@@ -14,6 +14,27 @@ import { printB2BInvoice } from '../utils/printB2BInvoice';
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 
+const TRACKING_STATUSES = ['confirmed', 'dispatched', 'delivered', 'cancelled'] as const;
+type TrackingStatus = typeof TRACKING_STATUSES[number];
+
+const TRACKING_BADGE: Record<TrackingStatus, { label: string; bg: string; color: string }> = {
+    confirmed:  { label: 'Order Placed', bg: 'rgba(245,158,11,0.12)',  color: '#f59e0b' },
+    dispatched: { label: 'Dispatched',   bg: 'rgba(56,189,248,0.12)',  color: '#38bdf8' },
+    delivered:  { label: 'Delivered',    bg: 'rgba(16,185,129,0.12)',  color: '#10b981' },
+    cancelled:  { label: 'Cancelled',    bg: 'rgba(239,68,68,0.10)',   color: '#ef4444' },
+};
+
+function TrackingBadge({ status }: { status?: string }) {
+    const s = status as TrackingStatus;
+    const cfg = TRACKING_STATUSES.includes(s) ? TRACKING_BADGE[s] : null;
+    if (!cfg) return <span style={{ color: 'var(--text-tertiary)', fontSize: '0.75rem' }}>—</span>;
+    return (
+        <span style={{ fontSize: '0.72rem', fontWeight: 700, padding: '0.2rem 0.6rem', borderRadius: '99px', background: cfg.bg, color: cfg.color, whiteSpace: 'nowrap' }}>
+            {cfg.label}
+        </span>
+    );
+}
+
 interface B2BInvoice {
     id: string;
     orderNumber?: string;
@@ -319,6 +340,7 @@ export default function B2BInvoiceWorklistPage() {
                                 <th style={{ padding: '0.85rem 1rem', fontWeight: 600, textAlign: 'right' }}>Paid</th>
                                 <th style={{ padding: '0.85rem 1rem', fontWeight: 600, textAlign: 'right' }}>Outstanding</th>
                                 <th style={{ padding: '0.85rem 1rem', fontWeight: 600 }}>Payment</th>
+                                <th style={{ padding: '0.85rem 1rem', fontWeight: 600 }}>Tracking</th>
                                 <th style={{ padding: '0.85rem 1rem', fontWeight: 600, textAlign: 'center' }}>Actions</th>
                             </tr>
                         </thead>
@@ -375,6 +397,9 @@ export default function B2BInvoiceWorklistPage() {
                                                     <option value="Paid">Paid</option>
                                                 </select>
                                             )}
+                                        </td>
+                                        <td style={{ padding: '0.85rem 1rem' }}>
+                                            <TrackingBadge status={o.status} />
                                         </td>
                                         <td style={{ padding: '0.85rem 1rem', textAlign: 'center' }}>
                                             {isSales ? (

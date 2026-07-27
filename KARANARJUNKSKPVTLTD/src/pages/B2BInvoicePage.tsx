@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { Save, Loader2, Printer, Plus, Trash2, UserPlus, ArrowLeft } from 'lucide-react';
+import { Save, Loader2, Printer, Plus, Trash2, UserPlus, ArrowLeft, Truck } from 'lucide-react';
 import { Link, useSearchParams, useNavigate } from 'react-router-dom';
 import UpiQrCode from '../components/UpiQrCode';
 import {
@@ -106,6 +106,8 @@ export default function B2BInvoicePage() {
 
     const today = new Date().toISOString().split('T')[0];
 
+    const [transporters, setTransporters] = useState<{ id: string; name: string; mobile?: string; contactPerson?: string }[]>([]);
+
     const [header, setHeader] = useState({
         invoiceNo: '',
         invoiceDate: today,
@@ -118,6 +120,9 @@ export default function B2BInvoicePage() {
         buyerContact: '',
         buyerState: 'Maharashtra',
         retailerId: '',
+        transporterId: '',
+        transporterName: '',
+        transporterContact: '',
     });
 
     const [rows, setRows] = useState<B2BRow[]>(
@@ -141,6 +146,11 @@ export default function B2BInvoicePage() {
             setRetailers(snap.docs.map(d => ({ id: d.id, ...d.data() })));
         });
 
+        const qTransporters = query(getTenantCollection(db, tenantId, 'transporters'));
+        const unsubTransporters = onSnapshot(qTransporters, snap => {
+            setTransporters(snap.docs.map(d => ({ id: d.id, ...d.data() } as { id: string; name: string; mobile?: string; contactPerson?: string })));
+        });
+
         const init = async () => {
             try {
                 const [brd] = await Promise.all([fetchInvoiceBranding(tenantId)]);
@@ -160,6 +170,7 @@ export default function B2BInvoicePage() {
         return () => {
             unsubProducts();
             unsubRetailers();
+            unsubTransporters();
         };
     }, [tenantId]);
 
@@ -204,6 +215,9 @@ export default function B2BInvoicePage() {
                 buyerContact: d.buyerContact || prev.buyerContact,
                 buyerState: d.buyerState || prev.buyerState,
                 retailerId: d.retailerId || prev.retailerId,
+                transporterId: d.transporterId || prev.transporterId,
+                transporterName: d.transporterName || prev.transporterName,
+                transporterContact: d.transporterContact || prev.transporterContact,
             }));
             // Restore discount / previous balance
             if (d.discountAmount !== undefined) setDiscount(String(d.discountAmount));
@@ -418,6 +432,9 @@ ${styles}
                 modeOfPayment: header.modeOfPayment,
                 salesmanName: header.salesmanName,
                 termsOfDelivery: header.termsOfDelivery,
+                transporterId: header.transporterId || null,
+                transporterName: header.transporterName || null,
+                transporterContact: header.transporterContact || null,
                 lineItems,
                 taxableValue: computedTaxable,
                 cgst: totalCgst,
@@ -430,7 +447,17 @@ ${styles}
                 previousBalance: prevBal,
                 netBalance,
                 invoiceDate: header.invoiceDate,
-                status: header.modeOfPayment === 'Cash' ? 'paid' : 'pending',
+                // 'confirmed' enters the tracking pipeline (Order Placed → Dispatched → Delivered).
+                // Cash invoices are immediately settled so 'paid' is correct there.
+                // On edit we preserve the existing tracking status if it's already in the pipeline.
+                status: (() => {
+                    if (header.modeOfPayment === 'Cash') return 'paid';
+                    if (isEditing) {
+                        const cur = existingOrder?.status || '';
+                        if (['confirmed', 'dispatched', 'delivered', 'cancelled'].includes(cur)) return cur;
+                    }
+                    return 'confirmed';
+                })(),
                 paymentStatus: header.modeOfPayment === 'Cash' ? 'Paid' : 'Pending',
             };
 
@@ -528,7 +555,7 @@ ${styles}
     };
 
     const resetForm = () => {
-        setHeader({ invoiceNo: '', invoiceDate: today, termsOfDelivery: '', modeOfPayment: '15 Days', salesmanName: '', buyerName: '', buyerAddress: '', buyerGstin: '', buyerContact: '', buyerState: 'Maharashtra', retailerId: '' });
+        setHeader({ invoiceNo: '', invoiceDate: today, termsOfDelivery: '', modeOfPayment: '15 Days', salesmanName: '', buyerName: '', buyerAddress: '', buyerGstin: '', buyerContact: '', buyerState: 'Maharashtra', retailerId: '', transporterId: '', transporterName: '', transporterContact: '' });
         setRows(Array.from({ length: 10 }, EMPTY_ROW));
         setPreviousBalance('');
         setDiscount('0');
@@ -729,6 +756,33 @@ ${styles}
                             <span className="print-val"></span>
                             <span className="print-val">{header.termsOfDelivery}</span>
                         </div>
+                        <div style={{ display: 'grid', gridTemplateColumns: '130px 1fr', gap: '4px', alignItems: 'center' }}>
+                            <span className="b2b-label" style={{ display: 'flex', alignItems: 'center', gap: '3px' }}><Truck size={11} /> Transporter :</span>
+                            <select className="b2b-input" value={header.transporterId}
+                                onChange={e => {
+                                    const t = transporters.find(x => x.id === e.target.value);
+                                    setHeader(h => ({
+                                        ...h,
+                                        transporterId: e.target.value,
+                                        transporterName: t?.name || '',
+                                        transporterContact: t?.mobile || '',
+                                    }));
+                                }}>
+                                <option value="">— Select Transporter —</option>
+                                {transporters.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
+                            </select>
+                            <span className="print-val"></span>
+                            <span className="print-val">{header.transporterName}</span>
+                        </div>
+                        {header.transporterId && (
+                            <div style={{ display: 'grid', gridTemplateColumns: '130px 1fr', gap: '4px', alignItems: 'center' }}>
+                                <span className="b2b-label">Contact No. :</span>
+                                <input className="b2b-input" placeholder="Transporter mobile" value={header.transporterContact}
+                                    onChange={e => setHeader(h => ({ ...h, transporterContact: e.target.value }))} />
+                                <span className="print-val"></span>
+                                <span className="print-val">{header.transporterContact}</span>
+                            </div>
+                        )}
                         <div style={{ display: 'grid', gridTemplateColumns: '130px 1fr', gap: '4px', alignItems: 'center' }}>
                             <span className="b2b-label">Mode of Payment :</span>
                             <select className="b2b-input" value={header.modeOfPayment} onChange={e => setHeader(h => ({ ...h, modeOfPayment: e.target.value }))}>

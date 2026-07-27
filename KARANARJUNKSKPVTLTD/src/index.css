@@ -179,6 +179,20 @@ h3 {
   background: var(--input-bg);
 }
 
+/* Select dropdowns — must also follow the theme for both the control and option list */
+select.input-field,
+select.input-field option {
+  background: var(--input-bg);
+  color: var(--text-primary);
+}
+
+/* Inline-styled filter selects (transparent background wrappers) need explicit
+   option colours in dark mode so they don't render as black-on-black. */
+.dark-theme select option {
+  background: hsl(220, 20%, 14%);
+  color: hsl(220, 20%, 90%);
+}
+
 /* Buttons */
 .btn {
   display: inline-flex;
