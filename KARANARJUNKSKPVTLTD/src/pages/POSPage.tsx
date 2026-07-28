@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
+import { createPortal } from 'react-dom';
 import { useSearchParams } from 'react-router-dom';
 // 'Link' was only used by the Returns quick-access link, now disabled below (2026-07-03).
 // import { Link } from 'react-router-dom';
@@ -227,7 +228,7 @@ export default function POSPage() {
     // The POS billing screen now renders as the same GST-invoice form as
     // B2BInvoicePage, but the buyer is a *farmer* (counter customer) instead of a
     // retailer. All checkout/inventory/loyalty logic below is reused unchanged.
-    const [billFormat, setBillFormat] = useState<BillFormat>('A4');
+    const [billFormat, setBillFormat] = useState<BillFormat>('A5');
     // Language the *printed bill* is rendered in — independent of the app UI
     // language, so the counter can hand a Marathi bill to a farmer while the
     // operator keeps the app in English. All three locales are bundled at init
@@ -266,6 +267,7 @@ export default function POSPage() {
     const [splits, setSplits] = useState<PaymentSplit[]>([{ method: 'Cash', amount: 0 }]);
 
     const [showVPayDialog, setShowVPayDialog] = useState(false);
+    const [transportCharges, setTransportCharges] = useState(0);
 
     // ── V-Checkout pending sessions ──────────────────────────────────────────
     const [vcheckoutSessions, setVcheckoutSessions] = useState<any[]>([]);
@@ -564,7 +566,7 @@ export default function POSPage() {
     // the discount must not apply — no partial/stale redemption should reach checkout.
     const effectiveRedeemPoints = loyaltyIsActive ? redeemPoints : 0;
     const loyaltyDiscount = effectiveRedeemPoints * ((loyaltyConfig?.pointsValue) || 0.1);
-    const grandTotal = Math.max(0, cartSubtotal - loyaltyDiscount);
+    const grandTotal = Math.max(0, cartSubtotal + transportCharges - loyaltyDiscount);
 
     // ── GST summary for the invoice (display + print) ────────────────────────
     // cartTotal is GST-inclusive (same convention as the analytics tax calc and
@@ -577,7 +579,7 @@ export default function POSPage() {
     }, 0);
     const totalSgst = totalCgst;
     const totalTax = totalCgst + totalSgst;
-    const invNetAmount = Math.round(computedTaxable + totalTax - loyaltyDiscount);
+    const invNetAmount = Math.round(computedTaxable + totalTax + transportCharges - loyaltyDiscount);
     const invFmt = (n: number) => (Number.isFinite(n) ? n : 0).toFixed(2);
 
     // Tracks which phone number (if any) the currently-displayed name/address/pin
@@ -670,6 +672,7 @@ export default function POSPage() {
                     gstPct: Number(item.gstPct) || 0,
                 })),
                 subtotal: cartSubtotal,
+                transportCharges,
                 discount: loyaltyDiscount,
                 grandTotal,
                 paymentStatus: paymentMethod === 'Khata' ? 'Pending' : 'Paid',
@@ -850,9 +853,8 @@ export default function POSPage() {
 
             showToast(`Sale saved · ${billNumber} · ₹${Math.round(grandTotal).toLocaleString('en-IN')}`, 'success');
 
-            // Print and reset
+            // Reset after save
             setTimeout(() => {
-                window.print();
                 // Reset the active tab
                 setBillTabs(prev => prev.map(t =>
                     t.id === activeTabId
@@ -864,6 +866,7 @@ export default function POSPage() {
                 // re-fetches the (now updated) outstanding for the next sale.
                 setCustomerOutstanding(0);
                 setRowMeta({});
+                setTransportCharges(0);
                 // Correction complete — drop edit mode so the next bill is a fresh one.
                 setEditingOrder(null);
                 // Advance the displayed bill number. generateBillNumber() already
@@ -871,7 +874,7 @@ export default function POSPage() {
                 // kept showing the number just used until the page was reloaded.
                 setNextBillNumber(`KA-${(Number(billNumber.replace(/\D/g, '')) + 1).toString().padStart(4, '0')}`);
                 setIsProcessing(false);
-            }, 500);
+            }, 300);
 
         } catch (e) {
             console.error(e);
@@ -1032,9 +1035,16 @@ export default function POSPage() {
         };
     })();
 
+    // Isolate print to the bill portal so the app sidebar/nav never appears.
+    const triggerPrint = () => {
+        document.body.classList.add('pos-printing');
+        window.print();
+        document.body.classList.remove('pos-printing');
+    };
+
     const openReprint = (order: any) => {
         setReprintOrder(order);
-        setTimeout(() => { window.print(); setReprintOrder(null); }, 100);
+        setTimeout(() => { triggerPrint(); setReprintOrder(null); }, 100);
     };
 
     const duplicateBill = (order: any) => {
@@ -1439,9 +1449,12 @@ export default function POSPage() {
                             <div style={{ padding: '8px', display: 'flex', flexDirection: 'column', gap: '3px', fontSize: '0.82rem' }}>
                                 <div style={{ display: 'flex', justifyContent: 'space-between' }}><span>{L('output_cgst')}@2.5%</span><span>{invFmt(totalCgst)}</span></div>
                                 <div style={{ display: 'flex', justifyContent: 'space-between' }}><span>{L('output_sgst')}@2.5%</span><span>{invFmt(totalSgst)}</span></div>
-                                <div style={{ display: 'flex', justifyContent: 'space-between' }}><span>{L('round_off')}</span><span>{invFmt(invNetAmount - (computedTaxable + totalTax - loyaltyDiscount))}</span></div>
+                                <div style={{ display: 'flex', justifyContent: 'space-between' }}><span>{L('round_off')}</span><span>{invFmt(invNetAmount - (computedTaxable + totalTax + transportCharges - loyaltyDiscount))}</span></div>
                                 {loyaltyDiscount > 0 && (
                                     <div style={{ display: 'flex', justifyContent: 'space-between', color: '#2E7D32' }}><span>{L('discount')} ({effectiveRedeemPoints} pts)</span><span>-{invFmt(loyaltyDiscount)}</span></div>
+                                )}
+                                {transportCharges > 0 && (
+                                    <div style={{ display: 'flex', justifyContent: 'space-between' }}><span>Transport Charges</span><span>+{invFmt(transportCharges)}</span></div>
                                 )}
                                 <div style={{ borderTop: '2px solid #111', marginTop: '4px', paddingTop: '4px', display: 'flex', justifyContent: 'space-between', fontWeight: 900, fontSize: '1rem' }}>
                                     <span>{L('net_amount')}</span><span>₹{invNetAmount.toLocaleString('en-IN')}</span>
@@ -1506,33 +1519,40 @@ export default function POSPage() {
                                 </div>
                             </div>
                         )}
-                        <div style={{ display: 'flex', gap: '0.6rem', flexWrap: 'wrap', alignItems: 'center' }}>
-                            <button
-                                onClick={() => handleCheckout(modeOfPayment === 'Credit' ? 'Khata' : modeOfPayment)}
-                                disabled={isProcessing || cart.length === 0}
-                                className="btn"
-                                style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', padding: '0.75rem 1.75rem', fontSize: '1rem', borderRadius: '8px', background: '#1565C0', color: '#fff', border: 'none', cursor: isProcessing ? 'not-allowed' : 'pointer', fontWeight: 700 }}>
-                                {isProcessing ? <Loader2 className="animate-spin" size={18} /> : <Printer size={18} />} Save &amp; Print
-                            </button>
-                            <ModuleGate moduleId="cash_tender" moduleName="Cash Tender" paywallVariant="badge">
-                                <button onClick={() => { setCashTenderAmount(grandTotal); setShowCashTenderDialog(true); }} disabled={isProcessing || cart.length === 0} className="btn" style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', padding: '0.75rem 1.25rem', borderRadius: '8px', background: '#16a34a', color: 'white', border: 'none', fontWeight: 700, cursor: 'pointer' }}>
-                                    <Banknote size={18} /> Cash+Change
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
+                            {/* Transport Charges */}
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+                                <label style={{ fontSize: '0.88rem', fontWeight: 600, color: 'var(--text-secondary)', whiteSpace: 'nowrap' }}>Transport Charges (₹)</label>
+                                <input
+                                    type="number"
+                                    min={0}
+                                    value={transportCharges || ''}
+                                    onChange={e => setTransportCharges(Math.max(0, Number(e.target.value) || 0))}
+                                    placeholder="0"
+                                    style={{ width: '120px', border: '1px solid var(--surface-border)', borderRadius: '8px', padding: '0.4rem 0.6rem', fontSize: '0.9rem', background: 'var(--surface-raised)', color: 'var(--text-primary)' }}
+                                />
+                            </div>
+                            {/* Save + Print + To Pay */}
+                            <div style={{ display: 'flex', gap: '0.6rem', flexWrap: 'wrap', alignItems: 'center' }}>
+                                <button
+                                    onClick={() => handleCheckout(modeOfPayment === 'Credit' ? 'Khata' : modeOfPayment)}
+                                    disabled={isProcessing || cart.length === 0}
+                                    className="btn"
+                                    style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', padding: '0.75rem 1.75rem', fontSize: '1rem', borderRadius: '8px', background: '#1565C0', color: '#fff', border: 'none', cursor: isProcessing ? 'not-allowed' : 'pointer', fontWeight: 700 }}>
+                                    {isProcessing ? <Loader2 className="animate-spin" size={18} /> : <Save size={18} />} Save
                                 </button>
-                            </ModuleGate>
-                            <ModuleGate moduleId="vpay" moduleName="V Pay" paywallVariant="badge">
-                                <button onClick={() => setShowVPayDialog(true)} disabled={isProcessing || cart.length === 0} className="btn" style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', padding: '0.75rem 1.25rem', borderRadius: '8px', background: '#0055ff', color: 'white', border: 'none', fontWeight: 700, cursor: 'pointer' }}>
-                                    <QrCode size={18} /> V Pay
+                                <button
+                                    onClick={() => {
+                                        if (cart.length === 0) { showToast('Add items to the bill before printing.', 'error'); return; }
+                                        triggerPrint();
+                                    }}
+                                    disabled={isProcessing}
+                                    className="btn btn-secondary"
+                                    style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', padding: '0.75rem 1.25rem', fontSize: '1rem', borderRadius: '8px', fontWeight: 700, cursor: 'pointer' }}>
+                                    <Printer size={18} /> Print
                                 </button>
-                            </ModuleGate>
-                            <ModuleGate moduleId="multiple_payment_modes" moduleName="Split Payment" paywallVariant="badge">
-                                <button onClick={() => { setSplits([{ method: 'Cash', amount: grandTotal }]); setShowSplitDialog(true); }} disabled={isProcessing || cart.length === 0} className="btn" style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', padding: '0.75rem 1.25rem', borderRadius: '8px', background: '#7c3aed', color: 'white', border: 'none', fontWeight: 700, cursor: 'pointer' }}>
-                                    <CreditCard size={18} /> Split
-                                </button>
-                            </ModuleGate>
-                            <button onClick={() => handleCheckout('Khata')} disabled={isProcessing || cart.length === 0} className="btn" style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', padding: '0.75rem 1.25rem', borderRadius: '8px', background: 'var(--secondary)', color: 'var(--secondary-dark)', border: 'none', fontWeight: 700, cursor: 'pointer' }}>
-                                Credit / Khata <ChevronRight size={18} />
-                            </button>
-                            <span style={{ marginLeft: 'auto', fontSize: '1.1rem', fontWeight: 800 }}>To Pay: <span style={{ color: 'var(--primary)' }}>₹{Math.round(grandTotal).toLocaleString('en-IN')}</span></span>
+                                <span style={{ marginLeft: 'auto', fontSize: '1.1rem', fontWeight: 800 }}>To Pay: <span style={{ color: 'var(--primary)' }}>₹{Math.round(grandTotal).toLocaleString('en-IN')}</span></span>
+                            </div>
                         </div>
                     </div>
                 </div>
@@ -1747,27 +1767,49 @@ export default function POSPage() {
                 </div>
             )}
 
-            {/* Hidden reprint layout — separate from the live checkout print layout below */}
-            {reprintOrder && (
-                <div className="print-only">
-                    <TraditionalPrintLayout
-                        cart={(reprintOrder.lineItems || []).map((li: any) => ({
-                            name: li.productName, cartQuantity: li.quantity, baseUnit: li.unit,
-                            sellingPrice: li.mrp, maxRetailPrice: li.mrp, cartTotal: li.amount, gstPct: li.gstPct,
-                            mfgCompany: li.mfgCompany, batchNo: li.batchNo, expDate: li.expDate,
-                        }))}
-                        customer={{ name: reprintOrder.retailerName, phone: reprintOrder.phoneNumber, address: reprintOrder.address, pin: reprintOrder.pin }}
-                        branding={branding}
-                        billNumber={reprintOrder.orderNumber}
-                        subtotal={reprintOrder.subtotal || 0}
-                        discount={reprintOrder.discount || 0}
-                        grandTotal={reprintOrder.grandTotal || 0}
-                        billFormat={billFormat}
-                        invoiceDate={reprintOrder.invoiceDate || ''}
-                        modeOfPayment={reprintOrder.paymentMethod || 'Cash'}
-                        L={L}
-                    />
-                </div>
+            {/* Bill print portal — rendered directly on <body> so body.pos-printing CSS
+                can hide everything else (sidebar, nav, app wrapper) without any className
+                gymnastics on the surrounding layout. Both Print and Reprint share this portal;
+                reprintOrder controls which content is active at print time. */}
+            {createPortal(
+                <div id="pos-print-root">
+                    {reprintOrder ? (
+                        <TraditionalPrintLayout
+                            cart={(reprintOrder.lineItems || []).map((li: any) => ({
+                                name: li.productName, cartQuantity: li.quantity, baseUnit: li.unit,
+                                sellingPrice: li.mrp, maxRetailPrice: li.mrp, cartTotal: li.amount, gstPct: li.gstPct,
+                                mfgCompany: li.mfgCompany, batchNo: li.batchNo, expDate: li.expDate,
+                            }))}
+                            customer={{ name: reprintOrder.retailerName, phone: reprintOrder.phoneNumber, address: reprintOrder.address, pin: reprintOrder.pin }}
+                            branding={branding}
+                            billNumber={reprintOrder.orderNumber}
+                            subtotal={reprintOrder.subtotal || 0}
+                            discount={reprintOrder.discount || 0}
+                            grandTotal={reprintOrder.grandTotal || 0}
+                            billFormat={billFormat}
+                            invoiceDate={reprintOrder.invoiceDate || ''}
+                            modeOfPayment={reprintOrder.paymentMethod || 'Cash'}
+                            L={L}
+                        />
+                    ) : (
+                        <TraditionalPrintLayout
+                            cart={cart.map(c => ({ ...c, batchNo: rowMeta[c.id]?.batchNo ?? c.batchNumber, expDate: rowMeta[c.id]?.expDate ?? c.expiryDate }))}
+                            customer={customer}
+                            branding={branding}
+                            billNumber={nextBillNumber}
+                            subtotal={cartSubtotal}
+                            transportCharges={transportCharges}
+                            discount={loyaltyDiscount}
+                            grandTotal={grandTotal}
+                            billFormat={billFormat}
+                            invoiceDate={invoiceDate}
+                            modeOfPayment={modeOfPayment}
+                            previousOutstanding={customerOutstanding}
+                            L={L}
+                        />
+                    )}
+                </div>,
+                document.body
             )}
 
             {/* ── V-Pay Dialog ──────────────────────────────────────────────────────── */}
@@ -1988,33 +2030,13 @@ export default function POSPage() {
                 />
             )}
 
-            {/* Hidden print layout — suppressed while a reprint (below) is in flight,
-                so window.print() never renders both layouts at once. */}
-            {!reprintOrder && (
-                <div className="print-only">
-                    <TraditionalPrintLayout
-                        cart={cart.map(c => ({ ...c, batchNo: rowMeta[c.id]?.batchNo ?? c.batchNumber, expDate: rowMeta[c.id]?.expDate ?? c.expiryDate }))}
-                        customer={customer}
-                        branding={branding}
-                        billNumber={nextBillNumber}
-                        subtotal={cartSubtotal}
-                        discount={loyaltyDiscount}
-                        grandTotal={grandTotal}
-                        billFormat={billFormat}
-                        invoiceDate={invoiceDate}
-                        modeOfPayment={modeOfPayment}
-                        previousOutstanding={customerOutstanding}
-                        L={L}
-                    />
-                </div>
-            )}
         </div>
     );
 }
 
 // Printed GST invoice — mirrors B2BInvoicePage's layout so the POS (farmer) bill
 // looks identical to the B2B one. `billFormat` drives the print @page size (A4/A5).
-function TraditionalPrintLayout({ cart, customer, branding, billNumber, discount, grandTotal, billFormat = 'A4', invoiceDate, modeOfPayment = 'Cash', previousOutstanding = 0, L = (k: string) => k }: any) {
+function TraditionalPrintLayout({ cart, customer, branding, billNumber, discount, transportCharges = 0, grandTotal, billFormat = 'A5', invoiceDate, modeOfPayment = 'Cash', previousOutstanding = 0, L = (k: string) => k }: any) {
     const fmt = (n: number) => (Number.isFinite(n) ? n : 0).toFixed(2);
     const lineGst = (i: any) => (typeof i.gstPct === 'number' ? i.gstPct : 5);
     const taxable = cart.reduce((s: number, i: any) => s + (i.cartTotal || 0) / (1 + lineGst(i) / 100), 0);
@@ -2022,7 +2044,7 @@ function TraditionalPrintLayout({ cart, customer, branding, billNumber, discount
     const sgst = cgst;
     const tax = cgst + sgst;
     const net = Math.round(grandTotal || 0);
-    const roundOff = net - (taxable + tax - (discount || 0));
+    const roundOff = net - (taxable + tax + (transportCharges || 0) - (discount || 0));
     const sellerName = branding?.businessName || 'Your Business Name';
     const isA5 = billFormat === 'A5';
     const baseFont = isA5 ? '0.72rem' : '0.82rem';
@@ -2139,6 +2161,7 @@ function TraditionalPrintLayout({ cart, customer, branding, billNumber, discount
                     <div style={{ display: 'flex', justifyContent: 'space-between' }}><span>{L('output_sgst')}@2.5%</span><span>{fmt(sgst)}</span></div>
                     <div style={{ display: 'flex', justifyContent: 'space-between' }}><span>{L('round_off')}</span><span>{fmt(roundOff)}</span></div>
                     {discount > 0 && <div style={{ display: 'flex', justifyContent: 'space-between', color: '#2E7D32' }}><span>{L('discount')}</span><span>-{fmt(discount)}</span></div>}
+                    {transportCharges > 0 && <div style={{ display: 'flex', justifyContent: 'space-between' }}><span>Transport Charges</span><span>+{fmt(transportCharges)}</span></div>}
                     <div style={{ borderTop: '2px solid #111', marginTop: '3px', paddingTop: '3px', display: 'flex', justifyContent: 'space-between', fontWeight: 900, fontSize: isA5 ? '0.85rem' : '1rem' }}>
                         <span>{L('net_amount')}</span><span>₹{net.toLocaleString('en-IN')}</span>
                     </div>

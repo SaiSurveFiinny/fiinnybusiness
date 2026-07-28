@@ -95,6 +95,24 @@ body {
     background-image: none !important;
     color: black !important;
   }
+
+  /* POS bill isolation: when body has this class, hide EVERYTHING except
+     the bill portal rendered directly on <body>, so the app sidebar,
+     nav wrapper, and all other chrome never appear in the print output. */
+  body.pos-printing > *:not(#pos-print-root) {
+    display: none !important;
+  }
+  body.pos-printing #pos-print-root {
+    display: block !important;
+    width: 100%;
+  }
+}
+
+/* Always hidden on screen — only shown when pos-printing body class is set */
+@media screen {
+  #pos-print-root {
+    display: none !important;
+  }
 }
 
 @media screen {

@@ -34,6 +34,8 @@ export default function HorizontalNavbar() {
   const visibleItems = PRIORITY_NAV.filter(item => {
     if (!userRole || !permissions) return false;
     if (isSalesUser) return SALES_NAV_PATHS.includes(item.path);
+    // Sales Targets is only for admin and sales roles, not analyst
+    if (item.path === '/sales-targets') return false;
     if (permissions[userRole] && !permissions[userRole][item.screenKey]) return false;
     return true;
   });
