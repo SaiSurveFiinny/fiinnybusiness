@@ -14,6 +14,9 @@ import '../../../core/widgets/section_header.dart';
 import '../../../core/widgets/shimmer_product_card.dart';
 import '../../notifications/notifications.dart';
 import '../providers/marketplace_provider.dart';
+import '../../reels/providers/reels_provider.dart';
+import '../../../core/models/reel_model.dart';
+import '../../../core/utils/format_count.dart';
 
 class HomeScreen extends ConsumerWidget {
   const HomeScreen({super.key});
@@ -118,6 +121,9 @@ class HomeScreen extends ConsumerWidget {
                   // Rotating promo banners — gives the page a lively hero strip
                   const _PromoCarousel(),
                   const SizedBox(height: 24),
+
+                  // Latest Reels (Added horizontally before trending)
+                  const _ReelsRail(),
 
                   // Trending Near You
                   SectionHeader(
@@ -894,6 +900,145 @@ class _TopDealsRail extends ConsumerWidget {
         );
       },
       orElse: () => const SizedBox.shrink(),
+    );
+  }
+}
+
+// ─────────────────────────── Reels Rail ────────────────────────────────────
+
+class _ReelsRail extends ConsumerWidget {
+  const _ReelsRail();
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final reelsAsync = ref.watch(reelsFeedProvider);
+    return reelsAsync.maybeWhen(
+      data: (reels) {
+        if (reels.isEmpty) return const SizedBox.shrink();
+        final displayReels = reels.take(4).toList();
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            SectionHeader(
+              title: 'Latest Reels',
+              icon: Icons.play_circle_fill_rounded,
+              iconColor: AppColors.primary,
+              actionLabel: 'See all',
+              onAction: () {
+                ref.invalidate(reelsFeedProvider);
+                context.go('/reels');
+              },
+            ),
+            const SizedBox(height: 12),
+            SizedBox(
+              height: 200,
+              child: ListView.separated(
+                scrollDirection: Axis.horizontal,
+                padding: const EdgeInsets.symmetric(horizontal: 4),
+                itemCount: displayReels.length,
+                separatorBuilder: (_, _) => const SizedBox(width: 12),
+                itemBuilder: (_, i) => SizedBox(
+                  width: 120,
+                  child: _ReelRailCard(reel: displayReels[i]),
+                ),
+              ),
+            ),
+            const SizedBox(height: 24),
+          ],
+        );
+      },
+      orElse: () => const SizedBox.shrink(),
+    );
+  }
+}
+
+class _ReelRailCard extends ConsumerWidget {
+  final ReelModel reel;
+  const _ReelRailCard({required this.reel});
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    return GestureDetector(
+      onTap: () {
+        ref.invalidate(reelsFeedProvider);
+        context.go('/reels');
+      },
+      child: Container(
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(12),
+          gradient: const LinearGradient(
+            colors: [AppColors.primaryDark, AppColors.primary],
+            begin: Alignment.topLeft,
+            end: Alignment.bottomRight,
+          ),
+        ),
+        child: Stack(
+          fit: StackFit.expand,
+          children: [
+            if (reel.thumbnailUrl != null && reel.thumbnailUrl!.isNotEmpty) ...[
+              ClipRRect(
+                borderRadius: BorderRadius.circular(12),
+                child: CachedNetworkImage(
+                  imageUrl: resolveImageUrl(reel.thumbnailUrl!),
+                  fit: BoxFit.cover,
+                  errorWidget: (context, url, error) => const SizedBox.shrink(),
+                ),
+              ),
+              Container(
+                decoration: BoxDecoration(
+                  borderRadius: BorderRadius.circular(12),
+                  color: Colors.black.withValues(alpha: 0.3),
+                ),
+              ),
+            ],
+            const Center(
+              child: Icon(
+                Icons.play_circle_outline_rounded,
+                color: Colors.white70,
+                size: 32,
+              ),
+            ),
+            Positioned(
+              left: 8,
+              right: 8,
+              bottom: 8,
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  if (reel.caption.isNotEmpty)
+                    Text(
+                      reel.caption,
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontSize: 10,
+                        fontWeight: FontWeight.w600,
+                        shadows: [Shadow(color: Colors.black87, blurRadius: 4)],
+                      ),
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  const SizedBox(height: 4),
+                  Row(
+                    children: [
+                      const Icon(Icons.remove_red_eye_rounded, size: 10, color: Colors.white70),
+                      const SizedBox(width: 4),
+                      Text(
+                        formatCount(reel.viewsCount),
+                        style: const TextStyle(
+                          color: Colors.white70,
+                          fontSize: 9,
+                          fontWeight: FontWeight.w500,
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
     );
   }
 }
