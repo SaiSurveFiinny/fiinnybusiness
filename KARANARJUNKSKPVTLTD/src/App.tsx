@@ -1,6 +1,6 @@
 import { useState, useEffect, lazy, Suspense } from 'react';
 import { BrowserRouter, Routes, Route, Link, useLocation, Navigate, useNavigate } from 'react-router-dom';
-import { Home, Users, UserPlus, LogOut, ReceiptText, ShieldAlert, Calculator, Settings, Package, ChevronDown, Layers, Palette, Database, Factory, Truck, Store, ShoppingCart, BarChart3, Activity, FileText, Bell, ClipboardList, Star, Link2, Bot, Loader2, Menu, X, Lock, Target, Sun, Moon } from 'lucide-react';
+import { Home, Users, UserPlus, LogOut, ReceiptText, ShieldAlert, Calculator, Settings, Package, ChevronDown, Layers, Palette, Database, Factory, Truck, Store, ShoppingCart, BarChart3, Activity, FileText, Bell, ClipboardList, Star, Link2, Bot, Loader2, Menu, X, Lock, Target, Sun, Moon, Receipt } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import LanguageSwitcher from './components/LanguageSwitcher';
 import OfflineBanner from './components/OfflineBanner';
@@ -90,6 +90,7 @@ const SupplierInvoicePage     = lazy(() => import('./pages/SupplierInvoicePage')
 const DataSecurityPage        = lazy(() => import('./pages/DataSecurityPage'));
 const SalesTargetsPage        = lazy(() => import('./pages/SalesTargetsPage'));
 const TeamPerformancePage     = lazy(() => import('./pages/TeamPerformancePage'));
+const ExpensePage             = lazy(() => import('./pages/ExpensePage'));
 const NotFoundPage            = lazy(() => import('./pages/NotFoundPage'));
 
 // Full-page spinner shown while a lazy chunk is loading
@@ -169,6 +170,7 @@ function Layout({ children, currentTheme, toggleTheme }: { children: React.React
     // PurchaseOrderModal-based implementation), which is unaffected.
     // { path: '/purchase-orders', icon: <ShoppingCart size={19} />, label: 'Purchase Orders', screenKey: 'worklist' },
     { path: '/supplier-ledger', icon: <Truck size={19} />, label: 'Supplier Ledger', screenKey: 'worklist' },
+    { path: '/expenses', icon: <Receipt size={19} />, label: 'Expenses', screenKey: 'expenses' },
     { path: '/delivery-challans', icon: <Truck size={19} />, label: 'Delivery Challans', screenKey: 'worklist' },
     { path: '/gst-reports', icon: <FileText size={19} />, label: 'GST Reports', screenKey: 'analytics' },
     { path: '/financial-reports', icon: <BarChart3 size={19} />, label: 'Financial Reports', screenKey: 'analytics' },
@@ -507,6 +509,7 @@ function AppRoutes() {
       {/* <Route path="/purchase-orders" element={<ProtectedRoute requireRole={['admin', 'analyst']} appScreen="worklist"><PurchaseOrdersPage /></ProtectedRoute>} /> */}
       <Route path="/supplier-ledger" element={<ProtectedRoute requireRole={['admin', 'analyst']} appScreen="worklist"><SupplierLedgerPage /></ProtectedRoute>} />
       <Route path="/supplier-ledger/:id" element={<ProtectedRoute requireRole={['admin', 'analyst']} appScreen="worklist"><SupplierLedgerDetailPage /></ProtectedRoute>} />
+      <Route path="/expenses" element={<ProtectedRoute requireRole={['admin', 'analyst']} appScreen="expenses"><ExpensePage /></ProtectedRoute>} />
       <Route path="/careoff-sync" element={<ProtectedRoute requireRole={['admin', 'analyst']} appScreen="accounts"><CareOffReconcilePage /></ProtectedRoute>} />
       <Route path="/supplier-invoice" element={<ProtectedRoute requireRole={['admin', 'analyst']} appScreen="worklist"><SupplierInvoicePage /></ProtectedRoute>} />
       <Route path="/delivery-challans" element={<ProtectedRoute requireRole={['admin', 'analyst']} appScreen="worklist"><DeliveryChallansPage /></ProtectedRoute>} />
