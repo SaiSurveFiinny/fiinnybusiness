@@ -1,11 +1,12 @@
-import { useState, useEffect, useCallback, useMemo } from 'react';
-import { useParams, useNavigate } from 'react-router-dom';
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
+import { createPortal } from 'react-dom';
+import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
 import {
   ArrowLeft, Phone, Mail, MapPin, Pencil, CheckCircle2,
   X, Loader2, AlertCircle, IndianRupee, Package, ChevronDown, ChevronRight,
   MessageSquare, Plus, Truck, CreditCard, CalendarDays, Trash2, Search,
   MessageCircle, Mic, Printer, CheckSquare, FileText, Square, Receipt, Paperclip,
-  Download, Tag, Edit2,
+  Download, Tag, Edit2, Bell,
 } from 'lucide-react';
 import {
   RadialBarChart, RadialBar, ResponsiveContainer, BarChart, Bar, XAxis, YAxis, Tooltip, CartesianGrid,
@@ -126,6 +127,21 @@ interface SupplierInvoice {
   updatedAt?: Timestamp;
 }
 
+interface PaymentReminder {
+  id: string;
+  supplierId: string;
+  supplierName: string;
+  reminderDate: string;
+  amount: number;
+  title: string;
+  notes?: string;
+  status: 'open' | 'completed';
+  notifyVia?: string[];
+  createdAt?: Timestamp;
+  createdBy?: string;
+  updatedAt?: Timestamp;
+}
+
 const today = () => new Date().toISOString().slice(0, 10);
 
 function fmtDate(v?: Timestamp | string): string {
@@ -195,8 +211,8 @@ export default function SupplierLedgerDetailPage() {
   // Supplier edit — handled by the shared SupplierFormModal in edit mode
   const [editMode, setEditMode] = useState(false);
 
-  // Account Statement / Purchase Orders / Payments / Supplier Invoices / Price List — single tabbed view.
-  const [activeTab, setActiveTab] = useState<'account' | 'purchaseOrders' | 'payments' | 'invoices' | 'priceList'>('account');
+  // Account Statement / Purchase Orders / Payments / Supplier Invoices / Price List / Reminders — single tabbed view.
+  const [activeTab, setActiveTab] = useState<'account' | 'purchaseOrders' | 'payments' | 'invoices' | 'priceList' | 'reminders'>('account');
 
   // Supplier Purchase Invoices (read-only list; created/edited via SupplierInvoicePage).
   const [invoices, setInvoices] = useState<SupplierInvoice[]>([]);
@@ -242,6 +258,20 @@ export default function SupplierLedgerDetailPage() {
   const [plEditId, setPlEditId] = useState<string | null>(null);
   const [plForm, setPlForm] = useState<{ productName: string; packaging: string; purchaseRate: string; gstPct: string } | null>(null);
   const [plSaving, setPlSaving] = useState(false);
+
+  // Payment Reminders
+  const [reminders, setReminders] = useState<PaymentReminder[]>([]);
+  const [remLoading, setRemLoading] = useState(false);
+  const [remEditId, setRemEditId] = useState<string | null>(null);
+  const [remForm, setRemForm] = useState<{ reminderDate: string; amount: string; title: string; notes: string } | null>(null);
+  const [remSaving, setRemSaving] = useState(false);
+  const [highlightedReminderId, setHighlightedReminderId] = useState<string | null>(null);
+  const highlightRef = useRef<HTMLDivElement | null>(null);
+  const [searchParams] = useSearchParams();
+
+  // Reminder-to-payment flow
+  const [reminderToComplete, setReminderToComplete] = useState<PaymentReminder | null>(null);
+  const [pmtFromReminder, setPmtFromReminder] = useState<{ reminderId: string; amount: number } | null>(null);
 
   const load = useCallback(async (persist = false) => {
     if (!tenantId || !id) return;
@@ -329,6 +359,49 @@ export default function SupplierLedgerDetailPage() {
 
   useEffect(() => { load(); }, [load]);
 
+  // Parse URL query params to auto-navigate to reminders tab and highlight a specific reminder
+  useEffect(() => {
+    const tab = searchParams.get('tab');
+    if (tab === 'reminders') setActiveTab('reminders');
+    const remId = searchParams.get('reminderId');
+    if (remId) setHighlightedReminderId(remId);
+  }, [searchParams]);
+
+  // Lock body scroll while any inline portal modal is open (PO/Payment modals handle their own lock)
+  useEffect(() => {
+    const isOpen = !!remForm || !!invToDelete || !!reminderToComplete;
+    if (isOpen) {
+      const prev = document.body.style.overflow;
+      document.body.style.overflow = 'hidden';
+      return () => { document.body.style.overflow = prev; };
+    }
+  }, [remForm, invToDelete, reminderToComplete]);
+
+  // Scroll highlighted reminder into view once reminders are loaded
+  useEffect(() => {
+    if (highlightedReminderId && highlightRef.current) {
+      highlightRef.current.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }
+  }, [highlightedReminderId, reminders]);
+
+  // Load reminders whenever the Reminders tab becomes active
+  useEffect(() => {
+    if (activeTab !== 'reminders' || !tenantId || !id) return;
+    let cancelled = false;
+    setRemLoading(true);
+    getDocs(query(getTenantCollection(db, tenantId, 'supplierPaymentReminders'), where('supplierId', '==', id)))
+      .then(snap => {
+        if (cancelled) return;
+        const list = snap.docs
+          .map(d => ({ id: d.id, ...d.data() } as PaymentReminder))
+          .sort((a, b) => a.reminderDate.localeCompare(b.reminderDate));
+        setReminders(list);
+      })
+      .catch(console.error)
+      .finally(() => { if (!cancelled) setRemLoading(false); });
+    return () => { cancelled = true; };
+  }, [activeTab, tenantId, id]);
+
   // Load price list whenever the Price List tab becomes active
   useEffect(() => {
     if (activeTab !== 'priceList' || !tenantId || !id) return;
@@ -376,6 +449,66 @@ export default function SupplierLedgerDetailPage() {
     if (!tenantId || !id) return;
     await deleteDoc(getTenantDoc(db, tenantId, 'suppliers', id, 'priceList', item.id));
     setPriceList(prev => prev.filter(p => p.id !== item.id));
+  };
+
+  // ── Payment Reminders ──────────────────────────────────────────────────────
+  const getReminderDisplayStatus = (r: PaymentReminder): 'upcoming' | 'completed' | 'overdue' => {
+    if (r.status === 'completed') return 'completed';
+    return r.reminderDate < today() ? 'overdue' : 'upcoming';
+  };
+
+  const handleSaveReminder = async () => {
+    if (!remForm || !tenantId || !id || !supplier) return;
+    if (!remForm.reminderDate || !remForm.title.trim()) return;
+    setRemSaving(true);
+    try {
+      const localFields = {
+        reminderDate: remForm.reminderDate,
+        amount: parseFloat(remForm.amount) || 0,
+        title: remForm.title.trim(),
+        notes: remForm.notes.trim(),
+      };
+      if (remEditId) {
+        await updateDoc(getTenantDoc(db, tenantId, 'supplierPaymentReminders', remEditId), { ...localFields, updatedAt: serverTimestamp() });
+        setReminders(prev => prev.map(r => r.id === remEditId ? { ...r, ...localFields } : r)
+          .sort((a, b) => a.reminderDate.localeCompare(b.reminderDate)));
+      } else {
+        const ref = await addDoc(getTenantCollection(db, tenantId, 'supplierPaymentReminders'), {
+          ...localFields,
+          supplierId: id,
+          supplierName: supplier.name,
+          status: 'open' as const,
+          notifyVia: [] as string[],
+          createdAt: serverTimestamp(),
+          createdBy: currentUser?.email ?? '',
+        });
+        const newRem: PaymentReminder = { id: ref.id, supplierId: id, supplierName: supplier.name, status: 'open', notifyVia: [], ...localFields };
+        setReminders(prev => [...prev, newRem].sort((a, b) => a.reminderDate.localeCompare(b.reminderDate)));
+      }
+      setRemForm(null);
+      setRemEditId(null);
+    } catch (e) { console.error(e); }
+    finally { setRemSaving(false); }
+  };
+
+  const markReminderStatus = async (reminderId: string, status: 'open' | 'completed') => {
+    if (!tenantId) return;
+    await updateDoc(getTenantDoc(db, tenantId, 'supplierPaymentReminders', reminderId), { status, updatedAt: serverTimestamp() });
+    setReminders(prev => prev.map(r => r.id === reminderId ? { ...r, status } : r));
+  };
+
+  const handleReminderToggle = (r: PaymentReminder) => {
+    if (r.status === 'completed') {
+      void markReminderStatus(r.id, 'open');
+    } else {
+      setReminderToComplete(r);
+    }
+  };
+
+  const handleDeleteReminder = async (r: PaymentReminder) => {
+    if (!tenantId || !window.confirm(`Delete reminder "${r.title}"? This cannot be undone.`)) return;
+    await deleteDoc(getTenantDoc(db, tenantId, 'supplierPaymentReminders', r.id));
+    setReminders(prev => prev.filter(rem => rem.id !== r.id));
   };
 
   const handleWhatsApp = () => {
@@ -708,6 +841,7 @@ export default function SupplierLedgerDetailPage() {
   ];
 
   return (
+    <>
     <div className="animate-fade-in" style={{ maxWidth: '980px', margin: '0 auto', padding: '1.5rem', display: 'flex', flexDirection: 'column', gap: '1.25rem' }}>
 
       {/* Back + title bar */}
@@ -742,6 +876,9 @@ export default function SupplierLedgerDetailPage() {
         </button>
         <button className="btn btn-primary" onClick={openAddPayment} style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', padding: '0.4rem 0.9rem', fontSize: '0.85rem' }}>
           <IndianRupee size={14} /> Record Payment
+        </button>
+        <button className="btn btn-secondary" onClick={() => { setActiveTab('reminders'); setRemEditId(null); setRemForm({ reminderDate: '', amount: '', title: '', notes: '' }); }} style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', padding: '0.4rem 0.9rem', fontSize: '0.85rem' }}>
+          <Bell size={14} /> Add Reminder
         </button>
       </div>
 
@@ -856,6 +993,7 @@ export default function SupplierLedgerDetailPage() {
           { key: 'payments', label: 'Payments Made', icon: <CreditCard size={15} />, count: payments.length },
           { key: 'invoices', label: 'Supplier Invoices', icon: <Receipt size={15} />, count: invoices.length },
           { key: 'priceList', label: 'Price List', icon: <Tag size={15} />, count: priceList.length },
+          { key: 'reminders', label: 'Payment Reminders', icon: <Bell size={15} />, count: reminders.length },
         ] as const).map((t, idx, arr) => {
           const active = activeTab === t.key;
           return (
@@ -1271,6 +1409,86 @@ export default function SupplierLedgerDetailPage() {
         </div>
       )}
 
+      {/* Payment Reminders */}
+      {activeTab === 'reminders' && card(
+        <div>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '1rem', flexWrap: 'wrap', gap: '0.5rem' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', color: 'var(--text-primary)' }}>
+              <span style={{ color: 'var(--primary-light)' }}><Bell size={16} /></span>
+              <span style={{ fontWeight: 700, fontSize: '1rem' }}>Payment Reminders</span>
+              <span style={{ fontSize: '0.78rem', color: 'var(--text-tertiary)' }}>({reminders.length})</span>
+            </div>
+            {!remForm && (
+              <button className="btn btn-primary" onClick={() => { setRemEditId(null); setRemForm({ reminderDate: '', amount: '', title: '', notes: '' }); }}
+                style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', padding: '0.45rem 0.9rem', fontSize: '0.85rem' }}>
+                <Plus size={14} /> Add Reminder
+              </button>
+            )}
+          </div>
+
+          {/* Reminders list */}
+          {remLoading ? (
+            <div style={{ display: 'flex', justifyContent: 'center', padding: '2rem' }}><Loader2 size={24} className="animate-spin" style={{ color: 'var(--text-tertiary)' }} /></div>
+          ) : reminders.length === 0 ? (
+            <div style={{ textAlign: 'center', padding: '2.5rem 1rem', color: 'var(--text-tertiary)', fontSize: '0.875rem' }}>
+              No payment reminders yet.<br />
+              <span style={{ fontSize: '0.8rem' }}>Click "Add Reminder" to set one up.</span>
+            </div>
+          ) : (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+              {reminders.map(r => {
+                const ds = getReminderDisplayStatus(r);
+                const statusColors: Record<string, string> = { upcoming: '#3b82f6', completed: '#10b981', overdue: '#ef4444' };
+                const sc = statusColors[ds];
+                const isHighlighted = r.id === highlightedReminderId;
+                return (
+                  <div
+                    key={r.id}
+                    ref={isHighlighted ? highlightRef : null}
+                    style={{
+                      display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                      padding: '0.75rem 1rem', borderRadius: '8px', background: 'var(--surface-raised)',
+                      gap: '1rem', flexWrap: 'wrap', borderLeft: `3px solid ${sc}`,
+                      boxShadow: isHighlighted ? `0 0 0 2px ${sc}` : 'none',
+                      transition: 'box-shadow 0.3s',
+                    }}
+                  >
+                    <div style={{ minWidth: 0, flex: 1 }}>
+                      <div style={{ fontWeight: 600, fontSize: '0.9rem', display: 'flex', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap' }}>
+                        <Bell size={13} style={{ color: sc, flexShrink: 0 }} />
+                        <span style={{ textDecoration: ds === 'completed' ? 'line-through' : 'none', color: ds === 'completed' ? 'var(--text-tertiary)' : 'var(--text-primary)' }}>{r.title}</span>
+                        <span style={{ fontSize: '0.68rem', padding: '0.1rem 0.5rem', borderRadius: '999px', background: `${sc}22`, color: sc, fontWeight: 700, textTransform: 'uppercase' }}>{ds}</span>
+                      </div>
+                      {r.notes && <div style={{ fontSize: '0.75rem', color: 'var(--text-tertiary)', marginTop: '0.15rem' }}>{r.notes}</div>}
+                      <div style={{ fontSize: '0.75rem', color: 'var(--text-tertiary)', display: 'flex', alignItems: 'center', gap: '0.4rem', marginTop: '0.15rem' }}>
+                        <CalendarDays size={12} /> {fmtDate(r.reminderDate)}
+                      </div>
+                    </div>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', flexShrink: 0 }}>
+                      {r.amount > 0 && <div style={{ fontWeight: 800, fontSize: '1rem', color: sc }}>{inr(r.amount)}</div>}
+                      <button
+                        onClick={() => handleReminderToggle(r)}
+                        title={r.status === 'completed' ? 'Mark as open' : 'Mark complete'}
+                        className="btn btn-secondary"
+                        style={{ padding: '0.3rem 0.6rem', fontSize: '0.75rem', display: 'flex', alignItems: 'center', gap: '0.3rem' }}
+                      >
+                        {r.status === 'completed' ? <Square size={13} /> : <CheckCircle2 size={13} />}
+                        {r.status === 'completed' ? 'Reopen' : 'Complete'}
+                      </button>
+                      {iconBtn(<Pencil size={14} />, () => {
+                        setRemEditId(r.id);
+                        setRemForm({ reminderDate: r.reminderDate, amount: String(r.amount || ''), title: r.title, notes: r.notes ?? '' });
+                      }, 'Edit reminder', 'var(--primary-light)')}
+                      {iconBtn(<Trash2 size={14} />, () => handleDeleteReminder(r), 'Delete reminder', '#ff4d4f')}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      )}
+
       {/* Follow-up Tasks */}
       {card(
         <div>
@@ -1375,65 +1593,194 @@ export default function SupplierLedgerDetailPage() {
       )}
 
       {/* Edit Supplier Modal — shared dual-mode form, mounted only when open */}
-      {editMode && supplier && (
-        <SupplierFormModal
-          mode="edit"
-          supplierId={supplier.id}
-          initial={supplier}
-          onClose={() => setEditMode(false)}
-          onSaved={() => { setEditMode(false); load(true); }}
-        />
-      )}
+    </div>
 
-      {/* Add / Edit PO Modal — shared PurchaseOrderModal, mounted only when open */}
-      {poEditing !== undefined && supplier && (
-        <PurchaseOrderModal
-          supplierId={supplier.id}
-          supplierName={supplier.name}
-          editing={poEditing}
-          onClose={() => setPoEditing(undefined)}
-          onSaved={() => { setPoEditing(undefined); load(true); }}
-        />
-      )}
+    {/* ── Portalled modals — rendered outside the animated page div to avoid transform containment ── */}
 
-      {/* Add / Edit Payment Modal — shared PaymentModal, mounted only when open */}
-      {pmtEditing !== undefined && supplier && (
-        <PaymentModal
-          supplierId={supplier.id}
-          supplierName={supplier.name}
-          outstandingBalance={supplier.outstandingBalance}
-          editing={pmtEditing}
-          applicableDocs={applicableDocs}
-          onClose={() => setPmtEditing(undefined)}
-          onSaved={() => { setPmtEditing(undefined); load(true); }}
-        />
-      )}
+    {editMode && supplier && (
+      <SupplierFormModal
+        mode="edit"
+        supplierId={supplier.id}
+        initial={supplier}
+        onClose={() => setEditMode(false)}
+        onSaved={() => { setEditMode(false); load(true); }}
+      />
+    )}
 
-      {/* Delete Supplier Invoice confirmation */}
-      {invToDelete && (
-        <div className="modal-overlay animate-fade-in" style={{ position: 'fixed', inset: 0, zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '1rem', background: 'hsla(220, 30%, 4%, 0.72)', backdropFilter: 'blur(4px)' }}>
-          <div className="glass-panel animate-slide-up" style={{ width: '100%', maxWidth: '440px', padding: '1.75rem', position: 'relative', borderRadius: '16px' }}>
-            <button onClick={() => !deletingInv && setInvToDelete(null)} className="btn-icon" aria-label="Close" style={{ position: 'absolute', top: '1rem', right: '1rem', background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-tertiary)' }}><X size={20} /></button>
-            <h2 style={{ fontSize: '1.3rem', fontWeight: 800, marginBottom: '0.5rem', display: 'flex', alignItems: 'center', gap: '0.5rem', color: '#ff4d4f' }}>
-              <AlertCircle size={20} /> Delete Supplier Invoice?
-            </h2>
-            <div style={{ fontSize: '0.875rem', color: 'var(--text-secondary)', marginBottom: '1rem', lineHeight: 1.7 }}>
-              <div>Invoice No: <strong style={{ color: 'var(--text-primary)' }}>{invToDelete.supplierInvoiceNumber || '—'}</strong></div>
-              <div>Internal Purchase ID: <strong style={{ color: 'var(--text-primary)' }}>{invToDelete.internalPurchaseId || '—'}</strong></div>
-              <div>Amount: <strong style={{ color: 'var(--secondary)' }}>₹{Number(invToDelete.netAmount || 0).toLocaleString('en-IN')}</strong></div>
+    {poEditing !== undefined && supplier && (
+      <PurchaseOrderModal
+        supplierId={supplier.id}
+        supplierName={supplier.name}
+        editing={poEditing}
+        onClose={() => setPoEditing(undefined)}
+        onSaved={() => { setPoEditing(undefined); load(true); }}
+      />
+    )}
+
+    {pmtEditing !== undefined && supplier && (
+      <PaymentModal
+        supplierId={supplier.id}
+        supplierName={supplier.name}
+        outstandingBalance={supplier.outstandingBalance}
+        editing={pmtEditing}
+        applicableDocs={applicableDocs}
+        defaultAmount={pmtFromReminder?.amount}
+        defaultDate={today()}
+        onClose={() => { setPmtEditing(undefined); setPmtFromReminder(null); }}
+        onSaved={() => {
+          if (pmtFromReminder) {
+            void markReminderStatus(pmtFromReminder.reminderId, 'completed');
+            setPmtFromReminder(null);
+          }
+          setPmtEditing(undefined);
+          load(true);
+        }}
+      />
+    )}
+
+    {/* Reminder completion confirmation dialog */}
+    {reminderToComplete && createPortal(
+      <div
+        style={{ position: 'fixed', inset: 0, zIndex: 1060, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '1rem', background: 'hsla(220, 30%, 4%, 0.72)', backdropFilter: 'blur(4px)', animation: 'fadeIn 0.18s ease-out' }}
+        role="dialog" aria-modal="true" aria-label="Complete reminder"
+      >
+        <div className="glass-panel" style={{ width: '100%', maxWidth: '420px', padding: '1.75rem', borderRadius: '16px', animation: 'scaleUp 0.22s ease-out' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', marginBottom: '0.6rem' }}>
+            <CheckCircle2 size={20} style={{ color: 'var(--primary-light)', flexShrink: 0 }} />
+            <h2 style={{ margin: 0, fontSize: '1.1rem', fontWeight: 800 }}>Record a Payment?</h2>
+          </div>
+          <p style={{ fontSize: '0.88rem', color: 'var(--text-secondary)', marginBottom: '0.5rem', lineHeight: 1.6 }}>
+            You're marking <strong style={{ color: 'var(--text-primary)' }}>"{reminderToComplete.title}"</strong> as complete.
+          </p>
+          {reminderToComplete.amount > 0 && (
+            <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', padding: '0.6rem 0.85rem', borderRadius: '8px', background: 'var(--surface-raised)', marginBottom: '1rem', fontSize: '0.88rem' }}>
+              <IndianRupee size={14} style={{ color: 'var(--primary-light)' }} />
+              <span style={{ color: 'var(--text-secondary)' }}>Amount:</span>
+              <span style={{ fontWeight: 700, color: 'var(--primary-light)' }}>{inr(reminderToComplete.amount)}</span>
             </div>
-            <div style={{ padding: '0.7rem 0.85rem', background: 'hsla(0,100%,50%,0.1)', color: '#ff4d4f', borderRadius: '8px', fontSize: '0.82rem', marginBottom: '1.25rem' }}>
-              This will permanently delete this supplier invoice. This action cannot be undone.
-            </div>
-            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '0.75rem' }}>
-              <button className="btn btn-secondary" onClick={() => setInvToDelete(null)} disabled={deletingInv}>Cancel</button>
-              <button className="btn" onClick={() => handleDeleteInvoice(invToDelete)} disabled={deletingInv} style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', background: '#ff4d4f', color: '#fff', border: 'none' }}>
-                {deletingInv ? <><Loader2 size={15} className="animate-spin" /> Deleting…</> : <><Trash2 size={15} /> Delete Invoice</>}
-              </button>
-            </div>
+          )}
+          <p style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', marginBottom: '1.25rem', lineHeight: 1.6 }}>
+            Would you like to record this as a <strong>Payment Made</strong> to the supplier as well?
+          </p>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.6rem' }}>
+            <button
+              className="btn btn-primary"
+              onClick={() => {
+                const r = reminderToComplete;
+                setReminderToComplete(null);
+                setPmtFromReminder({ reminderId: r.id, amount: r.amount });
+                setPmtEditing(null);
+              }}
+              style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '0.5rem', padding: '0.65rem 1rem', fontSize: '0.9rem' }}
+            >
+              <IndianRupee size={15} /> Yes, Record Payment
+            </button>
+            <button
+              className="btn btn-secondary"
+              onClick={() => {
+                const r = reminderToComplete;
+                setReminderToComplete(null);
+                void markReminderStatus(r.id, 'completed');
+              }}
+              style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '0.5rem', padding: '0.65rem 1rem', fontSize: '0.9rem' }}
+            >
+              <CheckCircle2 size={15} /> Just Mark Complete
+            </button>
+            <button
+              onClick={() => setReminderToComplete(null)}
+              style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-tertiary)', fontSize: '0.8rem', padding: '0.25rem', marginTop: '0.1rem' }}
+            >
+              Cancel
+            </button>
           </div>
         </div>
-      )}
-    </div>
+      </div>,
+      document.body
+    )}
+
+    {/* Payment Reminder add / edit modal */}
+    {remForm && createPortal(
+      <div
+        onMouseDown={e => { if (e.currentTarget === e.target && !remSaving) { setRemForm(null); setRemEditId(null); } }}
+        style={{ position: 'fixed', inset: 0, zIndex: 1050, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '1rem', background: 'hsla(220, 30%, 4%, 0.72)', backdropFilter: 'blur(4px)', animation: 'fadeIn 0.18s ease-out' }}
+        role="dialog" aria-modal="true" aria-label={remEditId ? 'Edit Reminder' : 'Add Payment Reminder'}
+      >
+        <div className="glass-panel" style={{ width: '100%', maxWidth: '480px', padding: '1.75rem', position: 'relative', borderRadius: '16px', animation: 'scaleUp 0.22s ease-out' }}>
+          <button onClick={() => { if (!remSaving) { setRemForm(null); setRemEditId(null); } }} className="btn-icon" aria-label="Close"
+            style={{ position: 'absolute', top: '1rem', right: '1rem', background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-tertiary)' }}>
+            <X size={20} />
+          </button>
+          <h2 style={{ fontSize: '1.2rem', fontWeight: 800, marginBottom: '1.25rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+            <Bell size={18} className="primary-gradient-text" /> {remEditId ? 'Edit Reminder' : 'Add Payment Reminder'}
+          </h2>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.85rem', marginBottom: '1.25rem' }}>
+            <div>
+              <label style={{ display: 'block', fontSize: '0.75rem', fontWeight: 600, color: 'var(--text-secondary)', marginBottom: '0.3rem' }}>Title / Subject *</label>
+              <input className="input-field" placeholder="e.g. Pay invoice #1234" value={remForm.title}
+                onChange={e => setRemForm(f => f ? { ...f, title: e.target.value } : f)}
+                autoFocus style={{ margin: 0, width: '100%' }} />
+            </div>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.85rem' }}>
+              <div>
+                <label style={{ display: 'block', fontSize: '0.75rem', fontWeight: 600, color: 'var(--text-secondary)', marginBottom: '0.3rem' }}>Reminder Date *</label>
+                <input className="input-field" type="date" value={remForm.reminderDate}
+                  onChange={e => setRemForm(f => f ? { ...f, reminderDate: e.target.value } : f)}
+                  style={{ margin: 0, width: '100%' }} />
+              </div>
+              <div>
+                <label style={{ display: 'block', fontSize: '0.75rem', fontWeight: 600, color: 'var(--text-secondary)', marginBottom: '0.3rem' }}>Amount (₹)</label>
+                <input className="input-field" type="number" placeholder="0.00" value={remForm.amount}
+                  onChange={e => setRemForm(f => f ? { ...f, amount: e.target.value } : f)}
+                  style={{ margin: 0, width: '100%' }} />
+              </div>
+            </div>
+            <div>
+              <label style={{ display: 'block', fontSize: '0.75rem', fontWeight: 600, color: 'var(--text-secondary)', marginBottom: '0.3rem' }}>Notes (optional)</label>
+              <textarea className="input-field" placeholder="Any additional details…" value={remForm.notes}
+                onChange={e => setRemForm(f => f ? { ...f, notes: e.target.value } : f)}
+                rows={2} style={{ margin: 0, width: '100%', resize: 'vertical' }} />
+            </div>
+          </div>
+          <div style={{ display: 'flex', gap: '0.75rem', justifyContent: 'flex-end' }}>
+            <button className="btn btn-secondary" onClick={() => { setRemForm(null); setRemEditId(null); }} disabled={remSaving}>Cancel</button>
+            <button className="btn btn-primary" onClick={handleSaveReminder}
+              disabled={remSaving || !remForm.title.trim() || !remForm.reminderDate}
+              style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+              {remSaving ? <Loader2 size={14} className="animate-spin" /> : <CheckCircle2 size={14} />}
+              {remEditId ? 'Save Changes' : 'Add Reminder'}
+            </button>
+          </div>
+        </div>
+      </div>,
+      document.body
+    )}
+
+    {/* Delete Supplier Invoice confirmation */}
+    {invToDelete && createPortal(
+      <div style={{ position: 'fixed', inset: 0, zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '1rem', background: 'hsla(220, 30%, 4%, 0.72)', backdropFilter: 'blur(4px)', animation: 'fadeIn 0.18s ease-out' }}>
+        <div className="glass-panel animate-slide-up" style={{ width: '100%', maxWidth: '440px', padding: '1.75rem', position: 'relative', borderRadius: '16px' }}>
+          <button onClick={() => !deletingInv && setInvToDelete(null)} className="btn-icon" aria-label="Close" style={{ position: 'absolute', top: '1rem', right: '1rem', background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-tertiary)' }}><X size={20} /></button>
+          <h2 style={{ fontSize: '1.3rem', fontWeight: 800, marginBottom: '0.5rem', display: 'flex', alignItems: 'center', gap: '0.5rem', color: '#ff4d4f' }}>
+            <AlertCircle size={20} /> Delete Supplier Invoice?
+          </h2>
+          <div style={{ fontSize: '0.875rem', color: 'var(--text-secondary)', marginBottom: '1rem', lineHeight: 1.7 }}>
+            <div>Invoice No: <strong style={{ color: 'var(--text-primary)' }}>{invToDelete.supplierInvoiceNumber || '—'}</strong></div>
+            <div>Internal Purchase ID: <strong style={{ color: 'var(--text-primary)' }}>{invToDelete.internalPurchaseId || '—'}</strong></div>
+            <div>Amount: <strong style={{ color: 'var(--secondary)' }}>₹{Number(invToDelete.netAmount || 0).toLocaleString('en-IN')}</strong></div>
+          </div>
+          <div style={{ padding: '0.7rem 0.85rem', background: 'hsla(0,100%,50%,0.1)', color: '#ff4d4f', borderRadius: '8px', fontSize: '0.82rem', marginBottom: '1.25rem' }}>
+            This will permanently delete this supplier invoice. This action cannot be undone.
+          </div>
+          <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '0.75rem' }}>
+            <button className="btn btn-secondary" onClick={() => setInvToDelete(null)} disabled={deletingInv}>Cancel</button>
+            <button className="btn" onClick={() => handleDeleteInvoice(invToDelete!)} disabled={deletingInv} style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', background: '#ff4d4f', color: '#fff', border: 'none' }}>
+              {deletingInv ? <><Loader2 size={15} className="animate-spin" /> Deleting…</> : <><Trash2 size={15} /> Delete Invoice</>}
+            </button>
+          </div>
+        </div>
+      </div>,
+      document.body
+    )}
+  </>
   );
 }

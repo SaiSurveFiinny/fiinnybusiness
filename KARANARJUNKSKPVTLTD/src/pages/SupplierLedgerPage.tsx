@@ -3,12 +3,23 @@ import { useNavigate } from 'react-router-dom';
 import {
   Building2, Plus, Loader2,
   IndianRupee, Package, Truck, ChevronRight, Link2, Search, X,
+  Bell, ChevronDown,
 } from 'lucide-react';
 import { getDocs } from 'firebase/firestore';
 import { db } from '../firebase';
 import { useAuth } from '../contexts/AuthContext';
 import { getTenantCollection } from '../utils/tenantPath';
 import SupplierFormModal from '../components/SupplierFormModal';
+
+interface UpcomingReminder {
+  id: string;
+  supplierId: string;
+  supplierName: string;
+  reminderDate: string;
+  amount: number;
+  title: string;
+  status: 'open' | 'completed';
+}
 
 interface Supplier {
   id: string;
@@ -33,6 +44,8 @@ export default function SupplierLedgerPage() {
   const [showAddSupplier, setShowAddSupplier] = useState(false);
   const [search, setSearch] = useState('');
   const [partyFilter, setPartyFilter] = useState<PartyFilter>('all');
+  const [upcomingReminders, setUpcomingReminders] = useState<UpcomingReminder[]>([]);
+  const [remindersExpanded, setRemindersExpanded] = useState(false);
 
   const loadSuppliers = async () => {
     if (!tenantId) return;
@@ -46,7 +59,23 @@ export default function SupplierLedgerPage() {
     setLoading(false);
   };
 
-  useEffect(() => { loadSuppliers(); }, [tenantId]);
+  const loadUpcomingReminders = async () => {
+    if (!tenantId) return;
+    try {
+      const snap = await getDocs(getTenantCollection(db, tenantId, 'supplierPaymentReminders'));
+      const todayStr = new Date().toISOString().slice(0, 10);
+      const list = snap.docs
+        .map(d => ({ id: d.id, ...d.data() } as UpcomingReminder))
+        .filter(r => r.status !== 'completed')
+        .sort((a, b) => a.reminderDate.localeCompare(b.reminderDate));
+      // separate overdue and upcoming
+      const overdue = list.filter(r => r.reminderDate < todayStr);
+      const upcoming = list.filter(r => r.reminderDate >= todayStr);
+      setUpcomingReminders([...overdue, ...upcoming]);
+    } catch (e) { console.error(e); }
+  };
+
+  useEffect(() => { loadSuppliers(); loadUpcomingReminders(); }, [tenantId]);
 
   const handleCreated = (openId?: string) => {
     setShowAddSupplier(false);
@@ -112,6 +141,62 @@ export default function SupplierLedgerPage() {
           </div>
         ))}
       </div>
+
+      {/* Upcoming Payment Reminders dashboard card */}
+      {upcomingReminders.length > 0 && (
+        <div className="glass-panel" style={{ borderRadius: '12px', padding: '1rem 1.25rem', marginBottom: '0.5rem' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: remindersExpanded || upcomingReminders.length <= 3 ? '0.75rem' : 0, flexWrap: 'wrap' }}>
+            <Bell size={16} style={{ color: '#f59e0b', flexShrink: 0 }} />
+            <span style={{ fontWeight: 700, fontSize: '0.95rem', color: 'var(--text-primary)' }}>Upcoming Payment Reminders</span>
+            <span style={{ fontSize: '0.75rem', color: 'var(--text-tertiary)' }}>({upcomingReminders.length} pending)</span>
+            {upcomingReminders.length > 3 && (
+              <button
+                onClick={() => setRemindersExpanded(e => !e)}
+                style={{ marginLeft: 'auto', background: 'none', border: 'none', cursor: 'pointer', color: 'var(--primary-light)', display: 'flex', alignItems: 'center', gap: '0.25rem', fontSize: '0.8rem', fontWeight: 600 }}
+              >
+                {remindersExpanded ? <><ChevronDown size={14} /> Collapse</> : <><ChevronRight size={14} /> Show all</>}
+              </button>
+            )}
+          </div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.4rem' }}>
+            {(remindersExpanded ? upcomingReminders : upcomingReminders.slice(0, 3)).map(r => {
+              const todayStr = new Date().toISOString().slice(0, 10);
+              const isOverdue = r.reminderDate < todayStr;
+              const sc = isOverdue ? '#ef4444' : '#3b82f6';
+              const dateLabel = new Date(r.reminderDate).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' });
+              return (
+                <button
+                  key={r.id}
+                  onClick={() => navigate(`/supplier-ledger/${r.supplierId}?tab=reminders&reminderId=${r.id}`)}
+                  style={{
+                    display: 'flex', alignItems: 'center', gap: '1rem', padding: '0.6rem 0.85rem',
+                    borderRadius: '8px', background: 'var(--surface-raised)', border: 'none',
+                    cursor: 'pointer', textAlign: 'left', borderLeft: `3px solid ${sc}`,
+                    transition: 'background 0.15s',
+                  }}
+                  onMouseEnter={e => (e.currentTarget.style.background = 'var(--surface-border)')}
+                  onMouseLeave={e => (e.currentTarget.style.background = 'var(--surface-raised)')}
+                >
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontWeight: 600, fontSize: '0.85rem', color: 'var(--text-primary)', display: 'flex', alignItems: 'center', gap: '0.4rem', flexWrap: 'wrap' }}>
+                      {r.supplierName}
+                      {isOverdue && <span style={{ fontSize: '0.68rem', padding: '0.1rem 0.4rem', borderRadius: '999px', background: '#ef444422', color: '#ef4444', fontWeight: 700 }}>OVERDUE</span>}
+                    </div>
+                    <div style={{ fontSize: '0.75rem', color: 'var(--text-tertiary)', marginTop: '0.1rem' }}>{r.title}</div>
+                  </div>
+                  <div style={{ textAlign: 'right', flexShrink: 0 }}>
+                    <div style={{ fontSize: '0.75rem', color: sc, fontWeight: 600, display: 'flex', alignItems: 'center', gap: '0.25rem' }}>
+                      <Bell size={11} /> {dateLabel}
+                    </div>
+                    {r.amount > 0 && <div style={{ fontWeight: 700, fontSize: '0.9rem', color: 'var(--text-primary)' }}>₹{r.amount.toLocaleString('en-IN')}</div>}
+                  </div>
+                  <ChevronRight size={14} style={{ color: 'var(--text-tertiary)', flexShrink: 0 }} />
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      )}
 
       {/* Party type filter */}
       <div style={{ display: 'flex', gap: '0.5rem', marginBottom: '1rem' }}>

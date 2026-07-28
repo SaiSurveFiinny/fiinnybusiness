@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef, useMemo } from 'react';
+import { createPortal } from 'react-dom';
 import {
   Package, Plus, Trash2, X, AlertCircle, Loader2, CheckCircle2, Tag,
 } from 'lucide-react';
@@ -301,7 +302,13 @@ export default function PurchaseOrderModal({ supplierId, supplierName, editing, 
 
   const hasPriceList = priceList.length > 0;
 
-  return (
+  useEffect(() => {
+    const prev = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    return () => { document.body.style.overflow = prev; };
+  }, []);
+
+  return createPortal(
     <div
       ref={overlayRef}
       onMouseDown={e => { if (e.target === overlayRef.current && !saving) onClose(); }}
@@ -519,6 +526,7 @@ export default function PurchaseOrderModal({ supplierId, supplierName, editing, 
           </button>
         </div>
       </div>
-    </div>
+    </div>,
+    document.body
   );
 }
