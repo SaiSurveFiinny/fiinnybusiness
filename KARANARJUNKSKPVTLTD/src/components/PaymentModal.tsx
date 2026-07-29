@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
+import { createPortal } from 'react-dom';
 import { IndianRupee, X, AlertCircle, Loader2, CheckCircle2, ChevronDown, ChevronRight } from 'lucide-react';
 import { addDoc, updateDoc, serverTimestamp, type Timestamp } from 'firebase/firestore';
 import { db } from '../firebase';
@@ -58,6 +59,10 @@ interface PaymentModalProps {
   applicableDocs?: ApplicableDoc[];
   onClose: () => void;
   onSaved: () => void;
+  /** Pre-fill amount when opening for a new payment (ignored in edit mode). */
+  defaultAmount?: number;
+  /** Pre-fill date when opening for a new payment (ignored in edit mode). */
+  defaultDate?: string;
 }
 
 const PAYMENT_METHODS = ['Cash', 'UPI', 'NEFT', 'RTGS', 'Bank Transfer', 'Cheque', 'Other'];
@@ -130,6 +135,7 @@ const labelStyle: React.CSSProperties = {
 
 export default function PaymentModal({
   supplierId, supplierName, outstandingBalance, editing, applicableDocs = [], onClose, onSaved,
+  defaultAmount, defaultDate,
 }: PaymentModalProps) {
   const { tenantId, currentUser } = useAuth();
   const isEdit = !!editing;
@@ -146,7 +152,14 @@ export default function PaymentModal({
         ...emptyBankDetails,
         ...(editing.bankDetails ?? {}),
       }
-    : { amount: '', paymentMethod: 'Cash', transactionRef: '', accountName: '', notes: '', paymentDate: today(), linkedDocId: '', ...emptyBankDetails }
+    : {
+        amount: defaultAmount != null ? String(defaultAmount) : '',
+        paymentMethod: 'Cash',
+        transactionRef: '', accountName: '', notes: '',
+        paymentDate: defaultDate ?? today(),
+        linkedDocId: '',
+        ...emptyBankDetails,
+      }
   );
 
   const [moreOpen, setMoreOpen] = useState(() => !!editing?.bankDetails && Object.values(editing.bankDetails).some(v => v));
@@ -262,7 +275,13 @@ export default function PaymentModal({
     ? { url: editing.attachmentUrl, name: editing.attachmentName || '', type: editing.attachmentType || '' }
     : null;
 
-  return (
+  useEffect(() => {
+    const prev = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    return () => { document.body.style.overflow = prev; };
+  }, []);
+
+  return createPortal(
     // Outer: fixed overlay, handles background + single scroll container
     <div
       style={{
@@ -404,6 +423,7 @@ export default function PaymentModal({
           </div>
         </div>
       </div>
-    </div>
+    </div>,
+    document.body
   );
 }

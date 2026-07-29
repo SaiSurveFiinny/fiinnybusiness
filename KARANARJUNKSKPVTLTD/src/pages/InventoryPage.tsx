@@ -1,19 +1,21 @@
 import { useState } from 'react';
-import { Package, Warehouse, Layers } from 'lucide-react';
+import { Package, Warehouse, Layers, Truck } from 'lucide-react';
 
 // Import sub-pages directly (InventoryPage itself is lazy-loaded by App.tsx)
 import RateSheetPage from './RateSheetPage';
 import WarehousePage from './WarehousePage';
 import InventoryBatchPage from './InventoryBatchPage';
+import ManageTransportPage from './ManageTransportPage';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
-type InventoryTab = 'products' | 'warehouses' | 'batches';
+type InventoryTab = 'products' | 'warehouses' | 'batches' | 'transport';
 
 const INVENTORY_TABS: { id: InventoryTab; label: string; icon: React.ReactNode }[] = [
     { id: 'products',   label: 'Products',          icon: <Package size={16} /> },
     { id: 'warehouses', label: 'Warehouses',         icon: <Warehouse size={16} /> },
     { id: 'batches',    label: 'Inventory Batches',  icon: <Layers size={16} /> },
+    { id: 'transport',  label: 'Transport',          icon: <Truck size={16} /> },
 ];
 
 // ─── Main Component ───────────────────────────────────────────────────────────
@@ -38,8 +40,6 @@ export default function InventoryPage() {
                     borderBottom: '2px solid var(--surface-border)',
                     overflowX: 'auto',
                     scrollbarWidth: 'none',
-                    // Negative margin trick so the sticky bar bleeds to page edges even
-                    // when the parent has padding, matching the WorklistPage pattern.
                     marginLeft: '-2rem',
                     marginRight: '-2rem',
                     paddingLeft: '2rem',
@@ -93,6 +93,7 @@ export default function InventoryPage() {
             {activeTab === 'products'   && <RateSheetPage />}
             {activeTab === 'warehouses' && <WarehousePage />}
             {activeTab === 'batches'    && <InventoryBatchPage />}
+            {activeTab === 'transport'  && <ManageTransportPage />}
         </div>
     );
 }

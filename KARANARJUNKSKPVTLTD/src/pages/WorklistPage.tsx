@@ -834,7 +834,7 @@ function PartnersTab() {
                                                 <td style={{ padding: '0.8rem 0.75rem', textAlign: 'right', whiteSpace: 'nowrap' }}>
                                                     {outstanding > 0
                                                         ? <span style={{ color: '#ef4444', fontWeight: 700 }}>₹{outstanding.toLocaleString('en-IN')}</span>
-                                                        : <span style={{ color: '#10b981', fontSize: '0.8rem', fontWeight: 600 }}>—</span>}
+                                                        : <span style={{ color: '#10b981', fontWeight: 700 }}>₹0</span>}
                                                 </td>
                                                 {isCompact && (
                                                     <td style={{ padding: '0.8rem 0.5rem', textAlign: 'center' }} onClick={e => toggleExpand(r.id, e)}>
