@@ -21,6 +21,7 @@ import { db } from '../firebase';
 import { useAuth } from '../contexts/AuthContext';
 import { useToast } from '../contexts/ToastContext';
 import { getTenantCollection, getTenantDoc } from '../utils/tenantPath';
+import { prepareStockDeduction, recordStockMovements } from '../utils/stockDeduction';
 import { resolveDateRange, DATE_RANGE_PERIODS, type DateRangePeriod } from '../utils/dateRanges';
 import { AGRI_CATEGORIES } from '../utils/constants';
 import { fetchInvoiceTemplate, fetchInvoiceBranding } from '../services/invoiceTemplateService';
@@ -691,64 +692,77 @@ export default function POSPage() {
                 invoiceDate: new Date().toISOString().split('T')[0],
             };
 
+            // ── Stock validation + FIFO batch deduction ────────────────────
+            // For new bills: validate stock and prepare FIFO batch deductions.
+            // For bill corrections (editingOrder): keep the existing net-delta
+            // logic so the return path remains simple.
+            const saleLines = cart.map(item => ({
+                productId: item.id,
+                productName: item.name,
+                qty: item.cartQuantity,
+                batchNo: rowMeta?.[item.id]?.batchNo ?? item.batchNumber ?? '',
+            }));
+
+            const deductionResult = !editingOrder
+                ? await prepareStockDeduction(tenantId, saleLines)
+                : { valid: true, errors: [], batchUpdates: [], productUpdates: [], movements: [] };
+
+            if (!deductionResult.valid) {
+                showToast(deductionResult.errors.join('\n'), 'error');
+                setIsProcessing(false);
+                return;
+            }
+
             // Persist the bill and deduct stock atomically in one batch — a
             // half-saved sale can never leave inventory inconsistent.
             const batch = writeBatch(db);
             const soRef = doc(getTenantCollection(db, tenantId, 'salesOrders'));
             batch.set(soRef, orderData);
 
-            // Correcting a bill returns the original's stock in this same batch, so
-            // the net movement is (new bill − old bill) rather than a second full
-            // decrement. Netted per product first: two updates to the same doc in
-            // one batch would silently drop the earlier one.
-            const returned = new Map<string, number>();
-            if (editingOrder) {
+            if (!editingOrder) {
+                // Apply FIFO batch deductions
+                for (const upd of deductionResult.batchUpdates) {
+                    batch.update(getTenantDoc(db, tenantId, 'inventoryBatches', upd.batchDocId), {
+                        quantity: upd.newQty,
+                        updatedAt: serverTimestamp(),
+                    });
+                }
+                // Update product.loosePieces (new model) or box/loose (fallback)
+                for (const upd of deductionResult.productUpdates) {
+                    const fields: Record<string, unknown> = { loosePieces: upd.newLoosePieces, updatedAt: serverTimestamp() };
+                    if (upd.newQuantity !== undefined) fields.quantity = upd.newQuantity;
+                    batch.update(getTenantDoc(db, tenantId, 'products', upd.productId), fields);
+                }
+            } else {
+                // Bill correction — net stock delta (original approach)
+                const returned = new Map<string, number>();
                 for (const li of (editingOrder.lineItems || [])) {
                     if (!li.productId) continue;
                     returned.set(li.productId, (returned.get(li.productId) || 0) + (Number(li.quantity) || 0));
                 }
-            }
-
-            for (const item of cart) {
-                const giveBack = returned.get(item.id) || 0;
-                returned.delete(item.id);
-                const cap = item.boxCapacity || 1;
-                let newLoose = (item.loosePieces || 0) - item.cartQuantity + giveBack;
-                let newBoxes = item.quantity || 0;
-                while (newLoose < 0 && newBoxes > 0) {
-                    newBoxes -= 1;
-                    newLoose += cap;
+                for (const item of cart) {
+                    const giveBack = returned.get(item.id) || 0;
+                    returned.delete(item.id);
+                    const cap = item.boxCapacity || 1;
+                    let newLoose = (item.loosePieces || 0) - item.cartQuantity + giveBack;
+                    let newBoxes = item.quantity || 0;
+                    while (newLoose < 0 && newBoxes > 0) { newBoxes--; newLoose += cap; }
+                    if (cap > 1 && newLoose >= cap) { newBoxes += Math.floor(newLoose / cap); newLoose = newLoose % cap; }
+                    batch.update(getTenantDoc(db, tenantId, 'products', item.id), {
+                        quantity: Math.max(0, newBoxes), loosePieces: Math.max(0, newLoose), updatedAt: serverTimestamp(),
+                    });
                 }
-                // Roll any surplus loose pieces back up into whole boxes.
-                if (cap > 1 && newLoose >= cap) {
-                    newBoxes += Math.floor(newLoose / cap);
-                    newLoose = newLoose % cap;
+                for (const [pid, qty] of returned.entries()) {
+                    const prod = products.find(p => p.id === pid);
+                    if (!prod || qty <= 0) continue;
+                    const cap = prod.boxCapacity || 1;
+                    let loose = (prod.loosePieces || 0) + qty;
+                    let boxes = prod.quantity || 0;
+                    if (cap > 1 && loose >= cap) { boxes += Math.floor(loose / cap); loose = loose % cap; }
+                    batch.update(getTenantDoc(db, tenantId, 'products', pid), {
+                        quantity: Math.max(0, boxes), loosePieces: Math.max(0, loose), updatedAt: serverTimestamp(),
+                    });
                 }
-                // Never write negative stock — you can't sell what isn't there.
-                batch.update(getTenantDoc(db, tenantId, 'products', item.id), {
-                    quantity: Math.max(0, newBoxes),
-                    loosePieces: Math.max(0, newLoose),
-                    updatedAt: serverTimestamp(),
-                });
-            }
-
-            // Anything on the original bill that isn't on the corrected one goes
-            // straight back to stock.
-            for (const [pid, qty] of returned.entries()) {
-                const prod = products.find(p => p.id === pid);
-                if (!prod || qty <= 0) continue;
-                const cap = prod.boxCapacity || 1;
-                let loose = (prod.loosePieces || 0) + qty;
-                let boxes = prod.quantity || 0;
-                if (cap > 1 && loose >= cap) {
-                    boxes += Math.floor(loose / cap);
-                    loose = loose % cap;
-                }
-                batch.update(getTenantDoc(db, tenantId, 'products', pid), {
-                    quantity: Math.max(0, boxes),
-                    loosePieces: Math.max(0, loose),
-                    updatedAt: serverTimestamp(),
-                });
             }
 
             // Retire the bill being corrected, pointing at its replacement.
@@ -761,6 +775,17 @@ export default function POSPage() {
             }
 
             await batch.commit();
+
+            // Record stock movements (best-effort — never blocks the sale)
+            if (!editingOrder && deductionResult.movements.length > 0) {
+                recordStockMovements(tenantId, deductionResult.movements, {
+                    type: 'sale_pos',
+                    sourceType: 'POS Billing',
+                    sourceId: soRef.id,
+                    sourceNumber: billNumber,
+                    date: new Date().toISOString().slice(0, 10),
+                }).catch(console.error);
+            }
 
             // Remember the walk-in customer for future lookup. Tagged channel:'pos'
             // so B2C counter customers don't pollute the B2B Partner Worklist.

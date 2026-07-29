@@ -62,6 +62,7 @@ const WarehousePage          = lazy(() => import('./pages/WarehousePage'));
 const InventoryBatchPage     = lazy(() => import('./pages/InventoryBatchPage'));
 const BarcodePage            = lazy(() => import('./pages/BarcodePage'));
 const InventoryPage          = lazy(() => import('./pages/InventoryPage'));
+const ReportsPage            = lazy(() => import('./pages/ReportsPage'));
 const ManageTransportPage    = lazy(() => import('./pages/ManageTransportPage'));
 const AdministrationPage     = lazy(() => import('./pages/AdministrationPage'));
 const PricingPage            = lazy(() => import('./pages/PricingPage'));
@@ -172,8 +173,7 @@ function Layout({ children, currentTheme, toggleTheme }: { children: React.React
     { path: '/supplier-ledger', icon: <Truck size={19} />, label: 'Supplier Ledger', screenKey: 'worklist' },
     { path: '/expenses', icon: <Receipt size={19} />, label: 'Expenses', screenKey: 'expenses' },
     { path: '/delivery-challans', icon: <Truck size={19} />, label: 'Delivery Challans', screenKey: 'worklist' },
-    { path: '/gst-reports', icon: <FileText size={19} />, label: 'GST Reports', screenKey: 'analytics' },
-    { path: '/financial-reports', icon: <BarChart3 size={19} />, label: 'Financial Reports', screenKey: 'analytics' },
+    { path: '/reports', icon: <BarChart3 size={19} />, label: 'Reports', screenKey: 'analytics' },
     { path: '/warehouses', icon: <Layers size={19} />, label: 'Warehouses / Godowns', screenKey: 'inventory' },
     { path: '/inventory-batches', icon: <Package size={19} />, label: 'Inventory Batches', screenKey: 'inventory' },
     { path: '/barcode', icon: <Activity size={19} />, label: 'Barcode Labels', screenKey: 'inventory' },
@@ -513,6 +513,7 @@ function AppRoutes() {
       <Route path="/careoff-sync" element={<ProtectedRoute requireRole={['admin', 'analyst']} appScreen="accounts"><CareOffReconcilePage /></ProtectedRoute>} />
       <Route path="/supplier-invoice" element={<ProtectedRoute requireRole={['admin', 'analyst']} appScreen="worklist"><SupplierInvoicePage /></ProtectedRoute>} />
       <Route path="/delivery-challans" element={<ProtectedRoute requireRole={['admin', 'analyst']} appScreen="worklist"><DeliveryChallansPage /></ProtectedRoute>} />
+      <Route path="/reports" element={<ProtectedRoute requireRole={['admin', 'analyst']} appScreen="analytics"><ReportsPage /></ProtectedRoute>} />
       <Route path="/gst-reports" element={<ProtectedRoute requireRole={['admin', 'analyst']} appScreen="analytics"><GSTReportsPage /></ProtectedRoute>} />
       <Route path="/financial-reports" element={<ProtectedRoute requireRole={['admin', 'analyst']} appScreen="analytics"><FinancialReportsPage /></ProtectedRoute>} />
       <Route path="/warehouses" element={<ProtectedRoute requireRole={['admin', 'analyst']} appScreen="inventory"><WarehousePage /></ProtectedRoute>} />

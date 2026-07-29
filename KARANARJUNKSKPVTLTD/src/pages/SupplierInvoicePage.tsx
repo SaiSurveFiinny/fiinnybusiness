@@ -1,6 +1,6 @@
-import { useState, useEffect, useRef, useMemo, Fragment } from 'react';
+import { useState, useEffect, useRef, useMemo } from 'react';
 import { useSearchParams, useNavigate } from 'react-router-dom';
-import { ArrowLeft, Plus, Trash2, Save, Printer, Loader2, ChevronRight, ChevronDown } from 'lucide-react';
+import { ArrowLeft, Plus, Trash2, Save, Printer, Loader2 } from 'lucide-react';
 import {
   getDoc, getDocs, addDoc, updateDoc, query, where, orderBy, runTransaction, serverTimestamp,
 } from 'firebase/firestore';
@@ -11,26 +11,32 @@ import { syncSupplierTotals } from '../utils/supplierLedgerSync';
 import { postSupplierInvoiceToInventory, type PostedLine } from '../utils/inventoryPosting';
 import { fetchInvoiceBranding } from '../services/invoiceTemplateService';
 import { fmtINR } from '../utils/gstCalculator';
-import { calcPurchaseLine, calcPurchaseTotals, rateWithGstToWithoutGst, rateWithoutGstToWithGst, type PurchaseLineInput } from '../utils/purchaseInvoiceCalc';
+import { rateWithGstToWithoutGst, rateWithoutGstToWithGst } from '../utils/purchaseInvoiceCalc';
 import ProductAutocomplete, { type ProductLite } from '../components/ProductAutocomplete';
 
 const today = () => new Date().toISOString().slice(0, 10);
+const r2 = (n: number) => Math.round(n * 100) / 100;
+const n = (s: string | number | undefined) => parseFloat(String(s ?? 0)) || 0;
+
+const GST_OPTIONS = [0, 5, 12, 18, 28];
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 type Line = {
   productId: string;
   productName: string;
-  packaging: string;
-  gstPct: string;       // auto from price list / master; editable
-  rateWithGst: string;  // PRIMARY USER INPUT — rate including GST
-  creditRate: string;
-  qtyPerBox: string;
-  boxQty: string;       // secondary user input
+  manufacturer: string;   // replaces packaging
+  batchNumber: string;    // new
+  expiryDate: string;     // new
+  rateWithoutGst: string; // primary input
+  gstPct: string;         // dropdown
+  rateWithGst: string;    // bidirectional with rateWithoutGst
+  quantity: string;       // total units received
 };
 
 const emptyLine = (): Line => ({
-  productId: '', productName: '', packaging: '',
-  gstPct: '5', rateWithGst: '', creditRate: '', qtyPerBox: '', boxQty: '',
+  productId: '', productName: '', manufacturer: '',
+  batchNumber: '', expiryDate: '',
+  rateWithoutGst: '', gstPct: '5', rateWithGst: '', quantity: '',
 });
 
 interface SupplierDoc {
@@ -45,25 +51,18 @@ interface PriceListItem {
   gstPct: number;
 }
 
-// ── Helpers ───────────────────────────────────────────────────────────────────
-const n = (s: string | number | undefined) => parseFloat(String(s ?? 0)) || 0;
-
 function computeLine(l: Line) {
-  const gstPct = n(l.gstPct);
-  // Derive rate excluding GST from the user-entered rate including GST
-  const rateWithoutGst = rateWithGstToWithoutGst(n(l.rateWithGst), gstPct);
-  const input: PurchaseLineInput = {
-    rateWithoutGst,
-    gstPct,
-    creditRate: n(l.creditRate),
-    qtyPerBox: n(l.qtyPerBox),
-    boxQty: n(l.boxQty),
-  };
-  return { ...input, ...calcPurchaseLine(input) };
+  const gstPctNum = n(l.gstPct);
+  const rateWo = n(l.rateWithoutGst);
+  const qty = n(l.quantity);
+  const amountWithoutGst = r2(rateWo * qty);
+  const gstAmount = r2(amountWithoutGst * gstPctNum / 100);
+  const finalAmount = r2(amountWithoutGst + gstAmount);
+  return { qty, amountWithoutGst, gstAmount, finalAmount };
 }
 
-function isActiveLine(l: { productName: string; boxQty: string | number }) {
-  return l.productName.trim() !== '' || n(l.boxQty) > 0;
+function isActiveLine(l: Line) {
+  return l.productName.trim() !== '' || n(l.quantity) > 0;
 }
 
 const AutoCell = ({ children }: { children: React.ReactNode }) => (
@@ -85,7 +84,6 @@ const tdAuto: React.CSSProperties = {
   fontSize: '0.8rem', textAlign: 'right', color: 'var(--text-secondary)',
   whiteSpace: 'nowrap',
 };
-const tdAutoCenter: React.CSSProperties = { ...tdAuto, textAlign: 'center' };
 const summaryRow: React.CSSProperties = {
   display: 'flex', justifyContent: 'space-between', alignItems: 'center',
   padding: '0.35rem 0', fontSize: '0.875rem', borderBottom: '1px solid var(--surface-border)',
@@ -107,8 +105,6 @@ export default function SupplierInvoicePage() {
   const [savedInvoiceId, setSavedInvoiceId] = useState<string>(invoiceIdParam);
 
   const autoGenIdRef = useRef<string>('');
-  // Stock already posted to inventory by a prior save — reversed before re-posting
-  // so editing an invoice never double-counts stock.
   const prevPostedRef = useRef<PostedLine[]>([]);
 
   const [supplier, setSupplier] = useState<SupplierDoc>({});
@@ -141,13 +137,14 @@ export default function SupplierInvoicePage() {
         setBranding(brd as unknown as typeof branding);
         const masterProducts = prodSnap.docs.map(d => {
           const p = d.data() as {
-            name?: string; baseUnit?: string; unit?: string;
+            name?: string; mfgCompany?: string; baseUnit?: string; unit?: string;
             purchasePrice?: number; gstPct?: number; retailerPrice?: number;
             boxCapacity?: number; unitSize?: number; unitMeasure?: string;
           };
           return {
             id: d.id,
             name: p.name ?? '',
+            mfgCompany: p.mfgCompany,
             baseUnit: p.baseUnit,
             unit: p.unit,
             purchasePrice: p.purchasePrice,
@@ -223,23 +220,38 @@ export default function SupplierInvoicePage() {
     }));
     autoGenIdRef.current = String(d.internalPurchaseId ?? '');
 
+    // Restore prevPosted for idempotent inventory re-posting on edit
+    if (Array.isArray(d.postedLines)) {
+      prevPostedRef.current = d.postedLines as PostedLine[];
+    }
+
     const rawLines = Array.isArray(d.lines) ? d.lines : [];
     if (rawLines.length > 0) {
       setLines(rawLines.map((l: Record<string, unknown>) => {
         const gstPct = n((l.gstPct as string | number | undefined) ?? 5);
-        // New format stores rateWithGst directly; old format stored rateWithoutGst — convert forward.
-        const rateWithGst = l.rateWithGst != null
-          ? String(l.rateWithGst)
-          : String(rateWithoutGstToWithGst(n((l.rateWithoutGst as string | number | undefined) ?? (l.rate as string | number | undefined) ?? 0), gstPct) || '');
+        // Handle both new format (rateWithoutGst) and old format (rateWithGst)
+        const rateWithoutGst = l.rateWithoutGst != null
+          ? String(l.rateWithoutGst)
+          : l.rateWithGst != null
+            ? String(rateWithGstToWithoutGst(n(l.rateWithGst as number), gstPct))
+            : '';
+        const rateWithGst = rateWithoutGst
+          ? String(rateWithoutGstToWithGst(n(rateWithoutGst), gstPct))
+          : String(l.rateWithGst ?? '');
+        // Backward-compat: old lines had boxQty * qtyPerBox for quantity
+        const quantity = l.quantity != null
+          ? String(l.quantity)
+          : String((n(l.boxQty as number) * n(l.qtyPerBox as number)) || '');
         return {
           productId: String(l.productId ?? ''),
           productName: String(l.productName ?? l.description ?? ''),
-          packaging: String(l.packaging ?? ''),
+          manufacturer: String(l.manufacturer ?? l.packaging ?? ''),
+          batchNumber: String(l.batchNumber ?? ''),
+          expiryDate: String(l.expiryDate ?? ''),
+          rateWithoutGst,
           gstPct: String(gstPct),
           rateWithGst,
-          creditRate: String(l.creditRate ?? ''),
-          qtyPerBox: String(l.qtyPerBox ?? ''),
-          boxQty: String(l.boxQty ?? ''),
+          quantity,
         };
       }));
     }
@@ -249,14 +261,38 @@ export default function SupplierInvoicePage() {
   const setLine = (i: number, key: keyof Line, val: string) =>
     setLines(ls => ls.map((l, idx) => idx === i ? { ...l, [key]: val } : l));
 
-  /** Select a product from the supplier price list. Auto-fills packaging, GST%,
-   *  and Rate with GST (= purchaseRate × (1+gstPct/100) — user confirms). */
+  const setRateWithoutGst = (i: number, val: string) => {
+    setLines(ls => ls.map((l, idx) => {
+      if (idx !== i) return l;
+      const derived = val ? String(rateWithoutGstToWithGst(n(val), n(l.gstPct))) : '';
+      return { ...l, rateWithoutGst: val, rateWithGst: derived };
+    }));
+  };
+
+  const setRateWithGst = (i: number, val: string) => {
+    setLines(ls => ls.map((l, idx) => {
+      if (idx !== i) return l;
+      const derived = val ? String(rateWithGstToWithoutGst(n(val), n(l.gstPct))) : '';
+      return { ...l, rateWithGst: val, rateWithoutGst: derived };
+    }));
+  };
+
+  const setGstPct = (i: number, val: string) => {
+    setLines(ls => ls.map((l, idx) => {
+      if (idx !== i) return l;
+      // Recompute rateWithGst from rateWithoutGst when GST changes
+      const rateWithGst = l.rateWithoutGst
+        ? String(rateWithoutGstToWithGst(n(l.rateWithoutGst), n(val)))
+        : l.rateWithGst;
+      return { ...l, gstPct: val, rateWithGst };
+    }));
+  };
+
   const selectFromPriceList = (i: number, itemId: string) => {
     const item = priceList.find(p => p.id === itemId);
     if (!item) return;
     const gstPct = item.gstPct;
-    const rateWithGst = rateWithoutGstToWithGst(item.purchaseRate, gstPct);
-    // Try to enrich with creditRate / qtyPerBox from master products by name match
+    const rateWithGst = String(rateWithoutGstToWithGst(item.purchaseRate, gstPct));
     const masterMatch = products.find(
       p => p.name.trim().toLowerCase() === item.productName.trim().toLowerCase()
     );
@@ -264,30 +300,25 @@ export default function SupplierInvoicePage() {
       ...l,
       productId: masterMatch?.id ?? '',
       productName: item.productName,
-      packaging: item.packaging,
+      manufacturer: l.manufacturer, // keep what user typed
       gstPct: String(gstPct),
-      rateWithGst: String(rateWithGst),
-      creditRate: masterMatch?.retailerPrice != null ? String(masterMatch.retailerPrice) : l.creditRate,
-      qtyPerBox: masterMatch?.boxCapacity != null ? String(masterMatch.boxCapacity) : l.qtyPerBox,
+      rateWithoutGst: String(item.purchaseRate),
+      rateWithGst,
     } : l));
   };
 
-  /** Select a product from the master catalog (fallback when no price list). */
   const selectFromMaster = (i: number, p: ProductLite) => {
     const gstPct = p.gstPct ?? 0;
-    const rateWithGst = p.purchasePrice != null
-      ? String(rateWithoutGstToWithGst(p.purchasePrice, gstPct))
-      : '';
-    const packaging = p.unitSize && p.unitMeasure ? `${p.unitSize}${p.unitMeasure}` : (p.baseUnit ?? p.unit ?? '');
+    const rateWithoutGst = p.purchasePrice != null ? String(p.purchasePrice) : '';
+    const rateWithGst = rateWithoutGst ? String(rateWithoutGstToWithGst(n(rateWithoutGst), gstPct)) : '';
     setLines(ls => ls.map((l, idx) => idx === i ? {
       ...l,
       productId: p.id,
       productName: p.name,
-      packaging,
+      manufacturer: p.mfgCompany || l.manufacturer, // auto-fill from master; keep user's value if master has none
       gstPct: String(gstPct),
-      rateWithGst: rateWithGst || l.rateWithGst,
-      creditRate: p.retailerPrice != null ? String(p.retailerPrice) : l.creditRate,
-      qtyPerBox: p.boxCapacity != null ? String(p.boxCapacity) : l.qtyPerBox,
+      rateWithoutGst,
+      rateWithGst,
     } : l));
   };
 
@@ -295,13 +326,15 @@ export default function SupplierInvoicePage() {
   const removeLine = (i: number) => setLines(ls => ls.length > 1 ? ls.filter((_, idx) => idx !== i) : ls);
 
   // ── Computed ──────────────────────────────────────────────────────────────
-  const computed = useMemo(() => {
-    return lines.map(l => ({ ...l, ...computeLine(l) }));
-  }, [lines]);
-
+  const computed = useMemo(() => lines.map(l => ({ ...l, ...computeLine(l) })), [lines]);
   const activeComputed = useMemo(() => computed.filter(l => isActiveLine(l)), [computed]);
 
-  const totals = useMemo(() => calcPurchaseTotals(activeComputed), [activeComputed]);
+  const totals = useMemo(() => ({
+    totalQty: activeComputed.reduce((s, l) => s + l.qty, 0),
+    totalAmountWithoutGst: r2(activeComputed.reduce((s, l) => s + l.amountWithoutGst, 0)),
+    totalGst: r2(activeComputed.reduce((s, l) => s + l.gstAmount, 0)),
+    totalFinalAmount: r2(activeComputed.reduce((s, l) => s + l.finalAmount, 0)),
+  }), [activeComputed]);
 
   // ── Save ──────────────────────────────────────────────────────────────────
   const buildPayload = () => ({
@@ -320,30 +353,22 @@ export default function SupplierInvoicePage() {
     lines: activeComputed.map(l => ({
       productId: l.productId,
       productName: l.productName.trim(),
-      packaging: l.packaging,
+      manufacturer: l.manufacturer.trim(),
+      batchNumber: l.batchNumber.trim(),
+      expiryDate: l.expiryDate,
       gstPct: n(l.gstPct),
-      rateWithGst: n(l.rateWithGst),                                     // user input
-      rateWithoutGst: rateWithGstToWithoutGst(n(l.rateWithGst), n(l.gstPct)), // derived
-      creditRate: n(l.creditRate),
-      qtyPerBox: n(l.qtyPerBox),
-      boxQty: n(l.boxQty),
-      qty: l.qty,
+      rateWithoutGst: n(l.rateWithoutGst),
+      rateWithGst: n(l.rateWithGst),
+      quantity: n(l.quantity),
       amountWithoutGst: l.amountWithoutGst,
       gstAmount: l.gstAmount,
-      amountWithGst: l.amountWithGst,
-      creditAmount: l.creditAmount,
-      differenceAmount: l.differenceAmount,
-      unitValue: l.unitValue,
+      finalAmount: l.finalAmount,
     })),
-    totalBoxQty: totals.totalBoxQty,
     totalQty: totals.totalQty,
     totalAmountWithoutGst: totals.totalAmountWithoutGst,
     totalGst: totals.totalGst,
-    totalAmountWithGst: totals.totalAmountWithGst,
-    totalCreditAmount: totals.totalCreditAmount,
-    totalDifferenceAmount: totals.totalDifferenceAmount,
-    totalUnitValue: totals.totalUnitValue,
-    netAmount: totals.totalAmountWithGst,  // used by supplier ledger sync
+    totalFinalAmount: totals.totalFinalAmount,
+    netAmount: totals.totalFinalAmount, // used by supplier ledger sync
   });
 
   const validate = async (): Promise<boolean> => {
@@ -379,10 +404,32 @@ export default function SupplierInvoicePage() {
         setSavedInvoiceId(ref.id);
         id = ref.id;
       }
+
+      // Sync supplier ledger totals
       if (payload.supplierId) {
         syncSupplierTotals(db, tenantId, payload.supplierId).catch(err =>
           console.error('Ledger sync failed (invoice already saved):', err));
       }
+
+      // Post to inventory — increases stock, updates purchase rate, creates/updates batches
+      const forPost = activeComputed.map(l => ({
+        description: l.productName.trim(),
+        mfgCompany: l.manufacturer.trim() || undefined,
+        batchNo: l.batchNumber.trim() || undefined,
+        expDate: l.expiryDate || undefined,
+        rate: n(l.rateWithoutGst),
+        gstPct: n(l.gstPct),
+        quantity: n(l.quantity),
+      }));
+      postSupplierInvoiceToInventory(tenantId, id, forPost, supplier.name || '', products, prevPostedRef.current)
+        .then(newPosted => {
+          prevPostedRef.current = newPosted;
+          // Store postedLines on invoice doc for idempotency on future edits
+          const ref = getTenantDoc(db, tenantId, 'supplierInvoices', id);
+          updateDoc(ref, { postedLines: newPosted }).catch(console.error);
+        })
+        .catch(err => console.error('Inventory posting failed (invoice already saved):', err));
+
       return id;
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Failed to save invoice');
@@ -424,7 +471,7 @@ ${styles}
   .pi-label { font-size: 7pt; color: #666; text-transform: uppercase; }
   .pi-val { font-weight: 700; font-size: 8.5pt; }
   .pi-table { border-collapse: collapse; width: 100%; table-layout: fixed; }
-  .pi-table th, .pi-table td { border: 1px solid #999; padding: 2px 3px; font-size: 7pt; vertical-align: middle; }
+  .pi-table th, .pi-table td { border: 1px solid #999; padding: 2px 4px; font-size: 7.5pt; vertical-align: middle; }
   .pi-table th { background: #f0f0f0; font-weight: 700; text-align: center; }
   .pi-table td.r { text-align: right; }
   .pi-table td.c { text-align: center; }
@@ -433,7 +480,6 @@ ${styles}
   .pi-tot-item { text-align: center; }
   .pi-tot-label { font-size: 6.5pt; color: #555; }
   .pi-tot-val { font-size: 9pt; font-weight: 700; }
-  .pi-diff { color: #1a6600; }
 </style></head><body>${html}</body></html>`);
     win.document.close();
     win.focus();
@@ -458,7 +504,7 @@ ${styles}
       <style>{`.si-print-only { display: none; }`}</style>
 
       {/* Toolbar */}
-      <div className="no-print" style={{ maxWidth: '1400px', margin: '0 auto 1rem', display: 'flex', justifyContent: 'space-between', gap: '0.75rem', flexWrap: 'wrap' }}>
+      <div className="no-print" style={{ maxWidth: '1200px', margin: '0 auto 1rem', display: 'flex', justifyContent: 'space-between', gap: '0.75rem', flexWrap: 'wrap' }}>
         <button className="btn btn-secondary" onClick={() => navigate(supplierIdParam ? `/supplier-ledger/${supplierIdParam}` : '/supplier-ledger')}
           style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', fontSize: '0.875rem', padding: '0.5rem 1rem' }}>
           <ArrowLeft size={16} /> Back to Supplier
@@ -481,12 +527,12 @@ ${styles}
       </div>
 
       {error && (
-        <div className="no-print" style={{ maxWidth: '1400px', margin: '0 auto 1rem', padding: '0.75rem', background: 'hsla(0,100%,50%,0.1)', color: '#ff4d4f', borderRadius: '8px', fontSize: '0.875rem' }}>
+        <div className="no-print" style={{ maxWidth: '1200px', margin: '0 auto 1rem', padding: '0.75rem', background: 'hsla(0,100%,50%,0.1)', color: '#ff4d4f', borderRadius: '8px', fontSize: '0.875rem' }}>
           {error}
         </div>
       )}
 
-      <div className="si-card glass-panel" style={{ maxWidth: '1400px', margin: '0 auto', padding: '1.75rem', borderRadius: '12px' }}>
+      <div className="si-card glass-panel" style={{ maxWidth: '1200px', margin: '0 auto', padding: '1.75rem', borderRadius: '12px' }}>
 
         {/* ── Print-only layout ─────────────────────────────────────────── */}
         <div className="si-print-only">
@@ -521,21 +567,17 @@ ${styles}
             <thead>
               <tr>
                 <th style={{ width: '22px' }}>#</th>
-                <th style={{ width: '130px' }}>Product</th>
-                <th style={{ width: '40px' }}>Pkg</th>
-                <th style={{ width: '28px' }}>GST%</th>
-                <th style={{ width: '50px' }}>Rate<br/>+GST</th>
-                <th style={{ width: '50px' }}>Rate<br/>w/o GST</th>
-                <th style={{ width: '46px' }}>Credit<br/>Rate</th>
-                <th style={{ width: '32px' }}>Qty/<br/>Box</th>
-                <th style={{ width: '32px' }}>Box<br/>Qty</th>
-                <th style={{ width: '32px' }}>Qty</th>
-                <th style={{ width: '52px' }}>Amt<br/>w/o GST</th>
-                <th style={{ width: '44px' }}>GST<br/>Amt</th>
-                <th style={{ width: '52px' }}>Amt<br/>+GST</th>
-                <th style={{ width: '52px' }}>Credit<br/>Amt</th>
-                <th style={{ width: '44px' }}>Diff<br/>Amt</th>
-                <th style={{ width: '44px' }}>Unit<br/>Value</th>
+                <th style={{ width: '150px' }}>Product</th>
+                <th style={{ width: '80px' }}>Manufacturer</th>
+                <th style={{ width: '70px' }}>Batch No.</th>
+                <th style={{ width: '65px' }}>Expiry</th>
+                <th style={{ width: '55px' }}>Rate w/o GST</th>
+                <th style={{ width: '30px' }}>GST%</th>
+                <th style={{ width: '55px' }}>Rate incl. GST</th>
+                <th style={{ width: '35px' }}>Qty</th>
+                <th style={{ width: '65px' }}>Amt w/o GST</th>
+                <th style={{ width: '50px' }}>GST Amt</th>
+                <th style={{ width: '65px' }}>Final Amount</th>
               </tr>
             </thead>
             <tbody>
@@ -543,34 +585,26 @@ ${styles}
                 <tr key={i}>
                   <td className="c">{i + 1}</td>
                   <td>{l.productName}</td>
-                  <td className="c">{l.packaging}</td>
+                  <td className="c">{l.manufacturer}</td>
+                  <td className="c">{l.batchNumber}</td>
+                  <td className="c">{l.expiryDate}</td>
+                  <td className="r">{n(l.rateWithoutGst).toFixed(2)}</td>
                   <td className="c">{l.gstPct}%</td>
                   <td className="r">{n(l.rateWithGst).toFixed(2)}</td>
-                  <td className="r">{rateWithGstToWithoutGst(n(l.rateWithGst), n(l.gstPct)).toFixed(2)}</td>
-                  <td className="r">{l.creditRate}</td>
-                  <td className="c">{l.qtyPerBox}</td>
-                  <td className="c">{l.boxQty}</td>
                   <td className="c">{l.qty}</td>
                   <td className="r">{fmtINR(l.amountWithoutGst)}</td>
                   <td className="r">{fmtINR(l.gstAmount)}</td>
-                  <td className="r">{fmtINR(l.amountWithGst)}</td>
-                  <td className="r">{fmtINR(l.creditAmount)}</td>
-                  <td className="r" style={{ color: l.differenceAmount >= 0 ? '#1a6600' : '#c00' }}>{fmtINR(l.differenceAmount)}</td>
-                  <td className="r">{fmtINR(l.unitValue)}</td>
+                  <td className="r">{fmtINR(l.finalAmount)}</td>
                 </tr>
               ))}
             </tbody>
             <tfoot>
               <tr>
                 <td colSpan={8} className="c">TOTALS</td>
-                <td className="c">{totals.totalBoxQty}</td>
                 <td className="c">{totals.totalQty}</td>
                 <td className="r">{fmtINR(totals.totalAmountWithoutGst)}</td>
                 <td className="r">{fmtINR(totals.totalGst)}</td>
-                <td className="r">{fmtINR(totals.totalAmountWithGst)}</td>
-                <td className="r">{fmtINR(totals.totalCreditAmount)}</td>
-                <td className="r" style={{ color: totals.totalDifferenceAmount >= 0 ? '#1a6600' : '#c00' }}>{fmtINR(totals.totalDifferenceAmount)}</td>
-                <td className="r">{fmtINR(totals.totalUnitValue)}</td>
+                <td className="r">{fmtINR(totals.totalFinalAmount)}</td>
               </tr>
             </tfoot>
           </table>
@@ -648,66 +682,49 @@ ${styles}
               2 · Products
             </div>
             <div style={{ overflowX: 'auto', border: '1px solid var(--surface-border)', borderRadius: '10px' }}>
-              <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: '1600px', tableLayout: 'fixed' }}>
+              <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: '1100px', tableLayout: 'fixed' }}>
                 <colgroup>
-                  <col style={{ width: '38px' }} />
+                  <col style={{ width: '36px' }} />
                   <col style={{ width: '200px' }} />
-                  <col style={{ width: '38px' }} />
-                  <col style={{ width: '200px' }} />
-                  <col style={{ width: '80px' }} />
-                  <col style={{ width: '62px' }} />
-                  <col style={{ width: '106px' }} />
-                  <col style={{ width: '96px' }} />
-                  <col style={{ width: '96px' }} />
-                  <col style={{ width: '76px' }} />
-                  <col style={{ width: '76px' }} />
-                  <col style={{ width: '60px' }} />
-                  <col style={{ width: '110px' }} />
-                  <col style={{ width: '90px' }} />
-                  <col style={{ width: '110px' }} />
-                  <col style={{ width: '110px' }} />
+                  <col style={{ width: '120px' }} />
                   <col style={{ width: '100px' }} />
-                  <col style={{ width: '90px' }} />
+                  <col style={{ width: '108px' }} />
+                  <col style={{ width: '110px' }} />
+                  <col style={{ width: '80px' }} />
+                  <col style={{ width: '110px' }} />
+                  <col style={{ width: '80px' }} />
+                  <col style={{ width: '110px' }} />
                   <col style={{ width: '36px' }} />
                 </colgroup>
                 <thead>
                   <tr>
                     <th style={thStyle}>#</th>
                     <th style={thStyle}>Product Name</th>
-                    <th style={thStyle}>Packaging</th>
+                    <th style={thStyle}>Manufacturer</th>
+                    <th style={thStyle}>Batch No.</th>
+                    <th style={thStyle}>Expiry Date</th>
+                    <th style={{ ...thStyle, background: 'hsla(220,40%,30%,0.3)' }}>Purchase Rate<br/>(w/o GST) ✏</th>
                     <th style={{ ...thStyle, background: 'hsla(220,40%,30%,0.3)' }}>GST %</th>
-                    <th style={{ ...thStyle, background: 'var(--primary-light)', color: '#fff' }}>Rate +GST ✏</th>
-                    <th style={{ ...thStyle, color: 'var(--text-tertiary)' }}>Rate w/o GST</th>
-                    <th style={{ ...thStyle, background: 'hsla(220,40%,30%,0.3)' }}>Credit Rate</th>
-                    <th style={{ ...thStyle, background: 'hsla(220,40%,30%,0.3)' }}>Qty/Box</th>
-                    <th style={{ ...thStyle, background: 'var(--secondary)', color: '#fff' }}>Box Qty ✏</th>
-                    <th style={{ ...thStyle, color: 'var(--text-tertiary)' }}>Qty</th>
-                    <th style={{ ...thStyle, color: 'var(--text-tertiary)' }}>Amt w/o GST</th>
-                    <th style={{ ...thStyle, color: 'var(--text-tertiary)' }}>GST Amt</th>
-                    <th style={{ ...thStyle, color: 'var(--text-tertiary)' }}>Amt +GST</th>
-                    <th style={{ ...thStyle, color: 'var(--text-tertiary)' }}>Credit Amt</th>
-                    <th style={{ ...thStyle, color: 'var(--text-tertiary)' }}>Diff Amt</th>
-                    <th style={{ ...thStyle, color: 'var(--text-tertiary)' }}>Unit Value</th>
+                    <th style={{ ...thStyle, background: 'var(--primary-light)', color: '#fff' }}>Purchase Rate<br/>(incl. GST) ✏</th>
+                    <th style={{ ...thStyle, background: 'var(--secondary)', color: '#fff' }}>Quantity ✏</th>
+                    <th style={{ ...thStyle, color: 'var(--text-tertiary)' }}>Final Amount</th>
                     <th style={thStyle}></th>
                   </tr>
                 </thead>
                 <tbody>
                   {lines.map((l, i) => {
                     const c = computed[i];
-                    const derivedRateWithoutGst = rateWithGstToWithoutGst(n(l.rateWithGst), n(l.gstPct));
                     return (
                       <tr key={i} style={{ background: i % 2 === 0 ? 'transparent' : 'hsla(220,20%,50%,0.04)' }}>
                         <td style={{ ...tdAuto, textAlign: 'center', fontWeight: 600 }}>{i + 1}</td>
 
-                        {/* Product selector — price list when available, else master search */}
+                        {/* Product selector */}
                         <td style={tdInput}>
                           {priceList.length > 0 ? (
                             <select
                               className="input-field"
                               value={
-                                priceList.find(p => p.productName === l.productName && p.packaging === l.packaging)?.id ??
-                                priceList.find(p => p.productName === l.productName)?.id ??
-                                ''
+                                priceList.find(p => p.productName === l.productName)?.id ?? ''
                               }
                               onChange={e => selectFromPriceList(i, e.target.value)}
                               style={{ width: '100%', margin: 0, padding: '0.3rem 0.4rem', fontSize: '0.8rem' }}
@@ -715,7 +732,7 @@ ${styles}
                               <option value="">— Select from price list —</option>
                               {priceList.map(item => (
                                 <option key={item.id} value={item.id}>
-                                  {item.productName}{item.packaging ? ` (${item.packaging})` : ''}
+                                  {item.productName}
                                 </option>
                               ))}
                             </select>
@@ -731,56 +748,57 @@ ${styles}
                           )}
                         </td>
 
-                        {/* Packaging — auto-filled, editable */}
+                        {/* Manufacturer */}
                         <td style={tdInput}>
-                          <input className="input-field" value={l.packaging} onChange={e => setLine(i, 'packaging', e.target.value)} placeholder="e.g. 500ml"
+                          <input className="input-field" value={l.manufacturer} onChange={e => setLine(i, 'manufacturer', e.target.value)} placeholder="Brand / Mfg"
                             style={{ width: '100%', margin: 0, padding: '0.3rem 0.4rem', fontSize: '0.8rem' }} />
                         </td>
 
-                        {/* GST % — auto-filled from price list, editable */}
+                        {/* Batch Number */}
                         <td style={tdInput}>
-                          <input className="input-field" type="number" value={l.gstPct} onChange={e => setLine(i, 'gstPct', e.target.value)} placeholder="5"
-                            style={{ width: '100%', margin: 0, padding: '0.3rem 0.4rem', fontSize: '0.8rem', textAlign: 'right' }} />
+                          <input className="input-field" value={l.batchNumber} onChange={e => setLine(i, 'batchNumber', e.target.value)} placeholder="e.g. B2024-01"
+                            style={{ width: '100%', margin: 0, padding: '0.3rem 0.4rem', fontSize: '0.8rem' }} />
                         </td>
 
-                        {/* Rate with GST — PRIMARY USER INPUT */}
+                        {/* Expiry Date */}
+                        <td style={tdInput}>
+                          <input className="input-field" type="date" value={l.expiryDate} onChange={e => setLine(i, 'expiryDate', e.target.value)}
+                            style={{ width: '100%', margin: 0, padding: '0.3rem 0.4rem', fontSize: '0.8rem' }} />
+                        </td>
+
+                        {/* Purchase Rate without GST — primary input */}
+                        <td style={{ ...tdInput, background: 'hsla(220,40%,50%,0.06)' }}>
+                          <input className="input-field" type="number" value={l.rateWithoutGst} onChange={e => setRateWithoutGst(i, e.target.value)} placeholder="0.00"
+                            style={{ width: '100%', margin: 0, padding: '0.3rem 0.4rem', fontSize: '0.88rem', textAlign: 'right', fontWeight: 600 }} />
+                        </td>
+
+                        {/* GST % dropdown */}
+                        <td style={{ ...tdInput, background: 'hsla(220,40%,50%,0.06)' }}>
+                          <select className="input-field" value={l.gstPct} onChange={e => setGstPct(i, e.target.value)}
+                            style={{ width: '100%', margin: 0, padding: '0.3rem 0.4rem', fontSize: '0.8rem', textAlign: 'right' }}>
+                            {GST_OPTIONS.map(g => (
+                              <option key={g} value={String(g)}>{g}%</option>
+                            ))}
+                          </select>
+                        </td>
+
+                        {/* Purchase Rate including GST — bidirectional */}
                         <td style={{ ...tdInput, background: 'hsla(210,80%,50%,0.08)' }}>
-                          <input className="input-field" type="number" value={l.rateWithGst} onChange={e => setLine(i, 'rateWithGst', e.target.value)} placeholder="0.00"
+                          <input className="input-field" type="number" value={l.rateWithGst} onChange={e => setRateWithGst(i, e.target.value)} placeholder="0.00"
                             style={{ width: '100%', margin: 0, padding: '0.3rem 0.4rem', fontSize: '0.88rem', textAlign: 'right', fontWeight: 700 }} />
                         </td>
 
-                        {/* Rate without GST — auto-computed */}
-                        <td style={{ ...tdAutoCenter, color: 'var(--text-secondary)', fontSize: '0.78rem' }}>
-                          {derivedRateWithoutGst > 0 ? derivedRateWithoutGst.toFixed(2) : '—'}
-                        </td>
-
-                        {/* Credit Rate — editable */}
-                        <td style={tdInput}>
-                          <input className="input-field" type="number" value={l.creditRate} onChange={e => setLine(i, 'creditRate', e.target.value)} placeholder="0"
-                            style={{ width: '100%', margin: 0, padding: '0.3rem 0.4rem', fontSize: '0.8rem', textAlign: 'right' }} />
-                        </td>
-
-                        {/* Qty/Box — auto, editable */}
-                        <td style={tdInput}>
-                          <input className="input-field" type="number" value={l.qtyPerBox} onChange={e => setLine(i, 'qtyPerBox', e.target.value)} placeholder="0"
-                            style={{ width: '100%', margin: 0, padding: '0.3rem 0.4rem', fontSize: '0.8rem', textAlign: 'right' }} />
-                        </td>
-
-                        {/* Box Qty — SECONDARY USER INPUT */}
+                        {/* Quantity */}
                         <td style={{ ...tdInput, background: 'hsla(var(--secondary-hsl, 145,60%,40%),0.08)' }}>
-                          <input className="input-field" type="number" value={l.boxQty} onChange={e => setLine(i, 'boxQty', e.target.value)} placeholder="0"
+                          <input className="input-field" type="number" value={l.quantity} onChange={e => setLine(i, 'quantity', e.target.value)} placeholder="0"
                             style={{ width: '100%', margin: 0, padding: '0.3rem 0.4rem', fontSize: '0.8rem', textAlign: 'right', fontWeight: 700 }} />
                         </td>
 
-                        <AutoCell>{c.qty > 0 ? c.qty : '—'}</AutoCell>
-                        <AutoCell>{c.amountWithoutGst > 0 ? fmtINR(c.amountWithoutGst) : '—'}</AutoCell>
-                        <AutoCell>{c.gstAmount > 0 ? fmtINR(c.gstAmount) : '—'}</AutoCell>
-                        <AutoCell>{c.amountWithGst > 0 ? fmtINR(c.amountWithGst) : '—'}</AutoCell>
-                        <AutoCell>{c.creditAmount > 0 ? fmtINR(c.creditAmount) : '—'}</AutoCell>
-                        <td style={{ ...tdAuto, color: c.differenceAmount >= 0 ? '#22c55e' : '#ef4444' }}>
-                          {c.differenceAmount !== 0 ? fmtINR(c.differenceAmount) : '—'}
-                        </td>
-                        <AutoCell>{c.unitValue > 0 ? fmtINR(c.unitValue) : '—'}</AutoCell>
+                        {/* Final Amount — auto-computed */}
+                        <AutoCell>
+                          {c.finalAmount > 0 ? <strong style={{ color: 'var(--text-primary)' }}>{fmtINR(c.finalAmount)}</strong> : '—'}
+                        </AutoCell>
+
                         <td style={{ ...tdAuto, textAlign: 'center', padding: '4px' }}>
                           <button onClick={() => removeLine(i)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#ef4444', padding: '2px' }}>
                             <Trash2 size={13} />
@@ -807,34 +825,17 @@ ${styles}
 
               <div style={{ border: '1px solid var(--surface-border)', borderRadius: '10px', padding: '1rem' }}>
                 <div style={{ fontWeight: 700, fontSize: '0.78rem', color: 'var(--text-secondary)', marginBottom: '0.6rem' }}>Quantities</div>
-                <div style={summaryRow}><span style={{ fontSize: '0.82rem' }}>Total Box Qty</span><strong>{totals.totalBoxQty}</strong></div>
-                <div style={{ ...summaryRow, borderBottom: 'none' }}><span style={{ fontSize: '0.82rem' }}>Total Qty</span><strong>{totals.totalQty}</strong></div>
+                <div style={{ ...summaryRow, borderBottom: 'none' }}><span style={{ fontSize: '0.82rem' }}>Total Quantity</span><strong>{totals.totalQty}</strong></div>
               </div>
 
               <div style={{ border: '1px solid var(--surface-border)', borderRadius: '10px', padding: '1rem' }}>
                 <div style={{ fontWeight: 700, fontSize: '0.78rem', color: 'var(--text-secondary)', marginBottom: '0.6rem' }}>Purchase Amounts</div>
-                <div style={summaryRow}><span style={{ fontSize: '0.82rem' }}>Total Amount w/o GST</span><strong>{fmtINR(totals.totalAmountWithoutGst)}</strong></div>
-                <div style={summaryRow}><span style={{ fontSize: '0.82rem' }}>Total GST</span><strong>{fmtINR(totals.totalGst)}</strong></div>
+                <div style={summaryRow}><span style={{ fontSize: '0.82rem' }}>Amount w/o GST</span><strong>{fmtINR(totals.totalAmountWithoutGst)}</strong></div>
+                <div style={summaryRow}><span style={{ fontSize: '0.82rem' }}>GST</span><strong>{fmtINR(totals.totalGst)}</strong></div>
                 <div style={{ ...summaryRow, borderBottom: 'none', fontSize: '1rem' }}>
-                  <span style={{ fontWeight: 700 }}>Total Amount +GST</span>
-                  <strong style={{ color: 'var(--secondary)', fontSize: '1.1rem' }}>{fmtINR(totals.totalAmountWithGst)}</strong>
+                  <span style={{ fontWeight: 700 }}>Final Amount</span>
+                  <strong style={{ color: 'var(--secondary)', fontSize: '1.1rem' }}>{fmtINR(totals.totalFinalAmount)}</strong>
                 </div>
-              </div>
-
-              <div style={{ border: '1px solid var(--surface-border)', borderRadius: '10px', padding: '1rem' }}>
-                <div style={{ fontWeight: 700, fontSize: '0.78rem', color: 'var(--text-secondary)', marginBottom: '0.6rem' }}>Credit & Margin</div>
-                <div style={summaryRow}><span style={{ fontSize: '0.82rem' }}>Total Credit Amount</span><strong>{fmtINR(totals.totalCreditAmount)}</strong></div>
-                <div style={{ ...summaryRow, borderBottom: 'none' }}>
-                  <span style={{ fontSize: '0.82rem' }}>Total Difference</span>
-                  <strong style={{ color: totals.totalDifferenceAmount >= 0 ? '#22c55e' : '#ef4444' }}>
-                    {fmtINR(totals.totalDifferenceAmount)}
-                  </strong>
-                </div>
-              </div>
-
-              <div style={{ border: '1px solid var(--surface-border)', borderRadius: '10px', padding: '1rem' }}>
-                <div style={{ fontWeight: 700, fontSize: '0.78rem', color: 'var(--text-secondary)', marginBottom: '0.6rem' }}>Unit Economics</div>
-                <div style={{ ...summaryRow, borderBottom: 'none' }}><span style={{ fontSize: '0.82rem' }}>Total Unit Value</span><strong>{fmtINR(totals.totalUnitValue)}</strong></div>
               </div>
 
             </div>

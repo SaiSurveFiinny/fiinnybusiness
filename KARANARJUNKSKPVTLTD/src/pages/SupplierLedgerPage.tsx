@@ -2,8 +2,7 @@ import { useState, useEffect, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
   Building2, Plus, Loader2,
-  IndianRupee, Package, Truck, ChevronRight, ChevronDown, Link2, Search, X,
-  Bell,
+  IndianRupee, Package, Truck, ChevronRight, ChevronDown, Link2, Search, X, Bell,
 } from 'lucide-react';
 import { getDocs } from 'firebase/firestore';
 import { db } from '../firebase';
@@ -355,9 +354,6 @@ export default function SupplierLedgerPage() {
                   <th style={{ ...thStyle('name', 'left'), cursor: 'default', color: 'var(--text-tertiary)' }}>
                     Reminders
                   </th>
-                  <th style={{ ...thStyle('name', 'right'), paddingRight: '1rem', cursor: 'default', color: 'var(--text-tertiary)' }}>
-                    Actions
-                  </th>
                 </tr>
               </thead>
               <tbody>
@@ -371,7 +367,8 @@ export default function SupplierLedgerPage() {
                   return (
                     <tr
                       key={sup.id}
-                      style={{ borderTop: '1px solid var(--surface-border)', background: rowBg, transition: 'background 0.1s' }}
+                      onClick={() => navigate(`/supplier-ledger/${sup.id}`)}
+                      style={{ borderTop: '1px solid var(--surface-border)', background: rowBg, transition: 'background 0.1s', cursor: 'pointer' }}
                       onMouseEnter={e => (e.currentTarget.style.background = 'hsla(152,60%,40%,0.06)')}
                       onMouseLeave={e => (e.currentTarget.style.background = rowBg)}
                     >
@@ -444,16 +441,6 @@ export default function SupplierLedgerPage() {
                         )}
                       </td>
 
-                      {/* Actions */}
-                      <td style={{ padding: '0.6rem 0.75rem 0.6rem 0.5rem', textAlign: 'right', paddingRight: '1rem' }}>
-                        <button
-                          onClick={() => navigate(`/supplier-ledger/${sup.id}`)}
-                          className="btn btn-secondary"
-                          style={{ padding: '0.28rem 0.65rem', fontSize: '0.76rem', display: 'inline-flex', alignItems: 'center', gap: '0.25rem' }}
-                        >
-                          View <ChevronRight size={13} />
-                        </button>
-                      </td>
                     </tr>
                   );
                 })}
