@@ -1,20 +1,22 @@
 import { useState } from 'react';
-import { Package, Warehouse, Layers, Truck } from 'lucide-react';
+import { Package, Warehouse, Layers, Truck, History } from 'lucide-react';
 
 // Import sub-pages directly (InventoryPage itself is lazy-loaded by App.tsx)
 import RateSheetPage from './RateSheetPage';
 import WarehousePage from './WarehousePage';
 import InventoryBatchPage from './InventoryBatchPage';
 import ManageTransportPage from './ManageTransportPage';
+import StockMovementPage from './StockMovementPage';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
-type InventoryTab = 'products' | 'warehouses' | 'batches' | 'transport';
+type InventoryTab = 'products' | 'warehouses' | 'batches' | 'transport' | 'history';
 
 const INVENTORY_TABS: { id: InventoryTab; label: string; icon: React.ReactNode }[] = [
-    { id: 'products',   label: 'Products',          icon: <Package size={16} /> },
-    { id: 'warehouses', label: 'Warehouses',         icon: <Warehouse size={16} /> },
+    { id: 'products',   label: 'Product Master',     icon: <Package size={16} /> },
     { id: 'batches',    label: 'Inventory Batches',  icon: <Layers size={16} /> },
+    { id: 'history',    label: 'Stock History',      icon: <History size={16} /> },
+    { id: 'warehouses', label: 'Warehouses',         icon: <Warehouse size={16} /> },
     { id: 'transport',  label: 'Transport',          icon: <Truck size={16} /> },
 ];
 
@@ -91,8 +93,9 @@ export default function InventoryPage() {
 
             {/* ── Tab Content ── */}
             {activeTab === 'products'   && <RateSheetPage />}
-            {activeTab === 'warehouses' && <WarehousePage />}
             {activeTab === 'batches'    && <InventoryBatchPage />}
+            {activeTab === 'history'    && <StockMovementPage />}
+            {activeTab === 'warehouses' && <WarehousePage />}
             {activeTab === 'transport'  && <ManageTransportPage />}
         </div>
     );

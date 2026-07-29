@@ -3,9 +3,10 @@ import { Save, Loader2, Printer, Plus, Trash2, UserPlus, ArrowLeft, Truck } from
 import { Link, useSearchParams, useNavigate } from 'react-router-dom';
 import UpiQrCode from '../components/UpiQrCode';
 import {
-    addDoc, getDoc, getDocs, runTransaction, serverTimestamp, updateDoc,
+    addDoc, getDoc, getDocs, runTransaction, serverTimestamp, updateDoc, writeBatch, doc,
     query, where, limit, onSnapshot
 } from 'firebase/firestore';
+import { prepareStockDeduction, recordStockMovements } from '../utils/stockDeduction';
 import { db } from '../firebase';
 import { useAuth } from '../contexts/AuthContext';
 import { getTenantCollection, getTenantDoc } from '../utils/tenantPath';
@@ -405,11 +406,32 @@ ${styles}
     const handleSave = async (isPrint = false) => {
         if (!tenantId) return;
         if (activeRows.length === 0) { alert('Please add at least one item.'); return; }
+
+        // ── Stock validation (new sales only, not edits) ──────────────────
+        if (!isEditing) {
+            const saleLines = activeRows
+                .filter(r => r.productId && parseFloat(r.quantity) > 0)
+                .map(r => ({
+                    productId: r.productId,
+                    productName: r.itemDescription,
+                    qty: parseFloat(r.quantity) || 0,
+                    batchNo: r.batchNo || undefined,
+                }));
+            if (saleLines.length > 0) {
+                const check = await prepareStockDeduction(tenantId, saleLines);
+                if (!check.valid) {
+                    alert('Stock validation failed:\n\n' + check.errors.join('\n'));
+                    return;
+                }
+            }
+        }
+
         setIsProcessing(true);
         try {
             // Editing keeps the original invoice number; only a brand-new invoice consumes the counter.
             const invNo = isEditing ? existingOrder.orderNumber : await generateInvoiceNumber();
             const lineItems = activeRows.map(r => ({
+                productId: r.productId || '',
                 itemDescription: r.itemDescription,
                 batchNo: r.batchNo,
                 expDate: r.expDate,
@@ -461,16 +483,46 @@ ${styles}
                 paymentStatus: header.modeOfPayment === 'Cash' ? 'Paid' : 'Pending',
             };
 
+            let savedOrderId = prefilledOrderId || '';
             if (isEditing) {
                 await updateDoc(getTenantDoc(db, tenantId, 'salesOrders', prefilledOrderId), {
                     ...orderPayload,
                     updatedAt: serverTimestamp(),
                 });
             } else {
-                await addDoc(getTenantCollection(db, tenantId, 'salesOrders'), {
+                const ref = await addDoc(getTenantCollection(db, tenantId, 'salesOrders'), {
                     ...orderPayload,
                     createdAt: serverTimestamp(),
                 });
+                savedOrderId = ref.id;
+
+                // ── FIFO batch deduction for new invoices ─────────────────
+                const saleLines = lineItems
+                    .filter(li => li.productId && li.quantity > 0)
+                    .map(li => ({ productId: li.productId, productName: li.itemDescription, qty: li.quantity, batchNo: li.batchNo || undefined }));
+                if (saleLines.length > 0) {
+                    try {
+                        const deduction = await prepareStockDeduction(tenantId, saleLines);
+                        if (deduction.valid && (deduction.batchUpdates.length > 0 || deduction.productUpdates.length > 0)) {
+                            const wb = writeBatch(db);
+                            for (const upd of deduction.batchUpdates) {
+                                wb.update(getTenantDoc(db, tenantId, 'inventoryBatches', upd.batchDocId), { quantity: upd.newQty, updatedAt: serverTimestamp() });
+                            }
+                            for (const upd of deduction.productUpdates) {
+                                const fields: Record<string, unknown> = { loosePieces: upd.newLoosePieces, updatedAt: serverTimestamp() };
+                                if (upd.newQuantity !== undefined) fields.quantity = upd.newQuantity;
+                                wb.update(getTenantDoc(db, tenantId, 'products', upd.productId), fields);
+                            }
+                            await wb.commit();
+                            recordStockMovements(tenantId, deduction.movements, {
+                                type: 'sale_b2b', sourceType: 'B2B Invoice', sourceId: savedOrderId, sourceNumber: invNo,
+                                date: header.invoiceDate || new Date().toISOString().slice(0, 10),
+                            }).catch(console.error);
+                        }
+                    } catch (e) {
+                        console.error('B2B stock deduction failed (invoice already saved):', e);
+                    }
+                }
             }
 
             // If editing and the order previously belonged to a different retailer

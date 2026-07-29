@@ -12,15 +12,15 @@ const PRIORITY_NAV = [
   { path: '/pos',              label: 'POS Billing',       icon: <Calculator size={15} />,     screenKey: 'pos' as AppScreen },
   { path: '/digital-khata',    label: 'Khata (Udhari)',   icon: <BookOpen size={15} />,       screenKey: 'khata' as AppScreen },
   { path: '/supplier-ledger', label: 'Supplier Ledger',   icon: <ClipboardList size={15} />,  screenKey: 'worklist' as AppScreen },
-  { path: '/expenses',         label: 'Expenses',          icon: <Receipt size={15} />,        screenKey: 'expenses' as AppScreen },
-  { path: '/inventory',        label: 'Inventory',         icon: <Package size={15} />,        screenKey: 'inventory' as AppScreen },
   { path: '/administration',   label: 'Administration',    icon: <ShieldAlert size={15} />,    screenKey: 'admin' as AppScreen },
+  { path: '/inventory',        label: 'Inventory',         icon: <Package size={15} />,        screenKey: 'inventory' as AppScreen },
+  { path: '/reports',           label: 'Reports',           icon: <FileText size={15} />,       screenKey: 'analytics' as AppScreen },
   { path: '/b2b-invoice',      label: 'B2B GST Invoice',  icon: <ReceiptText size={15} />,   screenKey: 'worklist' as AppScreen },
-  { path: '/barcode',          label: 'Barcode Labels',    icon: <Activity size={15} />,       screenKey: 'inventory' as AppScreen },
-  { path: '/gst-reports',      label: 'GST Reports',      icon: <FileText size={15} />,       screenKey: 'analytics' as AppScreen },
-  { path: '/order-history',    label: 'Audit Log',        icon: <ClipboardList size={15} />,  screenKey: 'order_history' as AppScreen },
-  // Sales-user-only items — filtered via SALES_NAV_PATHS below
   { path: '/sales-targets',    label: 'Sales Targets',    icon: <Target size={15} />,         screenKey: 'worklist' as AppScreen },
+  { path: '/expenses',         label: 'Expenses',          icon: <Receipt size={15} />,        screenKey: 'expenses' as AppScreen },
+  { path: '/order-history',    label: 'Audit Log',        icon: <ClipboardList size={15} />,  screenKey: 'order_history' as AppScreen },
+  { path: '/barcode',          label: 'Barcode Labels',    icon: <Activity size={15} />,       screenKey: 'inventory' as AppScreen },
+  // Sales-user-only items — filtered via SALES_NAV_PATHS below
 ];
 
 const SALES_NAV_PATHS = ['/sales-targets', '/worklist'];

@@ -3,26 +3,28 @@ import {
 } from 'firebase/firestore';
 import { db } from '../firebase';
 import { getTenantCollection, getTenantDoc } from './tenantPath';
+import { recordPurchaseMovements } from './stockDeduction';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Supplier Invoice → Inventory posting
 //
-// Turns each supplier-invoice line into (a) a create/update on the tenant's
-// `products` master (prices, manufacturer, current batch, stock) and (b) an
-// `inventoryBatches` record for the expiry/traceability dashboard.
+// Each supplier-invoice line updates:
+//   (a) `products` master — prices, manufacturer, stock (in loosePieces)
+//   (b) `inventoryBatches` — keyed by ${productId}_${batchNo}, so the same
+//       batch on two different invoices increments the existing doc rather than
+//       creating a duplicate.
 //
-// Idempotency: the caller stores the returned `postedLines` snapshot on the
-// supplier-invoice doc and passes it back on the next save. We first reverse the
-// previously-posted stock, then apply the current lines — so editing or
-// re-saving an invoice reconciles stock instead of double-counting. Batch docs
-// use a deterministic id (`${invoiceId}_${index}`) so a re-save updates the same
-// batch rather than creating duplicates.
+// Stock is stored in `product.loosePieces` (total units). POS deducts from
+// loosePieces, so POS stock tracking continues to work without changes.
+//
+// Idempotency: PostedLine carries batchDocId + units. On re-save the caller
+// passes back prevPosted; we reverse the previous delta then apply the new one.
 // ─────────────────────────────────────────────────────────────────────────────
 
 export interface PostedLine {
     productId: string;
-    boxes: number;   // stock added to product.quantity (boxes)
-    loose: number;   // stock added to product.loosePieces
+    batchDocId: string;
+    units: number;
 }
 
 export interface SupplierLineForPost {
@@ -33,31 +35,19 @@ export interface SupplierLineForPost {
     expDate?: string;
     hsnCode?: string;
     unit?: string;
-    quantity?: number;      // total selling units (fallback when packing not given)
-    boxCount?: number;      // boxes / bags received
-    piecesPerBox?: number;  // pieces per box/bag
-    rate?: number;          // received / purchase rate (cost)
+    quantity?: number;   // total loose units received
+    rate?: number;       // purchase cost without GST
     mrp?: number;
-    farmerRate?: number;    // sale rate to farmer (POS selling price)
-    retailerRate?: number;  // price to retailer (B2B / PTR)
     gstPct?: number;
-    // Remaining product-master fields, entered in the line's details panel.
-    productNumber?: string; // SKU
-    type?: string;          // agri category (Insecticide, Fertilizer, …)
+    productNumber?: string;
+    type?: string;
     unitSize?: number;
     unitMeasure?: string;
-    boxMrp?: number;
-    boxPtr?: number;
-    boxPurchase?: number;
-    boxSelling?: number;
 }
 
 interface ExistingProductLite { id: string; name: string; }
 
 const norm = (s: string) => (s || '').trim().toLowerCase();
-
-// Field writers that emit nothing when the invoice line left the value blank, so
-// a re-save never clobbers an existing product value with an empty/zero one.
 const num = (key: string, v: unknown): Record<string, number> => {
     if (v === undefined || v === null || v === '') return {};
     const n = Number(v);
@@ -68,21 +58,13 @@ const str = (key: string, v: unknown): Record<string, string> => {
     return s ? { [key]: s } : {};
 };
 
-// Split a line's received quantity into whole boxes + loose pieces.
-function splitUnits(line: SupplierLineForPost): { boxes: number; loose: number; pcsPerBox: number; totalUnits: number } {
-    const pcsPerBox = Math.max(0, Number(line.piecesPerBox) || 0);
-    const boxes = Math.max(0, Number(line.boxCount) || 0);
-    const unitsFromBoxes = boxes * pcsPerBox;
-    // When packing is given, trust it; otherwise fall back to the flat quantity.
-    const totalUnits = (boxes > 0 && pcsPerBox > 0) ? unitsFromBoxes : Math.max(0, Number(line.quantity) || 0);
-    const loose = Math.max(0, totalUnits - unitsFromBoxes);
-    return { boxes, loose, pcsPerBox, totalUnits };
+function makeBatchDocId(productId: string, batchNo: string | undefined, invoiceId: string, index: number): string {
+    const b = (batchNo || '').trim();
+    return b
+        ? `${productId}_${b.replace(/[/\\.\s[\]#*?]/g, '_')}`
+        : `${invoiceId}_${index}`;
 }
 
-/**
- * Reconcile a supplier invoice into products + inventoryBatches.
- * Returns the new postedLines snapshot to persist on the invoice doc.
- */
 export async function postSupplierInvoiceToInventory(
     tenantId: string,
     invoiceId: string,
@@ -95,7 +77,7 @@ export async function postSupplierInvoiceToInventory(
 
     const active = lines.filter(l => (l.description || '').trim());
 
-    // ── Resolve each active line to a product id (existing by name, else new) ──
+    // ── Resolve product ids ────────────────────────────────────────────────
     const byName = new Map(existingProducts.map(p => [norm(p.name), p.id]));
     const resolved: Array<{ line: SupplierLineForPost; productId: string; isNew: boolean; index: number }> = [];
     for (let i = 0; i < active.length; i++) {
@@ -103,114 +85,103 @@ export async function postSupplierInvoiceToInventory(
         let productId = byName.get(norm(line.description));
         let isNew = false;
         if (!productId) {
-            // Not in the loaded list — double-check Firestore, then create.
             const snap = await getDocs(query(
                 getTenantCollection(db, tenantId, 'products'),
                 where('name', '==', line.description.trim()),
             ));
-            if (!snap.empty) {
-                productId = snap.docs[0].id;
-            } else {
-                productId = doc(getTenantCollection(db, tenantId, 'products')).id;
-                isNew = true;
-                byName.set(norm(line.description), productId); // dedupe repeated names in one invoice
-            }
+            productId = snap.empty
+                ? (() => { isNew = true; const id = doc(getTenantCollection(db, tenantId, 'products')).id; byName.set(norm(line.description), id); return id; })()
+                : snap.docs[0].id;
         }
         resolved.push({ line, productId, isNew, index: i });
     }
 
-    // ── Aggregate net stock delta per product (apply now − reverse previous) ──
-    type Agg = { boxesDelta: number; looseDelta: number; master?: any; isNew: boolean };
-    const agg = new Map<string, Agg>();
-    const ensure = (id: string, isNew = false): Agg => {
-        let a = agg.get(id);
-        if (!a) { a = { boxesDelta: 0, looseDelta: 0, isNew }; agg.set(id, a); }
+    // ── Aggregate deltas ───────────────────────────────────────────────────
+    type ProductAgg = { looseDelta: number; master?: Record<string, unknown>; isNew: boolean };
+    const productAgg = new Map<string, ProductAgg>();
+    const ensureProduct = (id: string, isNew = false) => {
+        if (!productAgg.has(id)) productAgg.set(id, { looseDelta: 0, isNew });
+        const a = productAgg.get(id)!;
         if (isNew) a.isNew = true;
         return a;
     };
 
-    // Reverse previous contribution
+    type BatchAgg = { unitsDelta: number; productId: string; line?: SupplierLineForPost };
+    const batchAgg = new Map<string, BatchAgg>();
+    const ensureBatch = (bdId: string, productId: string) => {
+        if (!batchAgg.has(bdId)) batchAgg.set(bdId, { unitsDelta: 0, productId });
+        return batchAgg.get(bdId)!;
+    };
+
+    // Reverse previous (new PostedLine format; old format missing batchDocId is silently skipped)
     for (const p of prevPosted) {
-        if (!p.productId) continue;
-        const a = ensure(p.productId);
-        a.boxesDelta -= Number(p.boxes) || 0;
-        a.looseDelta -= Number(p.loose) || 0;
+        if (!p.productId || !p.batchDocId) continue;
+        ensureProduct(p.productId).looseDelta -= Number(p.units) || 0;
+        ensureBatch(p.batchDocId, p.productId).unitsDelta -= Number(p.units) || 0;
     }
 
     // Apply current lines
     const newPosted: PostedLine[] = [];
     for (const r of resolved) {
-        const { boxes, loose, pcsPerBox } = splitUnits(r.line);
-        const a = ensure(r.productId, r.isNew);
-        a.boxesDelta += boxes;
-        a.looseDelta += loose;
-        // Master fields — last line for a product wins (typical: one line per product).
-        // The supplier ledger is the source of truth for rates, so whatever this
-        // invoice supplies overwrites the product master. Fields the line leaves
-        // blank are omitted entirely so a blank never resets an existing value
-        // (e.g. an untouched MRP must not become 0).
-        a.master = {
+        const units = Math.max(0, Number(r.line.quantity) || 0);
+        const bdId = makeBatchDocId(r.productId, r.line.batchNo, invoiceId, r.index);
+
+        const pa = ensureProduct(r.productId, r.isNew);
+        pa.looseDelta += units;
+        pa.master = {
             name: r.line.description.trim(),
             ...str('mfgCompany', r.line.mfgCompany),
             ...num('purchasePrice', r.line.rate),
             ...num('maxRetailPrice', r.line.mrp),
-            ...num('sellingPrice', r.line.farmerRate),
-            ...num('retailerPrice', r.line.retailerRate),
-            ...num('boxPurchasePrice', r.line.boxPurchase),
-            ...num('boxMaxRetailPrice', r.line.boxMrp),
-            ...num('boxSellingPrice', r.line.boxSelling),
-            ...num('boxRetailerPrice', r.line.boxPtr),
             ...num('gstPct', r.line.gstPct),
             ...str('productNumber', r.line.productNumber),
             ...str('type', r.line.type),
             ...num('unitSize', r.line.unitSize),
             ...str('unitMeasure', r.line.unitMeasure),
             ...str('baseUnit', r.line.unit),
-            ...(pcsPerBox > 0 ? { boxCapacity: pcsPerBox } : {}),
             ...str('batchNumber', r.line.batchNo),
             ...str('expiryDate', r.line.expDate),
             ...str('mfgDate', r.line.mfgDate),
             ...str('hsnCode', r.line.hsnCode),
         };
-        newPosted.push({ productId: r.productId, boxes, loose });
+
+        ensureBatch(bdId, r.productId).unitsDelta += units;
+        batchAgg.get(bdId)!.line = r.line;
+
+        newPosted.push({ productId: r.productId, batchDocId: bdId, units });
     }
 
-    // ── Read current products so we can clamp stock at 0 and recompute margin
-    //    from the merged (existing + incoming) prices ──
-    const currentStock = new Map<string, { quantity: number; loosePieces: number; data: any }>();
-    await Promise.all(Array.from(agg.entries()).map(async ([id, a]) => {
-        if (a.isNew) { currentStock.set(id, { quantity: 0, loosePieces: 0, data: {} }); return; }
+    // ── Read current state ─────────────────────────────────────────────────
+    const currentProducts = new Map<string, { loosePieces: number; data: Record<string, unknown> }>();
+    await Promise.all(Array.from(productAgg.entries()).map(async ([id, a]) => {
+        if (a.isNew) { currentProducts.set(id, { loosePieces: 0, data: {} }); return; }
         try {
             const snap = await getDoc(getTenantDoc(db, tenantId, 'products', id));
-            const d = snap.exists() ? snap.data() as any : {};
-            currentStock.set(id, {
-                quantity: Number(d.quantity ?? d.stock ?? 0) || 0,
-                loosePieces: Number(d.loosePieces ?? 0) || 0,
-                data: d,
-            });
-        } catch {
-            currentStock.set(id, { quantity: 0, loosePieces: 0, data: {} });
-        }
+            const d = snap.exists() ? snap.data() as Record<string, unknown> : {};
+            currentProducts.set(id, { loosePieces: Number(d.loosePieces ?? 0) || 0, data: d });
+        } catch { currentProducts.set(id, { loosePieces: 0, data: {} }); }
     }));
 
-    // ── Write everything atomically ──
-    const batch = writeBatch(db);
+    const currentBatches = new Map<string, { quantity: number }>();
+    await Promise.all(Array.from(batchAgg.keys()).map(async bdId => {
+        try {
+            const snap = await getDoc(getTenantDoc(db, tenantId, 'inventoryBatches', bdId));
+            const d = snap.exists() ? snap.data() as Record<string, unknown> : {};
+            currentBatches.set(bdId, { quantity: Number(d.quantity ?? 0) || 0 });
+        } catch { currentBatches.set(bdId, { quantity: 0 }); }
+    }));
 
-    for (const [id, a] of agg.entries()) {
-        const cur = currentStock.get(id) || { quantity: 0, loosePieces: 0, data: {} };
-        const newQty = Math.max(0, cur.quantity + a.boxesDelta);
+    // ── Atomic write ───────────────────────────────────────────────────────
+    const wb = writeBatch(db);
+
+    for (const [id, a] of productAgg.entries()) {
+        const cur = currentProducts.get(id) ?? { loosePieces: 0, data: {} };
         const newLoose = Math.max(0, cur.loosePieces + a.looseDelta);
         const ref = getTenantDoc(db, tenantId, 'products', id);
-
-        // Margin is derived from the merged MRP/PTR (same formula as RateSheetPage).
         const mergedMrp = Number(a.master?.maxRetailPrice ?? cur.data?.maxRetailPrice ?? 0) || 0;
         const mergedPtr = Number(a.master?.retailerPrice ?? cur.data?.retailerPrice ?? 0) || 0;
-        const margin = mergedMrp > 0
-            ? `${Math.round(((mergedMrp - mergedPtr) / mergedMrp) * 100)}%`
-            : 'N/A';
-
-        const base = {
-            quantity: newQty,
+        const margin = mergedMrp > 0 ? `${Math.round(((mergedMrp - mergedPtr) / mergedMrp) * 100)}%` : 'N/A';
+        const base: Record<string, unknown> = {
             loosePieces: newLoose,
             margin,
             lastPurchasedAt: serverTimestamp(),
@@ -218,57 +189,52 @@ export async function postSupplierInvoiceToInventory(
             ...(a.master || {}),
         };
         if (a.isNew) {
-            batch.set(ref, {
-                // Defaults first so a product created straight from a purchase is
-                // well-formed even when the line left optional fields blank;
-                // `base` (the invoice's own values) overrides them.
-                category: 'B2B',
-                baseUnit: 'pcs',
-                boxCapacity: 1,
-                gstPct: 0,
-                maxRetailPrice: 0,
-                retailerPrice: 0,
-                purchasePrice: 0,
-                sellingPrice: 0,
-                ...base,
-                createdAt: serverTimestamp(),
-            });
+            wb.set(ref, { category: 'B2B', baseUnit: 'pcs', boxCapacity: 1, quantity: 0, gstPct: 0, maxRetailPrice: 0, retailerPrice: 0, purchasePrice: 0, sellingPrice: 0, ...base, createdAt: serverTimestamp() });
         } else {
-            batch.set(ref, base, { merge: true });
+            wb.set(ref, base, { merge: true });
         }
     }
 
-    // One inventoryBatches doc per active line (deterministic id → idempotent).
-    for (const r of resolved) {
-        const { boxes, pcsPerBox, totalUnits } = splitUnits(r.line);
-        const ref = getTenantDoc(db, tenantId, 'inventoryBatches', `${invoiceId}_${r.index}`);
-        batch.set(ref, {
-            productId: r.productId,
-            productName: r.line.description.trim(),
-            mfgCompany: (r.line.mfgCompany || '').trim(),
-            batchNumber: (r.line.batchNo || '').trim(),
-            mfgDate: r.line.mfgDate || '',
-            expiryDate: r.line.expDate || '',
-            hsnCode: (r.line.hsnCode || '').trim(),
-            mrp: Number(r.line.mrp) || 0,
-            purchaseRate: Number(r.line.rate) || 0,
-            retailerRate: Number(r.line.retailerRate) || 0,
-            farmerRate: Number(r.line.farmerRate) || 0,
-            quantity: totalUnits,
-            boxCount: boxes,
-            piecesPerBox: pcsPerBox,
-            unit: (r.line.unit || '').trim() || 'pcs',
-            supplier: (supplierName || '').trim(),
-            sourceInvoiceId: invoiceId,
-            updatedAt: serverTimestamp(),
-        }, { merge: true });
+    for (const [bdId, ba] of batchAgg.entries()) {
+        const cur = currentBatches.get(bdId) ?? { quantity: 0 };
+        const newQty = Math.max(0, cur.quantity + ba.unitsDelta);
+        const ref = getTenantDoc(db, tenantId, 'inventoryBatches', bdId);
+        if (!ba.line) {
+            wb.set(ref, { quantity: newQty, updatedAt: serverTimestamp() }, { merge: true });
+        } else {
+            const l = ba.line;
+            wb.set(ref, {
+                productId: ba.productId,
+                productName: l.description.trim(),
+                batchNumber: (l.batchNo || '').trim(),
+                mfgDate: l.mfgDate || '',
+                expiryDate: l.expDate || '',
+                mrp: Number(l.mrp) || 0,
+                purchaseRate: Number(l.rate) || 0,
+                quantity: newQty,
+                unit: (l.unit || '').trim() || 'pcs',
+                supplier: (supplierName || '').trim(),
+                sourceInvoiceId: invoiceId,
+                updatedAt: serverTimestamp(),
+            }, { merge: true });
+        }
     }
 
-    // Remove stale batch docs from a previous save that had more lines than now.
-    for (let i = active.length; i < prevPosted.length; i++) {
-        batch.delete(getTenantDoc(db, tenantId, 'inventoryBatches', `${invoiceId}_${i}`));
-    }
+    await wb.commit();
 
-    await batch.commit();
+    // Record purchase movements (best-effort — never block if this fails)
+    recordPurchaseMovements(
+        tenantId,
+        newPosted.map((p, i) => ({
+            productId: p.productId,
+            productName: resolved[i]?.line.description?.trim() ?? '',
+            batchNumber: (resolved[i]?.line.batchNo ?? '').trim(),
+            qtyIn: p.units,
+            batchDocId: p.batchDocId,
+        })),
+        invoiceId,
+        invoiceId,  // sourceNumber — caller can override via a future param
+    ).catch(console.error);
+
     return newPosted;
 }
