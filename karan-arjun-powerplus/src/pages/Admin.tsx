@@ -16,6 +16,8 @@ import {
 import { getFunctions, httpsCallable } from 'firebase/functions';
 import { Icons } from '../components/Icons';
 import { PaymentDetailModal, type PaymentDetailOrder } from '../components/PaymentDetailModal';
+import { CropSolutionsManager } from '../components/admin/CropSolutionsManager';
+import { CareerManager } from '../components/admin/CareerManager';
 import {
   initialAbout,
   initialBlogs,
@@ -30,7 +32,7 @@ import {
 } from '../data/mockData';
 import { db } from '../lib/firebase';
 
-type AdminTab = 'Dashboard' | 'Orders' | 'Users' | 'Products' | 'Blogs' | 'Support' | 'Company Info';
+type AdminTab = 'Dashboard' | 'Orders' | 'Users' | 'Products' | 'Crop Solutions' | 'Career' | 'Blogs' | 'Support' | 'Company Info';
 
 interface AdminUser extends User {
   email: string;
@@ -676,7 +678,7 @@ export default function Admin() {
         <div className="flex items-center gap-3 mb-12">
           <div className="w-12 h-12 bg-white/10 rounded-xl flex items-center justify-center font-sans font-black text-2xl">P</div>
           <div className="flex flex-col">
-            <span className="font-sans font-bold text-base leading-tight">Power Plus™</span>
+            <span className="font-sans font-bold text-base leading-tight">Karan Arjun Pvt. Ltd.</span>
             <span className="text-xs text-white/40 uppercase tracking-widest font-bold">Admin Console</span>
           </div>
         </div>
@@ -687,6 +689,8 @@ export default function Admin() {
             { id: 'Orders', icon: Icons.PackageCheck, label: 'Orders' },
             { id: 'Users', icon: Icons.Users, label: 'Users' },
             { id: 'Products', icon: Icons.Box, label: 'Products' },
+            { id: 'Crop Solutions', icon: Icons.Layers, label: 'Crop Solutions' },
+            { id: 'Career', icon: Icons.Briefcase, label: 'Career' },
             { id: 'Blogs', icon: Icons.FileText, label: 'Blogs' },
             { id: 'Support', icon: Icons.AlertCircle, label: 'Support' },
             { id: 'Company Info', icon: Icons.Settings, label: 'Company Info' },
@@ -1179,6 +1183,10 @@ export default function Admin() {
             </div>
           </div>
         )}
+
+        {activeTab === 'Crop Solutions' && <CropSolutionsManager />}
+
+        {activeTab === 'Career' && <CareerManager />}
 
         {activeTab === 'Blogs' && (
           <div className="space-y-6">

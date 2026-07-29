@@ -10,6 +10,16 @@ import Technical from './pages/Technical';
 import Benefits from './pages/Benefits';
 import Admin from './pages/Admin';
 import About from './pages/About';
+import WhoWeAre from './pages/WhoWeAre';
+import WhatWeDo from './pages/WhatWeDo';
+import CropSolutionsLanding from './pages/CropSolutionsLanding';
+import CropCategoryPage from './pages/CropCategoryPage';
+import CropDetailPage from './pages/CropDetailPage';
+import CareerLanding from './pages/CareerLanding';
+import JobDetailPage from './pages/JobDetailPage';
+import Support from './pages/Support';
+import Contact from './pages/Contact';
+import PlaceholderPage from './pages/PlaceholderPage';
 import { CartProvider } from './context/CartContext';
 import { AuthProvider } from './context/AuthContext';
 import { LanguageProvider } from './context/LanguageContext';
@@ -96,6 +106,27 @@ export default function App() {
                   }
                 />
                 <Route path="/about" element={<About />} />
+                <Route path="/who-we-are" element={<WhoWeAre />} />
+                <Route path="/what-we-do" element={<WhatWeDo />} />
+                <Route
+                  path="/research-innovation"
+                  element={<PlaceholderPage title="Research & Innovation" description="The science behind our agricultural solutions." />}
+                />
+                <Route
+                  path="/farmer-success"
+                  element={<PlaceholderPage title="Farmer Success" description="Stories and outcomes from farmers we work with." />}
+                />
+                <Route path="/crop-solutions" element={<CropSolutionsLanding />} />
+                <Route path="/crop-solutions/:categorySlug" element={<CropCategoryPage />} />
+                <Route path="/crop-solutions/:categorySlug/:cropSlug" element={<CropDetailPage />} />
+                <Route
+                  path="/resources"
+                  element={<PlaceholderPage title="Resources" description="Guides, research, and a farmer knowledge center." />}
+                />
+                <Route path="/career" element={<CareerLanding />} />
+                <Route path="/career/:jobSlug" element={<JobDetailPage />} />
+                <Route path="/support" element={<Support />} />
+                <Route path="/contact" element={<Contact />} />
               </Routes>
               <CartDrawer />
               <CheckoutModal />
