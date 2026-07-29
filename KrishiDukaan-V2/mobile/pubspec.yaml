@@ -40,6 +40,7 @@ dependencies:
 
   # Local storage
   shared_preferences: ^2.4.25
+  in_app_review: ^2.0.9
 
   # UI utilities
   shimmer: ^3.0.0

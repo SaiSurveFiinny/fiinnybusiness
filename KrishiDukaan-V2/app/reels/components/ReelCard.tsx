@@ -1,10 +1,12 @@
 "use client";
 
+import { useState } from "react";
 import { Volume2, VolumeX } from "lucide-react";
 import ReelVideo from "./ReelVideo";
 import ReelOverlay from "./ReelOverlay";
 import ReelStats from "./ReelStats";
 import ReelInfo from "./ReelInfo";
+import ReelComments from "../ReelComments";
 import type { FeedReel } from "../lib/types";
 
 interface Props {
@@ -33,6 +35,7 @@ export default function ReelCard({
   onVisible,
 }: Props) {
   const distance = Math.abs(index - activeIndex);
+  const [showComments, setShowComments] = useState(false);
 
   return (
     <section className="relative flex h-[calc(100dvh-4rem)] snap-start snap-always items-center justify-center bg-black">
@@ -67,8 +70,17 @@ export default function ReelCard({
           )}
         </button>
 
-        <ReelStats likesCount={reel.likesCount} viewsCount={reel.viewsCount} />
+        <ReelStats
+          likesCount={reel.likesCount}
+          viewsCount={reel.viewsCount}
+          commentsCount={reel.commentsCount}
+          onCommentsClick={() => setShowComments(true)}
+        />
         <ReelInfo reel={reel} />
+
+        {showComments && (
+          <ReelComments reelId={reel.id} onClose={() => setShowComments(false)} />
+        )}
       </div>
     </section>
   );

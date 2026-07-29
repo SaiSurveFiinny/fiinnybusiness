@@ -16,6 +16,7 @@ import {
   Truck,
   UserCircle2,
   UsersRound,
+  Video,
   X,
 } from "lucide-react";
 import { auth, getUserProfile } from "../../firebase";
@@ -27,6 +28,7 @@ const baseNav = [
   { href: "/dashboard", labelKey: "sideOverview" as const, icon: LayoutDashboard },
   { href: "/dashboard/analytics", labelKey: "sideAnalytics" as const, icon: BarChart3 },
   { href: "/dashboard/inventory", labelKey: "sideInventory" as const, icon: Package },
+  { href: "/dashboard/reels", labelKey: "sideReels" as const, icon: Video },
   { href: "/dashboard/orders", labelKey: "sideOrders" as const, icon: ReceiptText },
   { href: "/dashboard/delivery", labelKey: "sideDelivery" as const, icon: Truck },
   { href: "/dashboard/reviews", labelKey: "sideReviews" as const, icon: Star },

@@ -6,6 +6,8 @@ class ReelCommentModel {
   final String userName;
   final String text;
   final DateTime createdAt;
+  final String? taggedUserId;
+  final String? taggedUserName;
 
   const ReelCommentModel({
     required this.id,
@@ -13,6 +15,8 @@ class ReelCommentModel {
     required this.userName,
     required this.text,
     required this.createdAt,
+    this.taggedUserId,
+    this.taggedUserName,
   });
 
   factory ReelCommentModel.fromFirestore(DocumentSnapshot doc) {
@@ -23,6 +27,8 @@ class ReelCommentModel {
       userName: data['userName'] as String? ?? '',
       text: data['text'] as String? ?? '',
       createdAt: (data['createdAt'] as Timestamp?)?.toDate() ?? DateTime.now(),
+      taggedUserId: data['taggedUserId'] as String?,
+      taggedUserName: data['taggedUserName'] as String?,
     );
   }
 }

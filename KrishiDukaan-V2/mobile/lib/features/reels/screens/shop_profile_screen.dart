@@ -4,6 +4,7 @@ import 'package:go_router/go_router.dart';
 import 'package:video_player/video_player.dart';
 import '../../../core/constants/app_colors.dart';
 import '../../../core/constants/app_text_styles.dart';
+import '../../../core/widgets/user_tag_dialog.dart';
 import '../../../core/models/listing_model.dart';
 import '../../../core/models/reel_model.dart';
 import '../../../core/providers/user_provider.dart';
@@ -1346,16 +1347,6 @@ class _SingleReelViewState extends ConsumerState<_SingleReelView>
       ).showSnackBar(const SnackBar(content: Text('Login to repost reels')));
       return;
     }
-    if (!user.canAccessDashboard) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text(
-            'An active seller subscription is required to repost reels.',
-          ),
-        ),
-      );
-      return;
-    }
     if (_reposting) return;
     setState(() {
       _reposting = true;
@@ -1768,9 +1759,63 @@ class _CommentSheetSimple extends ConsumerStatefulWidget {
 class _CommentSheetSimpleState extends ConsumerState<_CommentSheetSimple> {
   final _ctrl = TextEditingController();
   bool _busy = false;
+  String? _taggedUserId;
+  String? _taggedUserName;
+
+  // Inline "@mention" suggestions while typing.
+  String? _mentionQuery;
+  List<TaggedUser> _mentionResults = const [];
+  bool _mentionLoading = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _ctrl.addListener(_onTextChanged);
+  }
+
+  void _onTextChanged() {
+    final text = _ctrl.text;
+    final caret = _ctrl.selection.baseOffset;
+    final uptoCaret = caret >= 0 ? text.substring(0, caret) : text;
+    final match = RegExp(r'@([^\s@]*)$').firstMatch(uptoCaret);
+    if (match == null) {
+      if (_mentionQuery != null) setState(() => _mentionQuery = null);
+      return;
+    }
+    final q = match.group(1) ?? '';
+    setState(() {
+      _mentionQuery = q;
+      _mentionLoading = true;
+    });
+    searchTaggableUsers(q).then((results) {
+      if (!mounted || _mentionQuery != q) return;
+      setState(() {
+        _mentionResults = results;
+        _mentionLoading = false;
+      });
+    });
+  }
+
+  void _pickMention(TaggedUser u) {
+    final text = _ctrl.text;
+    final caret = _ctrl.selection.baseOffset;
+    final uptoCaret = caret >= 0 ? text.substring(0, caret) : text;
+    final replaced = uptoCaret.replaceFirst(RegExp(r'@([^\s@]*)$'), '@${u.name} ');
+    final rest = caret >= 0 ? text.substring(caret) : '';
+    _ctrl.value = TextEditingValue(
+      text: replaced + rest,
+      selection: TextSelection.collapsed(offset: replaced.length),
+    );
+    setState(() {
+      _taggedUserId = u.id;
+      _taggedUserName = u.name;
+      _mentionQuery = null;
+    });
+  }
 
   @override
   void dispose() {
+    _ctrl.removeListener(_onTextChanged);
     _ctrl.dispose();
     super.dispose();
   }
@@ -1789,8 +1834,12 @@ class _CommentSheetSimpleState extends ConsumerState<_CommentSheetSimple> {
             widget.currentUserId!,
             widget.currentUserName,
             _ctrl.text.trim(),
+            taggedUserId: _taggedUserId,
+            taggedUserName: _taggedUserName,
           );
       _ctrl.clear();
+      _taggedUserId = null;
+      _taggedUserName = null;
       widget.onAdded();
     } finally {
       if (mounted)
@@ -1867,9 +1916,18 @@ class _CommentSheetSimpleState extends ConsumerState<_CommentSheetSimple> {
                                         fontWeight: FontWeight.w700,
                                       ),
                                     ),
-                                    Text(
-                                      c.text,
-                                      style: AppTextStyles.bodySmall,
+                                    RichText(
+                                      text: TextSpan(
+                                        style: AppTextStyles.bodySmall.copyWith(color: Colors.black87),
+                                        children: [
+                                          if (c.taggedUserName != null)
+                                            TextSpan(
+                                              text: '@${c.taggedUserName} ',
+                                              style: const TextStyle(color: Colors.blue, fontWeight: FontWeight.bold),
+                                            ),
+                                          TextSpan(text: c.text),
+                                        ],
+                                      ),
                                     ),
                                   ],
                                 ),
@@ -1883,15 +1941,60 @@ class _CommentSheetSimpleState extends ConsumerState<_CommentSheetSimple> {
           ),
           Padding(
             padding: EdgeInsets.only(
-              left: 16,
+              left: 4,
               right: 8,
               top: 8,
               bottom: MediaQuery.of(context).viewInsets.bottom + 12,
             ),
-            child: Row(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Expanded(
-                  child: TextField(
+                if (_mentionQuery != null)
+                  Padding(
+                    padding: const EdgeInsets.only(bottom: 6),
+                    child: MentionSuggestions(
+                      results: _mentionResults,
+                      loading: _mentionLoading,
+                      query: _mentionQuery!,
+                      onSelect: _pickMention,
+                    ),
+                  ),
+                if (_taggedUserName != null)
+                  Padding(
+                    padding: const EdgeInsets.only(left: 12, bottom: 4),
+                    child: Row(
+                      children: [
+                        Text('Tagging: @$_taggedUserName', style: const TextStyle(color: Colors.blue, fontSize: 12, fontWeight: FontWeight.bold)),
+                        const SizedBox(width: 4),
+                        GestureDetector(
+                          onTap: () => setState(() {
+                            _taggedUserId = null;
+                            _taggedUserName = null;
+                          }),
+                          child: const Icon(Icons.close, size: 14, color: Colors.blue),
+                        )
+                      ],
+                    ),
+                  ),
+                Row(
+                  children: [
+                    IconButton(
+                      icon: const Icon(Icons.alternate_email, color: AppColors.primary),
+                      onPressed: () async {
+                        final res = await showDialog(
+                          context: context,
+                          builder: (_) => const UserTagDialog(),
+                        );
+                        if (res != null && res is TaggedUser) {
+                          setState(() {
+                            _taggedUserId = res.id;
+                            _taggedUserName = res.name;
+                          });
+                        }
+                      },
+                    ),
+                    Expanded(
+                      child: TextField(
                     controller: _ctrl,
                     enabled: widget.currentUserId != null,
                     decoration: InputDecoration(
@@ -1925,9 +2028,11 @@ class _CommentSheetSimpleState extends ConsumerState<_CommentSheetSimple> {
                 ),
               ],
             ),
-          ),
-        ],
+          ],
+        ),
       ),
-    );
-  }
+    ],
+  ),
+);
+}
 }

@@ -6,6 +6,7 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { MarketplaceProduct } from '../../types/product';
 import { Hub } from '../firebase';
 import { useI18n } from '../i18n/I18nContext';
+import { PlayCircle, Video, Eye } from 'lucide-react';
 import { HelperIcon, HelperTooltip } from '../../components/helpers';
 import { Tag } from 'lucide-react';
 
@@ -126,6 +127,18 @@ export default function HomeView({
     const id = setInterval(() => setSlideIdx((i) => (i + 1) % slides.length), 6000);
     return () => clearInterval(id);
   }, [slides.length]);
+
+  const [reels, setReels] = useState<any[]>([]);
+  const [reelsLoading, setReelsLoading] = useState(true);
+  useEffect(() => {
+    fetch("/api/reels?limit=4")
+      .then((r) => r.json())
+      .then((data) => {
+        setReels(data.reels ?? []);
+        setReelsLoading(false);
+      })
+      .catch(() => setReelsLoading(false));
+  }, []);
 
   const goToSlideCta = (s: Slide) => {
     if (s.onCta === 'powerPlus') {
@@ -301,8 +314,60 @@ export default function HomeView({
         </div>
       </section>
 
+      {/* Latest Reels */}
+      <section className="px-4 md:px-10 max-w-7xl mx-auto w-full py-8 border-t border-surface-container mt-6">
+        <div className="flex justify-between items-end mb-6">
+          <div className="flex items-center gap-2">
+            <h2 className="text-2xl md:text-3xl font-bold text-on-surface">Latest Reels</h2>
+          </div>
+          <a
+            href="/reels"
+            className="text-primary font-bold flex items-center gap-2 hover:translate-x-1 transition-transform text-sm"
+          >
+            See all <ICONS.ArrowRight className="w-4 h-4" />
+          </a>
+        </div>
+        <div className="flex gap-4 overflow-x-auto pb-4 snap-x">
+          {reelsLoading ? (
+            Array.from({ length: 4 }).map((_, i) => (
+              <div key={i} className="snap-start shrink-0 w-36 h-56 bg-surface-variant animate-pulse rounded-2xl border border-outline-variant" />
+            ))
+          ) : reels.length === 0 ? (
+            <p className="text-sm text-on-surface-variant py-4">No reels yet. Check back soon!</p>
+          ) : (
+            reels.map((reel) => (
+              <a
+                key={reel.id}
+                href="/reels"
+                className="snap-start shrink-0 w-36 relative bg-surface-container rounded-2xl overflow-hidden shadow hover:shadow-md transition-shadow group border border-outline-variant"
+                title={reel.caption}
+              >
+                {reel.thumbnailUrl ? (
+                  <img src={reel.thumbnailUrl} alt="" className="w-full h-56 object-cover" />
+                ) : (
+                  <div className="w-full h-56 bg-surface-variant flex items-center justify-center">
+                    <Video className="w-8 h-8 text-on-surface-variant/30" />
+                  </div>
+                )}
+                <div className="absolute inset-0 bg-gradient-to-t from-black/60 to-transparent flex flex-col justify-end p-3 opacity-90 group-hover:opacity-100 transition-opacity">
+                  <p className="text-xs text-white font-semibold line-clamp-2 leading-tight drop-shadow-md">
+                    {reel.caption || reel.title || 'Reel'}
+                  </p>
+                  <p className="text-[10px] text-white/80 mt-1 flex items-center gap-1">
+                    <Eye className="w-3 h-3" /> {reel.viewsCount || 0}
+                  </p>
+                </div>
+                <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 drop-shadow-lg group-hover:scale-110 transition-transform">
+                   <PlayCircle className="w-10 h-10 text-white/90" />
+                </div>
+              </a>
+            ))
+          )}
+        </div>
+      </section>
+
       {/* Trending — denser grid, contained product shots */}
-      <section className="px-4 md:px-10 max-w-7xl mx-auto w-full py-8 bg-white shadow-sm border-y border-surface-container">
+      <section className="px-4 md:px-10 max-w-7xl mx-auto w-full py-8 bg-white shadow-sm border-y border-surface-container mt-6">
         <div className="flex justify-between items-end mb-6">
           <div className="flex items-center gap-2">
             <h2 className="text-2xl md:text-3xl font-bold text-on-surface">{t('trendingNearYou')}</h2>

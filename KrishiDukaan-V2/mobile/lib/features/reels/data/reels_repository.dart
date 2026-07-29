@@ -127,8 +127,10 @@ class ReelsRepository {
     String reelId,
     String userId,
     String userName,
-    String text,
-  ) async {
+    String text, {
+    String? taggedUserId,
+    String? taggedUserName,
+  }) async {
     final batch = _db.batch();
 
     final commentRef = _db
@@ -141,6 +143,8 @@ class ReelsRepository {
       'userName': userName,
       'text': text,
       'createdAt': FieldValue.serverTimestamp(),
+      if (taggedUserId != null) 'taggedUserId': taggedUserId,
+      if (taggedUserName != null) 'taggedUserName': taggedUserName,
     });
     batch.update(_db.collection('reels').doc(reelId), {
       'commentsCount': FieldValue.increment(1),

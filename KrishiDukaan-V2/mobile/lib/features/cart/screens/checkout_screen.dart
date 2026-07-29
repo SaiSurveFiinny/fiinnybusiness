@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
@@ -17,6 +19,7 @@ import '../../../core/widgets/empty_state.dart';
 import '../../../core/widgets/loading_overlay.dart';
 import '../data/payment_service.dart';
 import '../../orders/data/order_repository.dart';
+import '../../../core/services/app_review_service.dart';
 
 class CheckoutScreen extends ConsumerStatefulWidget {
   const CheckoutScreen({super.key});
@@ -36,6 +39,7 @@ class _CheckoutScreenState extends ConsumerState<CheckoutScreen> {
   late final AppRazorpay _razorpay;
   final _paymentService = PaymentService();
   final _orderRepo = OrderRepository();
+  final _reviewService = AppReviewService();
 
   bool _isLoading = false;
   bool _prefilled = false;
@@ -153,6 +157,8 @@ class _CheckoutScreenState extends ConsumerState<CheckoutScreen> {
       );
 
       ref.read(cartProvider.notifier).clear();
+      // Fire-and-forget: never block navigation on the review prompt.
+      unawaited(_reviewService.onOrderCompleted());
       if (mounted) context.go('/orders');
     } catch (e) {
       if (mounted) {

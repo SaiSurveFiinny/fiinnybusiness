@@ -17,6 +17,7 @@ export interface FeedReel {
   shopName: string;
   viewsCount: number;
   likesCount: number;
+  commentsCount: number;
   productPath: string | null;
   linkedProductName?: string;
   /** Pre-resolved CSS `filter` value for the seller's chosen look filter. */
