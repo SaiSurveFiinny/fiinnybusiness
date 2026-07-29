@@ -264,6 +264,9 @@ class HomeScreen extends ConsumerWidget {
                   ),
                   const SizedBox(height: 28),
 
+                  // More Reels at the bottom
+                  const _ReelsRail(skipCount: 4, title: 'More Reels'),
+                  
                   // Friendly closing card so the page ends on a helpful note
                   const _HelpFooter(),
                   const SizedBox(height: 80),
@@ -907,7 +910,13 @@ class _TopDealsRail extends ConsumerWidget {
 // ─────────────────────────── Reels Rail ────────────────────────────────────
 
 class _ReelsRail extends ConsumerWidget {
-  const _ReelsRail();
+  final int skipCount;
+  final String title;
+
+  const _ReelsRail({
+    this.skipCount = 0,
+    this.title = 'Latest Reels',
+  });
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -915,12 +924,29 @@ class _ReelsRail extends ConsumerWidget {
     return reelsAsync.maybeWhen(
       data: (reels) {
         if (reels.isEmpty) return const SizedBox.shrink();
-        final displayReels = reels.take(4).toList();
+        
+        List<ReelModel> displayReels;
+        if (skipCount > 0) {
+          if (reels.length > 4) {
+            final remaining = reels.skip(skipCount).toList();
+            remaining.shuffle(); // mix up the bottom rail so it feels fresh
+            displayReels = remaining.take(4).toList();
+          } else {
+            // Not enough reels to be entirely disjoint. Just shuffle the existing ones.
+            final mixed = reels.toList();
+            mixed.shuffle();
+            displayReels = mixed.take(4).toList();
+          }
+        } else {
+          displayReels = reels.take(4).toList();
+        }
+
+        if (displayReels.isEmpty) return const SizedBox.shrink();
         return Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             SectionHeader(
-              title: 'Latest Reels',
+              title: title,
               icon: Icons.play_circle_fill_rounded,
               iconColor: AppColors.primary,
               actionLabel: 'See all',

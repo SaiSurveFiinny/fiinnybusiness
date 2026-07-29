@@ -669,7 +669,9 @@ service cloud.firestore {
     }
 
     // ─── reels ───────────────────────────────────────────────────────────────
-    // Public read. Any authenticated user can create.
+    // Public read. Any authenticated user can create their own reel; admin can
+    // also create a reel on behalf of any seller (web admin "upload for seller"
+    // flow, e.g. when the seller can't upload it themselves).
     // Only the shop owner (matched by phone) or admin can update/delete.
     // viewsCount increment is the only anonymous-adjacent write, but we keep
     // write gated on auth to prevent abuse — unauthenticated viewers still
@@ -677,8 +679,8 @@ service cloud.firestore {
     // after the user has the app open (implying phone auth).
     match /reels/{reelId} {
       allow read: if true;
-      allow create: if isAuthed()
-        && request.resource.data.shopOwnerId == myPhone();
+      allow create: if isAdmin()
+        || (isAuthed() && request.resource.data.shopOwnerId == myPhone());
       allow update: if isAdmin()
         || (isAuthed() && phoneMatches(resource.data.shopOwnerId))
         // Allow any authed user to increment the counter fields only

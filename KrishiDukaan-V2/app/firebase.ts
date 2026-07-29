@@ -10,6 +10,7 @@ import {
   getDocs,
   getFirestore,
   increment,
+  limit,
   query,
   orderBy,
   serverTimestamp,
@@ -3938,4 +3939,15 @@ export async function resolveWaUserByPhone(phone: string): Promise<WaResolvedUse
   }
 
   return null;
+}
+
+export async function fetchReels(limitCount = 10): Promise<any[]> {
+  try {
+    const q = query(collection(db, 'reels'), orderBy('createdAt', 'desc'), limit(limitCount));
+    const snap = await getDocs(q);
+    return snap.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+  } catch (err) {
+    console.error('Error fetching reels:', err);
+    return [];
+  }
 }

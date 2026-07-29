@@ -31,6 +31,7 @@ export interface SeoReel {
   shopOwnerId: string;
   viewsCount: number;
   likesCount: number;
+  commentsCount: number;
   createdAtMs: number;
   linkedProductId?: string;
   linkedProductName?: string;
@@ -68,6 +69,7 @@ function mapReel(id: string, data: Record<string, unknown>): SeoReel {
     shopOwnerId: str(data.shopOwnerId),
     viewsCount: Number(data.viewsCount) || 0,
     likesCount: Number(data.likesCount) || 0,
+    commentsCount: Number(data.commentsCount) || 0,
     createdAtMs:
       (data.createdAt as { toMillis?: () => number })?.toMillis?.() ?? 0,
     linkedProductId: data.linkedProductId ? str(data.linkedProductId) : undefined,

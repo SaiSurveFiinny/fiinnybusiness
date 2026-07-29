@@ -10,7 +10,8 @@
 
 import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
-import { Volume2, VolumeX, Play, ShoppingBag, Eye, Heart } from "lucide-react";
+import { Volume2, VolumeX, Play, ShoppingBag, Eye, Heart, MessageCircle } from "lucide-react";
+import ReelComments from "./ReelComments";
 
 export interface FeedReel {
   id: string;
@@ -22,6 +23,7 @@ export interface FeedReel {
   shopName: string;
   viewsCount: number;
   likesCount: number;
+  commentsCount: number;
   productPath: string | null;
   linkedProductName?: string;
   /** Playback-time edits set in the mobile upload editor. */
@@ -40,6 +42,7 @@ function ReelCard({ reel }: { reel: FeedReel }) {
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const [muted, setMuted] = useState(true);
   const [paused, setPaused] = useState(false);
+  const [showComments, setShowComments] = useState(false);
 
   useEffect(() => {
     const video = videoRef.current;
@@ -125,10 +128,17 @@ function ReelCard({ reel }: { reel: FeedReel }) {
 
         {/* Stats column */}
         <div className="absolute right-3 bottom-24 flex flex-col items-center gap-4 text-white">
-          <span className="flex flex-col items-center text-xs font-semibold">
+          <button className="flex flex-col items-center text-xs font-semibold hover:text-emerald-400 transition-colors">
             <Heart className="h-6 w-6 mb-1" />
             {formatCount(reel.likesCount)}
-          </span>
+          </button>
+          <button 
+            onClick={() => { setShowComments(true); setPaused(true); videoRef.current?.pause(); }}
+            className="flex flex-col items-center text-xs font-semibold hover:text-emerald-400 transition-colors"
+          >
+            <MessageCircle className="h-6 w-6 mb-1" />
+            {formatCount(reel.commentsCount)}
+          </button>
           <span className="flex flex-col items-center text-xs font-semibold">
             <Eye className="h-6 w-6 mb-1" />
             {formatCount(reel.viewsCount)}
@@ -162,6 +172,10 @@ function ReelCard({ reel }: { reel: FeedReel }) {
             </Link>
           ) : null}
         </div>
+        
+        {showComments && (
+          <ReelComments reelId={reel.id} onClose={() => setShowComments(false)} />
+        )}
       </div>
     </section>
   );

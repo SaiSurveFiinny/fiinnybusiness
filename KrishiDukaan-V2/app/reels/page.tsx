@@ -41,6 +41,7 @@ export default async function ReelsPage() {
     shopName: r.shopName,
     viewsCount: r.viewsCount,
     likesCount: r.likesCount,
+    commentsCount: r.commentsCount,
     productPath: linkedProductStorePath(r),
     linkedProductName: r.linkedProductName,
     cssFilter: reelCssFilter(r.filterId),
