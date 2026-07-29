@@ -6,6 +6,7 @@ import { logger } from "firebase-functions/v2";
 import { queueWaNotification } from "./wa-notify";
 
 export { sendWaNotification, retryWaNotifications, webhookReceiver } from "./wa-dispatch";
+export { transcodeReel } from "./reels/media/transcodeReel";
 
 admin.initializeApp();
 const db = admin.firestore();
@@ -525,14 +526,78 @@ async function manufacturerDisplayName(phone: string, uid: string, fallback: str
   return fallback;
 }
 
-/** New order placed → notify the seller (store owner). */
+/** New order placed → notify the seller (store owner / manufacturer). */
 export const notifySellerOnOrder = onDocumentCreated(
   "orders/{orderId}",
   async (event) => {
     const d = event.data?.data() as Record<string, unknown> | undefined;
     if (!d) return;
 
-    const sellerPhone = firstPhone(d.sellerPhone, d.sellerId, d.storePhone);
+    const orderId   = event.params.orderId;
+    const sellerType = String(d.sellerType ?? "unknown");
+    const sellerId   = String(d.sellerId   ?? "");
+
+    logger.info("[notifySellerOnOrder] order created", {
+      orderId,
+      sellerType,
+      sellerId,
+      sellerPhoneInDoc: d.sellerPhone ?? null,
+      storePhoneInDoc:  d.storePhone  ?? null,
+    });
+
+    // Fast path: phone stored on the order doc (written since the sellerPhone fix).
+    // Fallback: UID → uidIndex → phone for legacy orders without sellerPhone.
+    let sellerPhone = firstPhone(d.sellerPhone, d.sellerId, d.storePhone);
+
+    if (!sellerPhone && sellerId) {
+      logger.info("[notifySellerOnOrder] sellerPhone not in order doc, attempting UID→phone lookup", {
+        orderId, sellerId,
+      });
+      try {
+        const idxSnap = await db.collection("uidIndex").doc(sellerId).get();
+        if (idxSnap.exists) {
+          const resolved = String(idxSnap.data()?.phone ?? "").trim();
+          if (looksLikePhone(resolved)) {
+            sellerPhone = resolved;
+            logger.info("[notifySellerOnOrder] resolved phone via uidIndex", {
+              orderId, sellerId, sellerPhone,
+            });
+          }
+        }
+
+        // Also check manufacturers/{sellerId} and users/{sellerId} directly
+        if (!sellerPhone) {
+          for (const col of ["manufacturers", "users"]) {
+            const snap = await db.collection(col).doc(sellerId).get();
+            if (!snap.exists) continue;
+            const phone = firstPhone(
+              snap.data()?.phone,
+              snap.data()?.ownerPhone,
+              snap.data()?.whatsapp,
+            );
+            if (phone) {
+              sellerPhone = phone;
+              logger.info(`[notifySellerOnOrder] resolved phone from ${col}/${sellerId}`, {
+                orderId, sellerPhone,
+              });
+              break;
+            }
+          }
+        }
+      } catch (lookupErr) {
+        logger.error("[notifySellerOnOrder] UID→phone lookup threw", {
+          orderId, sellerId, err: String(lookupErr),
+        });
+      }
+    }
+
+    logger.info("[notifySellerOnOrder] manufacturer identified", {
+      orderId,
+      sellerType,
+      sellerId,
+      sellerPhone: sellerPhone || "(not resolved)",
+    });
+
     const customer = String(d.customerName ?? "A customer");
     const total = typeof d.total === "number" ? d.total : null;
     const items = Array.isArray(d.items)
@@ -548,12 +613,13 @@ export const notifySellerOnOrder = onDocumentCreated(
       "order",
       "New order received 🛒",
       `${customer} ordered ${itemSummary}${total != null ? ` · ₹${total}` : ""}`,
-      { orderId: event.params.orderId }
+      { orderId }
     );
 
-    logger.info("[notifySellerOnOrder] resolved sellerPhone", { sellerPhone, orderId: event.params.orderId });
     if (sellerPhone) {
-      logger.info("[notifySellerOnOrder] before queueWaNotification");
+      logger.info("[notifySellerOnOrder] notification enqueue started", {
+        orderId, sellerType, sellerPhone,
+      });
       const shopName = String(d.sellerName ?? "");
       await queueWaNotification(
         sellerPhone,
@@ -564,12 +630,16 @@ export const notifySellerOnOrder = onDocumentCreated(
           // order_notification body {{1}} = shopName → businessName → "Retailer"
           // Static Orders Dashboard URL button — no button component needed.
           payload: { shopName, businessName: "" },
-          source: { event: "order_created", entityType: "order", entityId: event.params.orderId },
+          source: { event: "order_created", entityType: "order", entityId: orderId },
         }
       );
-      logger.info("[notifySellerOnOrder] after queueWaNotification");
+      logger.info("[notifySellerOnOrder] notification enqueue completed", {
+        orderId, sellerType, sellerPhone,
+      });
     } else {
-      logger.warn("[notifySellerOnOrder] skipping WA — sellerPhone is empty", { orderId: event.params.orderId });
+      logger.warn("[notifySellerOnOrder] skipping WA — sellerPhone could not be resolved", {
+        orderId, sellerType, sellerId,
+      });
     }
   }
 );
@@ -761,6 +831,70 @@ export const notifyShopOwnerOnFollow = onDocumentCreated(
       "New follower 🎉",
       `${followerName} started following your shop`,
       { followerPhone }
+    );
+  }
+);
+
+/**
+ * Someone reported a reel → tally reports on the reel doc, and once the
+ * count crosses REPORT_FLAG_THRESHOLD, flip moderationStatus to 'flagged' so
+ * it drops out of every feed/profile/product-page query (see
+ * ReelsRepository in the mobile app, and getAllReels in
+ * app/lib/seo/reels-server.ts on web).
+ *
+ * Runs with the admin SDK, which is not subject to firestore.rules — that's
+ * deliberate: no client, including the reel's own owner, may set
+ * moderationStatus directly (see the `reels` match block in
+ * firestore.rules). Per docs/reels-ranking-architecture.md §7, a human
+ * reviewing nothing on day one is fine — the field and the filter existing
+ * at all is the actual requirement this closes.
+ */
+const REPORT_FLAG_THRESHOLD = 3;
+
+export const flagReelOnReports = onDocumentCreated(
+  "reel_reports/{reportId}",
+  async (event) => {
+    const d = event.data?.data() as Record<string, unknown> | undefined;
+    if (!d) return;
+
+    const reelId = String(d.reelId ?? "");
+    if (!reelId) return;
+
+    const reelRef = db.collection("reels").doc(reelId);
+
+    // Transaction so two reports landing back-to-back can't both read the
+    // same pre-increment count and only one of them actually cross the
+    // threshold.
+    const justFlagged = await db.runTransaction(async (txn) => {
+      const reelSnap = await txn.get(reelRef);
+      if (!reelSnap.exists) return false;
+
+      const reel = reelSnap.data() as Record<string, unknown>;
+      const reportCount = (Number(reel.reportCount) || 0) + 1;
+      const wasFlagged = reel.moderationStatus === "flagged";
+      const nowFlagged = reportCount >= REPORT_FLAG_THRESHOLD;
+
+      txn.update(reelRef, {
+        reportCount,
+        ...(nowFlagged ? { moderationStatus: "flagged" } : {}),
+      });
+
+      return nowFlagged && !wasFlagged;
+    });
+
+    if (!justFlagged) return;
+
+    const reelSnap = await reelRef.get();
+    const reel = reelSnap.data() as Record<string, unknown> | undefined;
+    const ownerPhone = String(reel?.shopOwnerId ?? "");
+    if (!ownerPhone) return;
+
+    await notify(
+      ownerPhone,
+      "reel_flagged",
+      "Your reel was flagged for review",
+      "Multiple viewers reported one of your reels, so it's hidden from the feed pending review.",
+      { reelId }
     );
   }
 );

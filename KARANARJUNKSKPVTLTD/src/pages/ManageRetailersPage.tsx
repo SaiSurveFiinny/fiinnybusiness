@@ -6,6 +6,15 @@ import { db } from '../firebase';
 import { useAuth } from '../contexts/AuthContext';
 import { getTenantCollection, getTenantDoc } from '../utils/tenantPath';
 
+const MAHARASHTRA_DISTRICTS = [
+    'Ahmednagar', 'Akola', 'Amravati', 'Aurangabad', 'Beed', 'Bhandara', 'Buldhana',
+    'Chandrapur', 'Dhule', 'Gadchiroli', 'Gondia', 'Hingoli', 'Jalgaon', 'Jalna',
+    'Kolhapur', 'Latur', 'Mumbai City', 'Mumbai Suburban', 'Nagpur', 'Nanded',
+    'Nandurbar', 'Nashik', 'Osmanabad', 'Palghar', 'Parbhani', 'Pune', 'Raigad',
+    'Ratnagiri', 'Sangli', 'Satara', 'Sindhudurg', 'Solapur', 'Thane', 'Wardha',
+    'Washim', 'Yavatmal',
+];
+
 interface Retailer {
     id: string;
     name: string;
@@ -31,6 +40,7 @@ export default function ManageRetailersPage() {
     const [editingRetailer, setEditingRetailer] = useState<Retailer | null>(null);
     const [isModalOpen, setIsModalOpen] = useState(false);
     const [isSaving, setIsSaving] = useState(false);
+    const [districtIsOther, setDistrictIsOther] = useState(false);
 
     // Form State for Editing
     const [formData, setFormData] = useState({
@@ -64,13 +74,15 @@ export default function ManageRetailersPage() {
 
     const handleEditClick = (retailer: Retailer) => {
         setEditingRetailer(retailer);
+        const d = retailer.district || '';
+        setDistrictIsOther(!!d && !MAHARASHTRA_DISTRICTS.includes(d));
         setFormData({
             name: retailer.name || '',
             number: retailer.number || '',
             email: retailer.email || '',
             atPost: retailer.atPost || '',
             taluka: retailer.taluka || '',
-            district: retailer.district || '',
+            district: d,
             state: retailer.state || 'Maharashtra',
             country: retailer.country || 'India',
             gstin: retailer.gstin || '',
@@ -112,10 +124,12 @@ export default function ManageRetailersPage() {
         }
     };
 
+    const q = searchTerm.toLowerCase();
     const filteredRetailers = retailers.filter(r =>
-        r.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
-        r.district?.toLowerCase().includes(searchTerm.toLowerCase()) ||
-        r.number.includes(searchTerm)
+        (r.name ?? '').toLowerCase().includes(q) ||
+        (r.district ?? '').toLowerCase().includes(q) ||
+        (r.number ?? '').toLowerCase().includes(q) ||
+        (r.email ?? '').toLowerCase().includes(q)
     );
 
     if (userRole !== 'admin') {
@@ -135,7 +149,7 @@ export default function ManageRetailersPage() {
                     </h1>
                     <p style={{ color: 'var(--text-secondary)' }}>{t('manage_retailers.manage_retailers_desc')}</p>
                 </div>
-                <div style={{ position: 'relative', minWidth: '300px' }}>
+                <div style={{ position: 'relative', minWidth: '380px' }}>
                     <Search size={18} style={{ position: 'absolute', left: '1rem', top: '50%', transform: 'translateY(-50%)', color: 'var(--text-tertiary)' }} />
                     <input
                         type="text"
@@ -238,7 +252,33 @@ export default function ManageRetailersPage() {
 
                             <div>
                                 <label className="input-label">{t('onboarding.district')}</label>
-                                <input className="input-field" value={formData.district} onChange={e => setFormData({ ...formData, district: e.target.value })} />
+                                <select
+                                    className="input-field"
+                                    value={districtIsOther ? 'Other' : formData.district}
+                                    onChange={e => {
+                                        if (e.target.value === 'Other') {
+                                            setDistrictIsOther(true);
+                                            setFormData({ ...formData, district: '' });
+                                        } else {
+                                            setDistrictIsOther(false);
+                                            setFormData({ ...formData, district: e.target.value });
+                                        }
+                                    }}
+                                >
+                                    <option value="">Select district…</option>
+                                    {MAHARASHTRA_DISTRICTS.map(d => <option key={d} value={d}>{d}</option>)}
+                                    <option value="Other">Other</option>
+                                </select>
+                                {districtIsOther && (
+                                    <input
+                                        className="input-field"
+                                        placeholder="Enter district name"
+                                        value={formData.district}
+                                        onChange={e => setFormData({ ...formData, district: e.target.value })}
+                                        style={{ marginTop: '0.4rem' }}
+                                        autoFocus
+                                    />
+                                )}
                             </div>
                             <div>
                                 <label className="input-label">{t('onboarding.state')}</label>

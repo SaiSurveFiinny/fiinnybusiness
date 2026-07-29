@@ -1,6 +1,6 @@
 import { useState, useEffect, lazy, Suspense } from 'react';
 import { BrowserRouter, Routes, Route, Link, useLocation, Navigate, useNavigate } from 'react-router-dom';
-import { Home, Users, UserPlus, LogOut, ReceiptText, ShieldAlert, Calculator, Settings, Package, ChevronDown, Layers, Palette, Database, Factory, Truck, Store, ShoppingCart, BarChart3, Activity, FileText, Bell, ClipboardList, Star, Link2, Bot, Loader2, Menu, X, Lock } from 'lucide-react';
+import { Home, Users, UserPlus, LogOut, ReceiptText, ShieldAlert, Calculator, Settings, Package, ChevronDown, Layers, Palette, Database, Factory, Truck, Store, ShoppingCart, BarChart3, Activity, FileText, Bell, ClipboardList, Star, Link2, Bot, Loader2, Menu, X, Lock, Target, Sun, Moon, Receipt } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import LanguageSwitcher from './components/LanguageSwitcher';
 import OfflineBanner from './components/OfflineBanner';
@@ -62,6 +62,7 @@ const WarehousePage          = lazy(() => import('./pages/WarehousePage'));
 const InventoryBatchPage     = lazy(() => import('./pages/InventoryBatchPage'));
 const BarcodePage            = lazy(() => import('./pages/BarcodePage'));
 const InventoryPage          = lazy(() => import('./pages/InventoryPage'));
+const ManageTransportPage    = lazy(() => import('./pages/ManageTransportPage'));
 const AdministrationPage     = lazy(() => import('./pages/AdministrationPage'));
 const PricingPage            = lazy(() => import('./pages/PricingPage'));
 const PaymentLinkPage        = lazy(() => import('./pages/PaymentLinkPage'));
@@ -87,6 +88,9 @@ const SupplierLedgerDetailPage = lazy(() => import('./pages/SupplierLedgerDetail
 const CareOffReconcilePage    = lazy(() => import('./pages/CareOffReconcilePage'));
 const SupplierInvoicePage     = lazy(() => import('./pages/SupplierInvoicePage'));
 const DataSecurityPage        = lazy(() => import('./pages/DataSecurityPage'));
+const SalesTargetsPage        = lazy(() => import('./pages/SalesTargetsPage'));
+const TeamPerformancePage     = lazy(() => import('./pages/TeamPerformancePage'));
+const ExpensePage             = lazy(() => import('./pages/ExpensePage'));
 const NotFoundPage            = lazy(() => import('./pages/NotFoundPage'));
 
 // Full-page spinner shown while a lazy chunk is loading
@@ -101,7 +105,7 @@ function PageLoader() {
 import ProtectedRoute from './components/ProtectedRoute';
 import HorizontalNavbar from './components/HorizontalNavbar';
 
-function Layout({ children }: { children: React.ReactNode, currentTheme: 'light' | 'dark', toggleTheme: () => void }) {
+function Layout({ children, currentTheme, toggleTheme }: { children: React.ReactNode; currentTheme: 'light' | 'dark'; toggleTheme: () => void }) {
   const location = useLocation();
   const navigate = useNavigate();
   const { t } = useTranslation();
@@ -147,7 +151,7 @@ function Layout({ children }: { children: React.ReactNode, currentTheme: 'light'
   const isSalesUser = userRole === 'sales';
 
   // Paths sales role is allowed to see in the sidebar nav
-  const SALES_NAV_PATHS = ['/worklist'];
+  const SALES_NAV_PATHS = ['/sales-targets', '/worklist'];
 
   const mainNavItems = [
     { path: '/dashboard', icon: <Home size={19} />, label: 'B2B Dashboard', screenKey: 'dashboard' },
@@ -166,12 +170,14 @@ function Layout({ children }: { children: React.ReactNode, currentTheme: 'light'
     // PurchaseOrderModal-based implementation), which is unaffected.
     // { path: '/purchase-orders', icon: <ShoppingCart size={19} />, label: 'Purchase Orders', screenKey: 'worklist' },
     { path: '/supplier-ledger', icon: <Truck size={19} />, label: 'Supplier Ledger', screenKey: 'worklist' },
+    { path: '/expenses', icon: <Receipt size={19} />, label: 'Expenses', screenKey: 'expenses' },
     { path: '/delivery-challans', icon: <Truck size={19} />, label: 'Delivery Challans', screenKey: 'worklist' },
     { path: '/gst-reports', icon: <FileText size={19} />, label: 'GST Reports', screenKey: 'analytics' },
     { path: '/financial-reports', icon: <BarChart3 size={19} />, label: 'Financial Reports', screenKey: 'analytics' },
     { path: '/warehouses', icon: <Layers size={19} />, label: 'Warehouses / Godowns', screenKey: 'inventory' },
     { path: '/inventory-batches', icon: <Package size={19} />, label: 'Inventory Batches', screenKey: 'inventory' },
     { path: '/barcode', icon: <Activity size={19} />, label: 'Barcode Labels', screenKey: 'inventory' },
+    { path: '/manage-transport', icon: <Truck size={19} />, label: 'Manage Transport', screenKey: 'inventory' },
     { path: '/pricing', icon: <Star size={19} />, label: '⭐ Upgrade Plan', screenKey: 'analytics' },
     { path: '/modules', icon: <Package size={19} />, label: '🧩 Module Marketplace', screenKey: 'analytics' },
     { path: '/payment-links', icon: <Link2 size={19} />, label: '💳 Payment Links', screenKey: 'worklist' },
@@ -198,12 +204,13 @@ function Layout({ children }: { children: React.ReactNode, currentTheme: 'light'
   });
 
   const adminItems = [
-    { path: '/admin/manage-roles', icon: <ShieldAlert size={17} />, label: 'Role Matrix', screenKey: 'admin' },
-    { path: '/admin/data-security', icon: <Lock size={17} />, label: 'Data Security', screenKey: 'admin' },
-    { path: '/admin/manage-retailers', icon: <Users size={17} />, label: t('common.manage_retailers'), screenKey: 'manage_retailers' },
     { path: '/admin', icon: <ShieldAlert size={17} />, label: t('common.manage_users'), screenKey: 'admin' },
-    { path: '/admin/manufacturers', icon: <Factory size={17} />, label: 'Manufacturers', screenKey: 'manufacturers' },
+    { path: '/admin/team-performance', icon: <Target size={17} />, label: 'Team Performance', screenKey: 'admin' },
+    { path: '/admin/data-security', icon: <Lock size={17} />, label: 'Data Security', screenKey: 'admin' },
+    { path: '/admin/manage-roles', icon: <ShieldAlert size={17} />, label: 'Role Matrix', screenKey: 'admin' },
+    { path: '/admin/manage-retailers', icon: <Users size={17} />, label: t('common.manage_retailers'), screenKey: 'manage_retailers' },
     { path: '/admin/manage-store', icon: <Store size={17} />, label: 'Manage Store', screenKey: 'manage_store' },
+    { path: '/admin/manufacturers', icon: <Factory size={17} />, label: 'Manufacturers', screenKey: 'manufacturers' },
     { path: '/admin/invoice-templates', icon: <Layers size={17} />, label: 'Invoice Templates', screenKey: 'invoice_templates' },
     { path: '/admin/invoice-settings', icon: <Palette size={17} />, label: 'Invoice Branding', screenKey: 'invoice_settings' },
     { path: '/admin/schema-builder', icon: <Database size={17} />, label: 'UI Layout Builder', screenKey: 'schema_builder' },
@@ -251,6 +258,14 @@ function Layout({ children }: { children: React.ReactNode, currentTheme: 'light'
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: '1.5rem' }}>
           <LanguageSwitcher />
+          {/* Light/Dark toggle */}
+          <button
+            onClick={toggleTheme}
+            title={currentTheme === 'dark' ? 'Switch to Light mode' : 'Switch to Dark mode'}
+            style={{ background: 'hsla(220,20%,50%,0.1)', border: '1px solid var(--surface-border)', padding: '0.4rem', borderRadius: '8px', cursor: 'pointer', color: 'var(--text-secondary)', display: 'flex', alignItems: 'center', transition: 'all 0.2s' }}
+          >
+            {currentTheme === 'dark' ? <Sun size={18} /> : <Moon size={18} />}
+          </button>
           {/* Hamburger Menu Toggle */}
           <button onClick={() => setDrawerOpen(true)} style={{ background: 'hsla(152, 60%, 40%, 0.1)', border: '1px solid hsla(152, 60%, 40%, 0.2)', padding: '0.4rem', borderRadius: '8px', cursor: 'pointer', color: 'var(--primary-light)', display: 'flex', alignItems: 'center' }}>
             <Menu size={24} />
@@ -294,8 +309,8 @@ function Layout({ children }: { children: React.ReactNode, currentTheme: 'light'
           </button>
         </div>
 
-        {/* Main Nav (owner + sales) */}
-        {(isOwner || isSalesUser) && (
+        {/* Main Nav (owner only — sales users get their own nav below) */}
+        {isOwner && (
           <div style={{ display: 'flex', flexDirection: 'column', gap: '0.2rem', marginBottom: '0.5rem' }}>
             <div style={{ fontSize: '0.68rem', fontWeight: 700, color: 'var(--text-tertiary)', textTransform: 'uppercase', letterSpacing: '0.08em', padding: '0.25rem 1rem', marginBottom: '0.2rem' }}>Main</div>
             {navItems.map(item => (
@@ -332,11 +347,21 @@ function Layout({ children }: { children: React.ReactNode, currentTheme: 'light'
           </div>
         )}
 
+        {/* Sales quick nav */}
+        {userRole === 'sales' && (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.2rem' }}>
+            <div style={{ fontSize: '0.68rem', fontWeight: 700, color: 'var(--text-tertiary)', textTransform: 'uppercase', letterSpacing: '0.08em', padding: '0.25rem 1rem', marginBottom: '0.2rem' }}>My Workspace</div>
+            <Link to="/sales-targets" style={navLinkStyle('/sales-targets')} onClick={() => setDrawerOpen(false)}><Target size={19} /> Sales Targets</Link>
+            <Link to="/worklist" style={navLinkStyle('/worklist')} onClick={() => setDrawerOpen(false)}><ReceiptText size={19} /> Worklist</Link>
+          </div>
+        )}
+
         {/* Retailer quick nav */}
         {userRole === 'retailer' && (
           <div style={{ display: 'flex', flexDirection: 'column', gap: '0.2rem' }}>
             <div style={{ fontSize: '0.68rem', fontWeight: 700, color: 'var(--text-tertiary)', textTransform: 'uppercase', letterSpacing: '0.08em', padding: '0.25rem 1rem', marginBottom: '0.2rem' }}>My Portal</div>
-            <Link to="/retailer-portal" style={navLinkStyle('/retailer-portal')} onClick={() => setDrawerOpen(false)}><Store size={19} /> My Account</Link>
+            <Link to="/worklist" style={navLinkStyle('/worklist')} onClick={() => setDrawerOpen(false)}><ReceiptText size={19} /> My Orders</Link>
+            <Link to="/settings" style={navLinkStyle('/settings')} onClick={() => setDrawerOpen(false)}><Settings size={19} /> Settings</Link>
           </div>
         )}
 
@@ -409,9 +434,10 @@ function AppRoutes() {
   }
 
   // Role-based auto-redirect after login
+  const RETAILER_ALLOWED_PATHS = ['/worklist', '/settings'];
   if (currentUser && tenantId) {
-    if (userRole === 'retailer' && !locationHook.pathname.startsWith('/retailer-portal')) {
-      return <Navigate to="/retailer-portal" replace />;
+    if (userRole === 'retailer' && !RETAILER_ALLOWED_PATHS.some(p => locationHook.pathname.startsWith(p))) {
+      return <Navigate to="/worklist" replace />;
     }
     if (userRole === 'manufacturer' && !locationHook.pathname.startsWith('/manufacturer-portal')) {
       return <Navigate to="/manufacturer-portal" replace />;
@@ -420,9 +446,9 @@ function AppRoutes() {
     if ((userRole === 'admin' || userRole === 'analyst') && (locationHook.pathname === '/' || locationHook.pathname === '/login')) {
       return <Navigate to="/dashboard" replace />;
     }
-    // Sales users are confined to /worklist — redirect from any other path
-    if (userRole === 'sales' && !locationHook.pathname.startsWith('/worklist')) {
-      return <Navigate to="/worklist" replace />;
+    // Sales users are confined to /sales-targets and /worklist
+    if (userRole === 'sales' && !locationHook.pathname.startsWith('/sales-targets') && !locationHook.pathname.startsWith('/worklist')) {
+      return <Navigate to="/sales-targets" replace />;
     }
   }
 
@@ -464,11 +490,12 @@ function AppRoutes() {
       <Route path="/analytics" element={<ProtectedRoute requireRole={['admin', 'analyst']} appScreen="analytics"><AnalyticsPage /></ProtectedRoute>} />
       <Route path="/admin/manage-store" element={<ProtectedRoute requireRole={['admin', 'analyst']} appScreen="manage_store"><AdminStoreProductsPage /></ProtectedRoute>} />
       <Route path="/onboarding" element={<ProtectedRoute requireRole={['admin', 'analyst']} appScreen="retailers"><OnboardingPage /></ProtectedRoute>} />
-      <Route path="/worklist" element={<ProtectedRoute requireRole={['admin', 'analyst', 'sales']} appScreen="worklist"><WorklistPage /></ProtectedRoute>} />
-      <Route path="/worklist/:id" element={<ProtectedRoute requireRole={['admin', 'analyst', 'sales']} appScreen="worklist"><WorklistDetailsPage /></ProtectedRoute>} />
+      <Route path="/sales-targets" element={<ProtectedRoute requireRole={['admin', 'sales']} appScreen="worklist"><SalesTargetsPage /></ProtectedRoute>} />
+      <Route path="/worklist" element={<ProtectedRoute requireRole={['admin', 'analyst', 'sales', 'retailer']} appScreen="worklist"><WorklistPage /></ProtectedRoute>} />
+      <Route path="/worklist/:id" element={<ProtectedRoute requireRole={['admin', 'analyst', 'sales', 'retailer']} appScreen="worklist"><WorklistDetailsPage /></ProtectedRoute>} />
       <Route path="/inventory" element={<ProtectedRoute requireRole={['admin', 'analyst']} appScreen="inventory"><InventoryPage /></ProtectedRoute>} />
       <Route path="/administration" element={<ProtectedRoute requireRole={['admin']} appScreen="admin"><AdministrationPage /></ProtectedRoute>} />
-      <Route path="/digital-khata" element={<ProtectedRoute requireRole={['admin', 'analyst']} appScreen="worklist"><DigitalKhataPage /></ProtectedRoute>} />
+      <Route path="/digital-khata" element={<ProtectedRoute requireRole={['admin', 'analyst']} appScreen="khata"><DigitalKhataPage /></ProtectedRoute>} />
       <Route path="/sales-order/new" element={<ProtectedRoute requireRole={['admin', 'analyst']} appScreen="worklist"><SalesOrderPage /></ProtectedRoute>} />
       <Route path="/sales-order/:id" element={<ProtectedRoute requireRole={['admin', 'analyst']} appScreen="worklist"><SalesOrderPage /></ProtectedRoute>} />
       <Route path="/dispatch" element={<ProtectedRoute requireRole={['admin', 'analyst']} appScreen="dispatch"><DispatchBoardPage /></ProtectedRoute>} />
@@ -482,6 +509,7 @@ function AppRoutes() {
       {/* <Route path="/purchase-orders" element={<ProtectedRoute requireRole={['admin', 'analyst']} appScreen="worklist"><PurchaseOrdersPage /></ProtectedRoute>} /> */}
       <Route path="/supplier-ledger" element={<ProtectedRoute requireRole={['admin', 'analyst']} appScreen="worklist"><SupplierLedgerPage /></ProtectedRoute>} />
       <Route path="/supplier-ledger/:id" element={<ProtectedRoute requireRole={['admin', 'analyst']} appScreen="worklist"><SupplierLedgerDetailPage /></ProtectedRoute>} />
+      <Route path="/expenses" element={<ProtectedRoute requireRole={['admin', 'analyst']} appScreen="expenses"><ExpensePage /></ProtectedRoute>} />
       <Route path="/careoff-sync" element={<ProtectedRoute requireRole={['admin', 'analyst']} appScreen="accounts"><CareOffReconcilePage /></ProtectedRoute>} />
       <Route path="/supplier-invoice" element={<ProtectedRoute requireRole={['admin', 'analyst']} appScreen="worklist"><SupplierInvoicePage /></ProtectedRoute>} />
       <Route path="/delivery-challans" element={<ProtectedRoute requireRole={['admin', 'analyst']} appScreen="worklist"><DeliveryChallansPage /></ProtectedRoute>} />
@@ -490,6 +518,7 @@ function AppRoutes() {
       <Route path="/warehouses" element={<ProtectedRoute requireRole={['admin', 'analyst']} appScreen="inventory"><WarehousePage /></ProtectedRoute>} />
       <Route path="/inventory-batches" element={<ProtectedRoute requireRole={['admin', 'analyst']} appScreen="inventory"><InventoryBatchPage /></ProtectedRoute>} />
       <Route path="/barcode" element={<ProtectedRoute requireRole={['admin', 'analyst']} appScreen="inventory"><BarcodePage /></ProtectedRoute>} />
+      <Route path="/manage-transport" element={<ProtectedRoute requireRole={['admin', 'analyst']} appScreen="inventory"><ManageTransportPage /></ProtectedRoute>} />
       <Route path="/pricing" element={<ProtectedRoute requireRole={['admin', 'analyst']} appScreen="analytics"><PricingPage /></ProtectedRoute>} />
       <Route path="/payment-links" element={<ProtectedRoute requireRole={['admin', 'analyst']} appScreen="worklist"><PaymentLinkPage /></ProtectedRoute>} />
       <Route path="/ai-advisor" element={<ProtectedRoute requireRole={['admin', 'analyst']} appScreen="analytics"><AIAdvisorPage /></ProtectedRoute>} />
@@ -530,6 +559,7 @@ function AppRoutes() {
       <Route path="/admin/invoice-settings" element={<ProtectedRoute requireRole={['admin', 'analyst']} appScreen="invoice_settings"><InvoiceSettingsPage /></ProtectedRoute>} />
       <Route path="/admin/schema-builder" element={<ProtectedRoute requireRole={['admin', 'analyst']} appScreen="schema_builder"><SchemaBuilderPage /></ProtectedRoute>} />
       <Route path="/admin/invoice-templates" element={<ProtectedRoute requireRole={['admin', 'analyst']} appScreen="invoice_templates"><InvoiceTemplateBuilderPage /></ProtectedRoute>} />
+      <Route path="/admin/team-performance" element={<ProtectedRoute requireRole={['admin']} appScreen="admin"><TeamPerformancePage /></ProtectedRoute>} />
 
       {/* Catch-all: 404 for logged-in users, /login redirect for guests */}
       <Route path="*" element={<NotFoundPage />} />

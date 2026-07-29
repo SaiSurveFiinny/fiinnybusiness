@@ -31,8 +31,13 @@ export interface SeoReel {
   shopOwnerId: string;
   viewsCount: number;
   likesCount: number;
+  /** Same doc as everything else here, so exposing it costs nothing extra. */
   commentsCount: number;
   createdAtMs: number;
+  /** Empty until reels carry crop tags — see reel_ranker.dart's SeasonSignal. */
+  cropTags?: string[];
+  /** 'approved' | 'flagged'. See mobile/lib/core/models/reel_model.dart for the full contract. */
+  moderationStatus: string;
   linkedProductId?: string;
   linkedProductName?: string;
   linkedProductImageUrl?: string;
@@ -72,6 +77,10 @@ function mapReel(id: string, data: Record<string, unknown>): SeoReel {
     commentsCount: Number(data.commentsCount) || 0,
     createdAtMs:
       (data.createdAt as { toMillis?: () => number })?.toMillis?.() ?? 0,
+    cropTags: Array.isArray(data.cropTags)
+      ? (data.cropTags as unknown[]).map(String)
+      : undefined,
+    moderationStatus: str(data.moderationStatus, "approved"),
     linkedProductId: data.linkedProductId ? str(data.linkedProductId) : undefined,
     linkedProductName: data.linkedProductName
       ? str(data.linkedProductName)
@@ -85,12 +94,18 @@ function mapReel(id: string, data: Record<string, unknown>): SeoReel {
   };
 }
 
-/** A reel must have a playable video to be listable/indexable. */
+/**
+ * A reel must have a playable video and not be flagged to be
+ * listable/indexable. Gates both getAllReels (the /reels feed + sitemap)
+ * and getReelById (the /reels/[slug] detail page and share-link target) —
+ * a flagged reel must disappear from every public surface, not just the
+ * feed, or a direct link keeps it fully visible.
+ */
 function isListable(r: SeoReel): boolean {
-  return r.videoUrl.length > 0;
+  return r.videoUrl.length > 0 && r.moderationStatus !== "flagged";
 }
 
-// ─── Slug helpers (same convention as product slugs: {kebab-title}-{docId}) ──
+// ─── Slug helpers (same convention as product slugs: {kebab-title}--{docId}) ─
 
 export function buildReelSlug(title: string, id: string): string {
   const base = title
@@ -101,11 +116,13 @@ export function buildReelSlug(title: string, id: string): string {
     .replace(/-+/g, "-")
     .replace(/^-+|-+$/g, "")
     .slice(0, 70);
-  return base ? `${base}-${id}` : id;
+  return base ? `${base}--${id}` : id;
 }
 
 export function extractReelIdFromSlug(slug: string): string {
   const decoded = decodeURIComponent(slug).trim();
+  const sep = decoded.indexOf("--");
+  if (sep !== -1) return decoded.slice(sep + 2);
   const idx = decoded.lastIndexOf("-");
   return idx === -1 ? decoded : decoded.slice(idx + 1);
 }

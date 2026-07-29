@@ -6,7 +6,9 @@ import {
   linkedProductStorePath,
   reelCssFilter,
 } from "../lib/seo/reels-server";
-import ReelsFeedClient, { type FeedReel } from "./ReelsFeedClient";
+import ReelsFeedClient from "./ReelsFeedClient";
+import { rankReels } from "./lib/ranking/rank";
+import type { FeedReel } from "./lib/types";
 
 const SITE_URL =
   process.env.NEXT_PUBLIC_SITE_URL?.replace(/\/$/, "") || "https://krishidukan.com";
@@ -29,7 +31,10 @@ export const metadata: Metadata = {
 };
 
 export default async function ReelsPage() {
-  const reels = await getAllReels(60);
+  // Ranked, not raw newest-first — see lib/ranking/rank.ts. Diversifies
+  // across sellers and gives fresh, low-view reels a shot instead of
+  // burying them under whoever posted most recently.
+  const reels = rankReels(await getAllReels(60));
 
   const feedReels: FeedReel[] = reels.map((r) => ({
     id: r.id,

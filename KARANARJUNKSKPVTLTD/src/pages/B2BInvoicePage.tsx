@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { Save, Loader2, Printer, Plus, Trash2, UserPlus, ArrowLeft } from 'lucide-react';
+import { Save, Loader2, Printer, Plus, Trash2, UserPlus, ArrowLeft, Truck } from 'lucide-react';
 import { Link, useSearchParams, useNavigate } from 'react-router-dom';
 import UpiQrCode from '../components/UpiQrCode';
 import {
@@ -41,6 +41,10 @@ interface B2BRow {
 }
 
 const PAYMENT_MODES = ['Cash', '15 Days', '30 Days', '45 Days', 'Credit'];
+
+// Digits-only phone comparison — partner numbers are stored in inconsistent
+// shapes across imports and manual entry.
+const phoneKey = (v: unknown): string => String(v ?? '').replace(/\D/g, '');
 
 const DEFAULT_BANK_DETAILS = '';
 const EMPTY_ROW = (): B2BRow => ({
@@ -102,6 +106,8 @@ export default function B2BInvoicePage() {
 
     const today = new Date().toISOString().split('T')[0];
 
+    const [transporters, setTransporters] = useState<{ id: string; name: string; mobile?: string; contactPerson?: string }[]>([]);
+
     const [header, setHeader] = useState({
         invoiceNo: '',
         invoiceDate: today,
@@ -114,6 +120,9 @@ export default function B2BInvoicePage() {
         buyerContact: '',
         buyerState: 'Maharashtra',
         retailerId: '',
+        transporterId: '',
+        transporterName: '',
+        transporterContact: '',
     });
 
     const [rows, setRows] = useState<B2BRow[]>(
@@ -137,6 +146,11 @@ export default function B2BInvoicePage() {
             setRetailers(snap.docs.map(d => ({ id: d.id, ...d.data() })));
         });
 
+        const qTransporters = query(getTenantCollection(db, tenantId, 'transporters'));
+        const unsubTransporters = onSnapshot(qTransporters, snap => {
+            setTransporters(snap.docs.map(d => ({ id: d.id, ...d.data() } as { id: string; name: string; mobile?: string; contactPerson?: string })));
+        });
+
         const init = async () => {
             try {
                 const [brd] = await Promise.all([fetchInvoiceBranding(tenantId)]);
@@ -156,6 +170,7 @@ export default function B2BInvoicePage() {
         return () => {
             unsubProducts();
             unsubRetailers();
+            unsubTransporters();
         };
     }, [tenantId]);
 
@@ -173,6 +188,8 @@ export default function B2BInvoicePage() {
             buyerGstin: r.gstin || prev.buyerGstin,
             buyerState: r.state || prev.buyerState,
         }));
+        if (!searchParams.get('orderId')) setPreviousBalance(String(Number(r.outstandingAmount) || 0));
+        // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [prefilledRetailerId, retailers]);
 
     // ─── Load existing order by orderId query param ───
@@ -198,6 +215,9 @@ export default function B2BInvoicePage() {
                 buyerContact: d.buyerContact || prev.buyerContact,
                 buyerState: d.buyerState || prev.buyerState,
                 retailerId: d.retailerId || prev.retailerId,
+                transporterId: d.transporterId || prev.transporterId,
+                transporterName: d.transporterName || prev.transporterName,
+                transporterContact: d.transporterContact || prev.transporterContact,
             }));
             // Restore discount / previous balance
             if (d.discountAmount !== undefined) setDiscount(String(d.discountAmount));
@@ -225,23 +245,35 @@ export default function B2BInvoicePage() {
         }).catch(e => console.error('Failed to load existing order:', e));
     }, [prefilledOrderId, tenantId]);
 
+    // Pull the partner's running dues (the same outstandingAmount the Worklist
+    // shows) into Previous Balance. Skipped while editing a saved invoice, whose
+    // own previousBalance is restored from the order and must not be overwritten.
+    const applyRetailerBalance = (r: any) => {
+        if (prefilledOrderId) return;
+        setPreviousBalance(String(Number(r?.outstandingAmount) || 0));
+    };
+
     // ─── Auto-fill buyer by phone ───
+    // Matches on digits only: numbers are stored inconsistently (numeric type,
+    // +91 prefix, spaces, dashes), so an exact string match missed most partners.
     const handleBuyerPhoneBlur = async () => {
-        if (!tenantId || !header.buyerContact || header.buyerContact.length < 5) return;
-        try {
-            const q = query(getTenantCollection(db, tenantId, 'retailers'), where('number', '==', header.buyerContact), limit(1));
-            const snaps = await getDocs(q);
-            if (!snaps.empty) {
-                const d = snaps.docs[0].data();
-                setHeader(prev => ({
-                    ...prev,
-                    retailerId: snaps.docs[0].id,
-                    buyerName: d.name || prev.buyerName,
-                    buyerAddress: `${d.atPost || ''}, Tal. ${d.taluka || ''}, Dist. ${d.district || ''}`.trim(),
-                    buyerGstin: d.gstin || prev.buyerGstin,
-                }));
-            }
-        } catch (e) { console.error(e); }
+        if (!tenantId) return;
+        const key = phoneKey(header.buyerContact);
+        if (key.length < 6) return;
+        const match = retailers.find((r: any) => {
+            const stored = phoneKey(r.number ?? r.phone);
+            if (!stored) return false;
+            return stored === key || stored.slice(-10) === key.slice(-10);
+        });
+        if (!match) return;
+        setHeader(prev => ({
+            ...prev,
+            retailerId: match.id,
+            buyerName: match.name || prev.buyerName,
+            buyerAddress: `${match.atPost || ''}, Tal. ${match.taluka || ''}, Dist. ${match.district || ''}`.trim(),
+            buyerGstin: match.gstin || prev.buyerGstin,
+        }));
+        applyRetailerBalance(match);
     };
 
     // ─── Row calculations ───
@@ -400,6 +432,9 @@ ${styles}
                 modeOfPayment: header.modeOfPayment,
                 salesmanName: header.salesmanName,
                 termsOfDelivery: header.termsOfDelivery,
+                transporterId: header.transporterId || null,
+                transporterName: header.transporterName || null,
+                transporterContact: header.transporterContact || null,
                 lineItems,
                 taxableValue: computedTaxable,
                 cgst: totalCgst,
@@ -412,7 +447,17 @@ ${styles}
                 previousBalance: prevBal,
                 netBalance,
                 invoiceDate: header.invoiceDate,
-                status: header.modeOfPayment === 'Cash' ? 'paid' : 'pending',
+                // 'confirmed' enters the tracking pipeline (Order Placed → Dispatched → Delivered).
+                // Cash invoices are immediately settled so 'paid' is correct there.
+                // On edit we preserve the existing tracking status if it's already in the pipeline.
+                status: (() => {
+                    if (header.modeOfPayment === 'Cash') return 'paid';
+                    if (isEditing) {
+                        const cur = existingOrder?.status || '';
+                        if (['confirmed', 'dispatched', 'delivered', 'cancelled'].includes(cur)) return cur;
+                    }
+                    return 'confirmed';
+                })(),
                 paymentStatus: header.modeOfPayment === 'Cash' ? 'Paid' : 'Pending',
             };
 
@@ -510,7 +555,7 @@ ${styles}
     };
 
     const resetForm = () => {
-        setHeader({ invoiceNo: '', invoiceDate: today, termsOfDelivery: '', modeOfPayment: '15 Days', salesmanName: '', buyerName: '', buyerAddress: '', buyerGstin: '', buyerContact: '', buyerState: 'Maharashtra', retailerId: '' });
+        setHeader({ invoiceNo: '', invoiceDate: today, termsOfDelivery: '', modeOfPayment: '15 Days', salesmanName: '', buyerName: '', buyerAddress: '', buyerGstin: '', buyerContact: '', buyerState: 'Maharashtra', retailerId: '', transporterId: '', transporterName: '', transporterContact: '' });
         setRows(Array.from({ length: 10 }, EMPTY_ROW));
         setPreviousBalance('');
         setDiscount('0');
@@ -645,6 +690,7 @@ ${styles}
                                                         buyerAddress: `${r.atPost || ''}, Tal. ${r.taluka || ''}, Dist. ${r.district || ''}`.trim(),
                                                         buyerGstin: r.gstin || prev.buyerGstin,
                                                     }));
+                                                    applyRetailerBalance(r);
                                                     setShowRetailerDropdown(false);
                                                 }}
                                             >
@@ -710,6 +756,33 @@ ${styles}
                             <span className="print-val"></span>
                             <span className="print-val">{header.termsOfDelivery}</span>
                         </div>
+                        <div style={{ display: 'grid', gridTemplateColumns: '130px 1fr', gap: '4px', alignItems: 'center' }}>
+                            <span className="b2b-label" style={{ display: 'flex', alignItems: 'center', gap: '3px' }}><Truck size={11} /> Transporter :</span>
+                            <select className="b2b-input" value={header.transporterId}
+                                onChange={e => {
+                                    const t = transporters.find(x => x.id === e.target.value);
+                                    setHeader(h => ({
+                                        ...h,
+                                        transporterId: e.target.value,
+                                        transporterName: t?.name || '',
+                                        transporterContact: t?.mobile || '',
+                                    }));
+                                }}>
+                                <option value="">— Select Transporter —</option>
+                                {transporters.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
+                            </select>
+                            <span className="print-val"></span>
+                            <span className="print-val">{header.transporterName}</span>
+                        </div>
+                        {header.transporterId && (
+                            <div style={{ display: 'grid', gridTemplateColumns: '130px 1fr', gap: '4px', alignItems: 'center' }}>
+                                <span className="b2b-label">Contact No. :</span>
+                                <input className="b2b-input" placeholder="Transporter mobile" value={header.transporterContact}
+                                    onChange={e => setHeader(h => ({ ...h, transporterContact: e.target.value }))} />
+                                <span className="print-val"></span>
+                                <span className="print-val">{header.transporterContact}</span>
+                            </div>
+                        )}
                         <div style={{ display: 'grid', gridTemplateColumns: '130px 1fr', gap: '4px', alignItems: 'center' }}>
                             <span className="b2b-label">Mode of Payment :</span>
                             <select className="b2b-input" value={header.modeOfPayment} onChange={e => setHeader(h => ({ ...h, modeOfPayment: e.target.value }))}>
@@ -893,7 +966,7 @@ ${styles}
                     <div style={{ borderRight: '1px solid #222', padding: '8px', fontSize: '0.82rem' }}>
                         <div className="b2b-label" style={{ marginBottom: '6px' }}>Account Statement</div>
                         <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '3px' }}>
-                            <span>Previous Balance</span>
+                            <span title="Pulled from the partner's outstanding dues; edit if needed">Previous Balance</span>
                             <span style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
                                 <input
                                     type="number"
@@ -958,7 +1031,10 @@ ${styles}
                     {/* Signature */}
                     <div style={{ padding: '8px', display: 'flex', flexDirection: 'column', alignItems: 'flex-end', justifyContent: 'space-between', fontSize: '0.8rem' }}>
                         <div style={{ fontWeight: 700 }}>For {sellerName}</div>
-                        <div style={{ borderTop: '1px solid #555', paddingTop: '4px', minWidth: '140px', textAlign: 'center', marginTop: '28px' }}>
+                        {branding?.signatureUrl && (
+                            <img src={branding.signatureUrl} alt="" style={{ height: '46px', maxWidth: '160px', objectFit: 'contain', marginTop: '4px' }} />
+                        )}
+                        <div style={{ borderTop: '1px solid #555', paddingTop: '4px', minWidth: '140px', textAlign: 'center', marginTop: branding?.signatureUrl ? '4px' : '28px' }}>
                             {branding?.signatureName || 'Authorised Signatory'}
                         </div>
                     </div>
