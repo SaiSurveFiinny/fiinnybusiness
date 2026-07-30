@@ -14,9 +14,9 @@ module.exports = {
       },
       colors: {
         primary: {
-          DEFAULT: "#154212",
-          container: "#2d5a27",
-          "on-container": "#9dd090",
+          DEFAULT: "#0f391b",
+          container: "#184b25",
+          "on-container": "#bce6c1",
         },
         secondary: {
           DEFAULT: "#705a4c",

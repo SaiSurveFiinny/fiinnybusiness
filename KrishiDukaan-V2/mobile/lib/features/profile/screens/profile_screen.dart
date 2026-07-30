@@ -103,7 +103,11 @@ class _ProfileBody extends ConsumerWidget {
                 ),
               ),
               const SizedBox(height: 12),
-              Text(user.name, style: AppTextStyles.heading2),
+              Text(
+                user.name,
+                style: AppTextStyles.heading2,
+                textAlign: TextAlign.center,
+              ),
               const SizedBox(height: 4),
               // Username — tap to set/edit (sellers only)
               if (user.isSeller)

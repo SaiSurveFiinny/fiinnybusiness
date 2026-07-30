@@ -1391,6 +1391,27 @@ class _SingleReelViewState extends ConsumerState<_SingleReelView>
     }
   }
 
+  Widget _buildPosterOrLoader() {
+    final thumb = widget.reel.thumbnailUrl ?? widget.reel.linkedProductImageUrl;
+    return Stack(
+      fit: StackFit.expand,
+      children: [
+        if (thumb != null && thumb.isNotEmpty)
+          Image.network(
+            thumb,
+            fit: BoxFit.cover,
+            errorBuilder: (context, error, stackTrace) => const SizedBox.shrink(),
+          ),
+        const Center(
+          child: CircularProgressIndicator(
+            color: Colors.white38,
+            strokeWidth: 2,
+          ),
+        ),
+      ],
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final ctrl = widget.controller;
@@ -1407,12 +1428,7 @@ class _SingleReelViewState extends ConsumerState<_SingleReelView>
                     valueListenable: ctrl,
                     builder: (_, value, _) {
                       if (!value.isInitialized) {
-                        return const Center(
-                          child: CircularProgressIndicator(
-                            color: Colors.white38,
-                            strokeWidth: 2,
-                          ),
-                        );
+                        return _buildPosterOrLoader();
                       }
                       return applyReelFilter(
                         widget.reel.filterId,
@@ -1429,12 +1445,7 @@ class _SingleReelViewState extends ConsumerState<_SingleReelView>
                       );
                     },
                   )
-                : const Center(
-                    child: CircularProgressIndicator(
-                      color: Colors.white38,
-                      strokeWidth: 2,
-                    ),
-                  ),
+                : _buildPosterOrLoader(),
           ),
         ),
         if (widget.reel.overlayText != null)

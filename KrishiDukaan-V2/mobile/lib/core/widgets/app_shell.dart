@@ -98,23 +98,7 @@ class AppShell extends ConsumerWidget {
     final commentSheetOpen = ref.watch(reelCommentSheetOpenProvider);
 
     Widget? fab;
-    if (isReelsTab && userModel != null && !commentSheetOpen) {
-      // Any logged-in user (farmer or seller) can upload a reel. The
-      // subscription paywall only applies to sellers — consumers have no
-      // subscription concept, so they go straight to the upload screen.
-      fab = FloatingActionButton(
-        backgroundColor: AppColors.secondary,
-        foregroundColor: Colors.white,
-        onPressed: () {
-          if (!isSeller || canAccess) {
-            context.push('/reels/upload');
-          } else {
-            _showSubscriptionDialog(context);
-          }
-        },
-        child: const Icon(Icons.video_call_rounded, size: 26),
-      );
-    } else if (!isReelsTab && cartCount > 0) {
+    if (!isReelsTab && cartCount > 0) {
       fab = Container(
         margin: const EdgeInsets.only(bottom: 12, right: 12),
         child: FloatingActionButton(
@@ -140,7 +124,9 @@ class AppShell extends ConsumerWidget {
         body: navigationShell,
         floatingActionButton: fab,
         floatingActionButtonLocation: FloatingActionButtonLocation.endFloat,
-        bottomNavigationBar: SafeArea(
+        bottomNavigationBar: isReelsTab
+            ? null
+            : SafeArea(
           minimum: const EdgeInsets.fromLTRB(12, 0, 12, 12),
           child: DecoratedBox(
             decoration: BoxDecoration(

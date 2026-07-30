@@ -183,6 +183,15 @@ class _ReelsFeedScreenState extends ConsumerState<ReelsFeedScreen>
       }
     });
 
+    final reelsData = feedAsync.value;
+    if (reelsData != null && reelsData.isNotEmpty && !_initialized) {
+      _initialized = true;
+      _ensureController(_currentPage, reelsData);
+      _ensureController(_currentPage + 1, reelsData);
+      if (_currentPage > 0) _ensureController(_currentPage - 1, reelsData);
+      _markReelAsSeen(reelsData[_currentPage].id);
+    }
+
     ref.listen<AsyncValue<List<ReelModel>>>(reelsFeedProvider, (prev, next) {
       if (!_initialized && next.value != null && next.value!.isNotEmpty) {
         _initialized = true;
@@ -329,15 +338,46 @@ class _ReelsFeedScreenState extends ConsumerState<ReelsFeedScreen>
                           const Spacer(),
                           IconButton(
                             icon: const Icon(
+                              Icons.video_call_rounded,
+                              color: Colors.white,
+                              size: 26,
+                            ),
+                            tooltip: 'Upload Reel',
+                            onPressed: () {
+                              if (currentUser == null) {
+                                ScaffoldMessenger.of(context).showSnackBar(
+                                  SnackBar(
+                                    content: const Text('Login to upload reels'),
+                                    action: SnackBarAction(
+                                      label: 'Login',
+                                      onPressed: () => context.push('/login'),
+                                    ),
+                                  ),
+                                );
+                              } else {
+                                context.push('/reels/upload');
+                              }
+                            },
+                          ),
+                          IconButton(
+                            icon: const Icon(
                               Icons.search_rounded,
                               color: Colors.white,
                             ),
                             onPressed: () {
+                              final reels = feedAsync.value ?? [];
                               showModalBottomSheet(
                                 context: context,
                                 isScrollControlled: true,
                                 backgroundColor: Colors.transparent,
-                                builder: (_) => const _ShopSearchSheet(),
+                                builder: (_) => _ShopSearchSheet(
+                                  onSelectReel: (selectedReel) {
+                                    final index = reels.indexWhere((r) => r.id == selectedReel.id);
+                                    if (index != -1) {
+                                      _pageController.jumpToPage(index);
+                                    }
+                                  },
+                                ),
                               );
                             },
                           ),
@@ -816,6 +856,27 @@ class _ReelPageState extends ConsumerState<_ReelPage>
     }
   }
 
+  Widget _buildPosterOrLoader() {
+    final thumb = widget.reel.thumbnailUrl ?? widget.reel.linkedProductImageUrl;
+    return Stack(
+      fit: StackFit.expand,
+      children: [
+        if (thumb != null && thumb.isNotEmpty)
+          Image.network(
+            thumb,
+            fit: BoxFit.cover,
+            errorBuilder: (context, error, stackTrace) => const SizedBox.shrink(),
+          ),
+        const Center(
+          child: CircularProgressIndicator(
+            color: Colors.white38,
+            strokeWidth: 2,
+          ),
+        ),
+      ],
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final controller = widget.controller;
@@ -833,12 +894,7 @@ class _ReelPageState extends ConsumerState<_ReelPage>
                     valueListenable: controller,
                     builder: (_, value, _) {
                       if (!value.isInitialized) {
-                        return const Center(
-                          child: CircularProgressIndicator(
-                            color: Colors.white38,
-                            strokeWidth: 2,
-                          ),
-                        );
+                        return _buildPosterOrLoader();
                       }
                       return applyReelFilter(
                         widget.reel.filterId,
@@ -855,12 +911,7 @@ class _ReelPageState extends ConsumerState<_ReelPage>
                       );
                     },
                   )
-                : const Center(
-                    child: CircularProgressIndicator(
-                      color: Colors.white38,
-                      strokeWidth: 2,
-                    ),
-                  ),
+                : _buildPosterOrLoader(),
           ),
         ),
         if (widget.reel.overlayText != null)
@@ -1670,8 +1721,11 @@ class _CommentsSheetState extends ConsumerState<_CommentsSheet> {
 
 // ── Shop Search Sheet ────────────────────────────────────────────────────────
 
+// ── Shop & Reels Search Sheet (Explore Grid) ──────────────────────────────────
+
 class _ShopSearchSheet extends ConsumerStatefulWidget {
-  const _ShopSearchSheet();
+  final Function(ReelModel reel)? onSelectReel;
+  const _ShopSearchSheet({this.onSelectReel});
 
   @override
   ConsumerState<_ShopSearchSheet> createState() => _ShopSearchSheetState();
@@ -1680,20 +1734,22 @@ class _ShopSearchSheet extends ConsumerStatefulWidget {
 class _ShopSearchSheetState extends ConsumerState<_ShopSearchSheet> {
   final _searchController = TextEditingController();
   bool _isLoading = false;
-  List<Map<String, dynamic>> _results = [];
+  List<Map<String, dynamic>> _shopResults = [];
 
   Future<void> _search(String query) async {
-    if (query.trim().isEmpty) {
+    final trimmed = query.trim();
+    if (trimmed.isEmpty) {
       setState(() {
-        _results = [];
+        _shopResults = [];
+        _isLoading = false;
       });
       return;
     }
     setState(() => _isLoading = true);
-    final results = await ref.read(reelsRepoProvider).searchShops(query);
+    final results = await ref.read(reelsRepoProvider).searchShops(trimmed);
     if (mounted) {
       setState(() {
-        _results = results;
+        _shopResults = results;
         _isLoading = false;
       });
     }
@@ -1707,87 +1763,349 @@ class _ShopSearchSheetState extends ConsumerState<_ShopSearchSheet> {
 
   @override
   Widget build(BuildContext context) {
+    final allReels = ref.watch(reelsFeedProvider).value ?? [];
+    final query = _searchController.text.trim().toLowerCase();
+
+    final filteredReels = (query.isEmpty
+        ? allReels
+        : allReels.where((r) {
+            final title = r.title.toLowerCase();
+            final caption = r.caption.toLowerCase();
+            final shop = r.shopName.toLowerCase();
+            final prod = (r.linkedProductName ?? '').toLowerCase();
+            return title.contains(query) ||
+                caption.contains(query) ||
+                shop.contains(query) ||
+                prod.contains(query);
+          })).take(48).toList();
+
     return Container(
-      height: MediaQuery.of(context).size.height * 0.7,
+      height: MediaQuery.of(context).size.height * 0.85,
       padding: EdgeInsets.only(
-        top: 20,
-        left: 20,
-        right: 20,
-        bottom: MediaQuery.of(context).viewInsets.bottom + 20,
+        top: 16,
+        left: 16,
+        right: 16,
+        bottom: MediaQuery.of(context).viewInsets.bottom + 16,
       ),
       decoration: const BoxDecoration(
         color: Colors.white,
-        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
       ),
       child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Container(
-            width: 40,
-            height: 4,
-            margin: const EdgeInsets.only(bottom: 20),
-            decoration: BoxDecoration(
-              color: Colors.grey.shade300,
-              borderRadius: BorderRadius.circular(2),
+          Center(
+            child: Container(
+              width: 36,
+              height: 4,
+              margin: const EdgeInsets.only(bottom: 16),
+              decoration: BoxDecoration(
+                color: Colors.grey.shade300,
+                borderRadius: BorderRadius.circular(2),
+              ),
             ),
           ),
           TextField(
             controller: _searchController,
-            autofocus: true,
+            autofocus: false,
             onChanged: _search,
             decoration: InputDecoration(
-              hintText: 'Search username or shop...',
-              prefixIcon: const Icon(Icons.search),
+              hintText: 'Search shops, @username, or reels...',
+              hintStyle: const TextStyle(color: Colors.black38, fontSize: 14),
+              prefixIcon: const Icon(Icons.search_rounded, color: AppColors.primary),
+              suffixIcon: _searchController.text.isNotEmpty
+                  ? IconButton(
+                      icon: const Icon(Icons.clear_rounded, size: 20, color: Colors.grey),
+                      onPressed: () {
+                        _searchController.clear();
+                        _search('');
+                      },
+                    )
+                  : null,
               filled: true,
               fillColor: AppColors.background,
               border: OutlineInputBorder(
                 borderRadius: BorderRadius.circular(16),
                 borderSide: BorderSide.none,
               ),
-              contentPadding: const EdgeInsets.symmetric(horizontal: 16),
+              contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
             ),
           ),
-          const SizedBox(height: 16),
+          const SizedBox(height: 14),
           Expanded(
-            child: _isLoading
-                ? const Center(child: CircularProgressIndicator())
-                : _results.isEmpty && _searchController.text.isNotEmpty
-                ? const Center(child: Text('No shops found'))
-                : ListView.separated(
-                    itemCount: _results.length,
-                    separatorBuilder: (_, __) => const Divider(height: 1),
-                    itemBuilder: (context, index) {
-                      final shop = _results[index];
-                      return ListTile(
-                        leading: CircleAvatar(
-                          radius: 18,
-                          backgroundColor: AppColors.primaryContainer,
-                          child: Text(
-                            (shop['businessName'] as String? ?? '?')
-                                .substring(0, 1)
-                                .toUpperCase(),
-                            style: const TextStyle(
-                              color: AppColors.primary,
-                              fontWeight: FontWeight.bold,
-                            ),
-                          ),
-                        ),
-                        title: Text(shop['businessName'] ?? ''),
-                        subtitle: Text(
-                          '@${shop['username']}',
-                          style: const TextStyle(
-                            color: AppColors.primary,
-                            fontSize: 12,
-                          ),
-                        ),
-                        onTap: () {
-                          Navigator.pop(context);
-                          context.push('/shop/${shop['phone']}');
-                        },
-                      );
-                    },
-                  ),
+            child: query.isEmpty
+                ? _buildExploreGrid(allReels)
+                : _isLoading
+                    ? const Center(child: CircularProgressIndicator())
+                    : _buildSearchResults(_shopResults, filteredReels, query),
           ),
         ],
+      ),
+    );
+  }
+
+  Widget _buildExploreGrid(List<ReelModel> reels) {
+    if (reels.isEmpty) {
+      return const Center(
+        child: Text(
+          'No reels available',
+          style: TextStyle(color: Colors.black45),
+        ),
+      );
+    }
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          children: const [
+            Icon(Icons.grid_view_rounded, size: 16, color: AppColors.primary),
+            SizedBox(width: 6),
+            Text(
+              'Explore Reels',
+              style: TextStyle(
+                fontSize: 14,
+                fontWeight: FontWeight.bold,
+                color: Colors.black87,
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 10),
+        Expanded(
+          child: GridView.builder(
+            gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+              crossAxisCount: 3,
+              childAspectRatio: 0.68,
+              crossAxisSpacing: 6,
+              mainAxisSpacing: 6,
+            ),
+            itemCount: reels.length,
+            itemBuilder: (context, index) {
+              final reel = reels[index];
+              return _ReelGridTile(
+                reel: reel,
+                onTap: () {
+                  Navigator.pop(context);
+                  widget.onSelectReel?.call(reel);
+                },
+              );
+            },
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildSearchResults(
+    List<Map<String, dynamic>> shops,
+    List<ReelModel> reels,
+    String query,
+  ) {
+    if (shops.isEmpty && reels.isEmpty) {
+      return Center(
+        child: Padding(
+          padding: const EdgeInsets.all(24),
+          child: Text(
+            'No accounts or reels matching "$query"',
+            textAlign: TextAlign.center,
+            style: const TextStyle(color: Colors.black45, fontSize: 14),
+          ),
+        ),
+      );
+    }
+
+    return SingleChildScrollView(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          if (shops.isNotEmpty) ...[
+            const Padding(
+              padding: EdgeInsets.symmetric(vertical: 6),
+              child: Text(
+                'Accounts & Shops',
+                style: TextStyle(
+                  fontWeight: FontWeight.bold,
+                  fontSize: 14,
+                  color: Colors.black87,
+                ),
+              ),
+            ),
+            ListView.separated(
+              shrinkWrap: true,
+              physics: const NeverScrollableScrollPhysics(),
+              itemCount: shops.length,
+              separatorBuilder: (context, index) => const Divider(height: 1),
+              itemBuilder: (context, index) {
+                final shop = shops[index];
+                return ListTile(
+                  dense: true,
+                  contentPadding: EdgeInsets.zero,
+                  leading: CircleAvatar(
+                    radius: 18,
+                    backgroundColor: AppColors.primaryContainer,
+                    child: Text(
+                      (shop['businessName'] as String? ?? '?')
+                          .substring(0, 1)
+                          .toUpperCase(),
+                      style: const TextStyle(
+                        color: AppColors.primary,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                  ),
+                  title: Text(
+                    shop['businessName'] ?? '',
+                    style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 14),
+                  ),
+                  subtitle: Text(
+                    '@${shop['username'] ?? ''}',
+                    style: const TextStyle(color: AppColors.primary, fontSize: 12),
+                  ),
+                  onTap: () {
+                    Navigator.pop(context);
+                    context.push('/shop/${shop['phone']}');
+                  },
+                );
+              },
+            ),
+            const SizedBox(height: 16),
+          ],
+          if (reels.isNotEmpty) ...[
+            const Padding(
+              padding: EdgeInsets.symmetric(vertical: 6),
+              child: Text(
+                'Matching Reels',
+                style: TextStyle(
+                  fontWeight: FontWeight.bold,
+                  fontSize: 14,
+                  color: Colors.black87,
+                ),
+              ),
+            ),
+            GridView.builder(
+              shrinkWrap: true,
+              physics: const NeverScrollableScrollPhysics(),
+              gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+                crossAxisCount: 3,
+                childAspectRatio: 0.68,
+                crossAxisSpacing: 6,
+                mainAxisSpacing: 6,
+              ),
+              itemCount: reels.length,
+              itemBuilder: (context, index) {
+                final reel = reels[index];
+                return _ReelGridTile(
+                  reel: reel,
+                  onTap: () {
+                    Navigator.pop(context);
+                    widget.onSelectReel?.call(reel);
+                  },
+                );
+              },
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+}
+
+class _ReelGridTile extends StatelessWidget {
+  final ReelModel reel;
+  final VoidCallback onTap;
+
+  const _ReelGridTile({
+    required this.reel,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final thumb = reel.thumbnailUrl ?? reel.linkedProductImageUrl;
+    return GestureDetector(
+      onTap: onTap,
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(12),
+        child: Container(
+          color: Colors.black87,
+          child: Stack(
+            fit: StackFit.expand,
+            children: [
+              if (thumb != null && thumb.isNotEmpty)
+                Image.network(
+                  thumb,
+                  fit: BoxFit.cover,
+                  errorBuilder: (context, error, stackTrace) => Container(
+                    color: Colors.grey.shade900,
+                    child: const Icon(Icons.play_circle_fill_rounded, color: Colors.white38, size: 28),
+                  ),
+                )
+              else
+                Container(
+                  color: Colors.grey.shade900,
+                  child: const Icon(Icons.play_circle_fill_rounded, color: Colors.white38, size: 28),
+                ),
+              Positioned.fill(
+                child: DecoratedBox(
+                  decoration: BoxDecoration(
+                    gradient: LinearGradient(
+                      colors: [
+                        Colors.transparent,
+                        Colors.black.withValues(alpha: 0.8),
+                      ],
+                      begin: Alignment.topCenter,
+                      end: Alignment.bottomCenter,
+                    ),
+                  ),
+                ),
+              ),
+              const Center(
+                child: Icon(
+                  Icons.play_circle_fill_rounded,
+                  color: Colors.white70,
+                  size: 28,
+                ),
+              ),
+              Positioned(
+                left: 6,
+                right: 6,
+                bottom: 6,
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    if (reel.title.isNotEmpty || reel.caption.isNotEmpty)
+                      Text(
+                        reel.title.isNotEmpty ? reel.title : reel.caption,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 10,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                    const SizedBox(height: 2),
+                    Row(
+                      children: [
+                        const Icon(Icons.remove_red_eye_outlined, color: Colors.white70, size: 10),
+                        const SizedBox(width: 3),
+                        Text(
+                          formatCount(reel.viewsCount),
+                          style: const TextStyle(
+                            color: Colors.white70,
+                            fontSize: 9,
+                            fontWeight: FontWeight.w500,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
       ),
     );
   }
