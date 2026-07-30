@@ -657,7 +657,7 @@
         "net_amount": "निव्वळ रक्कम",
         "amount_in_words": "अक्षरी रक्कम",
         "declaration": "घोषणा",
-        "declaration_text": "आम्ही घोषित करतो की या बिलात वस्तूंची प्रत्यक्ष किंमत दर्शविली आहे आणि सर्व तपशील खरे व बरोबर आहेत.",
+        "declaration_text": "आम्ही प्रमाणित करतो की या बिलातील तपशील खरे व बरोबर आहेत. एकदा विकलेल्या वस्तू पूर्ण परताव्यासाठी पात्र नाहीत.",
         "for_business": "साठी",
         "authorised_signatory": "अधिकृत सही",
         "previous_outstanding": "मागील बाकी",
@@ -665,6 +665,10 @@
         "search_product": "वस्तू शोधा...",
         "bill_format": "बिल स्वरूप",
         "bill_language": "बिल भाषा",
-        "scan_to_pay": "पेमेंटसाठी स्कॅन करा"
+        "scan_to_pay": "पेमेंटसाठी स्कॅन करा",
+        "transport_charges": "वाहतूक शुल्क",
+        "labor_charges": "मजुरी शुल्क",
+        "amount_paid": "भरलेली रक्कम",
+        "credit_amount": "उधारी रक्कम"
     }
 }

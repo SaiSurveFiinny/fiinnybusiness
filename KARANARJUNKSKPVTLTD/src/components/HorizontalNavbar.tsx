@@ -35,17 +35,14 @@ export default function HorizontalNavbar() {
 
   const isOwner = userRole === 'admin' || userRole === 'analyst';
   const isSalesUser = userRole === 'sales';
-  if (!isOwner && !isSalesUser) return null;
 
-  const visibleItems = PRIORITY_NAV.filter(item => {
+  const visibleItems = (isOwner || isSalesUser) ? PRIORITY_NAV.filter(item => {
     if (!userRole || !permissions) return false;
     if (isSalesUser) return SALES_NAV_PATHS.includes(item.path);
     if (item.path === '/sales-targets') return false;
     if (permissions[userRole] && !permissions[userRole][item.screenKey]) return false;
     return true;
-  });
-
-  if (visibleItems.length === 0) return null;
+  }) : [];
 
   const checkScroll = useCallback(() => {
     const el = scrollRef.current;
@@ -63,6 +60,9 @@ export default function HorizontalNavbar() {
     ro.observe(el);
     return () => { el.removeEventListener('scroll', checkScroll); ro.disconnect(); };
   }, [checkScroll, visibleItems.length]);
+
+  if (!isOwner && !isSalesUser) return null;
+  if (visibleItems.length === 0) return null;
 
   const scroll = (dir: 'left' | 'right') => {
     scrollRef.current?.scrollBy({ left: dir === 'right' ? SCROLL_STEP : -SCROLL_STEP, behavior: 'smooth' });

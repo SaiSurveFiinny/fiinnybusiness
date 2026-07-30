@@ -6,7 +6,7 @@ import { useSearchParams } from 'react-router-dom';
 import {
     Save, Loader2, Printer, Search, ShoppingCart, Plus, Minus, Trash2,
     CreditCard, Banknote, History, ExternalLink, Target, Pencil,
-    Zap, CheckCircle2, ChevronRight, X, Phone, User, QrCode, Package,
+    Zap, CheckCircle2, ChevronRight, X, Phone, User, QrCode, Package, BookOpen, AlertTriangle,
     // RotateCcw removed — was only used by the Returns quick-access link, now disabled below (2026-07-03).
     Star, Smartphone, Columns, PlusCircle, FileText,
 } from 'lucide-react';
@@ -269,6 +269,9 @@ export default function POSPage() {
 
     const [showVPayDialog, setShowVPayDialog] = useState(false);
     const [transportCharges, setTransportCharges] = useState(0);
+    const [laborCharges, setLaborCharges] = useState(0);
+    const [creditPaidNow, setCreditPaidNow] = useState(0);
+    const [khataNote, setKhataNote] = useState('');
 
     // ── V-Checkout pending sessions ──────────────────────────────────────────
     const [vcheckoutSessions, setVcheckoutSessions] = useState<any[]>([]);
@@ -567,7 +570,12 @@ export default function POSPage() {
     // the discount must not apply — no partial/stale redemption should reach checkout.
     const effectiveRedeemPoints = loyaltyIsActive ? redeemPoints : 0;
     const loyaltyDiscount = effectiveRedeemPoints * ((loyaltyConfig?.pointsValue) || 0.1);
-    const grandTotal = Math.max(0, cartSubtotal + transportCharges - loyaltyDiscount);
+    const grandTotal = Math.max(0, cartSubtotal + transportCharges + laborCharges - loyaltyDiscount);
+
+    // Partial credit: how much of this credit bill the customer pays now vs. owes.
+    const isCreditBill = modeOfPayment === 'Credit' || modeOfPayment === 'Khata';
+    const effectiveCreditPaidNow = isCreditBill ? Math.min(creditPaidNow, grandTotal) : grandTotal;
+    const effectiveCreditAmount = isCreditBill ? Math.max(0, grandTotal - effectiveCreditPaidNow) : 0;
 
     // ── GST summary for the invoice (display + print) ────────────────────────
     // cartTotal is GST-inclusive (same convention as the analytics tax calc and
@@ -580,7 +588,7 @@ export default function POSPage() {
     }, 0);
     const totalSgst = totalCgst;
     const totalTax = totalCgst + totalSgst;
-    const invNetAmount = Math.round(computedTaxable + totalTax + transportCharges - loyaltyDiscount);
+    const invNetAmount = Math.round(computedTaxable + totalTax + transportCharges + laborCharges - loyaltyDiscount);
     const invFmt = (n: number) => (Number.isFinite(n) ? n : 0).toFixed(2);
 
     // Tracks which phone number (if any) the currently-displayed name/address/pin
@@ -674,15 +682,20 @@ export default function POSPage() {
                 })),
                 subtotal: cartSubtotal,
                 transportCharges,
+                laborCharges,
                 discount: loyaltyDiscount,
                 grandTotal,
-                paymentStatus: paymentMethod === 'Khata' ? 'Pending' : 'Paid',
+                paymentStatus: paymentMethod === 'Khata' && effectiveCreditAmount > 0
+                    ? (effectiveCreditPaidNow > 0 ? 'Partial' : 'Pending')
+                    : 'Paid',
                 paymentMethod,
                 paymentSplits: options?.splits ?? [],
                 cashReceived: options?.cashReceived ?? null,
                 changeGiven: options?.cashReceived ? Math.max(0, options.cashReceived - grandTotal) : 0,
                 loyaltyPointsRedeemed: options?.loyaltyPointsRedeemed ?? effectiveRedeemPoints,
-                amountPaid: paymentMethod === 'Khata' ? 0 : grandTotal,
+                amountPaid: paymentMethod === 'Khata' ? effectiveCreditPaidNow : grandTotal,
+                creditAmount: paymentMethod === 'Khata' ? effectiveCreditAmount : 0,
+                note: (paymentMethod === 'Khata' && khataNote.trim()) ? khataNote.trim() : null,
                 // Balance the customer carried into this bill, and the running total
                 // including it — mirrors the B2B invoice's previousBalance/netBalance.
                 previousBalance: customerOutstanding,
@@ -800,8 +813,8 @@ export default function POSPage() {
                         name: customer.name, number: customer.phone, atPost: customer.address,
                         pin: customer.pin, status: 'active', channel: 'pos',
                         totalSales: grandTotal,
-                        outstandingAmount: isCredit ? grandTotal : 0,
-                        totalPaid: isCredit ? 0 : grandTotal,
+                        outstandingAmount: isCredit ? effectiveCreditAmount : 0,
+                        totalPaid: isCredit ? effectiveCreditPaidNow : grandTotal,
                         createdAt: serverTimestamp(),
                         lastOrderedAt: serverTimestamp(),
                     });
@@ -812,12 +825,14 @@ export default function POSPage() {
                     // first so the balance reflects the delta, not a double count.
                     const prevTotal = editingOrder ? Number(editingOrder.grandTotal || 0) : 0;
                     const prevWasCredit = editingOrder ? editingOrder.paymentMethod === 'Khata' : false;
+                    const prevCreditAmt = editingOrder ? Number(editingOrder.creditAmount || (prevWasCredit ? prevTotal : 0)) : 0;
+                    const prevPaidAmt = editingOrder ? Number(editingOrder.amountPaid ?? (prevWasCredit ? 0 : prevTotal)) : 0;
                     await updateDoc(rDoc.ref, {
                         totalSales: Math.max(0, Number(rData.totalSales || 0) - prevTotal + grandTotal),
                         outstandingAmount: Math.max(0, Number(rData.outstandingAmount || 0)
-                            - (prevWasCredit ? prevTotal : 0) + (isCredit ? grandTotal : 0)),
+                            - (prevWasCredit ? prevCreditAmt : 0) + (isCredit ? effectiveCreditAmount : 0)),
                         totalPaid: Math.max(0, Number(rData.totalPaid || 0)
-                            - (prevWasCredit ? 0 : prevTotal) + (isCredit ? 0 : grandTotal)),
+                            - prevPaidAmt + (isCredit ? effectiveCreditPaidNow : grandTotal)),
                         lastOrderedAt: serverTimestamp(),
                     });
                 }
@@ -892,6 +907,9 @@ export default function POSPage() {
                 setCustomerOutstanding(0);
                 setRowMeta({});
                 setTransportCharges(0);
+                setLaborCharges(0);
+                setCreditPaidNow(0);
+                setKhataNote('');
                 // Correction complete — drop edit mode so the next bill is a fresh one.
                 setEditingOrder(null);
                 // Advance the displayed bill number. generateBillNumber() already
@@ -1384,12 +1402,15 @@ export default function POSPage() {
                                             <td><input type="month" className="pinv-input" style={{ textAlign: 'center', fontSize: '0.74rem' }} value={rowMeta[item.id]?.expDate ?? (item.expiryDate || '')}
                                                 onChange={e => setRowMeta(m => ({ ...m, [item.id]: { ...m[item.id], expDate: e.target.value } }))} /></td>
                                             <td style={{ textAlign: 'center' }}><input type="number" className="pinv-input" style={{ textAlign: 'center' }} value={item.gstPct ?? 5}
-                                                onChange={e => setCart(prev => prev.map(c => c.id === item.id ? { ...c, gstPct: Number(e.target.value) } : c))} /></td>
+                                                onChange={e => setCart(prev => prev.map(c => c.id === item.id ? { ...c, gstPct: Number(e.target.value) } : c))}
+                                                onWheel={e => e.currentTarget.blur()} /></td>
                                             <td style={{ textAlign: 'center' }}>{item.unit || item.baseUnit}</td>
                                             <td style={{ textAlign: 'center', fontWeight: 600 }}><input type="number" min="0" className="pinv-input" style={{ textAlign: 'center', fontWeight: 600 }} value={item.cartQuantity}
-                                                onChange={e => setQty(item.id, Number(e.target.value))} /></td>
+                                                onChange={e => setQty(item.id, Number(e.target.value))}
+                                                onWheel={e => e.currentTarget.blur()} /></td>
                                             <td style={{ textAlign: 'center' }}><input type="number" min="0" className="pinv-input" style={{ textAlign: 'center' }} value={posSellingRate(item)}
-                                                onChange={e => setRate(item.id, Number(e.target.value))} /></td>
+                                                onChange={e => setRate(item.id, Number(e.target.value))}
+                                                onWheel={e => e.currentTarget.blur()} /></td>
                                             <td style={{ textAlign: 'center', fontWeight: 600 }}>{item.cartTotal ? invFmt(item.cartTotal) : ''}</td>
                                             <td style={{ textAlign: 'center', padding: '2px' }}>
                                                 <button onClick={() => removeCartItem(item.id)} style={{ border: 'none', background: 'transparent', cursor: 'pointer', color: '#e53935', padding: '2px' }}>
@@ -1479,11 +1500,24 @@ export default function POSPage() {
                                     <div style={{ display: 'flex', justifyContent: 'space-between', color: '#2E7D32' }}><span>{L('discount')} ({effectiveRedeemPoints} pts)</span><span>-{invFmt(loyaltyDiscount)}</span></div>
                                 )}
                                 {transportCharges > 0 && (
-                                    <div style={{ display: 'flex', justifyContent: 'space-between' }}><span>Transport Charges</span><span>+{invFmt(transportCharges)}</span></div>
+                                    <div style={{ display: 'flex', justifyContent: 'space-between' }}><span>{L('transport_charges')}</span><span>+{invFmt(transportCharges)}</span></div>
+                                )}
+                                {laborCharges > 0 && (
+                                    <div style={{ display: 'flex', justifyContent: 'space-between' }}><span>{L('labor_charges')}</span><span>+{invFmt(laborCharges)}</span></div>
                                 )}
                                 <div style={{ borderTop: '2px solid #111', marginTop: '4px', paddingTop: '4px', display: 'flex', justifyContent: 'space-between', fontWeight: 900, fontSize: '1rem' }}>
                                     <span>{L('net_amount')}</span><span>₹{invNetAmount.toLocaleString('en-IN')}</span>
                                 </div>
+                                {isCreditBill && (
+                                    <>
+                                        <div style={{ display: 'flex', justifyContent: 'space-between', color: '#10b981', marginTop: '3px' }}>
+                                            <span>{L('amount_paid')}</span><span>₹{effectiveCreditPaidNow.toLocaleString('en-IN')}</span>
+                                        </div>
+                                        <div style={{ borderTop: '1px solid #111', paddingTop: '3px', display: 'flex', justifyContent: 'space-between', fontWeight: 900, color: effectiveCreditAmount > 0 ? '#c62828' : '#10b981' }}>
+                                            <span>{L('credit_amount')}</span><span>₹{effectiveCreditAmount.toLocaleString('en-IN')}</span>
+                                        </div>
+                                    </>
+                                )}
                                 {customerOutstanding > 0 && (
                                     <>
                                         <div style={{ display: 'flex', justifyContent: 'space-between', color: '#c62828', marginTop: '3px' }}>
@@ -1539,24 +1573,140 @@ export default function POSPage() {
                                             const minRedeem = loyaltyConfig?.minRedeemPoints || 0;
                                             setRedeemPoints(raw > 0 && raw < minRedeem ? 0 : raw);
                                         }}
+                                        onWheel={e => e.currentTarget.blur()}
                                         style={{ width: '70px', border: '1px solid var(--surface-border)', borderRadius: '6px', padding: '0.2rem 0.4rem', fontSize: '0.85rem', background: 'var(--surface-raised)', color: 'var(--text-primary)' }} />
                                     <span style={{ fontSize: '0.78rem', color: 'var(--text-tertiary)' }}>pts</span>
                                 </div>
                             </div>
                         )}
                         <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
-                            {/* Transport Charges */}
-                            <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
-                                <label style={{ fontSize: '0.88rem', fontWeight: 600, color: 'var(--text-secondary)', whiteSpace: 'nowrap' }}>Transport Charges (₹)</label>
-                                <input
-                                    type="number"
-                                    min={0}
-                                    value={transportCharges || ''}
-                                    onChange={e => setTransportCharges(Math.max(0, Number(e.target.value) || 0))}
-                                    placeholder="0"
-                                    style={{ width: '120px', border: '1px solid var(--surface-border)', borderRadius: '8px', padding: '0.4rem 0.6rem', fontSize: '0.9rem', background: 'var(--surface-raised)', color: 'var(--text-primary)' }}
-                                />
+                            {/* Transport Charges + Labor Charges */}
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '1.25rem', flexWrap: 'wrap' }}>
+                                <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                                    <label style={{ fontSize: '0.88rem', fontWeight: 600, color: 'var(--text-secondary)', whiteSpace: 'nowrap' }}>{L('transport_charges')} (₹)</label>
+                                    <input
+                                        type="number"
+                                        min={0}
+                                        value={transportCharges || ''}
+                                        onChange={e => setTransportCharges(Math.max(0, Number(e.target.value) || 0))}
+                                        onWheel={e => e.currentTarget.blur()}
+                                        placeholder="0"
+                                        style={{ width: '110px', border: '1px solid var(--surface-border)', borderRadius: '8px', padding: '0.4rem 0.6rem', fontSize: '0.9rem', background: 'var(--surface-raised)', color: 'var(--text-primary)' }}
+                                    />
+                                </div>
+                                <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                                    <label style={{ fontSize: '0.88rem', fontWeight: 600, color: 'var(--text-secondary)', whiteSpace: 'nowrap' }}>{L('labor_charges')} (₹)</label>
+                                    <input
+                                        type="number"
+                                        min={0}
+                                        value={laborCharges || ''}
+                                        onChange={e => setLaborCharges(Math.max(0, Number(e.target.value) || 0))}
+                                        onWheel={e => e.currentTarget.blur()}
+                                        placeholder="0"
+                                        style={{ width: '110px', border: '1px solid var(--surface-border)', borderRadius: '8px', padding: '0.4rem 0.6rem', fontSize: '0.9rem', background: 'var(--surface-raised)', color: 'var(--text-primary)' }}
+                                    />
+                                </div>
                             </div>
+                            {/* Partial Credit: Amount Paid Now (only shown for Credit bills) */}
+                            {isCreditBill && (
+                                <div style={{ background: 'hsla(220,70%,55%,0.07)', border: '1px solid hsla(220,70%,55%,0.2)', borderRadius: '10px', padding: '0.75rem 1rem' }}>
+                                    <div style={{ fontSize: '0.8rem', fontWeight: 700, color: 'var(--text-secondary)', marginBottom: '0.6rem', textTransform: 'uppercase', letterSpacing: '0.04em' }}>
+                                        Payment Summary
+                                    </div>
+                                    <div style={{ display: 'flex', alignItems: 'center', gap: '1rem', flexWrap: 'wrap' }}>
+                                        <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                                            <label style={{ fontSize: '0.85rem', fontWeight: 600, color: 'var(--text-secondary)', whiteSpace: 'nowrap' }}>{L('amount_paid')} (₹)</label>
+                                            <input
+                                                type="number"
+                                                min={0}
+                                                max={grandTotal}
+                                                value={creditPaidNow || ''}
+                                                onChange={e => setCreditPaidNow(Math.max(0, Math.min(grandTotal, Number(e.target.value) || 0)))}
+                                                onWheel={e => e.currentTarget.blur()}
+                                                placeholder="0"
+                                                style={{ width: '120px', border: '1px solid hsla(220,70%,55%,0.4)', borderRadius: '8px', padding: '0.4rem 0.6rem', fontSize: '0.9rem', background: 'var(--surface-raised)', color: 'var(--text-primary)' }}
+                                            />
+                                        </div>
+                                        <div style={{ display: 'flex', gap: '1.25rem', fontSize: '0.88rem' }}>
+                                            <span style={{ color: 'var(--text-secondary)' }}>
+                                                Bill: <strong>₹{grandTotal.toLocaleString('en-IN')}</strong>
+                                            </span>
+                                            <span style={{ color: '#10b981' }}>
+                                                Paid: <strong>₹{effectiveCreditPaidNow.toLocaleString('en-IN')}</strong>
+                                            </span>
+                                            <span style={{ color: effectiveCreditAmount > 0 ? '#ef4444' : '#10b981' }}>
+                                                {L('credit_amount')}: <strong>₹{effectiveCreditAmount.toLocaleString('en-IN')}</strong>
+                                            </span>
+                                        </div>
+                                    </div>
+                                </div>
+                            )}
+                            {/* Khata Integration — shown when credit amount > 0 */}
+                            {isCreditBill && effectiveCreditAmount > 0 && (
+                                <div style={{ background: 'hsla(30,90%,50%,0.07)', border: '1px solid hsla(30,90%,50%,0.25)', borderRadius: '10px', padding: '0.85rem 1rem' }}>
+                                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.65rem' }}>
+                                        <BookOpen size={15} style={{ color: '#f59e0b', flexShrink: 0 }} />
+                                        <span style={{ fontWeight: 700, fontSize: '0.82rem', color: 'var(--text-primary)', textTransform: 'uppercase', letterSpacing: '0.04em' }}>Khata / Udhaari</span>
+                                        <span style={{ fontSize: '0.72rem', color: 'var(--text-tertiary)' }}>— outstanding will be added to customer's Khata account</span>
+                                    </div>
+
+                                    {/* Customer resolved from bill header */}
+                                    {(customer.name || customer.phone) ? (
+                                        <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: '1rem', marginBottom: '0.6rem', flexWrap: 'wrap' }}>
+                                            <div>
+                                                <div style={{ fontWeight: 700, fontSize: '0.9rem', color: 'var(--text-primary)', display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+                                                    <User size={13} style={{ color: '#f59e0b' }} />
+                                                    {customer.name || 'Unnamed Customer'}
+                                                </div>
+                                                {customer.phone && (
+                                                    <div style={{ fontSize: '0.76rem', color: 'var(--text-tertiary)', display: 'flex', alignItems: 'center', gap: '0.3rem', marginTop: '0.1rem' }}>
+                                                        <Phone size={11} /> {customer.phone}
+                                                    </div>
+                                                )}
+                                                {customerOutstanding > 0 ? (
+                                                    <div style={{ fontSize: '0.75rem', color: '#f59e0b', marginTop: '0.2rem', fontWeight: 600 }}>
+                                                        Current Khata balance: ₹{customerOutstanding.toLocaleString('en-IN')}
+                                                    </div>
+                                                ) : (
+                                                    <div style={{ fontSize: '0.72rem', color: 'var(--text-tertiary)', marginTop: '0.2rem' }}>
+                                                        {farmers.some(f => {
+                                                            const stored = (f.number ?? f.phone ?? '').replace(/\D/g, '');
+                                                            const key = customer.phone.replace(/\D/g, '');
+                                                            return key.length >= 6 && (stored === key || stored.slice(-10) === key.slice(-10));
+                                                        }) ? 'Existing customer · no outstanding balance' : '✦ New customer — Khata account will be created'}
+                                                    </div>
+                                                )}
+                                            </div>
+                                            <div style={{ textAlign: 'right', flexShrink: 0 }}>
+                                                <div style={{ fontSize: '0.72rem', color: 'var(--text-tertiary)' }}>Adding to Khata</div>
+                                                <div style={{ fontWeight: 800, fontSize: '1.05rem', color: '#ef4444' }}>+₹{effectiveCreditAmount.toLocaleString('en-IN')}</div>
+                                                {customerOutstanding > 0 && (
+                                                    <div style={{ fontSize: '0.72rem', color: 'var(--text-secondary)', marginTop: '2px' }}>
+                                                        New total: ₹{(customerOutstanding + effectiveCreditAmount).toLocaleString('en-IN')}
+                                                    </div>
+                                                )}
+                                            </div>
+                                        </div>
+                                    ) : (
+                                        <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.6rem', padding: '0.5rem 0.6rem', background: 'hsla(38,92%,50%,0.1)', borderRadius: '8px', fontSize: '0.8rem', color: '#f59e0b', fontWeight: 600 }}>
+                                            <AlertTriangle size={14} />
+                                            Enter customer name or phone above to link this credit to their Khata account.
+                                        </div>
+                                    )}
+
+                                    {/* Note — visible in Khata ledger */}
+                                    <div>
+                                        <label style={{ display: 'block', fontSize: '0.72rem', fontWeight: 600, color: 'var(--text-tertiary)', marginBottom: '0.25rem' }}>Note for Khata record (optional)</label>
+                                        <input
+                                            className="input-field"
+                                            placeholder="e.g. Seeds & fertilizer purchase on credit"
+                                            value={khataNote}
+                                            onChange={e => setKhataNote(e.target.value)}
+                                            style={{ margin: 0, width: '100%', fontSize: '0.85rem' }}
+                                        />
+                                    </div>
+                                </div>
+                            )}
                             {/* Save + Print + To Pay */}
                             <div style={{ display: 'flex', gap: '0.6rem', flexWrap: 'wrap', alignItems: 'center' }}>
                                 <button
@@ -1824,8 +1974,11 @@ export default function POSPage() {
                             billNumber={nextBillNumber}
                             subtotal={cartSubtotal}
                             transportCharges={transportCharges}
+                            laborCharges={laborCharges}
                             discount={loyaltyDiscount}
                             grandTotal={grandTotal}
+                            creditPaidNow={effectiveCreditPaidNow}
+                            creditAmount={effectiveCreditAmount}
                             billFormat={billFormat}
                             invoiceDate={invoiceDate}
                             modeOfPayment={modeOfPayment}
@@ -1902,6 +2055,7 @@ export default function POSPage() {
                                 type="number"
                                 value={cashTenderAmount || ''}
                                 onChange={e => setCashTenderAmount(Number(e.target.value))}
+                                onWheel={e => e.currentTarget.blur()}
                                 placeholder="Enter amount"
                                 className="input-field"
                                 style={{ fontSize: '1.1rem', fontWeight: 700 }}
@@ -1953,6 +2107,7 @@ export default function POSPage() {
                                     {PAYMENT_METHODS.map(m => <option key={m} value={m}>{m}</option>)}
                                 </select>
                                 <input type="number" value={sp.amount || ''} onChange={e => setSplits(prev => prev.map((s, idx) => idx === i ? { ...s, amount: Number(e.target.value) } : s))}
+                                    onWheel={e => e.currentTarget.blur()}
                                     placeholder="₹0"
                                     style={{ width: '90px', padding: '0.5rem', borderRadius: '8px', border: '1px solid var(--surface-border)', fontSize: '0.9rem', fontWeight: 700, background: 'var(--surface-raised)', color: 'var(--text-primary)' }} />
                                 {splits.length > 1 && (
@@ -2061,7 +2216,7 @@ export default function POSPage() {
 
 // Printed GST invoice — mirrors B2BInvoicePage's layout so the POS (farmer) bill
 // looks identical to the B2B one. `billFormat` drives the print @page size (A4/A5).
-function TraditionalPrintLayout({ cart, customer, branding, billNumber, discount, transportCharges = 0, grandTotal, billFormat = 'A5', invoiceDate, modeOfPayment = 'Cash', previousOutstanding = 0, L = (k: string) => k }: any) {
+function TraditionalPrintLayout({ cart, customer, branding, billNumber, discount, transportCharges = 0, laborCharges = 0, grandTotal, creditPaidNow = 0, creditAmount = 0, billFormat = 'A5', invoiceDate, modeOfPayment = 'Cash', previousOutstanding = 0, L = (k: string) => k }: any) {
     const fmt = (n: number) => (Number.isFinite(n) ? n : 0).toFixed(2);
     const lineGst = (i: any) => (typeof i.gstPct === 'number' ? i.gstPct : 5);
     const taxable = cart.reduce((s: number, i: any) => s + (i.cartTotal || 0) / (1 + lineGst(i) / 100), 0);
@@ -2069,7 +2224,7 @@ function TraditionalPrintLayout({ cart, customer, branding, billNumber, discount
     const sgst = cgst;
     const tax = cgst + sgst;
     const net = Math.round(grandTotal || 0);
-    const roundOff = net - (taxable + tax + (transportCharges || 0) - (discount || 0));
+    const roundOff = net - (taxable + tax + (transportCharges || 0) + (laborCharges || 0) - (discount || 0));
     const sellerName = branding?.businessName || 'Your Business Name';
     const isA5 = billFormat === 'A5';
     const baseFont = isA5 ? '0.72rem' : '0.82rem';
@@ -2186,10 +2341,21 @@ function TraditionalPrintLayout({ cart, customer, branding, billNumber, discount
                     <div style={{ display: 'flex', justifyContent: 'space-between' }}><span>{L('output_sgst')}@2.5%</span><span>{fmt(sgst)}</span></div>
                     <div style={{ display: 'flex', justifyContent: 'space-between' }}><span>{L('round_off')}</span><span>{fmt(roundOff)}</span></div>
                     {discount > 0 && <div style={{ display: 'flex', justifyContent: 'space-between', color: '#2E7D32' }}><span>{L('discount')}</span><span>-{fmt(discount)}</span></div>}
-                    {transportCharges > 0 && <div style={{ display: 'flex', justifyContent: 'space-between' }}><span>Transport Charges</span><span>+{fmt(transportCharges)}</span></div>}
+                    {transportCharges > 0 && <div style={{ display: 'flex', justifyContent: 'space-between' }}><span>{L('transport_charges')}</span><span>+{fmt(transportCharges)}</span></div>}
+                    {laborCharges > 0 && <div style={{ display: 'flex', justifyContent: 'space-between' }}><span>{L('labor_charges')}</span><span>+{fmt(laborCharges)}</span></div>}
                     <div style={{ borderTop: '2px solid #111', marginTop: '3px', paddingTop: '3px', display: 'flex', justifyContent: 'space-between', fontWeight: 900, fontSize: isA5 ? '0.85rem' : '1rem' }}>
                         <span>{L('net_amount')}</span><span>₹{net.toLocaleString('en-IN')}</span>
                     </div>
+                    {(modeOfPayment === 'Khata' || modeOfPayment === 'Credit') && (
+                        <>
+                            <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: '2px', color: '#2E7D32' }}>
+                                <span>{L('amount_paid')}</span><span>₹{Number(creditPaidNow).toLocaleString('en-IN')}</span>
+                            </div>
+                            <div style={{ borderTop: '1px solid #555', paddingTop: '2px', display: 'flex', justifyContent: 'space-between', fontWeight: 900, color: creditAmount > 0 ? '#c62828' : '#2E7D32' }}>
+                                <span>{L('credit_amount')}</span><span>₹{Number(creditAmount).toLocaleString('en-IN')}</span>
+                            </div>
+                        </>
+                    )}
                     {previousOutstanding > 0 && (
                         <>
                             <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: '2px' }}>
@@ -2344,31 +2510,31 @@ function QuickProductModal({ tenantId, product, defaultName, products, onClose }
                 <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.75rem', marginBottom: '0.9rem' }}>
                     <div>
                         <label style={labelStyle}>Selling Price (₹) *</label>
-                        <input required type="number" min="0" step="0.01" value={form.sellingPrice || ''} onChange={e => set({ sellingPrice: Number(e.target.value) })} placeholder="0.00" style={fieldStyle} />
+                        <input required type="number" min="0" step="0.01" value={form.sellingPrice || ''} onChange={e => set({ sellingPrice: Number(e.target.value) })} onWheel={e => e.currentTarget.blur()} placeholder="0.00" style={fieldStyle} />
                     </div>
                     <div>
                         <label style={labelStyle}>MRP (₹)</label>
-                        <input type="number" min="0" step="0.01" value={form.maxRetailPrice || ''} onChange={e => set({ maxRetailPrice: Number(e.target.value) })} placeholder="0.00" style={fieldStyle} />
+                        <input type="number" min="0" step="0.01" value={form.maxRetailPrice || ''} onChange={e => set({ maxRetailPrice: Number(e.target.value) })} onWheel={e => e.currentTarget.blur()} placeholder="0.00" style={fieldStyle} />
                     </div>
                     <div>
                         <label style={labelStyle}>Purchase Rate (₹)</label>
-                        <input type="number" min="0" step="0.01" value={form.purchasePrice || ''} onChange={e => set({ purchasePrice: Number(e.target.value) })} placeholder="0.00" style={fieldStyle} />
+                        <input type="number" min="0" step="0.01" value={form.purchasePrice || ''} onChange={e => set({ purchasePrice: Number(e.target.value) })} onWheel={e => e.currentTarget.blur()} placeholder="0.00" style={fieldStyle} />
                     </div>
                     <div>
                         <label style={labelStyle}>GST %</label>
-                        <input type="number" min="0" value={form.gstPct} onChange={e => set({ gstPct: Number(e.target.value) })} style={fieldStyle} />
+                        <input type="number" min="0" value={form.gstPct} onChange={e => set({ gstPct: Number(e.target.value) })} onWheel={e => e.currentTarget.blur()} style={fieldStyle} />
                     </div>
                     <div>
                         <label style={labelStyle}>Stock (Boxes)</label>
-                        <input type="number" min="0" value={form.quantity} onChange={e => set({ quantity: Number(e.target.value) })} style={fieldStyle} />
+                        <input type="number" min="0" value={form.quantity} onChange={e => set({ quantity: Number(e.target.value) })} onWheel={e => e.currentTarget.blur()} style={fieldStyle} />
                     </div>
                     <div>
                         <label style={labelStyle}>Loose Pieces</label>
-                        <input type="number" min="0" value={form.loosePieces} onChange={e => set({ loosePieces: Number(e.target.value) })} style={fieldStyle} />
+                        <input type="number" min="0" value={form.loosePieces} onChange={e => set({ loosePieces: Number(e.target.value) })} onWheel={e => e.currentTarget.blur()} style={fieldStyle} />
                     </div>
                     <div>
                         <label style={labelStyle}>Pcs / Box</label>
-                        <input type="number" min="1" value={form.boxCapacity} onChange={e => set({ boxCapacity: Number(e.target.value) })} style={fieldStyle} />
+                        <input type="number" min="1" value={form.boxCapacity} onChange={e => set({ boxCapacity: Number(e.target.value) })} onWheel={e => e.currentTarget.blur()} style={fieldStyle} />
                     </div>
                     <div>
                         <label style={labelStyle}>Unit</label>

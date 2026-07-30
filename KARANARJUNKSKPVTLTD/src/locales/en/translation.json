@@ -658,7 +658,7 @@
         "net_amount": "NET AMOUNT",
         "amount_in_words": "Amount in Words",
         "declaration": "Declaration",
-        "declaration_text": "We declare that this invoice shows the actual price of the goods described and that all particulars are true and correct.",
+        "declaration_text": "We certify that the details in this invoice are true and correct. Goods once sold are not eligible for a full refund.",
         "for_business": "For",
         "authorised_signatory": "Authorised Signatory",
         "previous_outstanding": "Previous Outstanding",
@@ -666,6 +666,10 @@
         "search_product": "Search product to add...",
         "bill_format": "Bill Format",
         "bill_language": "Bill Language",
-        "scan_to_pay": "Scan to Pay"
+        "scan_to_pay": "Scan to Pay",
+        "transport_charges": "Transport Charges",
+        "labor_charges": "Labor Charges",
+        "amount_paid": "Amount Paid",
+        "credit_amount": "Credit Amount"
     }
 }
