@@ -360,49 +360,136 @@ export default function Navbar() {
   );
 }
 
+interface FooterLinkGroup {
+  heading: string;
+  links: { label: string; href: string }[];
+}
+
+/**
+ * Enterprise footer — company block + four link columns + contact block +
+ * legal bottom bar, replacing the earlier oversized-icon "contact card"
+ * layout. Link groups only reference routes that exist in App.tsx today;
+ * legal links (Privacy/Terms/Cookie Policy/Disclaimer) have no page yet and
+ * render as inert text (not fake hrefs) rather than linking to placeholder
+ * routes, matching the prior behavior — see feedback_karanarjun memory on
+ * not inventing scope beyond what's asked.
+ */
 export function Footer() {
   const { t } = useLanguage();
-  const links = [t.footer_privacy, t.footer_terms, t.footer_contact, t.footer_shipping];
+
+  const linkGroups: FooterLinkGroup[] = [
+    {
+      heading: 'Company',
+      links: [
+        { label: t.nav_who_we_are, href: '/who-we-are' },
+        { label: t.nav_what_we_do, href: '/what-we-do' },
+        { label: t.nav_products, href: '/shop' },
+        { label: t.nav_career, href: '/career' },
+      ],
+    },
+    {
+      heading: 'Solutions',
+      links: [
+        { label: t.nav_crop_solutions, href: '/crop-solutions' },
+        { label: t.nav_research_innovation, href: '/research-innovation' },
+        { label: t.nav_farmer_success, href: '/farmer-success' },
+        { label: t.nav_resources, href: '/resources' },
+      ],
+    },
+    {
+      heading: 'Resources',
+      links: [
+        { label: 'Blogs', href: '/resources/blogs' },
+        { label: 'Crop Guides', href: '/resources/guides' },
+        { label: 'FAQs', href: '/resources/faqs' },
+        { label: 'Downloads', href: '/resources/downloads' },
+      ],
+    },
+    {
+      heading: 'Support',
+      links: [
+        { label: t.footer_contact, href: '/contact' },
+        { label: 'Help Center', href: '/support' },
+      ],
+    },
+  ];
+
+  const legalLinks = [t.footer_privacy, t.footer_terms, 'Cookie Policy', 'Disclaimer'];
 
   return (
-    <footer className="bg-primary w-full mt-auto border-t border-white/10 relative overflow-hidden">
-      {/* Background Glow */}
-      <div className="absolute top-0 left-1/2 -translate-x-1/2 w-[800px] h-[800px] bg-secondary-container/10 rounded-full blur-[120px] pointer-events-none"></div>
-
-      <div className="flex flex-col items-center py-24 px-6 max-w-7xl mx-auto gap-12 text-center relative z-10">
-        <div className="text-3xl md:text-5xl font-extrabold text-white font-sans tracking-tight">
-          {BRAND_NAME}
+    <footer className="bg-primary w-full mt-auto border-t border-white/10">
+      <div className="max-w-7xl mx-auto px-6 md:px-10 py-16 md:py-20">
+        {/* Top: brand + description + social */}
+        <div className="flex flex-col md:flex-row md:items-start md:justify-between gap-10 pb-14 border-b border-white/10">
+          <div className="max-w-sm">
+            <div className="text-2xl font-extrabold text-white font-sans tracking-tight mb-4">
+              {BRAND_NAME}
+            </div>
+            <p className="text-white/60 font-serif text-sm leading-relaxed">
+              Precision agriculture solutions for Indian farmers — grounded in field research and built for sustainable yield.
+            </p>
+          </div>
+          <a
+            href="https://www.instagram.com/karanarjun_ksk_priyanka_mall"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="inline-flex items-center gap-2 text-white/70 hover:text-white text-sm font-sans font-semibold transition-colors w-fit"
+          >
+            <Icons.Instagram className="w-4 h-4" />
+            Instagram
+          </a>
         </div>
 
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-10 text-white/80 font-sans text-sm max-w-5xl w-full text-center md:text-left bg-white/5 p-8 md:p-12 rounded-[2.5rem] border border-white/10 backdrop-blur-md shadow-2xl">
-          <div className="flex flex-col items-center md:items-start gap-4">
-            <div className="bg-white/10 p-4 rounded-2xl text-secondary-container"><Icons.MapPin className="w-7 h-7" /></div>
-            <h4 className="font-bold text-white text-xl">{t.footer_hq_title}</h4>
-            <p className="text-white/70 leading-relaxed whitespace-pre-line">{t.footer_hq_address}</p>
-          </div>
-
-          <div className="flex flex-col items-center md:items-start gap-4">
-            <div className="bg-white/10 p-4 rounded-2xl text-secondary-container"><Icons.MessageCircle className="w-7 h-7" /></div>
-            <h4 className="font-bold text-white text-xl">{t.footer_sales_title}</h4>
-            <p className="text-white/70 leading-relaxed">{t.footer_sales_desc}<br/><span className="font-bold text-secondary-container text-xl block mt-1">+91 9307199040</span></p>
-          </div>
-
-          <div className="flex flex-col items-center md:items-start gap-4">
-            <div className="bg-white/10 p-4 rounded-2xl text-secondary-container"><Icons.Instagram className="w-7 h-7" /></div>
-            <h4 className="font-bold text-white text-xl">{t.footer_community_title}</h4>
-            <p className="text-white/70 leading-relaxed">{t.footer_community_desc}<br/><a href="#" className="font-bold text-white hover:text-secondary-container transition-colors">@karanarjun_ksk_priyanka_mall</a><br/><span className="inline-block mt-2 px-3 py-1 bg-secondary-container/20 text-secondary-container text-[10px] font-bold tracking-widest uppercase rounded-full">75.8K+ Followers</span></p>
-          </div>
-        </div>
-
-        <div className="flex flex-wrap justify-center gap-x-8 gap-y-4 font-sans text-[10px] sm:text-xs uppercase tracking-widest font-bold mt-8">
-          {links.map((link) => (
-            <a key={link} href="#" className="text-white/70 hover:text-secondary-container transition-colors">
-              {link}
-            </a>
+        {/* Middle: link columns + contact */}
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-10 py-14 border-b border-white/10">
+          {linkGroups.map((group) => (
+            <nav key={group.heading} aria-label={group.heading}>
+              <h4 className="font-sans text-xs font-bold uppercase tracking-[0.15em] text-white/50 mb-5">
+                {group.heading}
+              </h4>
+              <ul className="flex flex-col gap-3">
+                {group.links.map((link) => (
+                  <li key={link.href}>
+                    <Link
+                      to={link.href}
+                      className="text-white/75 hover:text-white text-sm font-sans transition-colors"
+                    >
+                      {link.label}
+                    </Link>
+                  </li>
+                ))}
+              </ul>
+            </nav>
           ))}
+
+          <div>
+            <h4 className="font-sans text-xs font-bold uppercase tracking-[0.15em] text-white/50 mb-5">
+              {t.footer_hq_title}
+            </h4>
+            <p className="text-white/75 text-sm font-sans leading-relaxed whitespace-pre-line mb-6">
+              {t.footer_hq_address}
+            </p>
+            <h4 className="font-sans text-xs font-bold uppercase tracking-[0.15em] text-white/50 mb-3">
+              {t.footer_sales_title}
+            </h4>
+            <a href="tel:+919307199040" className="text-white text-sm font-sans font-semibold hover:text-secondary-container transition-colors">
+              +91 93071 99040
+            </a>
+          </div>
         </div>
-        <div className="text-white/50 text-[10px] sm:text-xs font-sans max-w-md">
-          © {new Date().getFullYear()} {BRAND_NAME} {t.footer_copyright}
+
+        {/* Bottom: legal */}
+        <div className="pt-8 flex flex-col md:flex-row items-center justify-between gap-4">
+          <p className="text-white/50 text-xs font-sans text-center md:text-left">
+            © {new Date().getFullYear()} {BRAND_NAME} {t.footer_copyright}
+          </p>
+          <div className="flex flex-wrap items-center justify-center gap-x-6 gap-y-2 text-xs font-sans">
+            {legalLinks.map((link) => (
+              <span key={link} className="text-white/40">
+                {link}
+              </span>
+            ))}
+          </div>
         </div>
       </div>
     </footer>

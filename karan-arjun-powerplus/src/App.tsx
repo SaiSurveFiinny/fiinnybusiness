@@ -1,9 +1,8 @@
 import React, { Component, useEffect } from 'react';
-import { BrowserRouter as Router, Routes, Route, useLocation } from 'react-router-dom';
+import { BrowserRouter as Router, Routes, Route, useLocation, Navigate } from 'react-router-dom';
 import Navbar, { Footer } from './components/Layout';
 import Home from './pages/Home';
 import Shop from './pages/Shop';
-import Blog from './pages/Blog';
 import Profile from './pages/Profile';
 import Auth from './pages/Auth';
 import Technical from './pages/Technical';
@@ -17,6 +16,27 @@ import CropCategoryPage from './pages/CropCategoryPage';
 import CropDetailPage from './pages/CropDetailPage';
 import CareerLanding from './pages/CareerLanding';
 import JobDetailPage from './pages/JobDetailPage';
+import FarmerSuccessLanding from './pages/FarmerSuccessLanding';
+import StoryDetailPage from './pages/StoryDetailPage';
+import CaseStudyDetailPage from './pages/CaseStudyDetailPage';
+import VideoLibraryPage from './pages/VideoLibraryPage';
+import VideoDetailPage from './pages/VideoDetailPage';
+import TestimonialsListingPage from './pages/TestimonialsListingPage';
+import TestimonialDetailPage from './pages/TestimonialDetailPage';
+import ResourcesLanding from './pages/ResourcesLanding';
+import BlogListingPage from './pages/BlogListingPage';
+import ArticleListingPage from './pages/ArticleListingPage';
+import ArticleDetailPage from './pages/ArticleDetailPage';
+import CropGuideListingPage from './pages/CropGuideListingPage';
+import CropGuideDetailPage from './pages/CropGuideDetailPage';
+import DownloadsPage from './pages/DownloadsPage';
+import FaqsPage from './pages/FaqsPage';
+import SeasonalAdvicePage from './pages/SeasonalAdvicePage';
+import ResourceVideosPage from './pages/ResourceVideosPage';
+import NewsListingPage from './pages/NewsListingPage';
+import NewsDetailPage from './pages/NewsDetailPage';
+import AnnouncementListingPage from './pages/AnnouncementListingPage';
+import AnnouncementDetailPage from './pages/AnnouncementDetailPage';
 import Support from './pages/Support';
 import Contact from './pages/Contact';
 import PlaceholderPage from './pages/PlaceholderPage';
@@ -85,7 +105,8 @@ export default function App() {
               <Routes>
                 <Route path="/" element={<Home />} />
                 <Route path="/shop" element={<Shop />} />
-                <Route path="/blog" element={<Blog />} />
+                {/* /blog moved to /resources/blogs as part of the Resources Center migration; redirect preserves old bookmarked/indexed links. */}
+                <Route path="/blog" element={<Navigate to="/resources/blogs" replace />} />
                 <Route
                   path="/profile"
                   element={
@@ -112,17 +133,30 @@ export default function App() {
                   path="/research-innovation"
                   element={<PlaceholderPage title="Research & Innovation" description="The science behind our agricultural solutions." />}
                 />
-                <Route
-                  path="/farmer-success"
-                  element={<PlaceholderPage title="Farmer Success" description="Stories and outcomes from farmers we work with." />}
-                />
+                <Route path="/farmer-success" element={<FarmerSuccessLanding />} />
+                <Route path="/farmer-success/story/:storySlug" element={<StoryDetailPage />} />
+                <Route path="/farmer-success/case-study/:caseStudySlug" element={<CaseStudyDetailPage />} />
+                <Route path="/farmer-success/videos" element={<VideoLibraryPage />} />
+                <Route path="/farmer-success/video/:videoSlug" element={<VideoDetailPage />} />
+                <Route path="/farmer-success/testimonials" element={<TestimonialsListingPage />} />
+                <Route path="/farmer-success/testimonials/:testimonialSlug" element={<TestimonialDetailPage />} />
                 <Route path="/crop-solutions" element={<CropSolutionsLanding />} />
                 <Route path="/crop-solutions/:categorySlug" element={<CropCategoryPage />} />
                 <Route path="/crop-solutions/:categorySlug/:cropSlug" element={<CropDetailPage />} />
-                <Route
-                  path="/resources"
-                  element={<PlaceholderPage title="Resources" description="Guides, research, and a farmer knowledge center." />}
-                />
+                <Route path="/resources" element={<ResourcesLanding />} />
+                <Route path="/resources/blogs" element={<BlogListingPage />} />
+                <Route path="/resources/articles" element={<ArticleListingPage />} />
+                <Route path="/resources/articles/:articleSlug" element={<ArticleDetailPage />} />
+                <Route path="/resources/guides" element={<CropGuideListingPage />} />
+                <Route path="/resources/guides/:guideSlug" element={<CropGuideDetailPage />} />
+                <Route path="/resources/downloads" element={<DownloadsPage />} />
+                <Route path="/resources/faqs" element={<FaqsPage />} />
+                <Route path="/resources/seasonal-advice" element={<SeasonalAdvicePage />} />
+                <Route path="/resources/videos" element={<ResourceVideosPage />} />
+                <Route path="/resources/news" element={<NewsListingPage />} />
+                <Route path="/resources/news/:newsSlug" element={<NewsDetailPage />} />
+                <Route path="/resources/announcements" element={<AnnouncementListingPage />} />
+                <Route path="/resources/announcements/:announcementSlug" element={<AnnouncementDetailPage />} />
                 <Route path="/career" element={<CareerLanding />} />
                 <Route path="/career/:jobSlug" element={<JobDetailPage />} />
                 <Route path="/support" element={<Support />} />

@@ -57,6 +57,11 @@ import {
   ArrowDown,
   ChevronDown,
   Briefcase,
+  Quote,
+  Video,
+  PlayCircle,
+  Image,
+  ArrowLeftRight,
 } from 'lucide-react';
 
 export const Icons = {
@@ -118,4 +123,9 @@ export const Icons = {
   ArrowDown,
   ChevronDown,
   Briefcase,
+  Quote,
+  Video,
+  PlayCircle,
+  Image,
+  ArrowLeftRight,
 };

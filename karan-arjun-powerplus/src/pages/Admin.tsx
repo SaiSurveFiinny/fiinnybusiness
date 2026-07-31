@@ -18,21 +18,23 @@ import { Icons } from '../components/Icons';
 import { PaymentDetailModal, type PaymentDetailOrder } from '../components/PaymentDetailModal';
 import { CropSolutionsManager } from '../components/admin/CropSolutionsManager';
 import { CareerManager } from '../components/admin/CareerManager';
+import { FarmerSuccessManager } from '../components/admin/FarmerSuccessManager';
+import { ResourcesManager } from '../components/admin/ResourcesManager';
 import {
   initialAbout,
   initialBlogs,
   initialHomeVideos,
   initialProducts,
   type AboutInfo,
-  type Blog,
   type Grievance,
   type Order,
   type Product,
   type User,
 } from '../data/mockData';
+import type { Blog } from '../data/resources';
 import { db } from '../lib/firebase';
 
-type AdminTab = 'Dashboard' | 'Orders' | 'Users' | 'Products' | 'Crop Solutions' | 'Career' | 'Blogs' | 'Support' | 'Company Info';
+type AdminTab = 'Dashboard' | 'Orders' | 'Users' | 'Products' | 'Crop Solutions' | 'Career' | 'Farmer Success' | 'Resources' | 'Support' | 'Company Info';
 
 interface AdminUser extends User {
   email: string;
@@ -62,17 +64,6 @@ interface ProductFormState {
   featured: boolean;
 }
 
-interface BlogFormState {
-  title: string;
-  excerpt: string;
-  category: string;
-  date: string;
-  content: string;
-  imageUrlsText: string;
-  videoUrlsText: string;
-  linksText: string;
-}
-
 function formatPrice(price: number) {
   return `₹${price.toLocaleString('en-IN')}`;
 }
@@ -86,39 +77,6 @@ function toStringArray(value: unknown): string[] {
     .filter(Boolean);
 }
 
-function parseLineList(value: string): string[] {
-  return value
-    .split('\n')
-    .map((line) => line.trim())
-    .filter(Boolean);
-}
-
-function toMultiline(value: string[] | undefined) {
-  return (value ?? []).join('\n');
-}
-
-function parseLinksText(value: string): Array<{ label: string; url: string }> {
-  return value
-    .split('\n')
-    .map((line) => line.trim())
-    .filter(Boolean)
-    .map((line) => {
-      const [label, ...rest] = line.split('|');
-      const url = (rest.length > 0 ? rest.join('|') : label).trim();
-      return {
-        label: label.trim(),
-        url,
-      };
-    })
-    .filter((link) => link.url.length > 0);
-}
-
-function linksToMultiline(links: Blog['links']) {
-  return (links ?? [])
-    .map((link) => `${link.label || link.url}|${link.url}`)
-    .join('\n');
-}
-
 const defaultProductForm: ProductFormState = {
   name: '',
   desc: '',
@@ -126,17 +84,6 @@ const defaultProductForm: ProductFormState = {
   image: '/bottle-1l-Photoroom.png',
   badge: '',
   featured: false,
-};
-
-const defaultBlogForm: BlogFormState = {
-  title: '',
-  excerpt: '',
-  category: 'General',
-  date: new Date().toLocaleDateString('en-IN'),
-  content: '',
-  imageUrlsText: '',
-  videoUrlsText: '',
-  linksText: '',
 };
 
 export default function Admin() {
@@ -160,11 +107,6 @@ export default function Admin() {
   const [isProductFormOpen, setIsProductFormOpen] = useState(false);
   const [pendingProductDeleteId, setPendingProductDeleteId] = useState<string | null>(null);
 
-  const [blogForm, setBlogForm] = useState<BlogFormState>(defaultBlogForm);
-  const [editingBlogId, setEditingBlogId] = useState<string | null>(null);
-  const [isSavingBlog, setIsSavingBlog] = useState(false);
-  const [isBlogFormOpen, setIsBlogFormOpen] = useState(false);
-  const [pendingBlogDeleteId, setPendingBlogDeleteId] = useState<string | null>(null);
   const [replyDrafts, setReplyDrafts] = useState<Record<string, string>>({});
   const [replyingTicketId, setReplyingTicketId] = useState<string | null>(null);
 
@@ -413,89 +355,6 @@ export default function Admin() {
     setStatus('Product deleted.');
   };
 
-  const resetBlogForm = () => {
-    setBlogForm({
-      ...defaultBlogForm,
-      date: new Date().toLocaleDateString('en-IN'),
-    });
-    setEditingBlogId(null);
-    setIsBlogFormOpen(false);
-  };
-
-  const handleSaveBlog = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!blogForm.title.trim()) {
-      setStatus('Blog title is required.');
-      return;
-    }
-
-    const imageUrls = parseLineList(blogForm.imageUrlsText);
-    const videoUrls = parseLineList(blogForm.videoUrlsText);
-    const links = parseLinksText(blogForm.linksText);
-    const excerpt = blogForm.excerpt.trim()
-      || blogForm.content.trim().slice(0, 180)
-      || 'Read this article to learn more.';
-
-    setIsSavingBlog(true);
-    const payload = {
-      title: blogForm.title.trim(),
-      excerpt,
-      category: blogForm.category.trim() || 'General',
-      date: blogForm.date.trim() || new Date().toLocaleDateString('en-IN'),
-      content: blogForm.content.trim(),
-      imageUrls,
-      videoUrls,
-      links,
-      updatedAt: serverTimestamp(),
-    };
-
-    if (editingBlogId) {
-      await updateDoc(doc(db, 'blogs', editingBlogId), payload);
-      setStatus('Blog updated.');
-    } else {
-      await addDoc(collection(db, 'blogs'), {
-        ...payload,
-        createdAt: serverTimestamp(),
-      });
-      setStatus('Blog post created.');
-    }
-    setIsSavingBlog(false);
-    resetBlogForm();
-  };
-
-  const handleEditBlog = (blog: Blog) => {
-    setIsBlogFormOpen(true);
-    setPendingBlogDeleteId(null);
-    setEditingBlogId(blog.id);
-    setBlogForm({
-      title: blog.title,
-      excerpt: blog.excerpt,
-      category: blog.category,
-      date: blog.date || new Date().toLocaleDateString('en-IN'),
-      content: blog.content ?? '',
-      imageUrlsText: toMultiline(blog.imageUrls),
-      videoUrlsText: toMultiline(blog.videoUrls),
-      linksText: linksToMultiline(blog.links),
-    });
-  };
-
-  const requestDeleteBlog = (blogId: string) => {
-    setPendingBlogDeleteId(blogId);
-  };
-
-  const cancelDeleteBlog = () => {
-    setPendingBlogDeleteId(null);
-  };
-
-  const confirmDeleteBlog = async (blog: Blog) => {
-    await deleteDoc(doc(db, 'blogs', blog.id));
-    if (editingBlogId === blog.id) {
-      resetBlogForm();
-    }
-    setPendingBlogDeleteId(null);
-    setStatus('Blog deleted.');
-  };
-
   const handleResolveTicket = async (ticket: Grievance) => {
     await updateDoc(doc(db, 'grievances', ticket.id), {
       status: 'Resolved',
@@ -691,7 +550,8 @@ export default function Admin() {
             { id: 'Products', icon: Icons.Box, label: 'Products' },
             { id: 'Crop Solutions', icon: Icons.Layers, label: 'Crop Solutions' },
             { id: 'Career', icon: Icons.Briefcase, label: 'Career' },
-            { id: 'Blogs', icon: Icons.FileText, label: 'Blogs' },
+            { id: 'Farmer Success', icon: Icons.HandHeart, label: 'Farmer Success' },
+            { id: 'Resources', icon: Icons.FileText, label: 'Resources' },
             { id: 'Support', icon: Icons.AlertCircle, label: 'Support' },
             { id: 'Company Info', icon: Icons.Settings, label: 'Company Info' },
           ].map((item) => (
@@ -1188,184 +1048,9 @@ export default function Admin() {
 
         {activeTab === 'Career' && <CareerManager />}
 
-        {activeTab === 'Blogs' && (
-          <div className="space-y-6">
-            <div className="bg-white rounded-[2rem] p-8 border border-slate-100 shadow-sm">
-              <div className="flex items-center justify-between gap-4 mb-6">
-                <h2 className="font-sans text-xl font-bold text-primary">Blog Posts</h2>
-                <button
-                  onClick={() => {
-                    setEditingBlogId(null);
-                    resetBlogForm();
-                    setIsBlogFormOpen(true);
-                    setPendingBlogDeleteId(null);
-                  }}
-                  className="bg-primary text-secondary-container px-4 py-2 rounded-xl font-sans font-bold text-sm hover:bg-primary-container transition-colors shrink-0"
-                >
-                  Add Blog
-                </button>
-              </div>
+        {activeTab === 'Farmer Success' && <FarmerSuccessManager />}
 
-              {isBlogFormOpen && (
-                <form onSubmit={handleSaveBlog} className="space-y-4 mb-8 p-5 rounded-2xl border border-slate-200 bg-slate-50/70">
-                  <div className="flex justify-between items-center">
-                    <h3 className="font-sans text-lg font-bold text-primary">
-                      {editingBlogId ? 'Edit Blog Post' : 'Add Blog Post'}
-                    </h3>
-                    <button
-                      type="button"
-                      onClick={resetBlogForm}
-                      className="px-3 py-2 text-xs rounded-lg border border-slate-300 font-sans font-semibold hover:bg-white"
-                    >
-                      Close
-                    </button>
-                  </div>
-                  <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                    <div className="md:col-span-2">
-                      <label className="block font-sans text-sm font-semibold text-primary mb-2">Title</label>
-                      <input
-                        type="text"
-                        value={blogForm.title}
-                        onChange={(e) => setBlogForm((prev) => ({ ...prev, title: e.target.value }))}
-                        className="w-full px-4 py-3 rounded-xl border border-slate-200 bg-white text-sm"
-                        required
-                      />
-                    </div>
-                    <div>
-                      <label className="block font-sans text-sm font-semibold text-primary mb-2">Category</label>
-                      <input
-                        type="text"
-                        value={blogForm.category}
-                        onChange={(e) => setBlogForm((prev) => ({ ...prev, category: e.target.value }))}
-                        className="w-full px-4 py-3 rounded-xl border border-slate-200 bg-white text-sm"
-                      />
-                    </div>
-                  </div>
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                    <div>
-                      <label className="block font-sans text-sm font-semibold text-primary mb-2">Display Date</label>
-                      <input
-                        type="text"
-                        value={blogForm.date}
-                        onChange={(e) => setBlogForm((prev) => ({ ...prev, date: e.target.value }))}
-                        className="w-full px-4 py-3 rounded-xl border border-slate-200 bg-white text-sm"
-                      />
-                    </div>
-                    <div>
-                      <label className="block font-sans text-sm font-semibold text-primary mb-2">Excerpt</label>
-                      <input
-                        type="text"
-                        value={blogForm.excerpt}
-                        onChange={(e) => setBlogForm((prev) => ({ ...prev, excerpt: e.target.value }))}
-                        className="w-full px-4 py-3 rounded-xl border border-slate-200 bg-white text-sm"
-                        placeholder="Short preview line (optional)"
-                      />
-                    </div>
-                  </div>
-                  <div>
-                    <label className="block font-sans text-sm font-semibold text-primary mb-2">Full Content</label>
-                    <textarea
-                      rows={5}
-                      value={blogForm.content}
-                      onChange={(e) => setBlogForm((prev) => ({ ...prev, content: e.target.value }))}
-                      className="w-full px-4 py-3 rounded-xl border border-slate-200 bg-white text-sm"
-                      placeholder="Write the full blog content..."
-                    />
-                  </div>
-                  <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                    <div>
-                      <label className="block font-sans text-sm font-semibold text-primary mb-2">Image URLs (one per line)</label>
-                      <textarea
-                        rows={4}
-                        value={blogForm.imageUrlsText}
-                        onChange={(e) => setBlogForm((prev) => ({ ...prev, imageUrlsText: e.target.value }))}
-                        className="w-full px-4 py-3 rounded-xl border border-slate-200 bg-white text-sm"
-                      />
-                    </div>
-                    <div>
-                      <label className="block font-sans text-sm font-semibold text-primary mb-2">Video URLs (one per line)</label>
-                      <textarea
-                        rows={4}
-                        value={blogForm.videoUrlsText}
-                        onChange={(e) => setBlogForm((prev) => ({ ...prev, videoUrlsText: e.target.value }))}
-                        className="w-full px-4 py-3 rounded-xl border border-slate-200 bg-white text-sm"
-                      />
-                    </div>
-                    <div>
-                      <label className="block font-sans text-sm font-semibold text-primary mb-2">Links (Label|URL, one per line)</label>
-                      <textarea
-                        rows={4}
-                        value={blogForm.linksText}
-                        onChange={(e) => setBlogForm((prev) => ({ ...prev, linksText: e.target.value }))}
-                        className="w-full px-4 py-3 rounded-xl border border-slate-200 bg-white text-sm"
-                      />
-                    </div>
-                  </div>
-                  <button
-                    type="submit"
-                    disabled={isSavingBlog}
-                    className="bg-primary text-secondary-container px-6 py-3 rounded-xl font-sans font-bold text-sm hover:bg-primary-container transition-colors disabled:opacity-60"
-                  >
-                    {isSavingBlog ? 'Saving...' : editingBlogId ? 'Update Blog' : 'Create Blog'}
-                  </button>
-                </form>
-              )}
-
-              <div className="overflow-x-auto">
-                <table className="w-full text-left font-sans text-sm">
-                  <thead>
-                    <tr className="border-b border-primary/10">
-                      <th className="py-4 text-primary/60 font-semibold uppercase tracking-wider text-xs">Title</th>
-                      <th className="py-4 text-primary/60 font-semibold uppercase tracking-wider text-xs">Category</th>
-                      <th className="py-4 text-primary/60 font-semibold uppercase tracking-wider text-xs">Date</th>
-                      <th className="py-4 text-primary/60 font-semibold uppercase tracking-wider text-xs">Media</th>
-                      <th className="py-4 text-right text-primary/60 font-semibold uppercase tracking-wider text-xs">Actions</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {blogs.map((blog) => (
-                      <tr key={blog.id} className="border-b border-primary/5 hover:bg-slate-50 transition-colors">
-                        <td className="py-4 font-bold text-primary truncate max-w-xs">{blog.title}</td>
-                        <td className="py-4 text-primary/80">{blog.category}</td>
-                        <td className="py-4 text-primary/80">{blog.date}</td>
-                        <td className="py-4 text-primary/80 text-xs">
-                          Img:{blog.imageUrls?.length ?? 0} / Vid:{blog.videoUrls?.length ?? 0} / Link:{blog.links?.length ?? 0}
-                        </td>
-                        <td className="py-4 text-right">
-                          <div className="flex justify-end gap-2">
-                            <button onClick={() => handleEditBlog(blog)} className="p-2 text-blue-600 hover:bg-blue-50 rounded-lg transition-colors">
-                              <Icons.Edit className="w-4 h-4" />
-                            </button>
-                            {pendingBlogDeleteId === blog.id ? (
-                              <>
-                                <button
-                                  onClick={() => void confirmDeleteBlog(blog)}
-                                  className="px-2 py-1 text-xs rounded-lg bg-red-100 text-red-700 font-bold"
-                                >
-                                  Confirm
-                                </button>
-                                <button
-                                  onClick={cancelDeleteBlog}
-                                  className="px-2 py-1 text-xs rounded-lg bg-slate-100 text-slate-700 font-bold"
-                                >
-                                  Cancel
-                                </button>
-                              </>
-                            ) : (
-                              <button onClick={() => requestDeleteBlog(blog.id)} className="p-2 text-red-600 hover:bg-red-50 rounded-lg transition-colors">
-                                <Icons.Trash className="w-4 h-4" />
-                              </button>
-                            )}
-                          </div>
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-          </div>
-        )}
+        {activeTab === 'Resources' && <ResourcesManager />}
 
         {activeTab === 'Support' && (
           <div className="bg-white rounded-[2rem] p-8 border border-slate-100 shadow-sm">
