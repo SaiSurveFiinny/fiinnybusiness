@@ -3,8 +3,6 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import '../constants/app_colors.dart';
 import '../providers/cart_provider.dart';
-import '../providers/user_provider.dart';
-import '../../features/reels/providers/reels_provider.dart';
 
 /// Tracks which bottom-nav tab is currently visible.
 /// ReelsFeedScreen listens to this to pause video when leaving the reels tab.
@@ -50,31 +48,6 @@ class AppShell extends ConsumerWidget {
     ),
   ];
 
-  void _showSubscriptionDialog(BuildContext context) {
-    showDialog(
-      context: context,
-      builder: (_) => AlertDialog(
-        title: const Text('Subscription Required'),
-        content: const Text(
-          'An active subscription is required to upload reels.',
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('Cancel'),
-          ),
-          FilledButton(
-            onPressed: () {
-              Navigator.pop(context);
-              context.push('/subscription');
-            },
-            child: const Text('Subscribe Now'),
-          ),
-        ],
-      ),
-    );
-  }
-
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final currentIndex = navigationShell.currentIndex;
@@ -91,11 +64,7 @@ class AppShell extends ConsumerWidget {
     });
 
     final cartCount = ref.watch(cartCountProvider);
-    final userModel = ref.watch(currentUserProvider).value;
-    final isSeller = userModel?.isSeller ?? false;
-    final canAccess = ref.watch(canAccessDashboardProvider);
     final isReelsTab = currentIndex == 4;
-    final commentSheetOpen = ref.watch(reelCommentSheetOpenProvider);
 
     Widget? fab;
     if (!isReelsTab && cartCount > 0) {

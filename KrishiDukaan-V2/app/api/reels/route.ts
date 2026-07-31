@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { getAdminDb } from "../../lib/firebase-admin";
+import { buildReelSlug } from "../../lib/seo/reels-server";
 
 export const dynamic = "force-dynamic";
 
@@ -35,8 +36,10 @@ async function fetchReelsViaREST(limitCount: number) {
       const str = (f: any) => f?.stringValue ?? "";
       const num = (f: any) => Number(f?.integerValue ?? f?.doubleValue ?? 0);
 
+      const id = r.document.name.split("/").pop();
       return {
-        id: r.document.name.split("/").pop(),
+        id,
+        slug: buildReelSlug(str(fields.title), id),
         shopOwnerId: str(fields.shopOwnerId),
         shopName: str(fields.shopName),
         videoUrl: str(fields.videoUrl),
@@ -67,6 +70,10 @@ export async function GET(req: Request) {
       const data = doc.data();
       return {
         id: doc.id,
+        // Lets the home rail link straight to this reel's own page
+        // (/reels/[slug]) instead of the generic feed, which is ranked
+        // differently and so opened on a different reel than the thumbnail.
+        slug: buildReelSlug(String(data.title ?? ""), doc.id),
         shopOwnerId: data.shopOwnerId ?? "",
         shopName: data.shopName ?? "",
         videoUrl: data.videoUrl ?? "",

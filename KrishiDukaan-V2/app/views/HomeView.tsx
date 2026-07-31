@@ -338,7 +338,7 @@ export default function HomeView({
             reels.map((reel) => (
               <a
                 key={reel.id}
-                href="/reels"
+                href={reel.slug ? `/reels/${reel.slug}` : `/reels?reelId=${reel.id}`}
                 className="snap-start shrink-0 w-36 relative bg-surface-container rounded-2xl overflow-hidden shadow hover:shadow-md transition-shadow group border border-outline-variant"
                 title={reel.caption}
               >
