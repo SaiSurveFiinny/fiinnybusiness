@@ -304,7 +304,7 @@ export default function RateSheetPage() {
   const handleExport = () => {
     const rows = visibleProducts.map(p => {
       const row: Record<string, unknown> = {};
-      CSV_COLS.forEach(c => { row[c.header] = (p as Record<string, unknown>)[c.field] ?? ''; });
+      CSV_COLS.forEach(c => { row[c.header] = (p as unknown as Record<string, unknown>)[c.field] ?? ''; });
       return row;
     });
     downloadCsv(rows, `product_master_${new Date().toISOString().slice(0, 10)}.csv`);

@@ -57,9 +57,9 @@ interface Expense {
   category: Category;
   amount: number;
   date: string;          // YYYY-MM-DD
-  linkedEmployeeId?: string;
-  linkedEmployeeName?: string;
-  notes?: string;
+  linkedEmployeeId?: string | null;
+  linkedEmployeeName?: string | null;
+  notes?: string | null;
   createdAt?: Timestamp;
   updatedAt?: Timestamp;
 }
@@ -737,7 +737,7 @@ export default function ExpensePage() {
                         </td>
                         {/* Notes */}
                         <td style={{ padding: '0.6rem 0.8rem', color: 'var(--text-tertiary)', fontSize: '0.82rem', maxWidth: '200px' }}>
-                          <span title={e.notes} style={{ display: 'block', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                          <span title={e.notes ?? undefined} style={{ display: 'block', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                             {e.notes || <span style={{ opacity: 0.4 }}>—</span>}
                           </span>
                         </td>

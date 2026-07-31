@@ -50,6 +50,7 @@ interface Movement {
     sourceType: string;
     sourceId: string;
     sourceNumber: string;
+    supplierName?: string;
     date: string;
     createdAt?: any;
 }
@@ -196,6 +197,7 @@ export default function StockReportPage() {
 
     const purchaseMovements = useMemo(() => filteredMovements.filter(m => m.type === 'purchase'), [filteredMovements]);
     const saleMovements = useMemo(() => filteredMovements.filter(m => m.type !== 'purchase'), [filteredMovements]);
+    const productsById = useMemo(() => new Map(products.map(p => [p.id, p])), [products]);
 
     // ── Summary stats ─────────────────────────────────────────────────────────
     const summary = useMemo(() => {
@@ -235,6 +237,30 @@ export default function StockReportPage() {
         const a = document.createElement('a');
         a.href = URL.createObjectURL(blob);
         a.download = `stock_report_${dateFrom}_${dateTo}.csv`;
+        a.click();
+        URL.revokeObjectURL(a.href);
+    };
+
+    // ── Sales CSV export (for accountant handoff) ────────────────────────────
+    const handleExportSales = () => {
+        const rows = saleMovements.map(m => {
+            const rate = productsById.get(m.productId)?.sellingPrice ?? 0;
+            return {
+                'Date': m.date,
+                'Type': m.type === 'sale_pos' ? 'POS' : 'B2B',
+                'Order / Source': m.sourceNumber || m.sourceId,
+                'Product': m.productName,
+                'Batch': m.batchNumber || '',
+                'Qty Sold': m.qtyOut,
+                'Est. Rate': rate.toFixed(2),
+                'Est. Sale Value': (m.qtyOut * rate).toFixed(2),
+            };
+        });
+        const csv = Papa.unparse(rows);
+        const blob = new Blob(['﻿' + csv], { type: 'text/csv;charset=utf-8;' });
+        const a = document.createElement('a');
+        a.href = URL.createObjectURL(blob);
+        a.download = `sales_report_${dateFrom}_${dateTo}.csv`;
         a.click();
         URL.revokeObjectURL(a.href);
     };
@@ -381,6 +407,48 @@ export default function StockReportPage() {
                                             No batch records found. Batches are created when Purchase Invoices are saved.
                                         </div>
                                     )}
+                                </div>
+                            </div>
+
+                            {/* Overall Stock Summary — every product, not just low-stock ones */}
+                            <div className="glass-panel" style={{ borderRadius: '12px', overflow: 'hidden', marginBottom: '1.25rem' }}>
+                                <div style={{ padding: '1rem 1.25rem', borderBottom: '1px solid var(--surface-border)', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                                    <Package2 size={16} style={{ color: 'var(--primary-light)' }} />
+                                    <span style={{ fontWeight: 700, fontSize: '0.95rem' }}>Overall Stock Summary ({filteredRows.length} products)</span>
+                                </div>
+                                <div style={{ overflowX: 'auto' }}>
+                                    <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.85rem' }}>
+                                        <thead>
+                                            <tr style={{ borderBottom: '1px solid var(--surface-border)', color: 'var(--text-secondary)' }}>
+                                                {['Product', 'Category', 'Manufacturer', 'Current Stock', 'Stock Value', 'Batches', 'Status'].map(h => (
+                                                    <th key={h} style={{ padding: '0.6rem 1rem', fontWeight: 600, textAlign: ['Current Stock', 'Stock Value', 'Batches'].includes(h) ? 'right' : 'left', whiteSpace: 'nowrap' }}>{h}</th>
+                                                ))}
+                                            </tr>
+                                        </thead>
+                                        <tbody>
+                                            {filteredRows.length === 0 ? (
+                                                <tr><td colSpan={7} style={{ padding: '2rem', textAlign: 'center', color: 'var(--text-tertiary)' }}>No products found.</td></tr>
+                                            ) : filteredRows.map((r, i) => (
+                                                <tr key={r.product.id} style={{ borderBottom: '1px solid var(--surface-border)', background: i % 2 === 0 ? 'transparent' : 'var(--surface-raised)' }}>
+                                                    <td style={{ padding: '0.6rem 1rem', fontWeight: 600 }}>{r.product.name}</td>
+                                                    <td style={{ padding: '0.6rem 1rem', color: 'var(--text-secondary)' }}>{r.product.type || '—'}</td>
+                                                    <td style={{ padding: '0.6rem 1rem', color: 'var(--text-secondary)' }}>{r.product.mfgCompany || '—'}</td>
+                                                    <td style={{ padding: '0.6rem 1rem', textAlign: 'right', fontWeight: 700, color: r.isLowStock ? '#ef4444' : r.currentStock === 0 ? '#ef4444' : 'var(--text-primary)' }}>{r.currentStock}</td>
+                                                    <td style={{ padding: '0.6rem 1rem', textAlign: 'right', color: 'var(--text-secondary)' }}>{fmtInr(r.currentStock * (r.product.purchasePrice ?? 0))}</td>
+                                                    <td style={{ padding: '0.6rem 1rem', textAlign: 'right', color: 'var(--text-secondary)' }}>{r.batchCount}</td>
+                                                    <td style={{ padding: '0.6rem 1rem' }}>
+                                                        {r.currentStock === 0 ? (
+                                                            <span style={{ fontSize: '0.65rem', padding: '0.1rem 0.4rem', borderRadius: '999px', background: 'hsla(0,84%,60%,0.12)', color: '#ef4444', fontWeight: 700 }}>OUT</span>
+                                                        ) : r.isLowStock ? (
+                                                            <span style={{ fontSize: '0.65rem', padding: '0.1rem 0.4rem', borderRadius: '999px', background: 'hsla(38,92%,50%,0.12)', color: '#f59e0b', fontWeight: 700 }}>LOW</span>
+                                                        ) : (
+                                                            <span style={{ fontSize: '0.65rem', padding: '0.1rem 0.4rem', borderRadius: '999px', background: 'hsla(152,60%,40%,0.12)', color: '#10b981', fontWeight: 700 }}>OK</span>
+                                                        )}
+                                                    </td>
+                                                </tr>
+                                            ))}
+                                        </tbody>
+                                    </table>
                                 </div>
                             </div>
 
@@ -607,6 +675,7 @@ export default function StockReportPage() {
                                     { label: 'Total Qty Purchased', value: purchaseMovements.reduce((s, m) => s + (m.qtyIn || 0), 0).toLocaleString('en-IN'), color: '#6366f1' },
                                     { label: 'Est. Purchase Value', value: fmtInr(summary.purchaseValue), color: 'var(--primary-light)' },
                                     { label: 'Products Restocked', value: new Set(purchaseMovements.map(m => m.productId)).size, color: '#f59e0b' },
+                                    { label: 'Suppliers', value: new Set(purchaseMovements.map(m => m.supplierName).filter(Boolean)).size, color: '#8b5cf6' },
                                 ].map(c => (
                                     <div key={c.label} style={{ background: 'var(--surface-raised)', border: '1px solid var(--surface-border)', borderLeft: `4px solid ${c.color}`, borderRadius: '12px', padding: '1rem' }}>
                                         <div style={{ fontSize: '0.7rem', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.04em', color: c.color, marginBottom: '0.35rem' }}>{c.label}</div>
@@ -623,7 +692,7 @@ export default function StockReportPage() {
                                     <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.85rem' }}>
                                         <thead>
                                             <tr style={{ borderBottom: '2px solid var(--surface-border)', color: 'var(--text-secondary)' }}>
-                                                {['Date', 'Invoice / Source', 'Product', 'Batch', 'Qty In', 'Batch Balance'].map(h => (
+                                                {['Date', 'Invoice / Source', 'Supplier', 'Product', 'Batch', 'Qty In', 'Batch Balance'].map(h => (
                                                     <th key={h} style={{ padding: '0.65rem 0.85rem', fontWeight: 600, textAlign: ['Qty In', 'Batch Balance'].includes(h) ? 'right' : 'left', whiteSpace: 'nowrap' }}>{h}</th>
                                                 ))}
                                             </tr>
@@ -633,6 +702,7 @@ export default function StockReportPage() {
                                                 <tr key={m.id} style={{ borderBottom: '1px solid var(--surface-border)', background: i % 2 === 0 ? 'transparent' : 'var(--surface-raised)' }}>
                                                     <td style={{ padding: '0.6rem 0.85rem', color: 'var(--text-secondary)', whiteSpace: 'nowrap' }}>{fmtDate(m.date)}</td>
                                                     <td style={{ padding: '0.6rem 0.85rem', fontFamily: 'monospace', fontSize: '0.8rem' }}>{m.sourceNumber || m.sourceId.slice(-8).toUpperCase()}</td>
+                                                    <td style={{ padding: '0.6rem 0.85rem', color: 'var(--text-secondary)' }}>{m.supplierName || '—'}</td>
                                                     <td style={{ padding: '0.6rem 0.85rem', fontWeight: 600 }}>{m.productName}</td>
                                                     <td style={{ padding: '0.6rem 0.85rem', color: 'var(--text-secondary)', fontFamily: 'monospace', fontSize: '0.78rem' }}>{m.batchNumber || '—'}</td>
                                                     <td style={{ padding: '0.6rem 0.85rem', textAlign: 'right', fontWeight: 700, color: '#10b981' }}>+{m.qtyIn}</td>
@@ -665,7 +735,14 @@ export default function StockReportPage() {
                             </div>
 
                             <div className="glass-panel" style={{ borderRadius: '12px', overflowX: 'auto' }}>
-                                <div style={{ padding: '0.75rem 1rem', borderBottom: '1px solid var(--surface-border)', fontWeight: 700, fontSize: '0.9rem' }}>Sales History ({fmtDate(dateFrom)} – {fmtDate(dateTo)})</div>
+                                <div style={{ padding: '0.75rem 1rem', borderBottom: '1px solid var(--surface-border)', display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '0.75rem', flexWrap: 'wrap' }}>
+                                    <span style={{ fontWeight: 700, fontSize: '0.9rem' }}>Sales History ({fmtDate(dateFrom)} – {fmtDate(dateTo)})</span>
+                                    {saleMovements.length > 0 && (
+                                        <button onClick={handleExportSales} className="btn btn-secondary" style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', fontSize: '0.78rem', padding: '0.35rem 0.75rem' }}>
+                                            <Download size={13} /> Export Sales CSV
+                                        </button>
+                                    )}
+                                </div>
                                 {saleMovements.length === 0 ? (
                                     <div style={{ padding: '3rem', textAlign: 'center', color: 'var(--text-tertiary)' }}>No sales movements in this period.</div>
                                 ) : (
