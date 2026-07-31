@@ -407,12 +407,19 @@ ${styles}
         if (!tenantId) return;
         if (activeRows.length === 0) { alert('Please add at least one item.'); return; }
 
+        // Resolve productId by exact name match when the row was typed but the
+        // autocomplete suggestion was never clicked — otherwise stock deduction
+        // and stock movement recording silently skip that line entirely.
+        const productIdByName = new Map(products.map(p => [p.name.trim().toLowerCase(), p.id]));
+        const resolveProductId = (r: { productId: string; itemDescription: string }) =>
+            r.productId || productIdByName.get(r.itemDescription.trim().toLowerCase()) || '';
+
         // ── Stock validation (new sales only, not edits) ──────────────────
         if (!isEditing) {
             const saleLines = activeRows
-                .filter(r => r.productId && parseFloat(r.quantity) > 0)
+                .filter(r => resolveProductId(r) && parseFloat(r.quantity) > 0)
                 .map(r => ({
-                    productId: r.productId,
+                    productId: resolveProductId(r),
                     productName: r.itemDescription,
                     qty: parseFloat(r.quantity) || 0,
                     batchNo: r.batchNo || undefined,
@@ -431,7 +438,7 @@ ${styles}
             // Editing keeps the original invoice number; only a brand-new invoice consumes the counter.
             const invNo = isEditing ? existingOrder.orderNumber : await generateInvoiceNumber();
             const lineItems = activeRows.map(r => ({
-                productId: r.productId || '',
+                productId: resolveProductId(r),
                 itemDescription: r.itemDescription,
                 batchNo: r.batchNo,
                 expDate: r.expDate,

@@ -795,6 +795,17 @@ export const notifyReelOwnerOnComment = onDocumentCreated(
       preview || "Tap to view",
       { reelId }
     );
+
+    const taggedUserId = d.taggedUserId as string | undefined;
+    if (taggedUserId && taggedUserId !== commenterPhone) {
+      await notify(
+        taggedUserId,
+        "reel_comment_tag",
+        `${commenterName} tagged you in a comment 🏷️`,
+        preview || "Tap to view",
+        { reelId }
+      );
+    }
   }
 );
 

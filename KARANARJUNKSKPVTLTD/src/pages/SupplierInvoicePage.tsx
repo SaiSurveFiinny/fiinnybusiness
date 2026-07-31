@@ -15,6 +15,7 @@ import { rateWithGstToWithoutGst, rateWithoutGstToWithGst } from '../utils/purch
 import ProductAutocomplete, { type ProductLite } from '../components/ProductAutocomplete';
 
 const today = () => new Date().toISOString().slice(0, 10);
+const fmtDateDMY = (s: string) => { if (!s) return ''; const [y, m, d] = s.split('-'); return (y && m && d) ? `${d}/${m}/${y}` : s; };
 const r2 = (n: number) => Math.round(n * 100) / 100;
 const n = (s: string | number | undefined) => parseFloat(String(s ?? 0)) || 0;
 
@@ -31,12 +32,15 @@ type Line = {
   gstPct: string;         // dropdown
   rateWithGst: string;    // bidirectional with rateWithoutGst
   quantity: string;       // total units received
+  mrp: string;            // MRP printed on pack — fed directly to product master
+  ptr: string;            // PTR, trade price to retailer — fed directly to product master
+  salesRate: string;      // selling price fed directly to product master
 };
 
 const emptyLine = (): Line => ({
   productId: '', productName: '', manufacturer: '',
   batchNumber: '', expiryDate: '',
-  rateWithoutGst: '', gstPct: '5', rateWithGst: '', quantity: '',
+  rateWithoutGst: '', gstPct: '5', rateWithGst: '', quantity: '', mrp: '', ptr: '', salesRate: '',
 });
 
 interface SupplierDoc {
@@ -138,7 +142,7 @@ export default function SupplierInvoicePage() {
         const masterProducts = prodSnap.docs.map(d => {
           const p = d.data() as {
             name?: string; mfgCompany?: string; baseUnit?: string; unit?: string;
-            purchasePrice?: number; gstPct?: number; retailerPrice?: number;
+            purchasePrice?: number; gstPct?: number; retailerPrice?: number; maxRetailPrice?: number; sellingPrice?: number;
             boxCapacity?: number; unitSize?: number; unitMeasure?: string;
           };
           return {
@@ -150,6 +154,8 @@ export default function SupplierInvoicePage() {
             purchasePrice: p.purchasePrice,
             gstPct: p.gstPct,
             retailerPrice: p.retailerPrice,
+            maxRetailPrice: p.maxRetailPrice,
+            sellingPrice: p.sellingPrice,
             boxCapacity: p.boxCapacity,
             unitSize: p.unitSize,
             unitMeasure: p.unitMeasure,
@@ -252,6 +258,9 @@ export default function SupplierInvoicePage() {
           gstPct: String(gstPct),
           rateWithGst,
           quantity,
+          mrp: String(l.mrp ?? ''),
+          ptr: String(l.ptr ?? ''),
+          salesRate: String(l.salesRate ?? ''),
         };
       }));
     }
@@ -319,6 +328,9 @@ export default function SupplierInvoicePage() {
       gstPct: String(gstPct),
       rateWithoutGst,
       rateWithGst,
+      mrp: p.maxRetailPrice != null ? String(p.maxRetailPrice) : l.mrp,
+      ptr: p.retailerPrice != null ? String(p.retailerPrice) : l.ptr,
+      salesRate: p.sellingPrice != null ? String(p.sellingPrice) : l.salesRate,
     } : l));
   };
 
@@ -360,6 +372,9 @@ export default function SupplierInvoicePage() {
       rateWithoutGst: n(l.rateWithoutGst),
       rateWithGst: n(l.rateWithGst),
       quantity: n(l.quantity),
+      mrp: n(l.mrp),
+      ptr: n(l.ptr),
+      salesRate: n(l.salesRate),
       amountWithoutGst: l.amountWithoutGst,
       gstAmount: l.gstAmount,
       finalAmount: l.finalAmount,
@@ -420,8 +435,11 @@ export default function SupplierInvoicePage() {
         rate: n(l.rateWithoutGst),
         gstPct: n(l.gstPct),
         quantity: n(l.quantity),
+        mrp: n(l.mrp) || undefined,
+        retailerPrice: n(l.ptr) || undefined,
+        sellingPrice: n(l.salesRate) || undefined,
       }));
-      postSupplierInvoiceToInventory(tenantId, id, forPost, supplier.name || '', products, prevPostedRef.current)
+      postSupplierInvoiceToInventory(tenantId, id, forPost, supplier.name || '', products, prevPostedRef.current, meta.internalPurchaseId || meta.supplierInvoiceNumber)
         .then(newPosted => {
           prevPostedRef.current = newPosted;
           // Store postedLines on invoice doc for idempotency on future edits
@@ -559,7 +577,7 @@ ${styles}
           <div className="pi-meta">
             <div><div className="pi-label">Internal Purchase ID</div><div className="pi-val">{meta.internalPurchaseId || '—'}</div></div>
             <div><div className="pi-label">Bill No.</div><div className="pi-val">{meta.supplierInvoiceNumber || '—'}</div></div>
-            <div><div className="pi-label">Purchase Date</div><div className="pi-val">{meta.invoiceDate || '—'}</div></div>
+            <div><div className="pi-label">Purchase Date</div><div className="pi-val">{fmtDateDMY(meta.invoiceDate) || '—'}</div></div>
             <div><div className="pi-label">Status</div><div className="pi-val">{meta.status}</div></div>
           </div>
 
@@ -575,6 +593,9 @@ ${styles}
                 <th style={{ width: '30px' }}>GST%</th>
                 <th style={{ width: '55px' }}>Rate incl. GST</th>
                 <th style={{ width: '35px' }}>Qty</th>
+                <th style={{ width: '45px' }}>MRP</th>
+                <th style={{ width: '45px' }}>PTR</th>
+                <th style={{ width: '50px' }}>Sale Rate</th>
                 <th style={{ width: '65px' }}>Amt w/o GST</th>
                 <th style={{ width: '50px' }}>GST Amt</th>
                 <th style={{ width: '65px' }}>Final Amount</th>
@@ -587,11 +608,14 @@ ${styles}
                   <td>{l.productName}</td>
                   <td className="c">{l.manufacturer}</td>
                   <td className="c">{l.batchNumber}</td>
-                  <td className="c">{l.expiryDate}</td>
+                  <td className="c">{fmtDateDMY(l.expiryDate) || '—'}</td>
                   <td className="r">{n(l.rateWithoutGst).toFixed(2)}</td>
                   <td className="c">{l.gstPct}%</td>
                   <td className="r">{n(l.rateWithGst).toFixed(2)}</td>
                   <td className="c">{l.qty}</td>
+                  <td className="r">{l.mrp ? n(l.mrp).toFixed(2) : '—'}</td>
+                  <td className="r">{l.ptr ? n(l.ptr).toFixed(2) : '—'}</td>
+                  <td className="r">{l.salesRate ? n(l.salesRate).toFixed(2) : '—'}</td>
                   <td className="r">{fmtINR(l.amountWithoutGst)}</td>
                   <td className="r">{fmtINR(l.gstAmount)}</td>
                   <td className="r">{fmtINR(l.finalAmount)}</td>
@@ -602,6 +626,9 @@ ${styles}
               <tr>
                 <td colSpan={8} className="c">TOTALS</td>
                 <td className="c">{totals.totalQty}</td>
+                <td className="c">—</td>
+                <td className="c">—</td>
+                <td className="c">—</td>
                 <td className="r">{fmtINR(totals.totalAmountWithoutGst)}</td>
                 <td className="r">{fmtINR(totals.totalGst)}</td>
                 <td className="r">{fmtINR(totals.totalFinalAmount)}</td>
@@ -693,6 +720,9 @@ ${styles}
                   <col style={{ width: '80px' }} />
                   <col style={{ width: '110px' }} />
                   <col style={{ width: '80px' }} />
+                  <col style={{ width: '90px' }} />
+                  <col style={{ width: '90px' }} />
+                  <col style={{ width: '100px' }} />
                   <col style={{ width: '110px' }} />
                   <col style={{ width: '36px' }} />
                 </colgroup>
@@ -707,6 +737,9 @@ ${styles}
                     <th style={{ ...thStyle, background: 'hsla(220,40%,30%,0.3)' }}>GST %</th>
                     <th style={{ ...thStyle, background: 'var(--primary-light)', color: '#fff' }}>Purchase Rate<br/>(incl. GST) ✏</th>
                     <th style={{ ...thStyle, background: 'var(--secondary)', color: '#fff' }}>Quantity ✏</th>
+                    <th style={{ ...thStyle, background: 'hsla(145,60%,35%,0.25)' }}>MRP ✏</th>
+                    <th style={{ ...thStyle, background: 'hsla(145,60%,35%,0.25)' }}>PTR ✏</th>
+                    <th style={{ ...thStyle, background: 'hsla(145,60%,35%,0.25)' }}>Sale Rate ✏</th>
                     <th style={{ ...thStyle, color: 'var(--text-tertiary)' }}>Final Amount</th>
                     <th style={thStyle}></th>
                   </tr>
@@ -718,33 +751,33 @@ ${styles}
                       <tr key={i} style={{ background: i % 2 === 0 ? 'transparent' : 'hsla(220,20%,50%,0.04)' }}>
                         <td style={{ ...tdAuto, textAlign: 'center', fontWeight: 600 }}>{i + 1}</td>
 
-                        {/* Product selector */}
+                        {/* Product selector — always searches the full inventory master;
+                            supplier price list (if any) is an optional quick-fill below it. */}
                         <td style={tdInput}>
-                          {priceList.length > 0 ? (
+                          <ProductAutocomplete
+                            value={l.productName}
+                            onChange={v => setLine(i, 'productName', v)}
+                            onSelect={p => selectFromMaster(i, p)}
+                            products={products}
+                            placeholder="Search product…"
+                            style={{ padding: '0.3rem 0.4rem', fontSize: '0.8rem' }}
+                          />
+                          {priceList.length > 0 && (
                             <select
                               className="input-field"
                               value={
                                 priceList.find(p => p.productName === l.productName)?.id ?? ''
                               }
                               onChange={e => selectFromPriceList(i, e.target.value)}
-                              style={{ width: '100%', margin: 0, padding: '0.3rem 0.4rem', fontSize: '0.8rem' }}
+                              style={{ width: '100%', margin: '3px 0 0', padding: '0.2rem 0.4rem', fontSize: '0.7rem', color: 'var(--text-tertiary)' }}
                             >
-                              <option value="">— Select from price list —</option>
+                              <option value="">— quick-fill from price list —</option>
                               {priceList.map(item => (
                                 <option key={item.id} value={item.id}>
                                   {item.productName}
                                 </option>
                               ))}
                             </select>
-                          ) : (
-                            <ProductAutocomplete
-                              value={l.productName}
-                              onChange={v => setLine(i, 'productName', v)}
-                              onSelect={p => selectFromMaster(i, p)}
-                              products={products}
-                              placeholder="Search product…"
-                              style={{ padding: '0.3rem 0.4rem', fontSize: '0.8rem' }}
-                            />
                           )}
                         </td>
 
@@ -792,6 +825,20 @@ ${styles}
                         <td style={{ ...tdInput, background: 'hsla(var(--secondary-hsl, 145,60%,40%),0.08)' }}>
                           <input className="input-field" type="number" value={l.quantity} onChange={e => setLine(i, 'quantity', e.target.value)} placeholder="0"
                             style={{ width: '100%', margin: 0, padding: '0.3rem 0.4rem', fontSize: '0.8rem', textAlign: 'right', fontWeight: 700 }} />
+                        </td>
+
+                        {/* MRP, PTR, Sale Rate — fed directly into product master on save */}
+                        <td style={{ ...tdInput, background: 'hsla(145,60%,40%,0.06)' }}>
+                          <input className="input-field" type="number" value={l.mrp} onChange={e => setLine(i, 'mrp', e.target.value)} placeholder="0.00"
+                            style={{ width: '100%', margin: 0, padding: '0.3rem 0.4rem', fontSize: '0.8rem', textAlign: 'right', fontWeight: 600 }} />
+                        </td>
+                        <td style={{ ...tdInput, background: 'hsla(145,60%,40%,0.06)' }}>
+                          <input className="input-field" type="number" value={l.ptr} onChange={e => setLine(i, 'ptr', e.target.value)} placeholder="0.00"
+                            style={{ width: '100%', margin: 0, padding: '0.3rem 0.4rem', fontSize: '0.8rem', textAlign: 'right', fontWeight: 600 }} />
+                        </td>
+                        <td style={{ ...tdInput, background: 'hsla(145,60%,40%,0.06)' }}>
+                          <input className="input-field" type="number" value={l.salesRate} onChange={e => setLine(i, 'salesRate', e.target.value)} placeholder="0.00"
+                            style={{ width: '100%', margin: 0, padding: '0.3rem 0.4rem', fontSize: '0.8rem', textAlign: 'right', fontWeight: 600 }} />
                         </td>
 
                         {/* Final Amount — auto-computed */}

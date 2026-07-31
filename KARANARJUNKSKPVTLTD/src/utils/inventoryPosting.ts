@@ -10,9 +10,9 @@ import { recordPurchaseMovements } from './stockDeduction';
 //
 // Each supplier-invoice line updates:
 //   (a) `products` master — prices, manufacturer, stock (in loosePieces)
-//   (b) `inventoryBatches` — keyed by ${productId}_${batchNo}, so the same
-//       batch on two different invoices increments the existing doc rather than
-//       creating a duplicate.
+//   (b) `inventoryBatches` — keyed by ${productId}_${batchNo}_${invoiceId}, so
+//       each invoice's delivery is its own record even if a batch number is
+//       reused across dates; re-saving the same invoice stays idempotent.
 //
 // Stock is stored in `product.loosePieces` (total units). POS deducts from
 // loosePieces, so POS stock tracking continues to work without changes.
@@ -38,6 +38,8 @@ export interface SupplierLineForPost {
     quantity?: number;   // total loose units received
     rate?: number;       // purchase cost without GST
     mrp?: number;
+    retailerPrice?: number;
+    sellingPrice?: number;
     gstPct?: number;
     productNumber?: string;
     type?: string;
@@ -58,10 +60,14 @@ const str = (key: string, v: unknown): Record<string, string> => {
     return s ? { [key]: s } : {};
 };
 
+// Scoped to the invoice: a batch number can legitimately repeat across separate
+// deliveries (same manufacturer lot code), and each delivery needs its own
+// quantity/price/date record rather than silently overwriting the prior one.
+// Re-saving the SAME invoice still resolves to the same doc (idempotent edits).
 function makeBatchDocId(productId: string, batchNo: string | undefined, invoiceId: string, index: number): string {
     const b = (batchNo || '').trim();
     return b
-        ? `${productId}_${b.replace(/[/\\.\s[\]#*?]/g, '_')}`
+        ? `${productId}_${b.replace(/[/\\.\s[\]#*?]/g, '_')}_${invoiceId}`
         : `${invoiceId}_${index}`;
 }
 
@@ -72,6 +78,7 @@ export async function postSupplierInvoiceToInventory(
     supplierName: string,
     existingProducts: ExistingProductLite[],
     prevPosted: PostedLine[] = [],
+    invoiceNumber?: string,
 ): Promise<PostedLine[]> {
     if (!tenantId || !invoiceId) return prevPosted;
 
@@ -133,6 +140,8 @@ export async function postSupplierInvoiceToInventory(
             ...str('mfgCompany', r.line.mfgCompany),
             ...num('purchasePrice', r.line.rate),
             ...num('maxRetailPrice', r.line.mrp),
+            ...num('retailerPrice', r.line.retailerPrice),
+            ...num('sellingPrice', r.line.sellingPrice),
             ...num('gstPct', r.line.gstPct),
             ...str('productNumber', r.line.productNumber),
             ...str('type', r.line.type),
@@ -233,7 +242,8 @@ export async function postSupplierInvoiceToInventory(
             batchDocId: p.batchDocId,
         })),
         invoiceId,
-        invoiceId,  // sourceNumber — caller can override via a future param
+        invoiceNumber || invoiceId,
+        supplierName,
     ).catch(console.error);
 
     return newPosted;

@@ -98,12 +98,15 @@ class AppShell extends ConsumerWidget {
     final commentSheetOpen = ref.watch(reelCommentSheetOpenProvider);
 
     Widget? fab;
-    if (isReelsTab && isSeller && !commentSheetOpen) {
+    if (isReelsTab && userModel != null && !commentSheetOpen) {
+      // Any logged-in user (farmer or seller) can upload a reel. The
+      // subscription paywall only applies to sellers — consumers have no
+      // subscription concept, so they go straight to the upload screen.
       fab = FloatingActionButton(
         backgroundColor: AppColors.secondary,
         foregroundColor: Colors.white,
         onPressed: () {
-          if (canAccess) {
+          if (!isSeller || canAccess) {
             context.push('/reels/upload');
           } else {
             _showSubscriptionDialog(context);

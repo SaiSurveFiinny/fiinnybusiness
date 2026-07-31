@@ -201,6 +201,7 @@ export async function recordPurchaseMovements(
   lines: Array<{ productId: string; productName: string; batchNumber: string; qtyIn: number; batchDocId: string }>,
   sourceId: string,
   sourceNumber: string,
+  supplierName?: string,
 ): Promise<void> {
   if (!tenantId || lines.length === 0) return;
   const date = new Date().toISOString().slice(0, 10);
@@ -226,6 +227,7 @@ export async function recordPurchaseMovements(
           sourceType: 'Purchase Invoice',
           sourceId,
           sourceNumber,
+          supplierName: supplierName || '',
           date,
           createdAt: serverTimestamp(),
         });

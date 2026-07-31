@@ -10,6 +10,8 @@ export interface ProductLite {
   purchasePrice?: number;
   gstPct?: number;
   retailerPrice?: number;
+  maxRetailPrice?: number;
+  sellingPrice?: number;
   boxCapacity?: number;
   unitSize?: number;
   unitMeasure?: string;

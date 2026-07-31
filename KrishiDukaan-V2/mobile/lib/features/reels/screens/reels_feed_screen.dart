@@ -13,6 +13,7 @@ import '../../../core/providers/user_provider.dart';
 import '../../../core/utils/web_links.dart';
 import '../../../core/utils/format_count.dart';
 import '../../../core/widgets/app_shell.dart';
+import '../../../core/widgets/user_tag_dialog.dart';
 import '../providers/reels_provider.dart';
 import '../widgets/reel_filters.dart';
 
@@ -31,20 +32,6 @@ class _ReelsFeedScreenState extends ConsumerState<ReelsFeedScreen>
   int _currentPage = 0;
   bool _initialized = false;
 
-  // Route-level visibility guard.
-  //
-  // The tab-index listener in build() only fires when the bottom-nav branch
-  // changes, which misses a screen pushed ON TOP of the reels tab: tapping a
-  // reel's seller profile (`/shop/...`) or its linked product (`/product/...`)
-  // pushes a root route while the tab index stays on reels, so nothing paused
-  // the video and its audio kept playing underneath the new screen.
-  //
-  // ReelsNavigatorObserver drives the same shared gate via NavigatorObserver
-  // callbacks, but those fire mid-navigation where a Riverpod write can be
-  // rejected (and is swallowed by its `catch`), so it can't be the only
-  // safeguard. Listening to the router settles after navigation completes and
-  // pauses the controllers directly — audio plays only while the top-most
-  // location is exactly /reels.
   GoRouter? _router;
 
   @override
@@ -69,9 +56,6 @@ class _ReelsFeedScreenState extends ConsumerState<ReelsFeedScreen>
     final visible =
         path == '/reels' && ref.read(activeShellIndexProvider) == reelsTab;
 
-    // Pause/resume the controllers directly FIRST. This is what actually
-    // silences the audio, and it must not depend on the provider write below
-    // succeeding.
     if (!visible) {
       for (final c in _controllers.values) {
         c.pause();
@@ -83,8 +67,6 @@ class _ReelsFeedScreenState extends ConsumerState<ReelsFeedScreen>
       }
     }
 
-    // Then keep the shared gate in sync, so a controller that finishes
-    // initialising while we're away can't start playing on its own.
     try {
       ref.read(reelsFeedPlaybackActiveProvider.notifier).setPlayable(visible);
     } catch (_) {}
@@ -108,8 +90,6 @@ class _ReelsFeedScreenState extends ConsumerState<ReelsFeedScreen>
         c.pause();
       }
     } else {
-      // Only resume if the reels tab is still active — otherwise the user
-      // foregrounded the app while on a different tab and the reel must stay silent.
       const reelsTab = 4;
       if (ref.read(activeShellIndexProvider) != reelsTab) return;
       if (!ref.read(reelsFeedPlaybackActiveProvider)) return;
@@ -153,7 +133,6 @@ class _ReelsFeedScreenState extends ConsumerState<ReelsFeedScreen>
       _controllers[reels[index].id]?.play();
       _ensureController(index + 1, reels);
       if (index > 0) _ensureController(index - 1, reels);
-      // Count a view once per reel per session
       final reelId = reels[index].id;
       _markReelAsSeen(reelId);
     }
@@ -173,11 +152,9 @@ class _ReelsFeedScreenState extends ConsumerState<ReelsFeedScreen>
     final feedAsync = ref.watch(reelsFeedProvider);
     final currentUser = ref.watch(currentUserProvider).value;
 
-    // Pause/resume when the user switches away from / back to the reels tab.
     ref.listen<int>(activeShellIndexProvider, (_, tabIndex) {
       const reelsTab = 4;
       if (tabIndex != reelsTab) {
-        // Mark inactive FIRST so any late-initialising controllers don't sneak in.
         ref.read(reelsFeedPlaybackActiveProvider.notifier).setPlayable(false);
         for (final c in _controllers.values) {
           c.pause();
@@ -212,7 +189,6 @@ class _ReelsFeedScreenState extends ConsumerState<ReelsFeedScreen>
         final reels = next.value!;
         _ensureController(0, reels);
         _ensureController(1, reels);
-        // First reel is shown immediately — count its view
         if (reels.isNotEmpty) {
           _markReelAsSeen(reels[0].id);
         }
@@ -299,7 +275,6 @@ class _ReelsFeedScreenState extends ConsumerState<ReelsFeedScreen>
                     );
                   },
                 ),
-                // "AgriReels" header
                 Positioned(
                   top: 0,
                   left: 0,
@@ -403,7 +378,6 @@ class _ReelsFeedScreenState extends ConsumerState<ReelsFeedScreen>
       final seenReels = prefs.getStringList('seen_reels') ?? [];
       if (!seenReels.contains(reelId)) {
         seenReels.add(reelId);
-        // Keep the list from growing indefinitely
         if (seenReels.length > 500) {
           seenReels.removeAt(0);
         }
@@ -412,8 +386,6 @@ class _ReelsFeedScreenState extends ConsumerState<ReelsFeedScreen>
     }
   }
 }
-
-// ── Individual reel page ─────────────────────────────────────────────────────
 
 class _ReelPage extends ConsumerStatefulWidget {
   final ReelModel reel;
@@ -445,8 +417,6 @@ class _ReelPageState extends ConsumerState<_ReelPage>
   late Animation<double> _heartScale;
   late Animation<double> _heartOpacity;
   bool _reposting = false;
-  // The caller's repost doc id for this reel (null = not reposted). Drives the
-  // repost button's active state and one-tap undo.
   String? _repostId;
 
   @override
@@ -476,7 +446,6 @@ class _ReelPageState extends ConsumerState<_ReelPage>
       ),
     ]).animate(_likeAnimController);
 
-    // Double-tap heart burst
     _heartAnimController = AnimationController(
       vsync: this,
       duration: const Duration(milliseconds: 700),
@@ -617,10 +586,6 @@ class _ReelPageState extends ConsumerState<_ReelPage>
     });
   }
 
-  /// Share message leads with the reel's title + description. Both links are
-  /// real website routes (WebLinks slugs match the web's builders): the reel's
-  /// own page, and — when the seller linked a product — that product's page,
-  /// so the receiver can open exactly what was linked.
   String get _shareText {
     final reel = widget.reel;
     final reelLink = WebLinks.reel(reel.title, reel.id);
@@ -690,7 +655,6 @@ class _ReelPageState extends ConsumerState<_ReelPage>
                 if (await canLaunchUrl(url)) {
                   await launchUrl(url, mode: LaunchMode.externalApplication);
                 } else if (mounted) {
-                  // WhatsApp not installed — fall back to the system sheet.
                   SharePlus.instance.share(ShareParams(text: _shareText));
                 }
               },
@@ -755,9 +719,7 @@ class _ReelPageState extends ConsumerState<_ReelPage>
   }
 
   void _onDoubleTap() {
-    // Like if not already liked
     if (_isLiked == false) _toggleLike();
-    // Always burst the heart
     _heartAnimController.forward(from: 0);
   }
 
@@ -773,22 +735,10 @@ class _ReelPageState extends ConsumerState<_ReelPage>
     );
   }
 
-  /// One-tap repost / un-repost. No menus: tapping reposts instantly; tapping
-  /// again removes it. Removal is also available from the seller's own profile.
   Future<void> _toggleRepost() async {
     final user = ref.read(currentUserProvider).value;
     if (user == null) {
       _showLoginPrompt();
-      return;
-    }
-    if (!user.canAccessDashboard) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text(
-            'An active seller subscription is required to repost reels.',
-          ),
-        ),
-      );
       return;
     }
     if (_reposting) return;
@@ -873,7 +823,6 @@ class _ReelPageState extends ConsumerState<_ReelPage>
     return Stack(
       fit: StackFit.expand,
       children: [
-        // ── Video background ─────────────────────────────────────────────
         GestureDetector(
           onTap: _togglePlayPause,
           onDoubleTap: _onDoubleTap,
@@ -914,15 +863,11 @@ class _ReelPageState extends ConsumerState<_ReelPage>
                   ),
           ),
         ),
-
-        // ── Seller's text overlay (from the upload editor) ───────────────
         if (widget.reel.overlayText != null)
           ReelTextOverlay(
             text: widget.reel.overlayText!,
             pos: widget.reel.overlayPos,
           ),
-
-        // ── Pause icon flash ─────────────────────────────────────────────
         if (_showPauseIcon)
           Center(
             child: Container(
@@ -938,8 +883,6 @@ class _ReelPageState extends ConsumerState<_ReelPage>
               ),
             ),
           ),
-
-        // ── Double-tap heart burst ────────────────────────────────────────
         AnimatedBuilder(
           animation: _heartAnimController,
           builder: (_, _) {
@@ -961,8 +904,6 @@ class _ReelPageState extends ConsumerState<_ReelPage>
             );
           },
         ),
-
-        // ── Top gradient (status bar readability) ────────────────────────
         Positioned(
           top: 0,
           left: 0,
@@ -978,8 +919,6 @@ class _ReelPageState extends ConsumerState<_ReelPage>
             ),
           ),
         ),
-
-        // ── Bottom gradient ───────────────────────────────────────────────
         Positioned(
           bottom: 0,
           left: 0,
@@ -995,8 +934,6 @@ class _ReelPageState extends ConsumerState<_ReelPage>
             ),
           ),
         ),
-
-        // ── Right-side action column ──────────────────────────────────────
         Positioned(
           right: 12,
           bottom: 80,
@@ -1074,8 +1011,6 @@ class _ReelPageState extends ConsumerState<_ReelPage>
             ),
           ),
         ),
-
-        // ── Bottom overlay: shop name, caption, product card ─────────────
         Positioned(
           left: 14,
           right: 80,
@@ -1088,10 +1023,6 @@ class _ReelPageState extends ConsumerState<_ReelPage>
                 crossAxisAlignment: CrossAxisAlignment.start,
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  // Instagram-style identity row: small avatar + @handle +
-                  // Follow. The handle is Flexible so a long shop name
-                  // truncates instead of overflowing (and shoving the Follow
-                  // pill into the create-reel FAB).
                   Row(
                     children: [
                       GestureDetector(
@@ -1214,10 +1145,6 @@ class _ReelPageState extends ConsumerState<_ReelPage>
   String _formatCount(int count) => formatCount(count);
 }
 
-// ── Overlay helper widgets ────────────────────────────────────────────────────
-
-/// Small circular shop avatar with an initials fallback. Tap handling is left
-/// to the parent so it can be reused anywhere.
 class _ShopAvatar extends StatelessWidget {
   final String? imageUrl;
   final String shopName;
@@ -1384,8 +1311,6 @@ class _ProductCard extends StatelessWidget {
   }
 }
 
-// ── Comments bottom sheet ─────────────────────────────────────────────────────
-
 class _CommentsSheet extends ConsumerStatefulWidget {
   final String reelId;
   final String? currentUserId;
@@ -1406,9 +1331,63 @@ class _CommentsSheet extends ConsumerStatefulWidget {
 class _CommentsSheetState extends ConsumerState<_CommentsSheet> {
   final _textController = TextEditingController();
   bool _submitting = false;
+  String? _taggedUserId;
+  String? _taggedUserName;
+
+  // Inline "@mention" suggestions while typing.
+  String? _mentionQuery;
+  List<TaggedUser> _mentionResults = const [];
+  bool _mentionLoading = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _textController.addListener(_onTextChanged);
+  }
+
+  void _onTextChanged() {
+    final text = _textController.text;
+    final caret = _textController.selection.baseOffset;
+    final uptoCaret = caret >= 0 ? text.substring(0, caret) : text;
+    final match = RegExp(r'@([^\s@]*)$').firstMatch(uptoCaret);
+    if (match == null) {
+      if (_mentionQuery != null) setState(() => _mentionQuery = null);
+      return;
+    }
+    final q = match.group(1) ?? '';
+    setState(() {
+      _mentionQuery = q;
+      _mentionLoading = true;
+    });
+    searchTaggableUsers(q).then((results) {
+      if (!mounted || _mentionQuery != q) return;
+      setState(() {
+        _mentionResults = results;
+        _mentionLoading = false;
+      });
+    });
+  }
+
+  void _pickMention(TaggedUser u) {
+    final text = _textController.text;
+    final caret = _textController.selection.baseOffset;
+    final uptoCaret = caret >= 0 ? text.substring(0, caret) : text;
+    final replaced = uptoCaret.replaceFirst(RegExp(r'@([^\s@]*)$'), '@${u.name} ');
+    final rest = caret >= 0 ? text.substring(caret) : '';
+    _textController.value = TextEditingValue(
+      text: replaced + rest,
+      selection: TextSelection.collapsed(offset: replaced.length),
+    );
+    setState(() {
+      _taggedUserId = u.id;
+      _taggedUserName = u.name;
+      _mentionQuery = null;
+    });
+  }
 
   @override
   void dispose() {
+    _textController.removeListener(_onTextChanged);
     _textController.dispose();
     super.dispose();
   }
@@ -1444,8 +1423,12 @@ class _CommentsSheetState extends ConsumerState<_CommentsSheet> {
                 ? widget.currentUserName
                 : widget.currentUserId!,
             text,
+            taggedUserId: _taggedUserId,
+            taggedUserName: _taggedUserName,
           );
       _textController.clear();
+      _taggedUserId = null;
+      _taggedUserName = null;
       widget.onCommentAdded();
     } catch (e) {
       if (mounted) {
@@ -1473,7 +1456,6 @@ class _CommentsSheetState extends ConsumerState<_CommentsSheet> {
       ),
       child: Column(
         children: [
-          // Drag handle
           Container(
             margin: const EdgeInsets.symmetric(vertical: 10),
             width: 40,
@@ -1485,8 +1467,6 @@ class _CommentsSheetState extends ConsumerState<_CommentsSheet> {
           ),
           Text('Comments', style: AppTextStyles.heading3),
           const Divider(height: 16),
-
-          // Comments list
           Expanded(
             child: commentsAsync.when(
               loading: () => const Center(child: CircularProgressIndicator()),
@@ -1549,7 +1529,23 @@ class _CommentsSheetState extends ConsumerState<_CommentsSheet> {
                                   ),
                                 ),
                                 const SizedBox(height: 2),
-                                Text(c.text, style: AppTextStyles.bodySmall),
+                                c.taggedUserName != null && c.taggedUserName!.isNotEmpty
+                                    ? RichText(
+                                        text: TextSpan(
+                                          style: AppTextStyles.bodySmall.copyWith(color: Colors.black87),
+                                          children: [
+                                            TextSpan(
+                                              text: '@${c.taggedUserName} ',
+                                              style: const TextStyle(
+                                                color: Colors.blue,
+                                                fontWeight: FontWeight.bold,
+                                              ),
+                                            ),
+                                            TextSpan(text: c.text),
+                                          ],
+                                        ),
+                                      )
+                                    : Text(c.text, style: AppTextStyles.bodySmall),
                               ],
                             ),
                           ),
@@ -1565,15 +1561,60 @@ class _CommentsSheetState extends ConsumerState<_CommentsSheet> {
           // Input
           Padding(
             padding: EdgeInsets.only(
-              left: 16,
+              left: 4,
               right: 8,
               top: 8,
               bottom: MediaQuery.of(context).viewInsets.bottom + 12,
             ),
-            child: Row(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Expanded(
-                  child: TextField(
+                if (_mentionQuery != null)
+                  Padding(
+                    padding: const EdgeInsets.only(bottom: 6),
+                    child: MentionSuggestions(
+                      results: _mentionResults,
+                      loading: _mentionLoading,
+                      query: _mentionQuery!,
+                      onSelect: _pickMention,
+                    ),
+                  ),
+                if (_taggedUserName != null)
+                  Padding(
+                    padding: const EdgeInsets.only(left: 12, bottom: 4),
+                    child: Row(
+                      children: [
+                        Text('Tagging: @$_taggedUserName', style: const TextStyle(color: Colors.blue, fontSize: 12, fontWeight: FontWeight.bold)),
+                        const SizedBox(width: 4),
+                        GestureDetector(
+                          onTap: () => setState(() {
+                            _taggedUserId = null;
+                            _taggedUserName = null;
+                          }),
+                          child: const Icon(Icons.close, size: 14, color: Colors.blue),
+                        )
+                      ],
+                    ),
+                  ),
+                Row(
+                  children: [
+                    IconButton(
+                      icon: const Icon(Icons.alternate_email, color: AppColors.primary),
+                      onPressed: () async {
+                        final res = await showDialog(
+                          context: context,
+                          builder: (_) => const UserTagDialog(),
+                        );
+                        if (res != null && res is TaggedUser) {
+                          setState(() {
+                            _taggedUserId = res.id;
+                            _taggedUserName = res.name;
+                          });
+                        }
+                      },
+                    ),
+                    Expanded(
+                      child: TextField(
                     controller: _textController,
                     decoration: InputDecoration(
                       hintText: widget.currentUserId == null
@@ -1618,10 +1659,12 @@ class _CommentsSheetState extends ConsumerState<_CommentsSheet> {
                 ),
               ],
             ),
-          ),
-        ],
+          ],
+        ),
       ),
-    );
+    ],
+  ),
+);
   }
 }
 
