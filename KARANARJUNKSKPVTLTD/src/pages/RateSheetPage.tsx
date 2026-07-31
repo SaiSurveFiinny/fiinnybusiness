@@ -618,7 +618,7 @@ export default function RateSheetPage() {
                 <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '0.75rem' }}>
                   <div>
                     <label className="input-label">Unit Size</label>
-                    <input type="number" min="0" step="0.01" className="input-field" value={formData.unitSize || ''} onChange={e => set({ unitSize: Number(e.target.value) })} placeholder="e.g. 500" />
+                    <input type="number" min="0" step="0.01" className="input-field" value={formData.unitSize || ''} onChange={e => set({ unitSize: Number(e.target.value) })} onWheel={e => e.currentTarget.blur()} placeholder="e.g. 500" />
                   </div>
                   <div>
                     <label className="input-label">Unit Measure</label>
@@ -633,7 +633,7 @@ export default function RateSheetPage() {
                     </select>
                   </div>
                   <div>
-                    <label className="input-label">Default GST %</label>
+                    <label className="input-label">GST %</label>
                     <select className="input-field" value={formData.gstPct} onChange={e => set({ gstPct: Number(e.target.value) })}>
                       {GST_OPTIONS.map(g => <option key={g} value={g}>{g}%</option>)}
                     </select>
@@ -641,27 +641,27 @@ export default function RateSheetPage() {
                 </div>
               </section>
 
-              {/* Section 3: Default Rates */}
+              {/* Section 3: Rates */}
               <section>
-                <div style={{ fontSize: '0.72rem', fontWeight: 700, textTransform: 'uppercase', color: 'var(--text-tertiary)', letterSpacing: '0.08em', marginBottom: '0.85rem' }}>3 · Default Rates</div>
+                <div style={{ fontSize: '0.72rem', fontWeight: 700, textTransform: 'uppercase', color: 'var(--text-tertiary)', letterSpacing: '0.08em', marginBottom: '0.85rem' }}>3 · Rates</div>
                 <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '0.75rem' }}>
                   <div>
-                    <label className="input-label">Default MRP</label>
-                    <input type="number" step="0.01" min="0" className="input-field" value={formData.maxRetailPrice || ''} onChange={e => set({ maxRetailPrice: Number(e.target.value) })} placeholder="0.00" />
+                    <label className="input-label">MRP</label>
+                    <input type="number" step="0.01" min="0" className="input-field" value={formData.maxRetailPrice || ''} onChange={e => set({ maxRetailPrice: Number(e.target.value) })} onWheel={e => e.currentTarget.blur()} placeholder="0.00" />
                   </div>
                   <div>
                     <label className="input-label">Retailer Price (PTR)</label>
-                    <input type="number" step="0.01" min="0" className="input-field" value={formData.retailerPrice || ''} onChange={e => set({ retailerPrice: Number(e.target.value) })} placeholder="0.00" />
+                    <input type="number" step="0.01" min="0" className="input-field" value={formData.retailerPrice || ''} onChange={e => set({ retailerPrice: Number(e.target.value) })} onWheel={e => e.currentTarget.blur()} placeholder="0.00" />
                   </div>
                   {canSeeCost && (
                     <div>
-                      <label className="input-label">Default Purchase Rate</label>
-                      <input type="number" step="0.01" min="0" className="input-field" value={formData.purchasePrice || ''} onChange={e => set({ purchasePrice: Number(e.target.value) })} placeholder="0.00" />
+                      <label className="input-label">Purchase Rate</label>
+                      <input type="number" step="0.01" min="0" className="input-field" value={formData.purchasePrice || ''} onChange={e => set({ purchasePrice: Number(e.target.value) })} onWheel={e => e.currentTarget.blur()} placeholder="0.00" />
                     </div>
                   )}
                   <div>
-                    <label className="input-label">Default Sales Rate</label>
-                    <input type="number" step="0.01" min="0" className="input-field" value={formData.sellingPrice || ''} onChange={e => set({ sellingPrice: Number(e.target.value) })} placeholder="0.00" />
+                    <label className="input-label">Sales Rate</label>
+                    <input type="number" step="0.01" min="0" className="input-field" value={formData.sellingPrice || ''} onChange={e => set({ sellingPrice: Number(e.target.value) })} onWheel={e => e.currentTarget.blur()} placeholder="0.00" />
                   </div>
                 </div>
                 <p style={{ fontSize: '0.75rem', color: 'var(--text-tertiary)', marginTop: '0.5rem' }}>
