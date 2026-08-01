@@ -36,6 +36,7 @@ import '../../features/support/screens/support_screen.dart';
 import '../../features/welcome/screens/splash_screen.dart';
 import '../../features/welcome/screens/welcome_screen.dart';
 import '../../features/reels/screens/reels_feed_screen.dart';
+import '../../features/reels/screens/reel_deep_link_screen.dart';
 import '../../features/reels/screens/reel_upload_screen.dart';
 import '../../features/reels/screens/shop_profile_screen.dart';
 import '../../features/reels/providers/reels_provider.dart';
@@ -357,6 +358,16 @@ final routerProvider = Provider<GoRouter>((ref) {
         path: '/reels/upload',
         parentNavigatorKey: _rootKey,
         builder: (_, _) => const _RootBackFallback(child: ReelUploadScreen()),
+      ),
+      // Shared reel links: the deep-link redirect above maps
+      // /reels/{slug}-{id} to /reel/{id}, which was never registered — shared
+      // links fell through to a 404 until this route existed.
+      GoRoute(
+        path: '/reel/:id',
+        parentNavigatorKey: _rootKey,
+        builder: (_, state) => _RootBackFallback(
+          child: ReelDeepLinkScreen(reelId: state.pathParameters['id'] ?? ''),
+        ),
       ),
       GoRoute(
         path: '/shop/:phone',

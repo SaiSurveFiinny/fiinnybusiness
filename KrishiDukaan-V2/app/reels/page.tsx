@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import Link from "next/link";
+import { Suspense } from "react";
 import {
   getAllReels,
   buildReelSlug,
@@ -110,7 +111,9 @@ export default async function ReelsPage() {
           <p className="text-sm">Sellers can post the first one from the KrishiDukan app!</p>
         </div>
       ) : (
-        <ReelsFeedClient reels={feedReels} />
+        <Suspense fallback={<div className="h-[calc(100dvh-4rem)] bg-black" />}>
+          <ReelsFeedClient reels={feedReels} />
+        </Suspense>
       )}
     </main>
   );
