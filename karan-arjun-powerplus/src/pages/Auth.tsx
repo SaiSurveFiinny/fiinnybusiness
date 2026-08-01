@@ -191,7 +191,7 @@ export default function Auth() {
             Trust with tradition, one step toward modernity.
           </h2>
           <p className="font-serif text-white/80 leading-relaxed text-lg">
-            Sign in to manage orders, tickets, and your Power Plus account from anywhere.
+            Sign in to manage orders, tickets, and your Karan Arjun Pvt. Ltd. account from anywhere.
           </p>
         </div>
       </div>
@@ -206,7 +206,7 @@ export default function Auth() {
               {mode === 'phone' ? 'Phone Sign-In' : mode === 'signin' ? 'Welcome Back' : 'Create Account'}
             </h1>
             <p className="font-serif text-on-surface-variant text-sm">
-              {mode === 'phone' ? 'We\'ll send a one-time password to your mobile' : mode === 'signin' ? 'Sign in to access your dashboard' : 'Join the official Power Plus portal'}
+              {mode === 'phone' ? 'We\'ll send a one-time password to your mobile' : mode === 'signin' ? 'Sign in to access your dashboard' : 'Join the official Karan Arjun Pvt. Ltd. portal'}
             </p>
           </div>
 

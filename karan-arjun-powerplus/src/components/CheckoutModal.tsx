@@ -5,6 +5,7 @@ import { useCart } from '../context/CartContext';
 import { useAuth } from '../context/AuthContext';
 import { db } from '../lib/firebase';
 import { Icons } from './Icons';
+import { BRAND_NAME } from '../config/navigation';
 
 export function CheckoutModal() {
   const { isCheckoutOpen, setIsCheckoutOpen, items, cartTotal, clearCart } = useCart();
@@ -43,7 +44,7 @@ export function CheckoutModal() {
       key:         import.meta.env.VITE_RAZORPAY_KEY_ID,
       amount:      Math.round(cartTotal * 100),
       currency:    'INR',
-      name:        'Power Plus™',
+      name:        BRAND_NAME,
       description: `Order — ${items.length} item${items.length !== 1 ? 's' : ''}`,
       prefill: {
         name:    delivery.fullName,

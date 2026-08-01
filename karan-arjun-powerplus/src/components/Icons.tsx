@@ -51,6 +51,17 @@ import {
   CreditCard,
   PackageCheck,
   BadgeIndianRupee,
+  HandHeart,
+  Layers,
+  ArrowUp,
+  ArrowDown,
+  ChevronDown,
+  Briefcase,
+  Quote,
+  Video,
+  PlayCircle,
+  Image,
+  ArrowLeftRight,
 } from 'lucide-react';
 
 export const Icons = {
@@ -106,4 +117,15 @@ export const Icons = {
   CreditCard,
   PackageCheck,
   BadgeIndianRupee,
+  HandHeart,
+  Layers,
+  ArrowUp,
+  ArrowDown,
+  ChevronDown,
+  Briefcase,
+  Quote,
+  Video,
+  PlayCircle,
+  Image,
+  ArrowLeftRight,
 };

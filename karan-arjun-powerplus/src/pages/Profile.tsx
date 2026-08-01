@@ -176,7 +176,7 @@ export default function Profile() {
     setSaveSuccess('');
     try {
       const updates: ProfileUpdates = {
-        name: editForm.name.trim() || 'Power Plus User',
+        name: editForm.name.trim() || 'Guest',
         email: editForm.email.trim(),
         phone: editForm.phone.trim(),
         village: editForm.village.trim(),
@@ -212,7 +212,7 @@ export default function Profile() {
       await setDoc(grievanceRef, {
         ticketId,
         uid: user.uid,
-        userName: profile?.name ?? user.displayName ?? 'Power Plus User',
+        userName: profile?.name ?? user.displayName ?? 'Guest',
         subject: subject.trim(),
         description: description.trim(),
         status: 'Pending',
@@ -283,7 +283,7 @@ export default function Profile() {
             <div className="flex items-center gap-3 w-full justify-center md:justify-start">
               <div>
                 <h2 className="font-sans text-3xl font-bold text-white leading-tight">
-                  {profile?.name ?? user?.displayName ?? 'Power Plus User'}
+                  {profile?.name ?? user?.displayName ?? 'Guest'}
                 </h2>
                 <p className="text-white/50 text-sm font-medium tracking-wide capitalize mt-0.5">
                   {profile?.role ?? 'customer'} account
