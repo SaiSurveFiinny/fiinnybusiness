@@ -1,11 +1,13 @@
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useMemo, useRef } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { query, getDocs, orderBy, where } from 'firebase/firestore';
 import { db } from '../firebase';
 import { useAuth } from '../contexts/AuthContext';
 import { getTenantCollection } from '../utils/tenantPath';
 import {
     Package2, TrendingUp, TrendingDown, AlertTriangle, Loader2,
-    Search, X, Download, ChevronDown, ChevronRight,
+    Search, X, Download, ChevronDown, ChevronRight, Calendar,
+    ExternalLink,
 } from 'lucide-react';
 import Papa from 'papaparse';
 
@@ -55,6 +57,21 @@ interface Movement {
     createdAt?: any;
 }
 
+// Derived from salesOrders — covers all historical sales regardless of stockMovements
+interface SaleRow {
+    orderId: string;
+    orderNumber: string;
+    date: string;
+    type: 'sale_pos' | 'sale_b2b';
+    customerName: string;
+    productId: string;
+    productName: string;
+    qty: number;
+    rate: number;
+    amount: number;
+    batchNo?: string;
+}
+
 interface ProductRow {
     product: Product;
     currentStock: number;
@@ -70,38 +87,109 @@ interface ProductRow {
     isLowStock: boolean;
 }
 
+// ── Period helpers ─────────────────────────────────────────────────────────────
+
+type Period = 'today' | 'yesterday' | 'this_week' | 'this_month' | 'this_fy' | 'custom';
+
+const PERIODS: { key: Period; label: string }[] = [
+    { key: 'today',      label: 'Today' },
+    { key: 'yesterday',  label: 'Yesterday' },
+    { key: 'this_week',  label: 'This Week' },
+    { key: 'this_month', label: 'This Month' },
+    { key: 'this_fy',    label: 'This FY' },
+    { key: 'custom',     label: 'Custom' },
+];
+
+function toStr(d: Date) { return d.toISOString().slice(0, 10); }
+
+function periodRange(p: Period, cf: string, ct: string): [string, string] {
+    const now = new Date();
+    const t = toStr(now);
+    switch (p) {
+        case 'today':      return [t, t];
+        case 'yesterday':  { const y = new Date(now); y.setDate(y.getDate() - 1); const s = toStr(y); return [s, s]; }
+        case 'this_week':  { const d = new Date(now); d.setDate(d.getDate() - d.getDay()); return [toStr(d), t]; }
+        case 'this_month': return [toStr(new Date(now.getFullYear(), now.getMonth(), 1)), t];
+        case 'this_fy':    { const y = now.getMonth() >= 3 ? now.getFullYear() : now.getFullYear() - 1; return [toStr(new Date(y, 3, 1)), t]; }
+        case 'custom':     return cf && ct ? [cf, ct] : [t, t];
+    }
+}
+
 // ── Constants ─────────────────────────────────────────────────────────────────
 
 const LOW_STOCK = 100;
 const fmtInr = (n: number) => `₹${(n || 0).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 const fmtDate = (s: string) => { if (!s) return '—'; const [y, m, d] = s.split('-'); return `${d}-${m}-${y}`; };
-const today = () => new Date().toISOString().slice(0, 10);
 const firstOfMonth = () => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-01`; };
+const todayStr = () => new Date().toISOString().slice(0, 10);
+
+// Detect POS orders by their KA-#### order number
+const isPosOrder = (n: string) => /^KA-\d+$/i.test((n || '').trim());
 
 // ── Component ─────────────────────────────────────────────────────────────────
 
 export default function StockReportPage() {
     const { tenantId } = useAuth();
+    const navigate = useNavigate();
 
-    // ── Filters ───────────────────────────────────────────────────────────────
-    const [dateFrom, setDateFrom] = useState(firstOfMonth());
-    const [dateTo, setDateTo] = useState(today());
-    const [productSearch, setProductSearch] = useState('');
+    // ── Period / date filters ─────────────────────────────────────────────────
+    const [period, setPeriod]       = useState<Period>('this_month');
+    const [customFrom, setCustomFrom] = useState(firstOfMonth());
+    const [customTo, setCustomTo]     = useState(todayStr());
+    const [dateFrom, setDateFrom]   = useState(firstOfMonth());
+    const [dateTo, setDateTo]       = useState(todayStr());
+
+    // Apply period whenever it or custom dates change
+    useEffect(() => {
+        const [f, t] = periodRange(period, customFrom, customTo);
+        setDateFrom(f);
+        setDateTo(t);
+    }, [period, customFrom, customTo]);
+
+    // ── Product autocomplete ──────────────────────────────────────────────────
+    const [productSearch, setProductSearch]       = useState('');
+    const [selectedProduct, setSelectedProduct]   = useState<Product | null>(null);
+    const [showProductDropdown, setShowProductDropdown] = useState(false);
+    const productInputRef = useRef<HTMLInputElement>(null);
+
+    // ── Other filters ─────────────────────────────────────────────────────────
     const [categoryFilter, setCategoryFilter] = useState('');
-    const [mfgFilter, setMfgFilter] = useState('');
-    const [batchFilter, setBatchFilter] = useState('');
-    const [activeSection, setActiveSection] = useState<'summary' | 'purchases' | 'sales' | 'movement' | 'products'>('summary');
+    const [mfgFilter, setMfgFilter]           = useState('');
+    const [batchFilter, setBatchFilter]       = useState('');
+    const [activeSection, setActiveSection]   = useState<'summary' | 'purchases' | 'sales' | 'movement' | 'products'>('summary');
 
     // ── Data ──────────────────────────────────────────────────────────────────
-    const [products, setProducts] = useState<Product[]>([]);
-    const [batches, setBatches] = useState<BatchDoc[]>([]);
-    const [movements, setMovements] = useState<Movement[]>([]);
-    const [loading, setLoading] = useState(true);
+    const [products, setProducts]     = useState<Product[]>([]);
+    const [batches, setBatches]       = useState<BatchDoc[]>([]);
+    const [movements, setMovements]   = useState<Movement[]>([]);
+    const [saleRows, setSaleRows]     = useState<SaleRow[]>([]);
+    const [loading, setLoading]       = useState(true);
     const [expandedProducts, setExpandedProducts] = useState<Set<string>>(new Set());
 
     useEffect(() => {
         if (!tenantId) return;
         setLoading(true);
+
+        // salesOrders query — use invoiceDate for date range (covers all historical records)
+        const fetchSalesOrders = getDocs(
+            query(
+                getTenantCollection(db, tenantId, 'salesOrders'),
+                where('invoiceDate', '>=', dateFrom),
+                where('invoiceDate', '<=', dateTo),
+                orderBy('invoiceDate', 'desc'),
+            ),
+        ).catch(() =>
+            // If composite index doesn't exist yet, fetch all and filter client-side
+            getDocs(query(getTenantCollection(db, tenantId, 'salesOrders'), orderBy('invoiceDate', 'desc')))
+                .then(snap => ({
+                    docs: snap.docs.filter(d => {
+                        const inv = (d.data() as any).invoiceDate || '';
+                        return inv >= dateFrom && inv <= dateTo;
+                    }),
+                }))
+                .catch(() => ({ docs: [] as any[] })),
+        );
+
         Promise.all([
             getDocs(query(getTenantCollection(db, tenantId, 'products'))),
             getDocs(query(getTenantCollection(db, tenantId, 'inventoryBatches'))),
@@ -110,18 +198,59 @@ export default function StockReportPage() {
                 where('date', '>=', dateFrom),
                 where('date', '<=', dateTo),
                 orderBy('date', 'desc'),
-            )),
-        ]).then(([pSnap, bSnap, mSnap]) => {
-            setProducts(pSnap.docs.map(d => ({ id: d.id, ...d.data() } as Product)));
+            )).catch(() => ({ docs: [] as any[] })),
+            fetchSalesOrders,
+        ]).then(([pSnap, bSnap, mSnap, sSnap]) => {
+            const prods = (pSnap.docs.map(d => ({ id: d.id, ...d.data() })) as Product[]);
+            setProducts(prods);
             setBatches(bSnap.docs.map(d => ({ id: d.id, ...d.data() } as BatchDoc)));
-            setMovements(mSnap.docs.map(d => ({ id: d.id, ...d.data() } as Movement)));
+            setMovements((mSnap as any).docs.map((d: any) => ({ id: d.id, ...d.data() } as Movement)));
+
+            // Derive SaleRows from salesOrders.lineItems for complete historical coverage
+            const prodMap = new Map(prods.map(p => [p.id, p]));
+            const rows: SaleRow[] = [];
+            for (const doc of (sSnap as any).docs) {
+                const o = doc.data() as any;
+                if (o.status === 'cancelled') continue;
+                const orderNum = (o.orderNumber || '').trim();
+                const type: SaleRow['type'] = isPosOrder(orderNum) ? 'sale_pos' : 'sale_b2b';
+                const date = o.invoiceDate || '';
+                if (!date) continue;
+                for (const li of (o.lineItems || [])) {
+                    if (!li.productId) continue;
+                    const prod = prodMap.get(li.productId);
+                    const qty = Math.abs(Number(li.quantity) || 0);
+                    const rate = Number(li.mrp) || (prod ? (prod.sellingPrice ?? 0) : 0);
+                    rows.push({
+                        orderId: doc.id,
+                        orderNumber: orderNum,
+                        date,
+                        type,
+                        customerName: o.retailerName || o.buyerName || 'Walk-in Customer',
+                        productId: li.productId,
+                        productName: li.productName || prod?.name || '—',
+                        qty,
+                        rate,
+                        amount: Number(li.amount) || qty * rate,
+                        batchNo: li.batchNo || '',
+                    });
+                }
+            }
+            setSaleRows(rows);
             setLoading(false);
         }).catch(e => { console.error(e); setLoading(false); });
     }, [tenantId, dateFrom, dateTo]);
 
-    // ── Derived categories / manufacturers for filter dropdowns ───────────────
-    const categories = useMemo(() => [...new Set(products.map(p => p.type).filter(Boolean))].sort() as string[], [products]);
+    // ── Derived categories / manufacturers ───────────────────────────────────
+    const categories    = useMemo(() => [...new Set(products.map(p => p.type).filter(Boolean))].sort() as string[], [products]);
     const manufacturers = useMemo(() => [...new Set(products.map(p => p.mfgCompany).filter(Boolean))].sort() as string[], [products]);
+
+    // Product autocomplete list (text match, capped at 8)
+    const productSuggestions = useMemo(() => {
+        if (!productSearch.trim() || selectedProduct) return [];
+        const q = productSearch.trim().toLowerCase();
+        return products.filter(p => p.name.toLowerCase().includes(q) || (p.mfgCompany || '').toLowerCase().includes(q)).slice(0, 8);
+    }, [products, productSearch, selectedProduct]);
 
     // ── Batch map ─────────────────────────────────────────────────────────────
     const batchesByProduct = useMemo(() => {
@@ -140,7 +269,7 @@ export default function StockReportPage() {
         const map = new Map<string, { in: number; out: number; purchaseValue: number; salesQty: number; salesValue: number }>();
         for (const m of movements) {
             const a = map.get(m.productId) ?? { in: 0, out: 0, purchaseValue: 0, salesQty: 0, salesValue: 0 };
-            a.in += m.qtyIn || 0;
+            a.in  += m.qtyIn  || 0;
             a.out += m.qtyOut || 0;
             map.set(m.productId, a);
         }
@@ -151,124 +280,103 @@ export default function StockReportPage() {
     const allProductRows = useMemo((): ProductRow[] => {
         return products.map(p => {
             const pb = batchesByProduct.get(p.id) ?? [];
-            const batchStock = pb.reduce((s, b) => s + (b.quantity || 0), 0);
+            const batchStock   = pb.reduce((s, b) => s + (b.quantity || 0), 0);
             const productStock = (p.loosePieces ?? 0) + (p.quantity ?? 0) * (p.boxCapacity ?? 1);
             const currentStock = batchStock > 0 ? batchStock : productStock;
             const mov = movByProduct.get(p.id) ?? { in: 0, out: 0, purchaseValue: 0, salesQty: 0, salesValue: 0 };
-            const closingStock = currentStock;
-            const openingStock = Math.max(0, closingStock - mov.in + mov.out);
-            // Estimate purchase value from movements × purchasePrice
+            const closingStock  = currentStock;
+            const openingStock  = Math.max(0, closingStock - mov.in + mov.out);
             const purchaseValue = mov.in * (p.purchasePrice ?? 0);
             return {
-                product: p,
-                currentStock,
-                batchCount: pb.length,
-                stockIn: mov.in,
-                stockOut: mov.out,
-                openingStock,
-                closingStock,
-                purchaseValue,
-                salesQty: mov.out,
-                salesValue: mov.out * (p.sellingPrice ?? 0),
-                batches: pb,
-                isLowStock: currentStock < LOW_STOCK && currentStock > 0,
+                product: p, currentStock, batchCount: pb.length,
+                stockIn: mov.in, stockOut: mov.out, openingStock, closingStock, purchaseValue,
+                salesQty: mov.out, salesValue: mov.out * (p.sellingPrice ?? 0),
+                batches: pb, isLowStock: currentStock < LOW_STOCK && currentStock > 0,
             };
         });
     }, [products, batchesByProduct, movByProduct]);
 
-    // ── Filter applied to product rows ────────────────────────────────────────
+    // ── Filtered product rows ─────────────────────────────────────────────────
     const filteredRows = useMemo(() => {
-        const q = productSearch.trim().toLowerCase();
         const bf = batchFilter.trim().toLowerCase();
         return allProductRows.filter(r => {
+            if (selectedProduct && r.product.id !== selectedProduct.id) return false;
+            if (!selectedProduct && productSearch.trim()) {
+                const q = productSearch.trim().toLowerCase();
+                if (!r.product.name.toLowerCase().includes(q) && !(r.product.mfgCompany || '').toLowerCase().includes(q)) return false;
+            }
             if (categoryFilter && r.product.type !== categoryFilter) return false;
             if (mfgFilter && r.product.mfgCompany !== mfgFilter) return false;
-            if (q && !r.product.name.toLowerCase().includes(q) && !(r.product.mfgCompany || '').toLowerCase().includes(q)) return false;
             if (bf && !r.batches.some(b => (b.batchNumber || '').toLowerCase().includes(bf))) return false;
             return true;
         });
-    }, [allProductRows, productSearch, categoryFilter, mfgFilter, batchFilter]);
+    }, [allProductRows, selectedProduct, productSearch, categoryFilter, mfgFilter, batchFilter]);
 
-    // ── Filtered movements ────────────────────────────────────────────────────
+    // ── Filtered movements (stockMovements — for Movement & Purchase tabs) ───
     const filteredMovements = useMemo(() => {
-        const q = productSearch.trim().toLowerCase();
-        return movements.filter(m => !q || m.productName.toLowerCase().includes(q) || (m.batchNumber || '').toLowerCase().includes(q));
-    }, [movements, productSearch]);
+        return movements.filter(m => {
+            if (selectedProduct) return m.productId === selectedProduct.id;
+            if (productSearch.trim()) return m.productName.toLowerCase().includes(productSearch.trim().toLowerCase());
+            return true;
+        });
+    }, [movements, selectedProduct, productSearch]);
 
     const purchaseMovements = useMemo(() => filteredMovements.filter(m => m.type === 'purchase'), [filteredMovements]);
-    const saleMovements = useMemo(() => filteredMovements.filter(m => m.type !== 'purchase'), [filteredMovements]);
-    const productsById = useMemo(() => new Map(products.map(p => [p.id, p])), [products]);
+    const productsById      = useMemo(() => new Map(products.map(p => [p.id, p])), [products]);
+
+    // ── Filtered sale rows (from salesOrders — covers all history) ────────────
+    const filteredSaleRows = useMemo(() => {
+        return saleRows.filter(r => {
+            if (selectedProduct) return r.productId === selectedProduct.id;
+            if (productSearch.trim()) return r.productName.toLowerCase().includes(productSearch.trim().toLowerCase());
+            return true;
+        });
+    }, [saleRows, selectedProduct, productSearch]);
 
     // ── Summary stats ─────────────────────────────────────────────────────────
     const summary = useMemo(() => {
-        const totalStock = filteredRows.reduce((s, r) => s + r.currentStock, 0);
+        const totalStock      = filteredRows.reduce((s, r) => s + r.currentStock, 0);
         const totalStockValue = filteredRows.reduce((s, r) => s + r.currentStock * (r.product.purchasePrice ?? 0), 0);
-        const lowStockCount = filteredRows.filter(r => r.isLowStock).length;
-        const outOfStock = filteredRows.filter(r => r.currentStock === 0).length;
-        const totalIn = filteredRows.reduce((s, r) => s + r.stockIn, 0);
-        const totalOut = filteredRows.reduce((s, r) => s + r.stockOut, 0);
-        const purchaseValue = filteredRows.reduce((s, r) => s + r.purchaseValue, 0);
-        const salesValue = filteredRows.reduce((s, r) => s + r.salesValue, 0);
+        const lowStockCount   = filteredRows.filter(r => r.isLowStock).length;
+        const outOfStock      = filteredRows.filter(r => r.currentStock === 0).length;
+        const totalIn         = filteredRows.reduce((s, r) => s + r.stockIn, 0);
+        const totalOut        = filteredRows.reduce((s, r) => s + r.stockOut, 0);
+        const purchaseValue   = filteredRows.reduce((s, r) => s + r.purchaseValue, 0);
+        const salesValue      = filteredSaleRows.reduce((s, r) => s + r.amount, 0);
         return { totalStock, totalStockValue, lowStockCount, outOfStock, totalIn, totalOut, purchaseValue, salesValue };
-    }, [filteredRows]);
+    }, [filteredRows, filteredSaleRows]);
 
-    // ── CSV export ────────────────────────────────────────────────────────────
+    // ── CSV exports ───────────────────────────────────────────────────────────
     const handleExport = () => {
         const rows = filteredRows.map(r => ({
-            'Product': r.product.name,
-            'Category': r.product.type || '',
-            'Manufacturer': r.product.mfgCompany || '',
-            'Opening Stock': r.openingStock,
-            'Stock In': r.stockIn,
-            'Stock Out': r.stockOut,
-            'Closing Stock': r.closingStock,
-            'Current Stock': r.currentStock,
-            'Batch Count': r.batchCount,
-            'Low Stock': r.isLowStock ? 'Yes' : 'No',
-            'Purchase Value': r.purchaseValue.toFixed(2),
-            'Sales Qty': r.salesQty,
-            'Sales Value': r.salesValue.toFixed(2),
-            'MRP': (r.product.maxRetailPrice ?? 0).toFixed(2),
-            'Purchase Rate': (r.product.purchasePrice ?? 0).toFixed(2),
+            'Product': r.product.name, 'Category': r.product.type || '', 'Manufacturer': r.product.mfgCompany || '',
+            'Opening Stock': r.openingStock, 'Stock In': r.stockIn, 'Stock Out': r.stockOut,
+            'Closing Stock': r.closingStock, 'Current Stock': r.currentStock, 'Batch Count': r.batchCount,
+            'Low Stock': r.isLowStock ? 'Yes' : 'No', 'Purchase Value': r.purchaseValue.toFixed(2),
+            'Sales Qty': r.salesQty, 'Sales Value': r.salesValue.toFixed(2),
+            'MRP': (r.product.maxRetailPrice ?? 0).toFixed(2), 'Purchase Rate': (r.product.purchasePrice ?? 0).toFixed(2),
             'GST %': r.product.gstPct ?? 0,
         }));
-        const csv = Papa.unparse(rows);
-        const blob = new Blob(['﻿' + csv], { type: 'text/csv;charset=utf-8;' });
-        const a = document.createElement('a');
-        a.href = URL.createObjectURL(blob);
-        a.download = `stock_report_${dateFrom}_${dateTo}.csv`;
-        a.click();
-        URL.revokeObjectURL(a.href);
+        const blob = new Blob(['﻿' + Papa.unparse(rows)], { type: 'text/csv;charset=utf-8;' });
+        const a = document.createElement('a'); a.href = URL.createObjectURL(blob);
+        a.download = `stock_report_${dateFrom}_${dateTo}.csv`; a.click(); URL.revokeObjectURL(a.href);
     };
 
-    // ── Sales CSV export (for accountant handoff) ────────────────────────────
     const handleExportSales = () => {
-        const rows = saleMovements.map(m => {
-            const rate = productsById.get(m.productId)?.sellingPrice ?? 0;
-            return {
-                'Date': m.date,
-                'Type': m.type === 'sale_pos' ? 'POS' : 'B2B',
-                'Order / Source': m.sourceNumber || m.sourceId,
-                'Product': m.productName,
-                'Batch': m.batchNumber || '',
-                'Qty Sold': m.qtyOut,
-                'Est. Rate': rate.toFixed(2),
-                'Est. Sale Value': (m.qtyOut * rate).toFixed(2),
-            };
-        });
-        const csv = Papa.unparse(rows);
-        const blob = new Blob(['﻿' + csv], { type: 'text/csv;charset=utf-8;' });
-        const a = document.createElement('a');
-        a.href = URL.createObjectURL(blob);
-        a.download = `sales_report_${dateFrom}_${dateTo}.csv`;
-        a.click();
-        URL.revokeObjectURL(a.href);
+        const rows = filteredSaleRows.map(r => ({
+            'Date': r.date, 'Type': r.type === 'sale_pos' ? 'POS' : 'B2B',
+            'Invoice': r.orderNumber, 'Customer': r.customerName,
+            'Product': r.productName, 'Batch': r.batchNo || '',
+            'Qty Sold': r.qty, 'Rate': r.rate.toFixed(2), 'Amount': r.amount.toFixed(2),
+        }));
+        const blob = new Blob(['﻿' + Papa.unparse(rows)], { type: 'text/csv;charset=utf-8;' });
+        const a = document.createElement('a'); a.href = URL.createObjectURL(blob);
+        a.download = `sales_report_${dateFrom}_${dateTo}.csv`; a.click(); URL.revokeObjectURL(a.href);
     };
 
     const toggleProduct = (id: string) =>
         setExpandedProducts(s => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n; });
 
-    // ── Section nav ───────────────────────────────────────────────────────────
     const SECTIONS: { id: typeof activeSection; label: string }[] = [
         { id: 'summary',   label: 'Inventory Summary' },
         { id: 'movement',  label: 'Stock Movement' },
@@ -276,6 +384,11 @@ export default function StockReportPage() {
         { id: 'purchases', label: 'Purchase Analytics' },
         { id: 'sales',     label: 'Sales Analytics' },
     ];
+
+    const labelStyle: React.CSSProperties = { display: 'block', fontSize: '0.72rem', fontWeight: 600, color: 'var(--text-secondary)', marginBottom: '0.3rem' };
+
+    // Whether the product column is shown in Sales Analytics (hidden when a specific product is selected)
+    const showProductCol = !selectedProduct;
 
     // ── Render ────────────────────────────────────────────────────────────────
     return (
@@ -296,44 +409,97 @@ export default function StockReportPage() {
                 </button>
             </div>
 
-            {/* Filters */}
-            <div className="glass-panel" style={{ padding: '1rem 1.25rem', marginBottom: '1.25rem', borderRadius: '12px', display: 'flex', gap: '0.75rem', flexWrap: 'wrap', alignItems: 'flex-end' }}>
-                <div>
-                    <label style={{ display: 'block', fontSize: '0.72rem', fontWeight: 600, color: 'var(--text-secondary)', marginBottom: '0.3rem' }}>Date From</label>
-                    <input type="date" className="input-field" style={{ margin: 0, width: '150px' }} value={dateFrom} onChange={e => setDateFrom(e.target.value)} />
-                </div>
-                <div>
-                    <label style={{ display: 'block', fontSize: '0.72rem', fontWeight: 600, color: 'var(--text-secondary)', marginBottom: '0.3rem' }}>Date To</label>
-                    <input type="date" className="input-field" style={{ margin: 0, width: '150px' }} value={dateTo} onChange={e => setDateTo(e.target.value)} />
-                </div>
-                <div style={{ flex: '1 1 180px' }}>
-                    <label style={{ display: 'block', fontSize: '0.72rem', fontWeight: 600, color: 'var(--text-secondary)', marginBottom: '0.3rem' }}>Product</label>
+            {/* ── Period quick-filter ───────────────────────────────────────── */}
+            <div className="glass-panel" style={{ padding: '0.85rem 1.25rem', marginBottom: '0.6rem', borderRadius: '12px', display: 'flex', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap' }}>
+                <Calendar size={15} style={{ color: 'var(--primary-light)', flexShrink: 0 }} />
+                {PERIODS.map(({ key, label }) => (
+                    <button key={key} onClick={() => setPeriod(key)}
+                        style={{ padding: '0.35rem 0.8rem', borderRadius: '8px', border: '1px solid', cursor: 'pointer', fontWeight: period === key ? 700 : 500, fontSize: '0.8rem', font: 'inherit', transition: 'all 0.14s', background: period === key ? 'var(--primary)' : 'var(--surface-base)', color: period === key ? '#fff' : 'var(--text-secondary)', borderColor: period === key ? 'var(--primary)' : 'var(--surface-border)' }}>
+                        {label}
+                    </button>
+                ))}
+                {period === 'custom' && (
+                    <>
+                        <input type="date" value={customFrom} onChange={e => setCustomFrom(e.target.value)}
+                            style={{ padding: '0.35rem 0.6rem', borderRadius: '8px', border: '1px solid var(--surface-border)', fontSize: '0.82rem', background: 'var(--surface-base)', color: 'var(--text-primary)', fontFamily: 'inherit' }} />
+                        <span style={{ fontSize: '0.8rem', color: 'var(--text-tertiary)' }}>to</span>
+                        <input type="date" value={customTo} onChange={e => setCustomTo(e.target.value)}
+                            style={{ padding: '0.35rem 0.6rem', borderRadius: '8px', border: '1px solid var(--surface-border)', fontSize: '0.82rem', background: 'var(--surface-base)', color: 'var(--text-primary)', fontFamily: 'inherit' }} />
+                    </>
+                )}
+                <span style={{ marginLeft: 'auto', fontSize: '0.75rem', color: 'var(--text-tertiary)' }}>
+                    {fmtDate(dateFrom)} – {fmtDate(dateTo)}
+                </span>
+            </div>
+
+            {/* ── Detailed filters ──────────────────────────────────────────── */}
+            <div className="glass-panel" style={{ padding: '0.85rem 1.25rem', marginBottom: '1.25rem', borderRadius: '12px', display: 'flex', gap: '0.75rem', flexWrap: 'wrap', alignItems: 'flex-end' }}>
+
+                {/* Product autocomplete */}
+                <div style={{ flex: '1 1 220px' }}>
+                    <label style={labelStyle}>Product</label>
                     <div style={{ position: 'relative' }}>
-                        <Search size={13} style={{ position: 'absolute', left: '0.6rem', top: '50%', transform: 'translateY(-50%)', color: 'var(--text-tertiary)' }} />
-                        <input className="input-field" style={{ paddingLeft: '1.9rem', margin: 0 }} placeholder="Search product…" value={productSearch} onChange={e => setProductSearch(e.target.value)} />
-                        {productSearch && <button onClick={() => setProductSearch('')} style={{ position: 'absolute', right: '0.4rem', top: '50%', transform: 'translateY(-50%)', background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-tertiary)', display: 'flex' }}><X size={13} /></button>}
+                        <Search size={13} style={{ position: 'absolute', left: '0.6rem', top: '50%', transform: 'translateY(-50%)', color: 'var(--text-tertiary)', pointerEvents: 'none' }} />
+                        <input
+                            ref={productInputRef}
+                            className="input-field"
+                            style={{ paddingLeft: '1.9rem', paddingRight: '1.8rem', margin: 0 }}
+                            placeholder="Search product…"
+                            value={productSearch}
+                            onChange={e => {
+                                setProductSearch(e.target.value);
+                                if (selectedProduct) setSelectedProduct(null);
+                                setShowProductDropdown(true);
+                            }}
+                            onFocus={() => setShowProductDropdown(true)}
+                            onBlur={() => setTimeout(() => setShowProductDropdown(false), 180)}
+                        />
+                        {productSearch && (
+                            <button onClick={() => { setProductSearch(''); setSelectedProduct(null); setShowProductDropdown(false); }}
+                                style={{ position: 'absolute', right: '0.4rem', top: '50%', transform: 'translateY(-50%)', background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-tertiary)', display: 'flex', padding: 0 }}>
+                                <X size={13} />
+                            </button>
+                        )}
+                        {/* Autocomplete dropdown */}
+                        {showProductDropdown && productSuggestions.length > 0 && (
+                            <div style={{ position: 'absolute', top: '100%', left: 0, right: 0, zIndex: 200, background: 'var(--surface-base)', border: '1px solid var(--surface-border)', borderRadius: '10px', boxShadow: '0 6px 24px rgba(0,0,0,0.14)', marginTop: '2px', overflow: 'hidden' }}>
+                                {productSuggestions.map(p => (
+                                    <button key={p.id}
+                                        onMouseDown={() => { setSelectedProduct(p); setProductSearch(p.name); setShowProductDropdown(false); }}
+                                        style={{ display: 'block', width: '100%', textAlign: 'left', padding: '0.5rem 0.75rem', background: 'none', border: 'none', cursor: 'pointer', font: 'inherit', borderBottom: '1px solid var(--surface-border)' }}>
+                                        <div style={{ fontWeight: 600, fontSize: '0.85rem' }}>{p.name}</div>
+                                        {(p.mfgCompany || p.type) && (
+                                            <div style={{ fontSize: '0.72rem', color: 'var(--text-tertiary)', marginTop: '1px' }}>
+                                                {[p.mfgCompany, p.type].filter(Boolean).join(' · ')}
+                                            </div>
+                                        )}
+                                    </button>
+                                ))}
+                            </div>
+                        )}
                     </div>
                 </div>
+
                 <div>
-                    <label style={{ display: 'block', fontSize: '0.72rem', fontWeight: 600, color: 'var(--text-secondary)', marginBottom: '0.3rem' }}>Category</label>
+                    <label style={labelStyle}>Category</label>
                     <select className="input-field" style={{ margin: 0, minWidth: '140px' }} value={categoryFilter} onChange={e => setCategoryFilter(e.target.value)}>
                         <option value="">All Categories</option>
                         {categories.map(c => <option key={c} value={c}>{c}</option>)}
                     </select>
                 </div>
                 <div>
-                    <label style={{ display: 'block', fontSize: '0.72rem', fontWeight: 600, color: 'var(--text-secondary)', marginBottom: '0.3rem' }}>Manufacturer</label>
+                    <label style={labelStyle}>Manufacturer</label>
                     <select className="input-field" style={{ margin: 0, minWidth: '140px' }} value={mfgFilter} onChange={e => setMfgFilter(e.target.value)}>
                         <option value="">All Manufacturers</option>
                         {manufacturers.map(m => <option key={m} value={m}>{m}</option>)}
                     </select>
                 </div>
                 <div>
-                    <label style={{ display: 'block', fontSize: '0.72rem', fontWeight: 600, color: 'var(--text-secondary)', marginBottom: '0.3rem' }}>Batch No.</label>
+                    <label style={labelStyle}>Batch No.</label>
                     <input className="input-field" style={{ margin: 0, width: '130px' }} placeholder="Filter batch…" value={batchFilter} onChange={e => setBatchFilter(e.target.value)} />
                 </div>
-                {(categoryFilter || mfgFilter || batchFilter) && (
-                    <button onClick={() => { setCategoryFilter(''); setMfgFilter(''); setBatchFilter(''); }} className="btn btn-secondary" style={{ fontSize: '0.78rem', padding: '0.35rem 0.65rem' }}>
+                {(categoryFilter || mfgFilter || batchFilter || selectedProduct) && (
+                    <button onClick={() => { setCategoryFilter(''); setMfgFilter(''); setBatchFilter(''); setSelectedProduct(null); setProductSearch(''); }} className="btn btn-secondary" style={{ fontSize: '0.78rem', padding: '0.35rem 0.65rem' }}>
                         Clear Filters
                     </button>
                 )}
@@ -360,7 +526,6 @@ export default function StockReportPage() {
                     {/* ── INVENTORY SUMMARY ─────────────────────────────────── */}
                     {activeSection === 'summary' && (
                         <div>
-                            {/* KPI Cards */}
                             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(170px, 1fr))', gap: '0.85rem', marginBottom: '1.5rem' }}>
                                 {[
                                     { label: 'Total Products', value: filteredRows.length, color: 'var(--primary-light)', icon: <Package2 size={16} /> },
@@ -384,18 +549,16 @@ export default function StockReportPage() {
                                         <div key={r.product.id} style={{ border: '1px solid var(--surface-border)', borderRadius: '10px', padding: '0.85rem' }}>
                                             <div style={{ fontWeight: 700, fontSize: '0.88rem', marginBottom: '0.4rem', display: 'flex', justifyContent: 'space-between' }}>
                                                 <span>{r.product.name}</span>
-                                                <span style={{ fontSize: '0.75rem', color: r.isLowStock ? '#ef4444' : '#10b981', fontWeight: 700 }}>
-                                                    {r.currentStock} units{r.isLowStock && ' ⚠ Low'}
-                                                </span>
+                                                <span style={{ fontSize: '0.75rem', color: r.isLowStock ? '#ef4444' : '#10b981', fontWeight: 700 }}>{r.currentStock} units{r.isLowStock && ' ⚠ Low'}</span>
                                             </div>
                                             <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.35rem' }}>
                                                 {r.batches.map(b => {
                                                     const exp = b.expiryDate ? new Date(b.expiryDate) : null;
                                                     const daysLeft = exp ? Math.floor((exp.getTime() - Date.now()) / 86_400_000) : 999;
-                                                    const chipColor = daysLeft < 0 ? '#ef4444' : daysLeft <= 30 ? '#ef4444' : daysLeft <= 90 ? '#d97706' : '#10b981';
+                                                    const cc = daysLeft < 0 ? '#ef4444' : daysLeft <= 30 ? '#ef4444' : daysLeft <= 90 ? '#d97706' : '#10b981';
                                                     return (
-                                                        <span key={b.id} style={{ fontSize: '0.72rem', padding: '0.2rem 0.5rem', borderRadius: '6px', background: `${chipColor}14`, color: chipColor, fontWeight: 600, border: `1px solid ${chipColor}33` }}>
-                                                            {b.batchNumber || 'No batch'} · {b.quantity} {b.expiryDate ? `· ${fmtDate(b.expiryDate)}` : ''}
+                                                        <span key={b.id} style={{ fontSize: '0.72rem', padding: '0.2rem 0.5rem', borderRadius: '6px', background: `${cc}14`, color: cc, fontWeight: 600, border: `1px solid ${cc}33` }}>
+                                                            {b.batchNumber || 'No batch'} · {b.quantity}{b.expiryDate ? ` · ${fmtDate(b.expiryDate)}` : ''}
                                                         </span>
                                                     );
                                                 })}
@@ -410,7 +573,7 @@ export default function StockReportPage() {
                                 </div>
                             </div>
 
-                            {/* Overall Stock Summary — every product, not just low-stock ones */}
+                            {/* Overall Stock Summary */}
                             <div className="glass-panel" style={{ borderRadius: '12px', overflow: 'hidden', marginBottom: '1.25rem' }}>
                                 <div style={{ padding: '1rem 1.25rem', borderBottom: '1px solid var(--surface-border)', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
                                     <Package2 size={16} style={{ color: 'var(--primary-light)' }} />
@@ -437,13 +600,12 @@ export default function StockReportPage() {
                                                     <td style={{ padding: '0.6rem 1rem', textAlign: 'right', color: 'var(--text-secondary)' }}>{fmtInr(r.currentStock * (r.product.purchasePrice ?? 0))}</td>
                                                     <td style={{ padding: '0.6rem 1rem', textAlign: 'right', color: 'var(--text-secondary)' }}>{r.batchCount}</td>
                                                     <td style={{ padding: '0.6rem 1rem' }}>
-                                                        {r.currentStock === 0 ? (
-                                                            <span style={{ fontSize: '0.65rem', padding: '0.1rem 0.4rem', borderRadius: '999px', background: 'hsla(0,84%,60%,0.12)', color: '#ef4444', fontWeight: 700 }}>OUT</span>
-                                                        ) : r.isLowStock ? (
-                                                            <span style={{ fontSize: '0.65rem', padding: '0.1rem 0.4rem', borderRadius: '999px', background: 'hsla(38,92%,50%,0.12)', color: '#f59e0b', fontWeight: 700 }}>LOW</span>
-                                                        ) : (
-                                                            <span style={{ fontSize: '0.65rem', padding: '0.1rem 0.4rem', borderRadius: '999px', background: 'hsla(152,60%,40%,0.12)', color: '#10b981', fontWeight: 700 }}>OK</span>
-                                                        )}
+                                                        {r.currentStock === 0
+                                                            ? <span style={{ fontSize: '0.65rem', padding: '0.1rem 0.4rem', borderRadius: '999px', background: 'hsla(0,84%,60%,0.12)', color: '#ef4444', fontWeight: 700 }}>OUT</span>
+                                                            : r.isLowStock
+                                                                ? <span style={{ fontSize: '0.65rem', padding: '0.1rem 0.4rem', borderRadius: '999px', background: 'hsla(38,92%,50%,0.12)', color: '#f59e0b', fontWeight: 700 }}>LOW</span>
+                                                                : <span style={{ fontSize: '0.65rem', padding: '0.1rem 0.4rem', borderRadius: '999px', background: 'hsla(152,60%,40%,0.12)', color: '#10b981', fontWeight: 700 }}>OK</span>
+                                                        }
                                                     </td>
                                                 </tr>
                                             ))}
@@ -452,7 +614,6 @@ export default function StockReportPage() {
                                 </div>
                             </div>
 
-                            {/* Low Stock Alert Table */}
                             {summary.lowStockCount > 0 && (
                                 <div className="glass-panel" style={{ borderRadius: '12px', overflow: 'hidden' }}>
                                     <div style={{ padding: '1rem 1.25rem', borderBottom: '1px solid var(--surface-border)', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
@@ -494,7 +655,7 @@ export default function StockReportPage() {
                                 {[
                                     { label: `Opening Stock (before ${fmtDate(dateFrom)})`, value: filteredRows.reduce((s, r) => s + r.openingStock, 0).toLocaleString('en-IN'), color: '#6366f1' },
                                     { label: 'Stock In (Purchases)', value: `+${summary.totalIn.toLocaleString('en-IN')}`, color: '#10b981' },
-                                    { label: 'Stock Out (Sales)', value: `-${summary.totalOut.toLocaleString('en-IN')}`, color: '#ef4444' },
+                                    { label: 'Stock Out (Sales)', value: summary.totalOut.toLocaleString('en-IN'), color: '#ef4444' },
                                     { label: 'Closing Stock', value: filteredRows.reduce((s, r) => s + r.closingStock, 0).toLocaleString('en-IN'), color: 'var(--primary-light)' },
                                 ].map(c => (
                                     <div key={c.label} style={{ background: 'var(--surface-raised)', border: '1px solid var(--surface-border)', borderLeft: `4px solid ${c.color}`, borderRadius: '12px', padding: '1rem' }}>
@@ -503,8 +664,6 @@ export default function StockReportPage() {
                                     </div>
                                 ))}
                             </div>
-
-                            {/* Per-product movement table */}
                             <div className="glass-panel" style={{ borderRadius: '12px', overflowX: 'auto' }}>
                                 <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.85rem' }}>
                                     <thead>
@@ -515,22 +674,23 @@ export default function StockReportPage() {
                                         </tr>
                                     </thead>
                                     <tbody>
-                                        {filteredRows.length === 0 ? (
-                                            <tr><td colSpan={7} style={{ padding: '2rem', textAlign: 'center', color: 'var(--text-tertiary)' }}>No products found.</td></tr>
-                                        ) : filteredRows.map((r, i) => (
-                                            <tr key={r.product.id} style={{ borderBottom: '1px solid var(--surface-border)', background: i % 2 === 0 ? 'transparent' : 'var(--surface-raised)' }}>
-                                                <td style={{ padding: '0.6rem 0.85rem', fontWeight: 600 }}>{r.product.name}</td>
-                                                <td style={{ padding: '0.6rem 0.85rem', color: 'var(--text-secondary)' }}>{r.product.type || '—'}</td>
-                                                <td style={{ padding: '0.6rem 0.85rem', textAlign: 'right' }}>{r.openingStock}</td>
-                                                <td style={{ padding: '0.6rem 0.85rem', textAlign: 'right', color: '#10b981', fontWeight: 600 }}>{r.stockIn > 0 ? `+${r.stockIn}` : '—'}</td>
-                                                <td style={{ padding: '0.6rem 0.85rem', textAlign: 'right', color: '#ef4444', fontWeight: 600 }}>{r.stockOut > 0 ? `-${r.stockOut}` : '—'}</td>
-                                                <td style={{ padding: '0.6rem 0.85rem', textAlign: 'right', fontWeight: 700 }}>{r.closingStock}</td>
-                                                <td style={{ padding: '0.6rem 0.85rem', textAlign: 'right' }}>
-                                                    <span style={{ fontWeight: 700, color: r.isLowStock ? '#ef4444' : 'var(--text-primary)' }}>{r.currentStock}</span>
-                                                    {r.isLowStock && <span style={{ marginLeft: '0.3rem', fontSize: '0.65rem', padding: '0.1rem 0.3rem', borderRadius: '999px', background: 'hsla(0,84%,60%,0.12)', color: '#ef4444', fontWeight: 700 }}>LOW</span>}
-                                                </td>
-                                            </tr>
-                                        ))}
+                                        {filteredRows.length === 0
+                                            ? <tr><td colSpan={7} style={{ padding: '2rem', textAlign: 'center', color: 'var(--text-tertiary)' }}>No products found.</td></tr>
+                                            : filteredRows.map((r, i) => (
+                                                <tr key={r.product.id} style={{ borderBottom: '1px solid var(--surface-border)', background: i % 2 === 0 ? 'transparent' : 'var(--surface-raised)' }}>
+                                                    <td style={{ padding: '0.6rem 0.85rem', fontWeight: 600 }}>{r.product.name}</td>
+                                                    <td style={{ padding: '0.6rem 0.85rem', color: 'var(--text-secondary)' }}>{r.product.type || '—'}</td>
+                                                    <td style={{ padding: '0.6rem 0.85rem', textAlign: 'right' }}>{r.openingStock}</td>
+                                                    <td style={{ padding: '0.6rem 0.85rem', textAlign: 'right', color: '#10b981', fontWeight: 600 }}>{r.stockIn > 0 ? `+${r.stockIn}` : '—'}</td>
+                                                    <td style={{ padding: '0.6rem 0.85rem', textAlign: 'right', color: '#ef4444', fontWeight: 600 }}>{r.stockOut > 0 ? r.stockOut : '—'}</td>
+                                                    <td style={{ padding: '0.6rem 0.85rem', textAlign: 'right', fontWeight: 700 }}>{r.closingStock}</td>
+                                                    <td style={{ padding: '0.6rem 0.85rem', textAlign: 'right' }}>
+                                                        <span style={{ fontWeight: 700, color: r.isLowStock ? '#ef4444' : 'var(--text-primary)' }}>{r.currentStock}</span>
+                                                        {r.isLowStock && <span style={{ marginLeft: '0.3rem', fontSize: '0.65rem', padding: '0.1rem 0.3rem', borderRadius: '999px', background: 'hsla(0,84%,60%,0.12)', color: '#ef4444', fontWeight: 700 }}>LOW</span>}
+                                                    </td>
+                                                </tr>
+                                            ))
+                                        }
                                     </tbody>
                                     {filteredRows.length > 0 && (
                                         <tfoot>
@@ -538,7 +698,7 @@ export default function StockReportPage() {
                                                 <td colSpan={2} style={{ padding: '0.6rem 0.85rem', fontSize: '0.82rem' }}>TOTALS ({filteredRows.length} products)</td>
                                                 <td style={{ padding: '0.6rem 0.85rem', textAlign: 'right' }}>{filteredRows.reduce((s, r) => s + r.openingStock, 0)}</td>
                                                 <td style={{ padding: '0.6rem 0.85rem', textAlign: 'right', color: '#10b981' }}>+{summary.totalIn}</td>
-                                                <td style={{ padding: '0.6rem 0.85rem', textAlign: 'right', color: '#ef4444' }}>-{summary.totalOut}</td>
+                                                <td style={{ padding: '0.6rem 0.85rem', textAlign: 'right', color: '#ef4444' }}>{summary.totalOut}</td>
                                                 <td style={{ padding: '0.6rem 0.85rem', textAlign: 'right' }}>{filteredRows.reduce((s, r) => s + r.closingStock, 0)}</td>
                                                 <td style={{ padding: '0.6rem 0.85rem', textAlign: 'right' }}>{summary.totalStock}</td>
                                             </tr>
@@ -563,33 +723,17 @@ export default function StockReportPage() {
                                             <span style={{ color: 'var(--text-tertiary)', flexShrink: 0 }}>{isOpen ? <ChevronDown size={15} /> : <ChevronRight size={15} />}</span>
                                             <div style={{ flex: 1, minWidth: 0 }}>
                                                 <div style={{ fontWeight: 700, fontSize: '0.95rem' }}>{r.product.name}</div>
-                                                <div style={{ fontSize: '0.75rem', color: 'var(--text-tertiary)', marginTop: '0.1rem' }}>
-                                                    {[r.product.type, r.product.mfgCompany].filter(Boolean).join(' · ')}
-                                                </div>
+                                                <div style={{ fontSize: '0.75rem', color: 'var(--text-tertiary)', marginTop: '0.1rem' }}>{[r.product.type, r.product.mfgCompany].filter(Boolean).join(' · ')}</div>
                                             </div>
                                             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, auto)', gap: '1.5rem', flexShrink: 0, textAlign: 'right' }}>
-                                                <div>
-                                                    <div style={{ fontSize: '0.65rem', color: 'var(--text-tertiary)', textTransform: 'uppercase', letterSpacing: '0.04em' }}>Purchased</div>
-                                                    <div style={{ fontWeight: 700, color: '#10b981' }}>{r.stockIn}</div>
-                                                </div>
-                                                <div>
-                                                    <div style={{ fontSize: '0.65rem', color: 'var(--text-tertiary)', textTransform: 'uppercase', letterSpacing: '0.04em' }}>Sold</div>
-                                                    <div style={{ fontWeight: 700, color: '#f59e0b' }}>{r.stockOut}</div>
-                                                </div>
-                                                <div>
-                                                    <div style={{ fontSize: '0.65rem', color: 'var(--text-tertiary)', textTransform: 'uppercase', letterSpacing: '0.04em' }}>Current Stock</div>
-                                                    <div style={{ fontWeight: 700, color: r.isLowStock ? '#ef4444' : 'var(--text-primary)' }}>
-                                                        {r.currentStock}
-                                                        {r.isLowStock && <span style={{ marginLeft: '0.3rem', fontSize: '0.6rem', padding: '0.05rem 0.3rem', borderRadius: '999px', background: 'hsla(0,84%,60%,0.12)', color: '#ef4444' }}>LOW</span>}
+                                                {[{ lbl: 'Purchased', val: r.stockIn, color: '#10b981' }, { lbl: 'Sold', val: r.stockOut, color: '#f59e0b' }, { lbl: 'Current Stock', val: r.currentStock, color: r.isLowStock ? '#ef4444' : 'var(--text-primary)' }, { lbl: 'Batches', val: r.batchCount, color: 'var(--text-primary)' }].map(f => (
+                                                    <div key={f.lbl}>
+                                                        <div style={{ fontSize: '0.65rem', color: 'var(--text-tertiary)', textTransform: 'uppercase', letterSpacing: '0.04em' }}>{f.lbl}</div>
+                                                        <div style={{ fontWeight: 700, color: f.color }}>{f.val}{f.lbl === 'Current Stock' && r.isLowStock && <span style={{ marginLeft: '0.3rem', fontSize: '0.6rem', padding: '0.05rem 0.3rem', borderRadius: '999px', background: 'hsla(0,84%,60%,0.12)', color: '#ef4444' }}>LOW</span>}</div>
                                                     </div>
-                                                </div>
-                                                <div>
-                                                    <div style={{ fontSize: '0.65rem', color: 'var(--text-tertiary)', textTransform: 'uppercase', letterSpacing: '0.04em' }}>Batches</div>
-                                                    <div style={{ fontWeight: 700 }}>{r.batchCount}</div>
-                                                </div>
+                                                ))}
                                             </div>
                                         </button>
-
                                         {isOpen && (
                                             <div style={{ padding: '0.5rem 1.25rem 1rem', borderTop: '1px solid var(--surface-border)' }}>
                                                 <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '1rem', marginBottom: '1rem' }}>
@@ -600,7 +744,7 @@ export default function StockReportPage() {
                                                         { label: 'GST %', value: `${r.product.gstPct ?? 0}%` },
                                                         { label: 'Opening Stock', value: r.openingStock },
                                                         { label: 'Stock In', value: `+${r.stockIn}` },
-                                                        { label: 'Stock Out', value: `-${r.stockOut}` },
+                                                        { label: 'Stock Out', value: r.stockOut },
                                                         { label: 'Purchase Value', value: fmtInr(r.purchaseValue) },
                                                     ].map(f => (
                                                         <div key={f.label} style={{ background: 'var(--surface-raised)', borderRadius: '8px', padding: '0.65rem 0.85rem' }}>
@@ -609,16 +753,15 @@ export default function StockReportPage() {
                                                         </div>
                                                     ))}
                                                 </div>
-                                                {/* Batch chips */}
                                                 {r.batches.length > 0 && (
                                                     <div>
                                                         <div style={{ fontSize: '0.72rem', fontWeight: 600, color: 'var(--text-tertiary)', marginBottom: '0.4rem', textTransform: 'uppercase', letterSpacing: '0.04em' }}>Batches</div>
                                                         <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.4rem' }}>
                                                             {r.batches.map(b => {
                                                                 const daysLeft = b.expiryDate ? Math.floor((new Date(b.expiryDate).getTime() - Date.now()) / 86_400_000) : 999;
-                                                                const c = daysLeft < 0 ? '#ef4444' : daysLeft <= 90 ? '#d97706' : '#10b981';
+                                                                const cc = daysLeft < 0 ? '#ef4444' : daysLeft <= 90 ? '#d97706' : '#10b981';
                                                                 return (
-                                                                    <span key={b.id} style={{ fontSize: '0.75rem', padding: '0.25rem 0.65rem', borderRadius: '8px', background: `${c}14`, color: c, fontWeight: 600, border: `1px solid ${c}33` }}>
+                                                                    <span key={b.id} style={{ fontSize: '0.75rem', padding: '0.25rem 0.65rem', borderRadius: '8px', background: `${cc}14`, color: cc, fontWeight: 600, border: `1px solid ${cc}33` }}>
                                                                         {b.batchNumber || 'No batch'} · {b.quantity} units{b.expiryDate ? ` · Exp ${fmtDate(b.expiryDate)}` : ''}
                                                                     </span>
                                                                 );
@@ -626,7 +769,6 @@ export default function StockReportPage() {
                                                         </div>
                                                     </div>
                                                 )}
-                                                {/* Movement history for this product */}
                                                 {filteredMovements.filter(m => m.productId === r.product.id).length > 0 && (
                                                     <div style={{ marginTop: '0.75rem' }}>
                                                         <div style={{ fontSize: '0.72rem', fontWeight: 600, color: 'var(--text-tertiary)', marginBottom: '0.4rem', textTransform: 'uppercase', letterSpacing: '0.04em' }}>Movement History ({fmtDate(dateFrom)} – {fmtDate(dateTo)})</div>
@@ -650,7 +792,7 @@ export default function StockReportPage() {
                                                                         <td style={{ padding: '0.35rem 0.6rem', color: 'var(--text-secondary)', fontFamily: 'monospace', fontSize: '0.72rem' }}>{m.sourceNumber || m.sourceId.slice(-6).toUpperCase()}</td>
                                                                         <td style={{ padding: '0.35rem 0.6rem', color: 'var(--text-secondary)' }}>{m.batchNumber || '—'}</td>
                                                                         <td style={{ padding: '0.35rem 0.6rem', textAlign: 'right', color: '#10b981', fontWeight: 700 }}>{m.qtyIn > 0 ? `+${m.qtyIn}` : '—'}</td>
-                                                                        <td style={{ padding: '0.35rem 0.6rem', textAlign: 'right', color: '#ef4444', fontWeight: 700 }}>{m.qtyOut > 0 ? `-${m.qtyOut}` : '—'}</td>
+                                                                        <td style={{ padding: '0.35rem 0.6rem', textAlign: 'right', color: '#ef4444', fontWeight: 700 }}>{m.qtyOut > 0 ? m.qtyOut : '—'}</td>
                                                                         <td style={{ padding: '0.35rem 0.6rem', textAlign: 'right' }}>{m.remainingBatchQty ?? '—'}</td>
                                                                     </tr>
                                                                 ))}
@@ -683,35 +825,34 @@ export default function StockReportPage() {
                                     </div>
                                 ))}
                             </div>
-
                             <div className="glass-panel" style={{ borderRadius: '12px', overflowX: 'auto' }}>
                                 <div style={{ padding: '0.75rem 1rem', borderBottom: '1px solid var(--surface-border)', fontWeight: 700, fontSize: '0.9rem' }}>Purchase History ({fmtDate(dateFrom)} – {fmtDate(dateTo)})</div>
-                                {purchaseMovements.length === 0 ? (
-                                    <div style={{ padding: '3rem', textAlign: 'center', color: 'var(--text-tertiary)' }}>No purchase movements in this period.</div>
-                                ) : (
-                                    <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.85rem' }}>
-                                        <thead>
-                                            <tr style={{ borderBottom: '2px solid var(--surface-border)', color: 'var(--text-secondary)' }}>
-                                                {['Date', 'Invoice / Source', 'Supplier', 'Product', 'Batch', 'Qty In', 'Batch Balance'].map(h => (
-                                                    <th key={h} style={{ padding: '0.65rem 0.85rem', fontWeight: 600, textAlign: ['Qty In', 'Batch Balance'].includes(h) ? 'right' : 'left', whiteSpace: 'nowrap' }}>{h}</th>
-                                                ))}
-                                            </tr>
-                                        </thead>
-                                        <tbody>
-                                            {purchaseMovements.map((m, i) => (
-                                                <tr key={m.id} style={{ borderBottom: '1px solid var(--surface-border)', background: i % 2 === 0 ? 'transparent' : 'var(--surface-raised)' }}>
-                                                    <td style={{ padding: '0.6rem 0.85rem', color: 'var(--text-secondary)', whiteSpace: 'nowrap' }}>{fmtDate(m.date)}</td>
-                                                    <td style={{ padding: '0.6rem 0.85rem', fontFamily: 'monospace', fontSize: '0.8rem' }}>{m.sourceNumber || m.sourceId.slice(-8).toUpperCase()}</td>
-                                                    <td style={{ padding: '0.6rem 0.85rem', color: 'var(--text-secondary)' }}>{m.supplierName || '—'}</td>
-                                                    <td style={{ padding: '0.6rem 0.85rem', fontWeight: 600 }}>{m.productName}</td>
-                                                    <td style={{ padding: '0.6rem 0.85rem', color: 'var(--text-secondary)', fontFamily: 'monospace', fontSize: '0.78rem' }}>{m.batchNumber || '—'}</td>
-                                                    <td style={{ padding: '0.6rem 0.85rem', textAlign: 'right', fontWeight: 700, color: '#10b981' }}>+{m.qtyIn}</td>
-                                                    <td style={{ padding: '0.6rem 0.85rem', textAlign: 'right' }}>{m.remainingBatchQty ?? '—'}</td>
+                                {purchaseMovements.length === 0
+                                    ? <div style={{ padding: '3rem', textAlign: 'center', color: 'var(--text-tertiary)' }}>No purchase movements in this period.</div>
+                                    : (
+                                        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.85rem' }}>
+                                            <thead>
+                                                <tr style={{ borderBottom: '2px solid var(--surface-border)', color: 'var(--text-secondary)' }}>
+                                                    {['Date', 'Invoice / Source', 'Supplier', 'Product', 'Batch', 'Qty In', 'Batch Balance'].map(h => (
+                                                        <th key={h} style={{ padding: '0.65rem 0.85rem', fontWeight: 600, textAlign: ['Qty In', 'Batch Balance'].includes(h) ? 'right' : 'left', whiteSpace: 'nowrap' }}>{h}</th>
+                                                    ))}
                                                 </tr>
-                                            ))}
-                                        </tbody>
-                                    </table>
-                                )}
+                                            </thead>
+                                            <tbody>
+                                                {purchaseMovements.map((m, i) => (
+                                                    <tr key={m.id} style={{ borderBottom: '1px solid var(--surface-border)', background: i % 2 === 0 ? 'transparent' : 'var(--surface-raised)' }}>
+                                                        <td style={{ padding: '0.6rem 0.85rem', color: 'var(--text-secondary)', whiteSpace: 'nowrap' }}>{fmtDate(m.date)}</td>
+                                                        <td style={{ padding: '0.6rem 0.85rem', fontFamily: 'monospace', fontSize: '0.8rem' }}>{m.sourceNumber || m.sourceId.slice(-8).toUpperCase()}</td>
+                                                        <td style={{ padding: '0.6rem 0.85rem', color: 'var(--text-secondary)' }}>{m.supplierName || '—'}</td>
+                                                        <td style={{ padding: '0.6rem 0.85rem', fontWeight: 600 }}>{m.productName}</td>
+                                                        <td style={{ padding: '0.6rem 0.85rem', color: 'var(--text-secondary)', fontFamily: 'monospace', fontSize: '0.78rem' }}>{m.batchNumber || '—'}</td>
+                                                        <td style={{ padding: '0.6rem 0.85rem', textAlign: 'right', fontWeight: 700, color: '#10b981' }}>+{m.qtyIn}</td>
+                                                        <td style={{ padding: '0.6rem 0.85rem', textAlign: 'right' }}>{m.remainingBatchQty ?? '—'}</td>
+                                                    </tr>
+                                                ))}
+                                            </tbody>
+                                        </table>
+                                    )}
                             </div>
                         </div>
                     )}
@@ -721,11 +862,11 @@ export default function StockReportPage() {
                         <div>
                             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: '0.85rem', marginBottom: '1.25rem' }}>
                                 {[
-                                    { label: 'Sale Transactions', value: saleMovements.length, color: '#3b82f6' },
-                                    { label: 'Total Qty Sold', value: saleMovements.reduce((s, m) => s + (m.qtyOut || 0), 0).toLocaleString('en-IN'), color: '#f59e0b' },
-                                    { label: 'Est. Sales Value', value: fmtInr(summary.salesValue), color: '#10b981' },
-                                    { label: 'POS Sales', value: saleMovements.filter(m => m.type === 'sale_pos').length, color: '#6366f1' },
-                                    { label: 'B2B Sales', value: saleMovements.filter(m => m.type === 'sale_b2b').length, color: '#8b5cf6' },
+                                    { label: 'Sale Lines', value: filteredSaleRows.length, color: '#3b82f6' },
+                                    { label: 'Total Qty Sold', value: filteredSaleRows.reduce((s, r) => s + r.qty, 0).toLocaleString('en-IN'), color: '#f59e0b' },
+                                    { label: 'Est. Sales Value', value: fmtInr(filteredSaleRows.reduce((s, r) => s + r.amount, 0)), color: '#10b981' },
+                                    { label: 'POS Sales', value: filteredSaleRows.filter(r => r.type === 'sale_pos').length, color: '#6366f1' },
+                                    { label: 'B2B Sales', value: filteredSaleRows.filter(r => r.type === 'sale_b2b').length, color: '#8b5cf6' },
                                 ].map(c => (
                                     <div key={c.label} style={{ background: 'var(--surface-raised)', border: '1px solid var(--surface-border)', borderLeft: `4px solid ${c.color}`, borderRadius: '12px', padding: '1rem' }}>
                                         <div style={{ fontSize: '0.7rem', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.04em', color: c.color, marginBottom: '0.35rem' }}>{c.label}</div>
@@ -736,43 +877,76 @@ export default function StockReportPage() {
 
                             <div className="glass-panel" style={{ borderRadius: '12px', overflowX: 'auto' }}>
                                 <div style={{ padding: '0.75rem 1rem', borderBottom: '1px solid var(--surface-border)', display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '0.75rem', flexWrap: 'wrap' }}>
-                                    <span style={{ fontWeight: 700, fontSize: '0.9rem' }}>Sales History ({fmtDate(dateFrom)} – {fmtDate(dateTo)})</span>
-                                    {saleMovements.length > 0 && (
+                                    <span style={{ fontWeight: 700, fontSize: '0.9rem' }}>
+                                        Sales History ({fmtDate(dateFrom)} – {fmtDate(dateTo)})
+                                        {selectedProduct && <span style={{ fontWeight: 400, color: 'var(--text-secondary)', marginLeft: '0.5rem' }}>— {selectedProduct.name}</span>}
+                                    </span>
+                                    {filteredSaleRows.length > 0 && (
                                         <button onClick={handleExportSales} className="btn btn-secondary" style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', fontSize: '0.78rem', padding: '0.35rem 0.75rem' }}>
                                             <Download size={13} /> Export Sales CSV
                                         </button>
                                     )}
                                 </div>
-                                {saleMovements.length === 0 ? (
-                                    <div style={{ padding: '3rem', textAlign: 'center', color: 'var(--text-tertiary)' }}>No sales movements in this period.</div>
-                                ) : (
-                                    <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.85rem' }}>
-                                        <thead>
-                                            <tr style={{ borderBottom: '2px solid var(--surface-border)', color: 'var(--text-secondary)' }}>
-                                                {['Date', 'Type', 'Order / Source', 'Product', 'Batch', 'Qty Out', 'Batch Balance'].map(h => (
-                                                    <th key={h} style={{ padding: '0.65rem 0.85rem', fontWeight: 600, textAlign: ['Qty Out', 'Batch Balance'].includes(h) ? 'right' : 'left', whiteSpace: 'nowrap' }}>{h}</th>
-                                                ))}
-                                            </tr>
-                                        </thead>
-                                        <tbody>
-                                            {saleMovements.map((m, i) => (
-                                                <tr key={m.id} style={{ borderBottom: '1px solid var(--surface-border)', background: i % 2 === 0 ? 'transparent' : 'var(--surface-raised)' }}>
-                                                    <td style={{ padding: '0.6rem 0.85rem', color: 'var(--text-secondary)', whiteSpace: 'nowrap' }}>{fmtDate(m.date)}</td>
-                                                    <td style={{ padding: '0.6rem 0.85rem' }}>
-                                                        <span style={{ fontSize: '0.72rem', padding: '0.15rem 0.45rem', borderRadius: '999px', fontWeight: 700, background: m.type === 'sale_pos' ? 'hsla(217,91%,60%,0.1)' : 'hsla(263,70%,60%,0.1)', color: m.type === 'sale_pos' ? '#3b82f6' : '#8b5cf6' }}>
-                                                            {m.type === 'sale_pos' ? 'POS' : 'B2B'}
-                                                        </span>
-                                                    </td>
-                                                    <td style={{ padding: '0.6rem 0.85rem', fontFamily: 'monospace', fontSize: '0.8rem' }}>{m.sourceNumber || m.sourceId.slice(-8).toUpperCase()}</td>
-                                                    <td style={{ padding: '0.6rem 0.85rem', fontWeight: 600 }}>{m.productName}</td>
-                                                    <td style={{ padding: '0.6rem 0.85rem', color: 'var(--text-secondary)', fontFamily: 'monospace', fontSize: '0.78rem' }}>{m.batchNumber || '—'}</td>
-                                                    <td style={{ padding: '0.6rem 0.85rem', textAlign: 'right', fontWeight: 700, color: '#ef4444' }}>-{m.qtyOut}</td>
-                                                    <td style={{ padding: '0.6rem 0.85rem', textAlign: 'right' }}>{m.remainingBatchQty ?? '—'}</td>
+
+                                {filteredSaleRows.length === 0
+                                    ? <div style={{ padding: '3rem', textAlign: 'center', color: 'var(--text-tertiary)' }}>No sales in this period.</div>
+                                    : (
+                                        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.85rem' }}>
+                                            <thead>
+                                                <tr style={{ borderBottom: '2px solid var(--surface-border)', color: 'var(--text-secondary)' }}>
+                                                    <th style={{ padding: '0.65rem 0.85rem', fontWeight: 600, textAlign: 'left', whiteSpace: 'nowrap' }}>Date</th>
+                                                    <th style={{ padding: '0.65rem 0.85rem', fontWeight: 600, textAlign: 'left', whiteSpace: 'nowrap' }}>Type</th>
+                                                    <th style={{ padding: '0.65rem 0.85rem', fontWeight: 600, textAlign: 'left', whiteSpace: 'nowrap' }}>Invoice</th>
+                                                    <th style={{ padding: '0.65rem 0.85rem', fontWeight: 600, textAlign: 'left', whiteSpace: 'nowrap' }}>Customer</th>
+                                                    {showProductCol && <th style={{ padding: '0.65rem 0.85rem', fontWeight: 600, textAlign: 'left', whiteSpace: 'nowrap' }}>Product</th>}
+                                                    <th style={{ padding: '0.65rem 0.85rem', fontWeight: 600, textAlign: 'left', whiteSpace: 'nowrap' }}>Batch</th>
+                                                    <th style={{ padding: '0.65rem 0.85rem', fontWeight: 600, textAlign: 'right', whiteSpace: 'nowrap' }}>Qty</th>
+                                                    <th style={{ padding: '0.65rem 0.85rem', fontWeight: 600, textAlign: 'right', whiteSpace: 'nowrap' }}>Amount</th>
                                                 </tr>
-                                            ))}
-                                        </tbody>
-                                    </table>
-                                )}
+                                            </thead>
+                                            <tbody>
+                                                {filteredSaleRows.map((r, i) => (
+                                                    <tr key={`${r.orderId}-${r.productId}-${i}`} style={{ borderBottom: '1px solid var(--surface-border)', background: i % 2 === 0 ? 'transparent' : 'var(--surface-raised)' }}>
+                                                        <td style={{ padding: '0.6rem 0.85rem', color: 'var(--text-secondary)', whiteSpace: 'nowrap' }}>{fmtDate(r.date)}</td>
+                                                        <td style={{ padding: '0.6rem 0.85rem' }}>
+                                                            <span style={{ fontSize: '0.72rem', padding: '0.15rem 0.45rem', borderRadius: '999px', fontWeight: 700, background: r.type === 'sale_pos' ? 'hsla(217,91%,60%,0.1)' : 'hsla(263,70%,60%,0.1)', color: r.type === 'sale_pos' ? '#3b82f6' : '#8b5cf6' }}>
+                                                                {r.type === 'sale_pos' ? 'POS' : 'B2B'}
+                                                            </span>
+                                                        </td>
+                                                        {/* Clickable invoice number */}
+                                                        <td style={{ padding: '0.6rem 0.85rem' }}>
+                                                            <button
+                                                                onClick={() => r.type === 'sale_pos'
+                                                                    ? navigate(`/pos?reprintOrderId=${r.orderId}`)
+                                                                    : navigate(`/b2b-invoice-worklist`)}
+                                                                style={{ background: 'none', border: 'none', padding: 0, cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: '0.25rem', fontFamily: 'monospace', fontSize: '0.82rem', fontWeight: 600, color: 'var(--primary-light)', textDecoration: 'underline', textUnderlineOffset: '2px' }}>
+                                                                {r.orderNumber || r.orderId.slice(-8).toUpperCase()}
+                                                                <ExternalLink size={11} style={{ opacity: 0.7 }} />
+                                                            </button>
+                                                        </td>
+                                                        <td style={{ padding: '0.6rem 0.85rem', fontWeight: 600 }}>{r.customerName}</td>
+                                                        {showProductCol && <td style={{ padding: '0.6rem 0.85rem', color: 'var(--text-secondary)' }}>{r.productName}</td>}
+                                                        <td style={{ padding: '0.6rem 0.85rem', color: 'var(--text-secondary)', fontFamily: 'monospace', fontSize: '0.78rem' }}>{r.batchNo || '—'}</td>
+                                                        <td style={{ padding: '0.6rem 0.85rem', textAlign: 'right', fontWeight: 700, color: '#f59e0b' }}>{r.qty}</td>
+                                                        <td style={{ padding: '0.6rem 0.85rem', textAlign: 'right', fontWeight: 600 }}>{fmtInr(r.amount)}</td>
+                                                    </tr>
+                                                ))}
+                                            </tbody>
+                                            <tfoot>
+                                                <tr style={{ borderTop: '2px solid var(--surface-border)', background: 'var(--surface-raised)', fontWeight: 800 }}>
+                                                    <td colSpan={showProductCol ? 6 : 5} style={{ padding: '0.65rem 0.85rem', fontSize: '0.82rem' }}>
+                                                        TOTAL ({filteredSaleRows.length} lines)
+                                                    </td>
+                                                    <td style={{ padding: '0.65rem 0.85rem', textAlign: 'right', color: '#f59e0b' }}>
+                                                        {filteredSaleRows.reduce((s, r) => s + r.qty, 0).toLocaleString('en-IN')}
+                                                    </td>
+                                                    <td style={{ padding: '0.65rem 0.85rem', textAlign: 'right' }}>
+                                                        {fmtInr(filteredSaleRows.reduce((s, r) => s + r.amount, 0))}
+                                                    </td>
+                                                </tr>
+                                            </tfoot>
+                                        </table>
+                                    )}
                             </div>
                         </div>
                     )}

@@ -14,6 +14,7 @@ interface UpcomingReminder {
   id: string;
   supplierId: string;
   supplierName: string;
+  commitmentDate?: string;
   reminderDate: string;
   amount: number;
   title: string;
@@ -256,7 +257,14 @@ export default function SupplierLedgerPage() {
                       <div style={{ fontSize: '0.72rem', color: 'var(--text-tertiary)', marginTop: '0.05rem' }}>{r.title}</div>
                     </div>
                     <div style={{ textAlign: 'right', flexShrink: 0 }}>
-                      <div style={{ fontSize: '0.72rem', color: sc, fontWeight: 600 }}>{fmtDate(r.reminderDate)}</div>
+                      <div style={{ fontSize: '0.68rem', color: '#f59e0b', fontWeight: 600, marginBottom: '0.05rem' }}>
+                        Remind: {fmtDate(r.reminderDate)}
+                      </div>
+                      {r.commitmentDate && r.commitmentDate !== r.reminderDate && (
+                        <div style={{ fontSize: '0.68rem', color: '#10b981', fontWeight: 600, marginBottom: '0.05rem' }}>
+                          Pay by: {fmtDate(r.commitmentDate)}
+                        </div>
+                      )}
                       {r.amount > 0 && <div style={{ fontWeight: 700, fontSize: '0.85rem', color: 'var(--text-primary)' }}>{fmtInr(r.amount)}</div>}
                     </div>
                     <ChevronRight size={13} style={{ color: 'var(--text-tertiary)', flexShrink: 0 }} />

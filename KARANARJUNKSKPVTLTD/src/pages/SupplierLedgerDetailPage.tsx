@@ -127,15 +127,20 @@ interface SupplierInvoice {
   updatedAt?: Timestamp;
 }
 
+type ReminderSchedule = 'same_day' | '1_day_before' | '3_days_before' | '5_days_before' | '7_days_before' | 'custom';
+
 interface PaymentReminder {
   id: string;
   supplierId: string;
   supplierName: string;
+  commitmentDate: string;
   reminderDate: string;
+  reminderSchedule?: ReminderSchedule;
   amount: number;
   title: string;
   notes?: string;
   status: 'open' | 'completed';
+  lockedByPayment?: boolean;
   notifyVia?: string[];
   createdAt?: Timestamp;
   createdBy?: string;
@@ -143,6 +148,31 @@ interface PaymentReminder {
 }
 
 const today = () => new Date().toISOString().slice(0, 10);
+
+const REMINDER_SCHEDULE_OPTIONS: { value: ReminderSchedule; label: string }[] = [
+  { value: 'same_day',     label: 'Same Day as Commitment' },
+  { value: '1_day_before', label: '1 Day Before' },
+  { value: '3_days_before', label: '3 Days Before' },
+  { value: '5_days_before', label: '5 Days Before' },
+  { value: '7_days_before', label: '7 Days Before' },
+  { value: 'custom',       label: 'Custom Date' },
+];
+
+const SCHEDULE_OFFSETS: Record<string, number> = {
+  same_day: 0,
+  '1_day_before': -1,
+  '3_days_before': -3,
+  '5_days_before': -5,
+  '7_days_before': -7,
+};
+
+function computeReminderDate(commitmentDate: string, schedule: string, customDate: string): string {
+  if (!commitmentDate) return customDate;
+  if (schedule === 'custom') return customDate;
+  const d = new Date(commitmentDate);
+  d.setDate(d.getDate() + (SCHEDULE_OFFSETS[schedule] ?? 0));
+  return d.toISOString().slice(0, 10);
+}
 
 function fmtDate(v?: Timestamp | string): string {
   if (!v) return '—';
@@ -263,7 +293,14 @@ export default function SupplierLedgerDetailPage() {
   const [reminders, setReminders] = useState<PaymentReminder[]>([]);
   const [remLoading, setRemLoading] = useState(false);
   const [remEditId, setRemEditId] = useState<string | null>(null);
-  const [remForm, setRemForm] = useState<{ reminderDate: string; amount: string; title: string; notes: string } | null>(null);
+  const [remForm, setRemForm] = useState<{
+    commitmentDate: string;
+    reminderSchedule: string;
+    reminderDate: string;
+    amount: string;
+    title: string;
+    notes: string;
+  } | null>(null);
   const [remSaving, setRemSaving] = useState(false);
   const [highlightedReminderId, setHighlightedReminderId] = useState<string | null>(null);
   const highlightRef = useRef<HTMLDivElement | null>(null);
@@ -459,11 +496,15 @@ export default function SupplierLedgerDetailPage() {
 
   const handleSaveReminder = async () => {
     if (!remForm || !tenantId || !id || !supplier) return;
-    if (!remForm.reminderDate || !remForm.title.trim()) return;
+    if (!remForm.commitmentDate || !remForm.title.trim()) return;
+    const computedReminderDate = computeReminderDate(remForm.commitmentDate, remForm.reminderSchedule, remForm.reminderDate);
+    if (!computedReminderDate) return;
     setRemSaving(true);
     try {
       const localFields = {
-        reminderDate: remForm.reminderDate,
+        commitmentDate: remForm.commitmentDate,
+        reminderDate: computedReminderDate,
+        reminderSchedule: remForm.reminderSchedule as ReminderSchedule,
         amount: parseFloat(remForm.amount) || 0,
         title: remForm.title.trim(),
         notes: remForm.notes.trim(),
@@ -491,14 +532,24 @@ export default function SupplierLedgerDetailPage() {
     finally { setRemSaving(false); }
   };
 
-  const markReminderStatus = async (reminderId: string, status: 'open' | 'completed') => {
+  const markReminderStatus = async (reminderId: string, status: 'open' | 'completed', lockedByPayment?: boolean) => {
     if (!tenantId) return;
-    await updateDoc(getTenantDoc(db, tenantId, 'supplierPaymentReminders', reminderId), { status, updatedAt: serverTimestamp() });
-    setReminders(prev => prev.map(r => r.id === reminderId ? { ...r, status } : r));
+    const patch: Record<string, unknown> = { status, updatedAt: serverTimestamp() };
+    if (lockedByPayment !== undefined) patch.lockedByPayment = lockedByPayment;
+    await updateDoc(getTenantDoc(db, tenantId, 'supplierPaymentReminders', reminderId), patch);
+    setReminders(prev => prev.map(r =>
+      r.id === reminderId
+        ? { ...r, status, ...(lockedByPayment !== undefined ? { lockedByPayment } : {}) }
+        : r
+    ));
   };
 
   const handleReminderToggle = (r: PaymentReminder) => {
     if (r.status === 'completed') {
+      if (r.lockedByPayment) {
+        alert('This reminder was completed by recording a payment.\nTo reopen it, delete the linked payment first — this keeps financial totals accurate.');
+        return;
+      }
       void markReminderStatus(r.id, 'open');
     } else {
       setReminderToComplete(r);
@@ -877,7 +928,7 @@ export default function SupplierLedgerDetailPage() {
         <button className="btn btn-primary" onClick={openAddPayment} style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', padding: '0.4rem 0.9rem', fontSize: '0.85rem' }}>
           <IndianRupee size={14} /> Record Payment
         </button>
-        <button className="btn btn-secondary" onClick={() => { setActiveTab('reminders'); setRemEditId(null); setRemForm({ reminderDate: '', amount: '', title: '', notes: '' }); }} style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', padding: '0.4rem 0.9rem', fontSize: '0.85rem' }}>
+        <button className="btn btn-secondary" onClick={() => { setActiveTab('reminders'); setRemEditId(null); setRemForm({ commitmentDate: '', reminderSchedule: '1_day_before', reminderDate: '', amount: '', title: '', notes: '' }); }} style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', padding: '0.4rem 0.9rem', fontSize: '0.85rem' }}>
           <Bell size={14} /> Add Reminder
         </button>
       </div>
@@ -1419,7 +1470,7 @@ export default function SupplierLedgerDetailPage() {
               <span style={{ fontSize: '0.78rem', color: 'var(--text-tertiary)' }}>({reminders.length})</span>
             </div>
             {!remForm && (
-              <button className="btn btn-primary" onClick={() => { setRemEditId(null); setRemForm({ reminderDate: '', amount: '', title: '', notes: '' }); }}
+              <button className="btn btn-primary" onClick={() => { setRemEditId(null); setRemForm({ commitmentDate: '', reminderSchedule: '1_day_before', reminderDate: '', amount: '', title: '', notes: '' }); }}
                 style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', padding: '0.45rem 0.9rem', fontSize: '0.85rem' }}>
                 <Plus size={14} /> Add Reminder
               </button>
@@ -1460,8 +1511,22 @@ export default function SupplierLedgerDetailPage() {
                         <span style={{ fontSize: '0.68rem', padding: '0.1rem 0.5rem', borderRadius: '999px', background: `${sc}22`, color: sc, fontWeight: 700, textTransform: 'uppercase' }}>{ds}</span>
                       </div>
                       {r.notes && <div style={{ fontSize: '0.75rem', color: 'var(--text-tertiary)', marginTop: '0.15rem' }}>{r.notes}</div>}
-                      <div style={{ fontSize: '0.75rem', color: 'var(--text-tertiary)', display: 'flex', alignItems: 'center', gap: '0.4rem', marginTop: '0.15rem' }}>
-                        <CalendarDays size={12} /> {fmtDate(r.reminderDate)}
+                      <div style={{ fontSize: '0.75rem', color: 'var(--text-tertiary)', display: 'flex', alignItems: 'center', gap: '0.75rem', marginTop: '0.2rem', flexWrap: 'wrap' }}>
+                        <span style={{ display: 'flex', alignItems: 'center', gap: '0.3rem' }}>
+                          <Bell size={11} style={{ color: '#f59e0b' }} />
+                          <span style={{ color: '#f59e0b', fontWeight: 600 }}>Remind:</span> {fmtDate(r.reminderDate)}
+                        </span>
+                        {r.commitmentDate && r.commitmentDate !== r.reminderDate && (
+                          <span style={{ display: 'flex', alignItems: 'center', gap: '0.3rem' }}>
+                            <CalendarDays size={11} style={{ color: '#10b981' }} />
+                            <span style={{ color: '#10b981', fontWeight: 600 }}>Pay by:</span> {fmtDate(r.commitmentDate)}
+                          </span>
+                        )}
+                        {r.lockedByPayment && (
+                          <span style={{ fontSize: '0.65rem', padding: '0.1rem 0.4rem', borderRadius: '999px', background: '#10b98122', color: '#10b981', fontWeight: 700, textTransform: 'uppercase' }}>
+                            Payment Recorded
+                          </span>
+                        )}
                       </div>
                     </div>
                     <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', flexShrink: 0 }}>
@@ -1475,9 +1540,16 @@ export default function SupplierLedgerDetailPage() {
                         {r.status === 'completed' ? <Square size={13} /> : <CheckCircle2 size={13} />}
                         {r.status === 'completed' ? 'Reopen' : 'Complete'}
                       </button>
-                      {iconBtn(<Pencil size={14} />, () => {
+                      {!r.lockedByPayment && iconBtn(<Pencil size={14} />, () => {
                         setRemEditId(r.id);
-                        setRemForm({ reminderDate: r.reminderDate, amount: String(r.amount || ''), title: r.title, notes: r.notes ?? '' });
+                        setRemForm({
+                          commitmentDate: r.commitmentDate || r.reminderDate,
+                          reminderSchedule: r.reminderSchedule ?? 'custom',
+                          reminderDate: r.reminderDate,
+                          amount: String(r.amount || ''),
+                          title: r.title,
+                          notes: r.notes ?? '',
+                        });
                       }, 'Edit reminder', 'var(--primary-light)')}
                       {iconBtn(<Trash2 size={14} />, () => handleDeleteReminder(r), 'Delete reminder', '#ff4d4f')}
                     </div>
@@ -1629,7 +1701,7 @@ export default function SupplierLedgerDetailPage() {
         onClose={() => { setPmtEditing(undefined); setPmtFromReminder(null); }}
         onSaved={() => {
           if (pmtFromReminder) {
-            void markReminderStatus(pmtFromReminder.reminderId, 'completed');
+            void markReminderStatus(pmtFromReminder.reminderId, 'completed', true);
             setPmtFromReminder(null);
           }
           setPmtEditing(undefined);
@@ -1722,10 +1794,11 @@ export default function SupplierLedgerDetailPage() {
             </div>
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.85rem' }}>
               <div>
-                <label style={{ display: 'block', fontSize: '0.75rem', fontWeight: 600, color: 'var(--text-secondary)', marginBottom: '0.3rem' }}>Reminder Date *</label>
-                <input className="input-field" type="date" value={remForm.reminderDate}
-                  onChange={e => setRemForm(f => f ? { ...f, reminderDate: e.target.value } : f)}
-                  style={{ margin: 0, width: '100%' }} />
+                <label style={{ display: 'block', fontSize: '0.75rem', fontWeight: 600, color: '#10b981', marginBottom: '0.3rem' }}>Payment Commitment Date *</label>
+                <input className="input-field" type="date" value={remForm.commitmentDate}
+                  onChange={e => setRemForm(f => f ? { ...f, commitmentDate: e.target.value } : f)}
+                  style={{ margin: 0, width: '100%', borderColor: 'hsla(160,60%,40%,0.4)' }} />
+                <div style={{ fontSize: '0.65rem', color: 'var(--text-tertiary)', marginTop: '0.2rem' }}>Date you commit to pay the supplier</div>
               </div>
               <div>
                 <label style={{ display: 'block', fontSize: '0.75rem', fontWeight: 600, color: 'var(--text-secondary)', marginBottom: '0.3rem' }}>Amount (₹)</label>
@@ -1733,6 +1806,29 @@ export default function SupplierLedgerDetailPage() {
                   onChange={e => setRemForm(f => f ? { ...f, amount: e.target.value } : f)}
                   style={{ margin: 0, width: '100%' }} />
               </div>
+            </div>
+            <div>
+              <label style={{ display: 'block', fontSize: '0.75rem', fontWeight: 600, color: '#f59e0b', marginBottom: '0.3rem' }}>Remind Me</label>
+              <select className="input-field" value={remForm.reminderSchedule}
+                onChange={e => setRemForm(f => f ? { ...f, reminderSchedule: e.target.value } : f)}
+                style={{ margin: 0, width: '100%' }}>
+                {REMINDER_SCHEDULE_OPTIONS.map(o => (
+                  <option key={o.value} value={o.value}>{o.label}</option>
+                ))}
+              </select>
+              {remForm.reminderSchedule === 'custom' ? (
+                <div style={{ marginTop: '0.5rem' }}>
+                  <label style={{ display: 'block', fontSize: '0.72rem', fontWeight: 600, color: 'var(--text-secondary)', marginBottom: '0.2rem' }}>Custom Reminder Date *</label>
+                  <input className="input-field" type="date" value={remForm.reminderDate}
+                    onChange={e => setRemForm(f => f ? { ...f, reminderDate: e.target.value } : f)}
+                    style={{ margin: 0, width: '100%' }} />
+                </div>
+              ) : remForm.commitmentDate ? (
+                <div style={{ marginTop: '0.35rem', fontSize: '0.72rem', color: 'var(--text-tertiary)', display: 'flex', alignItems: 'center', gap: '0.3rem' }}>
+                  <Bell size={11} style={{ color: '#f59e0b' }} />
+                  Reminder will fire on: <strong style={{ color: '#f59e0b' }}>{fmtDate(computeReminderDate(remForm.commitmentDate, remForm.reminderSchedule, remForm.reminderDate))}</strong>
+                </div>
+              ) : null}
             </div>
             <div>
               <label style={{ display: 'block', fontSize: '0.75rem', fontWeight: 600, color: 'var(--text-secondary)', marginBottom: '0.3rem' }}>Notes (optional)</label>
@@ -1744,7 +1840,7 @@ export default function SupplierLedgerDetailPage() {
           <div style={{ display: 'flex', gap: '0.75rem', justifyContent: 'flex-end' }}>
             <button className="btn btn-secondary" onClick={() => { setRemForm(null); setRemEditId(null); }} disabled={remSaving}>Cancel</button>
             <button className="btn btn-primary" onClick={handleSaveReminder}
-              disabled={remSaving || !remForm.title.trim() || !remForm.reminderDate}
+              disabled={remSaving || !remForm.title.trim() || !remForm.commitmentDate || (remForm.reminderSchedule === 'custom' && !remForm.reminderDate)}
               style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
               {remSaving ? <Loader2 size={14} className="animate-spin" /> : <CheckCircle2 size={14} />}
               {remEditId ? 'Save Changes' : 'Add Reminder'}
