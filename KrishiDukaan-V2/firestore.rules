@@ -347,6 +347,15 @@ service cloud.firestore {
         // Allow any retailer to add their store to the product's availability array
         request.resource.data.diff(resource.data).affectedKeys().hasOnly(['availability', 'updatedAt']) ||
         request.resource.data.diff(resource.data).affectedKeys().hasOnly(['availability']) ||
+        // Allow any authed shopper to bump the analytics counters only
+        // (trackProductImpression/Click/StoreCall/DirectionRequest in
+        // app/firebase.ts). Without this the seller-analytics counters were
+        // permission-denied for every non-owner and silently stayed zero —
+        // same pattern as the reels viewsCount/likesCount clause.
+        request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          'impressions', 'clicks', 'positionSum', 'calls', 'directionRequests',
+          'impressionsByDay', 'clicksByDay', 'callsByDay', 'directionRequestsByDay'
+        ]) ||
         // Allow owner to update discount mirror fields (effectiveDiscountPct, maxDiscountPct, availability+discount)
         request.resource.data.diff(resource.data).affectedKeys().hasOnly(['effectiveDiscountPct', 'updatedAt']) ||
         request.resource.data.diff(resource.data).affectedKeys().hasOnly(['maxDiscountPct']) ||

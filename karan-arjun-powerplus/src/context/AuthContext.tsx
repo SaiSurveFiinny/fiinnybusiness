@@ -84,7 +84,7 @@ async function ensureUserProfile(authUser: User, preferredName?: string): Promis
   const role = await resolveRole(authUser.email ?? '');
   await setDoc(profileRef, {
     uid: authUser.uid,
-    name: preferredName || authUser.displayName || 'Power Plus User',
+    name: preferredName || authUser.displayName || 'Guest',
     email: authUser.email ?? '',
     phone: authUser.phoneNumber ?? '',
     village: '',
@@ -138,7 +138,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
               : (data.role ?? 'customer');
             setProfile({
               uid: authUser.uid,
-              name: data.name ?? authUser.displayName ?? 'Power Plus User',
+              name: data.name ?? authUser.displayName ?? 'Guest',
               email: data.email ?? authUser.email ?? '',
               phone: data.phone ?? authUser.phoneNumber ?? '',
               role: effectiveRole,
@@ -201,7 +201,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         if (!snap.exists()) {
           await setDoc(ref, {
             uid: user.uid,
-            name: updates.name ?? user.displayName ?? 'Power Plus User',
+            name: updates.name ?? user.displayName ?? 'Guest',
             email: updates.email ?? user.email ?? '',
             phone: updates.phone ?? user.phoneNumber ?? '',
             village: updates.village ?? '',

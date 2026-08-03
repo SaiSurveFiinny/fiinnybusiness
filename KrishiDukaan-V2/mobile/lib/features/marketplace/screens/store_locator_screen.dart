@@ -2,6 +2,7 @@ import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
+import 'package:scrollable_positioned_list/scrollable_positioned_list.dart';
 import 'package:url_launcher/url_launcher.dart';
 import '../../../core/constants/app_colors.dart';
 import '../../../core/constants/app_config.dart';
@@ -70,8 +71,20 @@ class _StoreLocatorScreenState extends ConsumerState<StoreLocatorScreen> {
   GoogleMapController? _stripMapController;
   GoogleMapController? _overlayMapController;
   final _searchCtrl = TextEditingController();
-  final _listScrollCtrl = ScrollController();
-  final _cardKeys = <String, GlobalKey>{};
+
+  // Index-based scrolling: a lazy ListView + GlobalKey/ensureVisible could
+  // only scroll to cards that were already built, so selecting a distant
+  // store from the map silently did nothing. ScrollablePositionedList can
+  // jump to any index, built or not.
+  final _itemScrollCtrl = ItemScrollController();
+
+  // The currently rendered (filtered) list — captured during build so
+  // _selectStore can translate a store id into a list index.
+  List<StoreModel> _visibleStores = const [];
+
+  // A marker tapped while the fullscreen map overlay is up can't scroll a
+  // list that's hidden behind the overlay — remember it and scroll on close.
+  String? _pendingScrollStoreId;
 
   String? _selectedStoreId;
   String _searchQuery = '';
@@ -112,7 +125,6 @@ class _StoreLocatorScreenState extends ConsumerState<StoreLocatorScreen> {
   @override
   void dispose() {
     _searchCtrl.dispose();
-    _listScrollCtrl.dispose();
     _stripMapController?.dispose();
     _overlayMapController?.dispose();
     super.dispose();
@@ -144,16 +156,25 @@ class _StoreLocatorScreenState extends ConsumerState<StoreLocatorScreen> {
       _animateTo(_stripMapController, store.lat!, store.lng!, 15);
     }
 
-    // Scroll the list to the selected card
+    if (_mapExpanded) {
+      // List is hidden behind the overlay — scroll once it closes.
+      _pendingScrollStoreId = store.id;
+    } else {
+      _scrollListToStore(store.id);
+    }
+  }
+
+  void _scrollListToStore(String storeId) {
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      final key = _cardKeys[store.id];
-      if (key?.currentContext != null) {
-        Scrollable.ensureVisible(
-          key!.currentContext!,
-          duration: const Duration(milliseconds: 300),
-          alignment: 0.1,
-        );
-      }
+      if (!mounted || !_itemScrollCtrl.isAttached) return;
+      final index = _visibleStores.indexWhere((s) => s.id == storeId);
+      if (index < 0) return;
+      _itemScrollCtrl.scrollTo(
+        index: index,
+        duration: const Duration(milliseconds: 300),
+        curve: Curves.easeOutCubic,
+        alignment: 0.05,
+      );
     });
   }
 
@@ -224,6 +245,7 @@ class _StoreLocatorScreenState extends ConsumerState<StoreLocatorScreen> {
               ? [...rawStores, focus]
               : rawStores;
           final stores = _filteredStores(allStores);
+          _visibleStores = stores;
           final selected = stores.firstWhere(
             (s) => s.id == _selectedStoreId,
             orElse: () =>
@@ -334,8 +356,8 @@ class _StoreLocatorScreenState extends ConsumerState<StoreLocatorScreen> {
                               ],
                             ),
                           )
-                        : ListView.builder(
-                            controller: _listScrollCtrl,
+                        : ScrollablePositionedList.builder(
+                            itemScrollController: _itemScrollCtrl,
                             padding: const EdgeInsets.all(12),
                             itemCount: stores.length,
                             itemBuilder: (_, i) {
@@ -343,9 +365,7 @@ class _StoreLocatorScreenState extends ConsumerState<StoreLocatorScreen> {
                               final isSelected =
                                   store.id == _selectedStoreId ||
                                   (!hasSelected && i == 0);
-                              _cardKeys[store.id] ??= GlobalKey();
                               return _StoreCard(
-                                key: _cardKeys[store.id],
                                 store: store,
                                 isSelected: isSelected,
                                 onTap: () => _selectStore(store),
@@ -416,8 +436,13 @@ class _StoreLocatorScreenState extends ConsumerState<StoreLocatorScreen> {
                   userLng: userLng,
                   selectedStoreId: _selectedStoreId,
                   focusedStore: hasSelected ? selected : null,
-                  onMarkerTap: (s) => setState(() => _selectedStoreId = s.id),
-                  onClose: () => setState(() => _mapExpanded = false),
+                  onMarkerTap: (s) => _selectStore(s, panMap: false),
+                  onClose: () {
+                    setState(() => _mapExpanded = false);
+                    final pending = _pendingScrollStoreId;
+                    _pendingScrollStoreId = null;
+                    if (pending != null) _scrollListToStore(pending);
+                  },
                   onNavigate: (s) => _navigate(
                     s,
                     allStores: allStores,
@@ -699,7 +724,6 @@ class _StoreCard extends StatelessWidget {
   final VoidCallback onDetails;
 
   const _StoreCard({
-    super.key,
     required this.store,
     required this.isSelected,
     required this.onTap,

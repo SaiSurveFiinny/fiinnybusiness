@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:math';
 
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
@@ -15,6 +16,7 @@ import '../../../core/widgets/shimmer_product_card.dart';
 import '../../notifications/notifications.dart';
 import '../providers/marketplace_provider.dart';
 import '../../reels/providers/reels_provider.dart';
+import '../../reels/screens/shop_profile_screen.dart' show StandaloneReelsFeed;
 import '../../../core/models/reel_model.dart';
 import '../../../core/utils/format_count.dart';
 
@@ -925,16 +927,21 @@ class _ReelsRail extends ConsumerWidget {
       data: (reels) {
         if (reels.isEmpty) return const SizedBox.shrink();
         
+        // Seeded from the feed's identity so the selection is stable across
+        // rebuilds (an unseeded shuffle changed which reels the cards showed
+        // on every home rebuild, so the tapped thumbnail no longer matched
+        // what the card was rendering).
+        final seed = reels.length ^ reels.first.id.hashCode;
         List<ReelModel> displayReels;
         if (skipCount > 0) {
           if (reels.length > 4) {
             final remaining = reels.skip(skipCount).toList();
-            remaining.shuffle(); // mix up the bottom rail so it feels fresh
+            remaining.shuffle(Random(seed));
             displayReels = remaining.take(4).toList();
           } else {
-            // Not enough reels to be entirely disjoint. Just shuffle the existing ones.
+            // Not enough reels to be entirely disjoint. Just mix the existing ones.
             final mixed = reels.toList();
-            mixed.shuffle();
+            mixed.shuffle(Random(seed));
             displayReels = mixed.take(4).toList();
           }
         } else {
@@ -965,7 +972,7 @@ class _ReelsRail extends ConsumerWidget {
                 separatorBuilder: (_, _) => const SizedBox(width: 12),
                 itemBuilder: (_, i) => SizedBox(
                   width: 120,
-                  child: _ReelRailCard(reel: displayReels[i]),
+                  child: _ReelRailCard(reel: displayReels[i], allReels: reels),
                 ),
               ),
             ),
@@ -980,14 +987,34 @@ class _ReelsRail extends ConsumerWidget {
 
 class _ReelRailCard extends ConsumerWidget {
   final ReelModel reel;
-  const _ReelRailCard({required this.reel});
+
+  /// The rail's full (ranked) list — the fullscreen feed opens over it at the
+  /// tapped reel's position, so the reel shown is exactly the thumbnail
+  /// tapped. Routing through the /reels tab instead was racy: the tab's feed
+  /// re-ranks on open, so it frequently started on a different reel.
+  final List<ReelModel> allReels;
+
+  const _ReelRailCard({required this.reel, required this.allReels});
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     return GestureDetector(
       onTap: () {
-        ref.invalidate(reelsFeedProvider);
-        context.go('/reels');
+        final index = allReels.indexWhere((r) => r.id == reel.id);
+        final user = ref.read(currentUserProvider).value;
+        Navigator.of(context, rootNavigator: true).push(
+          MaterialPageRoute(
+            fullscreenDialog: true,
+            builder: (_) => ProviderScope(
+              child: StandaloneReelsFeed(
+                reels: allReels,
+                initialIndex: index < 0 ? 0 : index,
+                currentUserId: user?.phone,
+                currentUserName: user?.businessName ?? user?.name ?? '',
+              ),
+            ),
+          ),
+        );
       },
       child: Container(
         decoration: BoxDecoration(

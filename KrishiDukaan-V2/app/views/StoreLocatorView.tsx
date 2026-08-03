@@ -122,16 +122,23 @@ export default function StoreLocatorView({
     }
   }, [map, center]);
 
-  // Scroll sidebar to selected store card when map marker is clicked
+  // Scroll the store list to the selected card when a map marker is clicked.
+  // The mobile and desktop lists are BOTH in the DOM (toggled via CSS), so
+  // refs are keyed per layout and we scroll whichever element is actually
+  // visible — scrollIntoView on a display:none node is a silent no-op, which
+  // is why marker taps used to leave the list unscrolled.
+  // While the mobile fullscreen map overlay is up, the list is hidden; defer
+  // the scroll until the overlay closes.
   useEffect(() => {
-    if (!activeStoreId) return;
-    const card = cardRefs.current.get(activeStoreId);
-    if (card && listRef.current) {
-      const container = listRef.current;
-      const cardTop = card.offsetTop - container.offsetTop;
-      container.scrollTo({ top: cardTop - 16, behavior: 'smooth' });
+    if (!activeStoreId || mobileMapOverlay) return;
+    for (const layout of ['desktop', 'mobile']) {
+      const card = cardRefs.current.get(`${layout}:${activeStoreId}`);
+      if (card && card.offsetParent !== null) {
+        card.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        return;
+      }
     }
-  }, [activeStoreId]);
+  }, [activeStoreId, mobileMapOverlay]);
 
   const handleStoreClick = (storeId: string, showMap = false) => {
     onStoreSelect?.(storeId);
@@ -411,6 +418,10 @@ export default function StoreLocatorView({
           return (
             <div
               key={store.id}
+              ref={(el) => {
+                if (el) cardRefs.current.set(`mobile:${store.id}`, el);
+                else cardRefs.current.delete(`mobile:${store.id}`);
+              }}
               className={`rounded-2xl border-2 overflow-hidden transition-all ${
                 isActive ? 'border-primary bg-white shadow-md' : 'border-surface-container bg-white shadow-sm'
               }`}
@@ -671,8 +682,8 @@ export default function StoreLocatorView({
             <motion.div
               key={store.id}
               ref={(el) => {
-                if (el) cardRefs.current.set(store.id, el);
-                else cardRefs.current.delete(store.id);
+                if (el) cardRefs.current.set(`desktop:${store.id}`, el);
+                else cardRefs.current.delete(`desktop:${store.id}`);
               }}
               initial={{ x: -20, opacity: 0 }}
               animate={{ x: 0, opacity: 1 }}

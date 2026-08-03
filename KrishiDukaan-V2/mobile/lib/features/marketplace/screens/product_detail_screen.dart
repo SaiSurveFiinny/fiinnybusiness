@@ -2157,27 +2157,60 @@ class _SellerTileState extends ConsumerState<_SellerTile> {
                 ),
               ),
               padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
+              // Directions + Call + Store Products is one pill too many for a
+              // plain unconstrained Row on a phone-width screen — it overflowed
+              // (RenderFlex "crash") the moment the third pill was added. The
+              // pills now live in their own horizontally-scrollable segment so
+              // the row can never overflow no matter how many pills it holds,
+              // and the trailing "Details & order" label stays fixed and
+              // always visible instead of getting squeezed off-screen.
               child: Row(
                 children: [
-                  if (listing.hasLocation ||
-                      (listing.sellerAddress?.trim().isNotEmpty ?? false))
-                    _QuickPillAction(
-                      icon: Icons.directions_outlined,
-                      label: 'Directions',
-                      onTap: () => _openMap(listing),
+                  Expanded(
+                    child: SingleChildScrollView(
+                      scrollDirection: Axis.horizontal,
+                      child: Row(
+                        children: [
+                          if (listing.hasLocation ||
+                              (listing.sellerAddress?.trim().isNotEmpty ??
+                                  false))
+                            _QuickPillAction(
+                              icon: Icons.directions_outlined,
+                              label: 'Directions',
+                              onTap: () => _openMap(listing),
+                            ),
+                          if ((listing.hasLocation ||
+                                  (listing.sellerAddress?.trim().isNotEmpty ??
+                                      false)) &&
+                              _isDialable(listing.sellerPhone))
+                            const SizedBox(width: 6),
+                          if (_isDialable(listing.sellerPhone))
+                            _QuickPillAction(
+                              icon: Icons.phone_outlined,
+                              label: 'Call',
+                              onTap: () => _callStore(listing.sellerPhone),
+                            ),
+                          if (listing.sellerPhone.trim().isNotEmpty) ...[
+                            const SizedBox(width: 6),
+                            // Same destination as the store locator's "View
+                            // Store Products" button: the marketplace grid
+                            // filtered to this seller (SellerFilter matches on
+                            // phone as primary key).
+                            _QuickPillAction(
+                              icon: Icons.storefront_outlined,
+                              label: 'Store Products',
+                              onTap: () => context.go(
+                                '/marketplace'
+                                '?seller=${Uri.encodeComponent(listing.sellerPhone)}'
+                                '&sellerName=${Uri.encodeComponent(listing.sellerName)}',
+                              ),
+                            ),
+                          ],
+                        ],
+                      ),
                     ),
-                  if ((listing.hasLocation ||
-                          (listing.sellerAddress?.trim().isNotEmpty ??
-                              false)) &&
-                      _isDialable(listing.sellerPhone))
-                    const SizedBox(width: 6),
-                  if (_isDialable(listing.sellerPhone))
-                    _QuickPillAction(
-                      icon: Icons.phone_outlined,
-                      label: 'Call',
-                      onTap: () => _callStore(listing.sellerPhone),
-                    ),
-                  const Spacer(),
+                  ),
+                  const SizedBox(width: 8),
                   Text(
                     _expanded ? 'Hide details' : 'Details & order',
                     style: AppTextStyles.caption.copyWith(

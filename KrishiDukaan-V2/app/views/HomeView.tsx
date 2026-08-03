@@ -131,7 +131,7 @@ export default function HomeView({
   const [reels, setReels] = useState<any[]>([]);
   const [reelsLoading, setReelsLoading] = useState(true);
   useEffect(() => {
-    fetch("/api/reels?limit=4")
+    fetch("/api/reels?limit=10")
       .then((r) => r.json())
       .then((data) => {
         setReels(data.reels ?? []);
@@ -329,7 +329,7 @@ export default function HomeView({
         </div>
         <div className="flex gap-4 overflow-x-auto pb-4 snap-x">
           {reelsLoading ? (
-            Array.from({ length: 4 }).map((_, i) => (
+            Array.from({ length: 10 }).map((_, i) => (
               <div key={i} className="snap-start shrink-0 w-36 h-56 bg-surface-variant animate-pulse rounded-2xl border border-outline-variant" />
             ))
           ) : reels.length === 0 ? (
@@ -338,7 +338,7 @@ export default function HomeView({
             reels.map((reel) => (
               <a
                 key={reel.id}
-                href="/reels"
+                href={reel.slug ? `/reels/${reel.slug}` : `/reels?reelId=${reel.id}`}
                 className="snap-start shrink-0 w-36 relative bg-surface-container rounded-2xl overflow-hidden shadow hover:shadow-md transition-shadow group border border-outline-variant"
                 title={reel.caption}
               >

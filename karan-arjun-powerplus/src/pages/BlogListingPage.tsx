@@ -1,59 +1,39 @@
-import { collection, onSnapshot } from 'firebase/firestore';
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
+import { Link } from 'react-router-dom';
 import { Icons } from '../components/Icons';
-import type { Blog } from '../data/mockData';
-import { db } from '../lib/firebase';
-
-function toStringArray(value: unknown): string[] {
-  if (!Array.isArray(value)) {
-    return [];
-  }
-  return value
-    .map((item) => String(item ?? '').trim())
-    .filter(Boolean);
-}
+import { usePageSeo } from '../hooks/usePageSeo';
+import { useResourcesData } from '../hooks/useResourcesData';
+import type { Blog } from '../data/resources';
 
 function isDirectVideoUrl(url: string) {
   return /\.(mp4|webm|ogg)(\?.*)?$/i.test(url);
 }
 
-export default function Blog() {
-  const [blogs, setBlogs] = useState<Blog[]>([]);
-  const [isLoading, setIsLoading] = useState(true);
+/**
+ * Blog listing — /resources/blogs (formerly the standalone /blog page,
+ * which now redirects here — see App.tsx). Rendering is preserved exactly
+ * from the original pages/Blog.tsx: card grid + modal detail view, same
+ * fields, same image/video/link handling. Only the data source changed
+ * (useResourcesData's shared subscription instead of its own onSnapshot)
+ * and a usePageSeo call was added, since the original page had none.
+ */
+export default function BlogListingPage() {
+  const { blogs, isLoading } = useResourcesData();
   const [selectedBlog, setSelectedBlog] = useState<Blog | null>(null);
 
-  useEffect(() => {
-    const unsubscribe = onSnapshot(collection(db, 'blogs'), (snapshot) => {
-      const firestoreBlogs: Blog[] = snapshot.docs.map((docItem) => {
-        const data = docItem.data();
-        return {
-          id: docItem.id,
-          title: String(data.title ?? 'Untitled'),
-          excerpt: String(data.excerpt ?? ''),
-          date: String(data.date ?? new Date().toLocaleDateString('en-IN')),
-          category: String(data.category ?? 'General'),
-          content: String(data.content ?? ''),
-          imageUrls: toStringArray(data.imageUrls),
-          videoUrls: toStringArray(data.videoUrls),
-          links: Array.isArray(data.links)
-            ? data.links
-                .map((item) => ({
-                  label: String(item?.label ?? ''),
-                  url: String(item?.url ?? ''),
-                }))
-                .filter((item) => item.url.trim().length > 0)
-            : [],
-        };
-      });
-      setBlogs(firestoreBlogs);
-      setIsLoading(false);
-    });
-
-    return () => unsubscribe();
-  }, []);
+  usePageSeo({
+    title: 'Blog | Resources | Karan Arjun Pvt. Ltd.',
+    description: 'Simple, expert advice to maximize your crop yield and ensure soil health.',
+  });
 
   return (
     <div className="flex flex-col pt-32 pb-16 px-8 max-w-7xl mx-auto min-h-screen">
+      <nav className="flex items-center gap-2 mb-8 text-xs font-sans font-bold text-primary/50 uppercase tracking-widest">
+        <Link to="/resources" className="hover:text-primary transition-colors">Resources</Link>
+        <Icons.ChevronRight className="w-3 h-3" />
+        <span className="text-primary">Blogs</span>
+      </nav>
+
       <header className="text-center max-w-3xl mx-auto space-y-4 mb-16">
         <h1 className="font-sans text-[32px] md:text-5xl font-extrabold text-primary leading-tight">
           Agricultural Insights
@@ -73,11 +53,7 @@ export default function Blog() {
         {blogs.map((blog) => (
           <article key={blog.id} className="bg-white rounded-[2rem] p-8 border border-slate-100 shadow-sm hover:shadow-lg transition-shadow flex flex-col">
             {blog.imageUrls && blog.imageUrls.length > 0 && (
-              <img
-                src={blog.imageUrls[0]}
-                alt={blog.title}
-                className="w-full h-48 object-cover rounded-2xl mb-6"
-              />
+              <img src={blog.imageUrls[0]} alt={blog.title} className="w-full h-48 object-cover rounded-2xl mb-6" />
             )}
             <div className="flex items-center justify-between mb-6">
               <span className="px-3 py-1 bg-primary/5 text-primary text-[10px] font-sans font-bold rounded-full uppercase tracking-widest">
@@ -85,12 +61,8 @@ export default function Blog() {
               </span>
               <span className="text-xs text-slate-400 font-sans font-medium">{blog.date}</span>
             </div>
-            <h3 className="font-sans text-xl font-bold text-primary mb-4 leading-snug">
-              {blog.title}
-            </h3>
-            <p className="text-sm text-on-surface-variant font-serif mb-8 flex-grow">
-              {blog.excerpt}
-            </p>
+            <h3 className="font-sans text-xl font-bold text-primary mb-4 leading-snug">{blog.title}</h3>
+            <p className="text-sm text-on-surface-variant font-serif mb-8 flex-grow">{blog.excerpt}</p>
             <button
               onClick={() => setSelectedBlog(blog)}
               className="flex items-center gap-2 font-sans font-bold text-primary text-sm hover:text-secondary-container transition-colors mt-auto w-fit"
@@ -104,11 +76,7 @@ export default function Blog() {
       {selectedBlog && (
         <div className="fixed inset-0 bg-black/60 z-50 p-4 md:p-8 flex items-center justify-center">
           <div className="bg-white w-full max-w-4xl max-h-[90vh] overflow-y-auto rounded-[2rem] p-6 md:p-8 relative">
-            <button
-              onClick={() => setSelectedBlog(null)}
-              className="absolute top-4 right-4 p-2 rounded-lg hover:bg-slate-100 text-slate-500"
-              aria-label="Close article"
-            >
+            <button onClick={() => setSelectedBlog(null)} className="absolute top-4 right-4 p-2 rounded-lg hover:bg-slate-100 text-slate-500" aria-label="Close article">
               <Icons.X className="w-5 h-5" />
             </button>
             <span className="inline-block px-3 py-1 bg-primary/5 text-primary text-[10px] font-sans font-bold rounded-full uppercase tracking-widest mb-3">
@@ -130,9 +98,7 @@ export default function Blog() {
                 {(selectedBlog.content || selectedBlog.excerpt)
                   .split('\n')
                   .filter((line) => line.trim().length > 0)
-                  .map((line) => (
-                    <p key={line}>{line}</p>
-                  ))}
+                  .map((line) => <p key={line}>{line}</p>)}
               </div>
             )}
 
@@ -147,12 +113,7 @@ export default function Blog() {
                           <source src={videoUrl} />
                         </video>
                       ) : (
-                        <a
-                          href={videoUrl}
-                          target="_blank"
-                          rel="noreferrer"
-                          className="inline-flex items-center gap-2 text-primary font-sans font-semibold hover:underline"
-                        >
+                        <a href={videoUrl} target="_blank" rel="noreferrer" className="inline-flex items-center gap-2 text-primary font-sans font-semibold hover:underline">
                           Watch Video <Icons.ArrowRight className="w-4 h-4" />
                         </a>
                       )}
@@ -167,13 +128,7 @@ export default function Blog() {
                 <h3 className="font-sans font-bold text-primary mb-3">Useful Links</h3>
                 <div className="space-y-2">
                   {selectedBlog.links.map((link) => (
-                    <a
-                      key={`${link.label}-${link.url}`}
-                      href={link.url}
-                      target="_blank"
-                      rel="noreferrer"
-                      className="block text-sm text-primary hover:underline font-sans"
-                    >
+                    <a key={`${link.label}-${link.url}`} href={link.url} target="_blank" rel="noreferrer" className="block text-sm text-primary hover:underline font-sans">
                       {link.label || link.url}
                     </a>
                   ))}

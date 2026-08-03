@@ -1554,7 +1554,7 @@ export default function ProductDetailView({
                                   e.stopPropagation();
                                   void trackStoreCall(product.id);
                                 }}
-                                className="w-full border border-outline-variant text-on-surface py-2.5 rounded-xl text-xs font-black uppercase tracking-widest hover:bg-surface-container transition-colors flex items-center justify-center gap-1.5"
+                                className="flex-1 border border-outline-variant text-on-surface py-2.5 rounded-xl text-xs font-black uppercase tracking-widest hover:bg-surface-container transition-colors flex items-center justify-center gap-1.5"
                               >
                                 <ICONS.Phone className="w-3.5 h-3.5" /> {t('callStoreShort')}
                               </a>
@@ -1562,12 +1562,32 @@ export default function ProductDetailView({
                               <button
                                 type="button"
                                 disabled
-                                className="w-full border border-outline-variant text-on-surface-variant py-2.5 rounded-xl text-xs font-black uppercase tracking-widest opacity-60 cursor-not-allowed flex items-center justify-center gap-1.5"
+                                className="flex-1 border border-outline-variant text-on-surface-variant py-2.5 rounded-xl text-xs font-black uppercase tracking-widest opacity-60 cursor-not-allowed flex items-center justify-center gap-1.5"
                               >
                                 <ICONS.Phone className="w-3.5 h-3.5" /> {t('callStoreShort')}
                               </button>
                             )}
                           </HelperTooltip>
+                          {/* Same behavior as the store locator's button:
+                              manufacturers get their brand page, everyone else
+                              gets the market filtered to this store. */}
+                          {((store as any).role === 'manufacturer' || (store as any).onboardingType === 'manufacturer') && storePhone ? (
+                            <a
+                              href={`/brand/${storePhone}`}
+                              onClick={(e) => e.stopPropagation()}
+                              className="flex-1 border border-primary text-primary bg-primary/5 py-2.5 rounded-xl text-xs font-black uppercase tracking-widest hover:bg-primary hover:text-white transition-colors flex items-center justify-center gap-1.5"
+                            >
+                              <ICONS.Market className="w-3.5 h-3.5" /> Visit Brand Store
+                            </a>
+                          ) : onViewSellerAll && store.name ? (
+                            <button
+                              type="button"
+                              onClick={(e) => { e.stopPropagation(); onViewSellerAll(store.name); }}
+                              className="flex-1 border border-primary text-primary bg-primary/5 py-2.5 rounded-xl text-xs font-black uppercase tracking-widest hover:bg-primary hover:text-white transition-colors flex items-center justify-center gap-1.5"
+                            >
+                              <ICONS.Market className="w-3.5 h-3.5" /> View Store Products
+                            </button>
+                          ) : null}
                         </div>
 
                         {/* Rate this store — write/read reviews for this specific store */}
