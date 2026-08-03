@@ -160,6 +160,15 @@ export default function POSPage() {
     const [selectedCategory, setSelectedCategory] = useState('All');
     const searchRef = useRef<HTMLInputElement>(null);
 
+    // ── Keyboard nav & draft refs ────────────────────────────────────────────
+    const draftLoadedRef = useRef(false);
+    const [highlightedProductIdx, setHighlightedProductIdx] = useState(-1);
+    const qtyRefs = useRef<Record<string, HTMLInputElement | null>>({});
+    const customerPhoneRef = useRef<HTMLInputElement>(null);
+    const customerAddressRef = useRef<HTMLInputElement>(null);
+    const customerPinRef = useRef<HTMLInputElement>(null);
+    const rowSearchRef = useRef<HTMLInputElement>(null);
+
     // Quick add/edit product — manage inventory inline without leaving the POS
     const [showProductModal, setShowProductModal] = useState(false);
     const [editingProduct, setEditingProduct] = useState<Product | null>(null);
@@ -506,6 +515,48 @@ export default function POSPage() {
             .catch(() => { if (!cancelled) setCustomerRetailerDoc(null); });
         return () => { cancelled = true; };
     }, [tenantId, showInsightsPanel, customer.phone]);
+
+    // ── Draft persistence (localStorage) ────────────────────────────────────
+    // Load saved draft when tenantId first becomes available.
+    useEffect(() => {
+        if (!tenantId || draftLoadedRef.current) return;
+        draftLoadedRef.current = true;
+        try {
+            const raw = localStorage.getItem(`pos_draft_${tenantId}`);
+            if (!raw) return;
+            const draft = JSON.parse(raw);
+            if (Array.isArray(draft.billTabs) && draft.billTabs.length > 0) setBillTabs(draft.billTabs);
+            if (draft.activeTabId) setActiveTabId(draft.activeTabId);
+            if (draft.modeOfPayment) setModeOfPayment(draft.modeOfPayment);
+            if (draft.invoiceDate) setInvoiceDate(draft.invoiceDate);
+            if (draft.billFormat === 'A4' || draft.billFormat === 'A5') setBillFormat(draft.billFormat);
+            if (draft.billLang) setBillLang(draft.billLang);
+            if (typeof draft.transportCharges === 'number') setTransportCharges(draft.transportCharges);
+            if (typeof draft.laborCharges === 'number') setLaborCharges(draft.laborCharges);
+            if (typeof draft.creditPaidNow === 'number') setCreditPaidNow(draft.creditPaidNow);
+            if (typeof draft.khataNote === 'string') setKhataNote(draft.khataNote);
+            if (typeof draft.redeemPoints === 'number') setRedeemPoints(draft.redeemPoints);
+            if (draft.rowMeta && typeof draft.rowMeta === 'object') setRowMeta(draft.rowMeta);
+        } catch { /* ignore parse errors */ }
+    }, [tenantId]);
+
+    // Auto-save draft on every meaningful state change (500 ms debounce).
+    useEffect(() => {
+        if (!tenantId || !draftLoadedRef.current) return;
+        const timer = setTimeout(() => {
+            try {
+                localStorage.setItem(`pos_draft_${tenantId}`, JSON.stringify({
+                    billTabs, activeTabId, modeOfPayment, invoiceDate, billFormat, billLang,
+                    transportCharges, laborCharges, creditPaidNow, khataNote, redeemPoints, rowMeta,
+                }));
+            } catch { /* storage quota exceeded — ignore */ }
+        }, 500);
+        return () => clearTimeout(timer);
+    }, [tenantId, billTabs, activeTabId, modeOfPayment, invoiceDate, billFormat, billLang,
+        transportCharges, laborCharges, creditPaidNow, khataNote, redeemPoints, rowMeta]);
+
+    // Reset dropdown highlight when the active search row changes.
+    useEffect(() => { setHighlightedProductIdx(-1); }, [activeRowIndex]);
 
     // ── Cart operations ─────────────────────────────────────────────────────
     const addToCart = (product: Product) => {
@@ -861,6 +912,10 @@ export default function POSPage() {
                     const prevCreditAmt = editingOrder ? Number(editingOrder.creditAmount || (prevWasCredit ? prevTotal : 0)) : 0;
                     const prevPaidAmt = editingOrder ? Number(editingOrder.amountPaid ?? (prevWasCredit ? 0 : prevTotal)) : 0;
                     await updateDoc(rDoc.ref, {
+                        // Sync any edits the cashier made to the customer's master record.
+                        ...(customer.name ? { name: customer.name } : {}),
+                        ...(customer.address ? { atPost: customer.address } : {}),
+                        ...(customer.pin ? { pin: customer.pin } : {}),
                         totalSales: Math.max(0, Number(rData.totalSales || 0) - prevTotal + grandTotal),
                         outstandingAmount: Math.max(0, Number(rData.outstandingAmount || 0)
                             - (prevWasCredit ? prevCreditAmt : 0) + (isCredit ? effectiveCreditAmount : 0)),
@@ -928,6 +983,8 @@ export default function POSPage() {
 
             // Reset after save
             setTimeout(() => {
+                // Clear the draft immediately so a navigation-then-return doesn't restore it.
+                try { localStorage.removeItem(`pos_draft_${tenantId}`); } catch {}
                 // Reset the active tab
                 setBillTabs(prev => prev.map(t =>
                     t.id === activeTabId
@@ -1175,8 +1232,11 @@ export default function POSPage() {
                             const match = products.find(p => p.barcode === q)
                                 || products.find(p => p.name.toLowerCase() === q.toLowerCase())
                                 || products.find(p => p.name.toLowerCase().includes(q.toLowerCase()));
-                            if (match) { addToCart(match); setSearchQuery(''); }
-                            else showToast(`No product matches "${q}"`, 'error');
+                            if (match) {
+                                addToCart(match);
+                                setSearchQuery('');
+                                setTimeout(() => qtyRefs.current[match.id]?.focus(), 50);
+                            } else showToast(`No product matches "${q}"`, 'error');
                         }}
                     />
                 </div>
@@ -1367,7 +1427,8 @@ export default function POSPage() {
                                         <input className="pinv-input" style={{ fontWeight: 700, fontSize: '0.82rem', flex: 1 }} placeholder={L('buyer_name_ph')} value={customer.name}
                                             onChange={e => { setCustomer({ ...customer, name: e.target.value }); setShowFarmerDropdown(e.target.value.length > 0); }}
                                             onFocus={() => customer.name.length > 0 && setShowFarmerDropdown(true)}
-                                            onBlur={() => setTimeout(() => setShowFarmerDropdown(false), 200)} />
+                                            onBlur={() => setTimeout(() => setShowFarmerDropdown(false), 200)}
+                                            onKeyDown={e => { if (e.key === 'Enter' && !showFarmerDropdown) { e.preventDefault(); customerPhoneRef.current?.focus(); } }} />
                                         {showFarmerDropdown && (
                                             <div className="pinv-dropdown" style={{ width: '100%' }}>
                                                 {farmers.filter(r => (r.name || '').toLowerCase().includes(customer.name.toLowerCase()) && customer.name.toLowerCase() !== (r.name || '').toLowerCase())
@@ -1387,82 +1448,94 @@ export default function POSPage() {
                                     </div>
                                     <div style={{ borderRight: '1px solid #ccc', padding: '4px 8px', display: 'flex', gap: '5px', alignItems: 'center' }}>
                                         <span style={{ fontWeight: 700, color: '#555', whiteSpace: 'nowrap', flexShrink: 0, fontSize: '0.72rem' }}>Ph:</span>
-                                        <input className="pinv-input" style={{ flex: 1, fontSize: '0.8rem' }} placeholder="Phone" value={customer.phone}
-                                            onChange={e => setCustomer({ ...customer, phone: e.target.value })} onBlur={handlePhoneLookup} />
+                                        <input ref={customerPhoneRef} className="pinv-input" style={{ flex: 1, fontSize: '0.8rem' }} placeholder="Phone" value={customer.phone}
+                                            onChange={e => setCustomer({ ...customer, phone: e.target.value })} onBlur={handlePhoneLookup}
+                                            onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); customerAddressRef.current?.focus(); } }} />
                                     </div>
                                     <div style={{ borderRight: '1px solid #ccc', padding: '4px 8px', display: 'flex', gap: '5px', alignItems: 'center' }}>
                                         <span style={{ fontWeight: 700, color: '#555', whiteSpace: 'nowrap', flexShrink: 0, fontSize: '0.72rem' }}>Addr:</span>
-                                        <input className="pinv-input" style={{ flex: 1, fontSize: '0.8rem' }} placeholder={L('village_ph')} value={customer.address}
-                                            onChange={e => setCustomer({ ...customer, address: e.target.value })} />
+                                        <input ref={customerAddressRef} className="pinv-input" style={{ flex: 1, fontSize: '0.8rem' }} placeholder={L('village_ph')} value={customer.address}
+                                            onChange={e => setCustomer({ ...customer, address: e.target.value })}
+                                            onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); customerPinRef.current?.focus(); } }} />
                                     </div>
                                     <div style={{ padding: '4px 8px', display: 'flex', gap: '5px', alignItems: 'center' }}>
                                         <span style={{ fontWeight: 700, color: '#555', whiteSpace: 'nowrap', flexShrink: 0, fontSize: '0.72rem' }}>PIN:</span>
-                                        <input className="pinv-input" style={{ flex: 1, fontSize: '0.8rem' }} placeholder={L('pin')} value={customer.pin}
-                                            onChange={e => setCustomer({ ...customer, pin: e.target.value })} />
+                                        <input ref={customerPinRef} className="pinv-input" style={{ flex: 1, fontSize: '0.8rem' }} placeholder={L('pin')} value={customer.pin}
+                                            onChange={e => setCustomer({ ...customer, pin: e.target.value })}
+                                            onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); rowSearchRef.current?.focus(); } }} />
                                     </div>
                                 </div>
 
                                 {/* ══ ITEMS TABLE ══════════════════════════════════════════════ */}
                                 <div style={{ overflowX: 'auto' }}>
-                                    <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.80rem', tableLayout: 'fixed' }}>
+                                    {/* Column widths in % — mirror the print template exactly so WYSIWYG. */}
+                                    <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.78rem', tableLayout: 'fixed' }}>
                                         <colgroup>
-                                            {/* # */}      <col style={{ width: '24px' }} />
+                                            {/* # */}      <col style={{ width: '2.5%' }} />
                                             {/* Product */} <col />
-                                            {/* Company */} <col style={{ width: '82px' }} />
-                                            {/* Batch */}   <col style={{ width: '80px' }} />
-                                            {/* Exp */}     <col style={{ width: '52px' }} />
-                                            {/* Per */}     <col style={{ width: '32px' }} />
-                                            {/* Qty */}     <col style={{ width: '40px' }} />
-                                            {/* Rate */}    <col style={{ width: '62px' }} />
-                                            {/* GST% */}    <col style={{ width: '38px' }} />
-                                            {/* Amount */}  <col style={{ width: '76px' }} />
-                                            {/* Del */}     <col style={{ width: '22px' }} />
+                                            {/* Company */} <col style={{ width: '11%' }} />
+                                            {/* Batch */}   <col style={{ width: '9.5%' }} />
+                                            {/* Exp */}     <col style={{ width: '6%' }} />
+                                            {/* Per */}     <col style={{ width: '4.5%' }} />
+                                            {/* Qty */}     <col style={{ width: '5%' }} />
+                                            {/* Rate */}    <col style={{ width: '8.5%' }} />
+                                            {/* GST% */}    <col style={{ width: '5%' }} />
+                                            {/* Amount */}  <col style={{ width: '10%' }} />
+                                            {/* Del */}     <col style={{ width: '2.5%' }} />
                                         </colgroup>
                                         <thead>
                                             <tr style={{ background: '#f5f5f5', borderBottom: '1.5px solid #333' }}>
-                                                <th style={{ border: '1px solid #ccc', padding: '4px 2px', textAlign: 'center', fontWeight: 700, fontSize: '0.76rem' }}>#</th>
-                                                <th style={{ border: '1px solid #ccc', padding: '4px 6px', textAlign: 'left', fontWeight: 700, fontSize: '0.76rem' }}>Product</th>
-                                                <th style={{ border: '1px solid #ccc', padding: '4px 2px', textAlign: 'center', fontWeight: 700, fontSize: '0.76rem' }}>Company</th>
-                                                <th style={{ border: '1px solid #ccc', padding: '4px 2px', textAlign: 'center', fontWeight: 700, fontSize: '0.76rem' }}>Batch No.</th>
-                                                <th style={{ border: '1px solid #ccc', padding: '4px 2px', textAlign: 'center', fontWeight: 700, fontSize: '0.76rem' }}>Exp</th>
-                                                <th style={{ border: '1px solid #ccc', padding: '4px 2px', textAlign: 'center', fontWeight: 700, fontSize: '0.76rem' }}>Per</th>
-                                                <th style={{ border: '1px solid #ccc', padding: '4px 2px', textAlign: 'center', fontWeight: 700, fontSize: '0.76rem' }}>Qty</th>
-                                                <th style={{ border: '1px solid #ccc', padding: '4px 3px', textAlign: 'right', fontWeight: 700, fontSize: '0.76rem' }}>Rate</th>
-                                                <th style={{ border: '1px solid #ccc', padding: '4px 2px', textAlign: 'center', fontWeight: 700, fontSize: '0.76rem' }}>GST%</th>
-                                                <th style={{ border: '1px solid #ccc', padding: '4px 4px', textAlign: 'right', fontWeight: 700, fontSize: '0.76rem' }}>Amount</th>
+                                                {([
+                                                    ['#', 'center', '3px 1px'],
+                                                    ['Product', 'left', '3px 5px'],
+                                                    ['Company', 'center', '3px 2px'],
+                                                    ['Batch No.', 'center', '3px 2px'],
+                                                    ['Exp', 'center', '3px 1px'],
+                                                    ['Per', 'center', '3px 1px'],
+                                                    ['Qty', 'center', '3px 1px'],
+                                                    ['Rate', 'right', '3px 3px'],
+                                                    ['GST%', 'center', '3px 1px'],
+                                                    ['Amount', 'right', '3px 3px'],
+                                                ] as const).map(([label, align, pad]) => (
+                                                    <th key={label} style={{ border: '1px solid #ccc', padding: pad, textAlign: align as const, fontWeight: 700, fontSize: '0.74rem', overflow: 'hidden', whiteSpace: 'nowrap' }}>
+                                                        {label}
+                                                    </th>
+                                                ))}
                                                 <th style={{ border: '1px solid #ccc' }}></th>
                                             </tr>
                                         </thead>
                                         <tbody>
                                             {cart.map((item, idx) => (
                                                 <tr key={item.id} style={{ borderBottom: '1px solid #eee' }}>
-                                                    <td style={{ border: '1px solid #e8e8e8', padding: '3px 2px', textAlign: 'center', fontSize: '0.74rem' }}>{idx + 1}</td>
-                                                    <td style={{ border: '1px solid #e8e8e8', padding: '3px 6px', fontWeight: 600, fontSize: '0.80rem', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{item.name}</td>
-                                                    <td style={{ border: '1px solid #e8e8e8', padding: '3px 2px', fontSize: '0.74rem', textAlign: 'center', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{item.mfgCompany || ''}</td>
+                                                    <td style={{ border: '1px solid #e8e8e8', padding: '3px 2px', textAlign: 'center', fontSize: '0.72rem' }}>{idx + 1}</td>
+                                                    <td style={{ border: '1px solid #e8e8e8', padding: '3px 5px', fontWeight: 600, fontSize: '0.78rem', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{item.name}</td>
+                                                    <td style={{ border: '1px solid #e8e8e8', padding: '3px 2px', fontSize: '0.72rem', textAlign: 'center', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{item.mfgCompany || ''}</td>
                                                     <td style={{ border: '1px solid #e8e8e8', padding: '1px 2px' }}>
-                                                        <input className="pinv-input" style={{ textAlign: 'center', fontSize: '0.74rem' }} value={rowMeta[item.id]?.batchNo ?? (item.batchNumber || '')}
+                                                        <input className="pinv-input" style={{ textAlign: 'center', fontSize: '0.72rem' }} value={rowMeta[item.id]?.batchNo ?? (item.batchNumber || '')}
                                                             onChange={e => setRowMeta(m => ({ ...m, [item.id]: { ...m[item.id], batchNo: e.target.value } }))} />
                                                     </td>
                                                     <td style={{ border: '1px solid #e8e8e8', padding: '1px 2px' }}>
-                                                        <input type="text" className="pinv-input" style={{ textAlign: 'center', fontSize: '0.72rem', width: '100%' }} placeholder="MM/YY"
+                                                        <input type="text" className="pinv-input" style={{ textAlign: 'center', fontSize: '0.70rem', width: '100%' }} placeholder="MM/YY"
                                                             value={toMonthYear(rowMeta[item.id]?.expDate ?? (item.expiryDate || ''))}
                                                             onChange={e => setRowMeta(m => ({ ...m, [item.id]: { ...m[item.id], expDate: fromMonthYear(e.target.value) } }))} />
                                                     </td>
-                                                    <td style={{ border: '1px solid #e8e8e8', padding: '3px 2px', textAlign: 'center', fontSize: '0.76rem', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{item.unit || item.baseUnit}</td>
+                                                    <td style={{ border: '1px solid #e8e8e8', padding: '3px 2px', textAlign: 'center', fontSize: '0.72rem', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{item.unit || item.baseUnit}</td>
                                                     <td style={{ border: '1px solid #e8e8e8', padding: '1px 2px' }}>
-                                                        <input type="number" min="0" className="pinv-input" style={{ textAlign: 'center', fontWeight: 700, fontSize: '0.80rem' }} value={item.cartQuantity}
-                                                            onChange={e => setQty(item.id, Number(e.target.value))} onWheel={e => e.currentTarget.blur()} />
+                                                        <input type="number" min="0" className="pinv-input" style={{ textAlign: 'center', fontWeight: 700, fontSize: '0.78rem' }} value={item.cartQuantity}
+                                                            ref={el => { qtyRefs.current[item.id] = el; }}
+                                                            onChange={e => setQty(item.id, Number(e.target.value))} onWheel={e => e.currentTarget.blur()}
+                                                            onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); rowSearchRef.current?.focus(); } }} />
                                                     </td>
                                                     <td style={{ border: '1px solid #e8e8e8', padding: '1px 2px' }}>
-                                                        <input type="number" min="0" className="pinv-input" style={{ textAlign: 'right', paddingRight: '3px', fontSize: '0.80rem' }} value={posSellingRate(item)}
+                                                        <input type="number" min="0" className="pinv-input" style={{ textAlign: 'right', paddingRight: '3px', fontSize: '0.78rem' }} value={posSellingRate(item)}
                                                             onChange={e => setRate(item.id, Number(e.target.value))} onWheel={e => e.currentTarget.blur()} />
                                                     </td>
                                                     <td style={{ border: '1px solid #e8e8e8', padding: '1px 2px' }}>
-                                                        <input type="number" className="pinv-input" style={{ textAlign: 'center', fontSize: '0.74rem' }} value={item.gstPct ?? 5}
+                                                        <input type="number" className="pinv-input" style={{ textAlign: 'center', fontSize: '0.72rem' }} value={item.gstPct ?? 5}
                                                             onChange={e => setCart(prev => prev.map(c => c.id === item.id ? { ...c, gstPct: Number(e.target.value) } : c))}
                                                             onWheel={e => e.currentTarget.blur()} />
                                                     </td>
-                                                    <td style={{ border: '1px solid #e8e8e8', padding: '3px 4px', textAlign: 'right', fontWeight: 700, fontSize: '0.80rem' }}>{item.cartTotal ? invFmt(item.cartTotal) : ''}</td>
+                                                    <td style={{ border: '1px solid #e8e8e8', padding: '3px 4px', textAlign: 'right', fontWeight: 700, fontSize: '0.78rem' }}>{item.cartTotal ? invFmt(item.cartTotal) : ''}</td>
                                                     <td style={{ border: '1px solid #e8e8e8', padding: '1px', textAlign: 'center' }}>
                                                         <button onClick={() => removeCartItem(item.id)} style={{ border: 'none', background: 'transparent', cursor: 'pointer', color: '#e53935', padding: '2px' }}>
                                                             <Trash2 size={12} />
@@ -1474,25 +1547,39 @@ export default function POSPage() {
                                             <tr>
                                                 <td style={{ border: '1px solid #e8e8e8', padding: '2px', textAlign: 'center', color: '#bbb', fontSize: '0.74rem' }}>{cart.length + 1}</td>
                                                 <td colSpan={3} style={{ border: '1px solid #e8e8e8', padding: '1px 3px', position: 'relative' }}>
-                                                    <input className="pinv-input" placeholder={L('search_product')} value={rowSearch[cart.length] || ''}
-                                                        onChange={e => { setRowSearch(s => ({ ...s, [cart.length]: e.target.value })); setActiveRowIndex(e.target.value.length > 0 ? cart.length : null); }}
-                                                        onFocus={() => (rowSearch[cart.length] || '').length > 0 && setActiveRowIndex(cart.length)}
-                                                        onBlur={() => setTimeout(() => setActiveRowIndex(null), 200)} />
-                                                    {activeRowIndex === cart.length && (
-                                                        <div className="pinv-dropdown">
-                                                            {products.filter(p => p.name.toLowerCase().includes((rowSearch[cart.length] || '').toLowerCase()) || p.barcode === (rowSearch[cart.length] || '')).slice(0, 50)
-                                                                .map(p => (
-                                                                    <div key={p.id} className="pinv-dropdown-item" onMouseDown={() => { addToCart(p); setRowSearch(s => ({ ...s, [cart.length]: '' })); setActiveRowIndex(null); }}>
-                                                                        {p.name} <span style={{ color: '#888' }}>· ₹{posSellingRate(p)}</span>
-                                                                    </div>
-                                                                ))}
-                                                            {products.filter(p => p.name.toLowerCase().includes((rowSearch[cart.length] || '').toLowerCase())).length === 0 && (
-                                                                <div className="pinv-dropdown-item" onMouseDown={openAddProduct} style={{ color: 'var(--primary)' }}>
-                                                                    + Add "{rowSearch[cart.length]}" to inventory
+                                                    {(() => {
+                                                        const a5Filtered = products.filter(p => p.name.toLowerCase().includes((rowSearch[cart.length] || '').toLowerCase()) || p.barcode === (rowSearch[cart.length] || '')).slice(0, 50);
+                                                        return (<>
+                                                            <input ref={rowSearchRef} className="pinv-input" placeholder={L('search_product')} value={rowSearch[cart.length] || ''}
+                                                                onChange={e => { setRowSearch(s => ({ ...s, [cart.length]: e.target.value })); setActiveRowIndex(e.target.value.length > 0 ? cart.length : null); setHighlightedProductIdx(-1); }}
+                                                                onFocus={() => (rowSearch[cart.length] || '').length > 0 && setActiveRowIndex(cart.length)}
+                                                                onBlur={() => setTimeout(() => setActiveRowIndex(null), 200)}
+                                                                onKeyDown={e => {
+                                                                    if (e.key === 'ArrowDown') { e.preventDefault(); setHighlightedProductIdx(i => Math.min(i + 1, a5Filtered.length - 1)); }
+                                                                    else if (e.key === 'ArrowUp') { e.preventDefault(); setHighlightedProductIdx(i => Math.max(i - 1, -1)); }
+                                                                    else if (e.key === 'Enter') {
+                                                                        e.preventDefault();
+                                                                        const pick = highlightedProductIdx >= 0 ? a5Filtered[highlightedProductIdx] : a5Filtered.length === 1 ? a5Filtered[0] : null;
+                                                                        if (pick) { addToCart(pick); setRowSearch(s => ({ ...s, [cart.length]: '' })); setActiveRowIndex(null); setHighlightedProductIdx(-1); setTimeout(() => qtyRefs.current[pick.id]?.focus(), 50); }
+                                                                    }
+                                                                }} />
+                                                            {activeRowIndex === cart.length && (
+                                                                <div className="pinv-dropdown">
+                                                                    {a5Filtered.map((p, pi) => (
+                                                                        <div key={p.id} className="pinv-dropdown-item" style={{ background: pi === highlightedProductIdx ? '#e8f5e9' : undefined }}
+                                                                            onMouseDown={() => { addToCart(p); setRowSearch(s => ({ ...s, [cart.length]: '' })); setActiveRowIndex(null); setHighlightedProductIdx(-1); setTimeout(() => qtyRefs.current[p.id]?.focus(), 50); }}>
+                                                                            {p.name} <span style={{ color: '#888' }}>· ₹{posSellingRate(p)}</span>
+                                                                        </div>
+                                                                    ))}
+                                                                    {products.filter(p => p.name.toLowerCase().includes((rowSearch[cart.length] || '').toLowerCase())).length === 0 && (
+                                                                        <div className="pinv-dropdown-item" onMouseDown={openAddProduct} style={{ color: 'var(--primary)' }}>
+                                                                            + Add "{rowSearch[cart.length]}" to inventory
+                                                                        </div>
+                                                                    )}
                                                                 </div>
                                                             )}
-                                                        </div>
-                                                    )}
+                                                        </>);
+                                                    })()}
                                                 </td>
                                                 <td colSpan={7} style={{ border: '1px solid #e8e8e8' }}></td>
                                             </tr>
@@ -1646,6 +1733,7 @@ export default function POSPage() {
                                                 onChange={e => { setCustomer({ ...customer, name: e.target.value }); setShowFarmerDropdown(e.target.value.length > 0); }}
                                                 onFocus={() => customer.name.length > 0 && setShowFarmerDropdown(true)}
                                                 onBlur={() => setTimeout(() => setShowFarmerDropdown(false), 200)}
+                                                onKeyDown={e => { if (e.key === 'Enter' && !showFarmerDropdown) { e.preventDefault(); customerPhoneRef.current?.focus(); } }}
                                             />
                                             {showFarmerDropdown && (
                                                 <div className="pinv-dropdown" style={{ width: '100%' }}>
@@ -1670,18 +1758,21 @@ export default function POSPage() {
                                         </div>
                                         <div style={{ display: 'flex', gap: '8px', marginTop: '4px' }}>
                                             <span className="pinv-label">{L('contact')} :</span>
-                                            <input className="pinv-input" style={{ flexGrow: 1 }} placeholder="Phone No" value={customer.phone}
-                                                onChange={e => setCustomer({ ...customer, phone: e.target.value })} onBlur={handlePhoneLookup} />
+                                            <input ref={customerPhoneRef} className="pinv-input" style={{ flexGrow: 1 }} placeholder="Phone No" value={customer.phone}
+                                                onChange={e => setCustomer({ ...customer, phone: e.target.value })} onBlur={handlePhoneLookup}
+                                                onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); customerAddressRef.current?.focus(); } }} />
                                         </div>
                                         <div style={{ display: 'flex', gap: '8px', marginTop: '4px' }}>
                                             <span className="pinv-label">{L('address')} :</span>
-                                            <input className="pinv-input" style={{ flexGrow: 1 }} placeholder={L('village_ph')} value={customer.address}
-                                                onChange={e => setCustomer({ ...customer, address: e.target.value })} />
+                                            <input ref={customerAddressRef} className="pinv-input" style={{ flexGrow: 1 }} placeholder={L('village_ph')} value={customer.address}
+                                                onChange={e => setCustomer({ ...customer, address: e.target.value })}
+                                                onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); customerPinRef.current?.focus(); } }} />
                                         </div>
                                         <div style={{ display: 'flex', gap: '8px', marginTop: '4px' }}>
                                             <span className="pinv-label">{L('pin')} :</span>
-                                            <input className="pinv-input" style={{ flexGrow: 1 }} placeholder={L('pin')} value={customer.pin}
-                                                onChange={e => setCustomer({ ...customer, pin: e.target.value })} />
+                                            <input ref={customerPinRef} className="pinv-input" style={{ flexGrow: 1 }} placeholder={L('pin')} value={customer.pin}
+                                                onChange={e => setCustomer({ ...customer, pin: e.target.value })}
+                                                onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); rowSearchRef.current?.focus(); } }} />
                                         </div>
                                     </div>
                                     <div style={{ padding: '8px', display: 'flex', flexDirection: 'column', gap: '5px' }}>
@@ -1735,8 +1826,10 @@ export default function POSPage() {
                                                         onWheel={e => e.currentTarget.blur()} /></td>
                                                     <td style={{ textAlign: 'center' }}>{item.unit || item.baseUnit}</td>
                                                     <td style={{ textAlign: 'center', fontWeight: 600 }}><input type="number" min="0" className="pinv-input" style={{ textAlign: 'center', fontWeight: 600 }} value={item.cartQuantity}
+                                                        ref={el => { qtyRefs.current[item.id] = el; }}
                                                         onChange={e => setQty(item.id, Number(e.target.value))}
-                                                        onWheel={e => e.currentTarget.blur()} /></td>
+                                                        onWheel={e => e.currentTarget.blur()}
+                                                        onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); rowSearchRef.current?.focus(); } }} /></td>
                                                     <td style={{ textAlign: 'center' }}><input type="number" min="0" className="pinv-input" style={{ textAlign: 'center' }} value={posSellingRate(item)}
                                                         onChange={e => setRate(item.id, Number(e.target.value))}
                                                         onWheel={e => e.currentTarget.blur()} /></td>
@@ -1752,32 +1845,44 @@ export default function POSPage() {
                                             <tr>
                                                 <td style={{ textAlign: 'center', color: '#999' }}>{cart.length + 1}</td>
                                                 <td colSpan={3} style={{ position: 'relative' }}>
-                                                    <input
-                                                        className="pinv-input"
-                                                        placeholder={L('search_product')}
-                                                        value={rowSearch[cart.length] || ''}
-                                                        onChange={e => { setRowSearch(s => ({ ...s, [cart.length]: e.target.value })); setActiveRowIndex(e.target.value.length > 0 ? cart.length : null); }}
-                                                        onFocus={() => (rowSearch[cart.length] || '').length > 0 && setActiveRowIndex(cart.length)}
-                                                        onBlur={() => setTimeout(() => setActiveRowIndex(null), 200)}
-                                                    />
-                                                    {activeRowIndex === cart.length && (
-                                                        <div className="pinv-dropdown">
-                                                            {products
-                                                                .filter(p => p.name.toLowerCase().includes((rowSearch[cart.length] || '').toLowerCase()) || p.barcode === (rowSearch[cart.length] || ''))
-                                                                .slice(0, 50)
-                                                                .map(p => (
-                                                                    <div key={p.id} className="pinv-dropdown-item"
-                                                                        onMouseDown={() => { addToCart(p); setRowSearch(s => ({ ...s, [cart.length]: '' })); setActiveRowIndex(null); }}>
-                                                                        {p.name} <span style={{ color: '#888' }}>· ₹{posSellingRate(p)}</span>
-                                                                    </div>
-                                                                ))}
-                                                            {products.filter(p => p.name.toLowerCase().includes((rowSearch[cart.length] || '').toLowerCase())).length === 0 && (
-                                                                <div className="pinv-dropdown-item" onMouseDown={openAddProduct} style={{ color: 'var(--primary)' }}>
-                                                                    + Add "{rowSearch[cart.length]}" to inventory
+                                                    {(() => {
+                                                        const a4Filtered = products.filter(p => p.name.toLowerCase().includes((rowSearch[cart.length] || '').toLowerCase()) || p.barcode === (rowSearch[cart.length] || '')).slice(0, 50);
+                                                        return (<>
+                                                            <input
+                                                                ref={rowSearchRef}
+                                                                className="pinv-input"
+                                                                placeholder={L('search_product')}
+                                                                value={rowSearch[cart.length] || ''}
+                                                                onChange={e => { setRowSearch(s => ({ ...s, [cart.length]: e.target.value })); setActiveRowIndex(e.target.value.length > 0 ? cart.length : null); setHighlightedProductIdx(-1); }}
+                                                                onFocus={() => (rowSearch[cart.length] || '').length > 0 && setActiveRowIndex(cart.length)}
+                                                                onBlur={() => setTimeout(() => setActiveRowIndex(null), 200)}
+                                                                onKeyDown={e => {
+                                                                    if (e.key === 'ArrowDown') { e.preventDefault(); setHighlightedProductIdx(i => Math.min(i + 1, a4Filtered.length - 1)); }
+                                                                    else if (e.key === 'ArrowUp') { e.preventDefault(); setHighlightedProductIdx(i => Math.max(i - 1, -1)); }
+                                                                    else if (e.key === 'Enter') {
+                                                                        e.preventDefault();
+                                                                        const pick = highlightedProductIdx >= 0 ? a4Filtered[highlightedProductIdx] : a4Filtered.length === 1 ? a4Filtered[0] : null;
+                                                                        if (pick) { addToCart(pick); setRowSearch(s => ({ ...s, [cart.length]: '' })); setActiveRowIndex(null); setHighlightedProductIdx(-1); setTimeout(() => qtyRefs.current[pick.id]?.focus(), 50); }
+                                                                    }
+                                                                }}
+                                                            />
+                                                            {activeRowIndex === cart.length && (
+                                                                <div className="pinv-dropdown">
+                                                                    {a4Filtered.map((p, pi) => (
+                                                                        <div key={p.id} className="pinv-dropdown-item" style={{ background: pi === highlightedProductIdx ? '#e8f5e9' : undefined }}
+                                                                            onMouseDown={() => { addToCart(p); setRowSearch(s => ({ ...s, [cart.length]: '' })); setActiveRowIndex(null); setHighlightedProductIdx(-1); setTimeout(() => qtyRefs.current[p.id]?.focus(), 50); }}>
+                                                                            {p.name} <span style={{ color: '#888' }}>· ₹{posSellingRate(p)}</span>
+                                                                        </div>
+                                                                    ))}
+                                                                    {products.filter(p => p.name.toLowerCase().includes((rowSearch[cart.length] || '').toLowerCase())).length === 0 && (
+                                                                        <div className="pinv-dropdown-item" onMouseDown={openAddProduct} style={{ color: 'var(--primary)' }}>
+                                                                            + Add "{rowSearch[cart.length]}" to inventory
+                                                                        </div>
+                                                                    )}
                                                                 </div>
                                                             )}
-                                                        </div>
-                                                    )}
+                                                        </>);
+                                                    })()}
                                                 </td>
                                                 <td colSpan={7}></td>
                                             </tr>

@@ -244,56 +244,64 @@ export function PosInvoicePreview({
                     </div>
 
                     {/* ══ ITEMS TABLE ══════════════════════════════════════════════ */}
-                    <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.60rem', tableLayout: 'fixed' }}>
+                    {/* Column widths in % so they scale identically on screen and print.
+                        Product is left as auto so it absorbs all remaining space (~38%). */}
+                    <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.62rem', tableLayout: 'fixed' }}>
                         <colgroup>
-                            {/* # */}     <col style={{ width: '11px' }} />
-                            {/* Product */}<col />
-                            {/* Company */}<col style={{ width: '44px' }} />
-                            {/* Batch */}  <col style={{ width: '44px' }} />
-                            {/* Exp */}    <col style={{ width: '28px' }} />
-                            {/* Per */}    <col style={{ width: '15px' }} />
-                            {/* Qty */}    <col style={{ width: '15px' }} />
-                            {/* Rate */}   <col style={{ width: '36px' }} />
-                            {/* GST% */}   <col style={{ width: '18px' }} />
-                            {/* Amount */} <col style={{ width: '44px' }} />
+                            <col style={{ width: '2.5%' }} />   {/* # */}
+                            <col />                              {/* Product — auto (~38%) */}
+                            <col style={{ width: '11%' }} />    {/* Company */}
+                            <col style={{ width: '9.5%' }} />   {/* Batch */}
+                            <col style={{ width: '6%' }} />     {/* Exp */}
+                            <col style={{ width: '4.5%' }} />   {/* Per */}
+                            <col style={{ width: '5%' }} />     {/* Qty */}
+                            <col style={{ width: '8.5%' }} />   {/* Rate */}
+                            <col style={{ width: '5%' }} />     {/* GST% */}
+                            <col style={{ width: '10%' }} />    {/* Amount */}
                         </colgroup>
                         <thead>
                             <tr style={{ background: '#f5f5f5', borderBottom: '1.5px solid #333' }}>
-                                <th style={{ border: '1px solid #ccc', padding: '2px 1px', textAlign: 'center' as const, fontWeight: 700, fontSize: '0.56rem' }}>#</th>
-                                <th style={{ border: '1px solid #ccc', padding: '2px 3px', textAlign: 'left' as const, fontWeight: 700, fontSize: '0.56rem' }}>Product</th>
-                                <th style={{ border: '1px solid #ccc', padding: '2px 1px', textAlign: 'center' as const, fontWeight: 700, fontSize: '0.56rem' }}>Company</th>
-                                <th style={{ border: '1px solid #ccc', padding: '2px 1px', textAlign: 'center' as const, fontWeight: 700, fontSize: '0.56rem' }}>Batch</th>
-                                <th style={{ border: '1px solid #ccc', padding: '2px 1px', textAlign: 'center' as const, fontWeight: 700, fontSize: '0.56rem' }}>Exp</th>
-                                <th style={{ border: '1px solid #ccc', padding: '2px 1px', textAlign: 'center' as const, fontWeight: 700, fontSize: '0.56rem' }}>Per</th>
-                                <th style={{ border: '1px solid #ccc', padding: '2px 1px', textAlign: 'center' as const, fontWeight: 700, fontSize: '0.56rem' }}>Qty</th>
-                                <th style={{ border: '1px solid #ccc', padding: '2px 2px', textAlign: 'right' as const, fontWeight: 700, fontSize: '0.56rem' }}>Rate</th>
-                                <th style={{ border: '1px solid #ccc', padding: '2px 1px', textAlign: 'center' as const, fontWeight: 700, fontSize: '0.56rem' }}>GST%</th>
-                                <th style={{ border: '1px solid #ccc', padding: '2px 2px', textAlign: 'right' as const, fontWeight: 700, fontSize: '0.56rem' }}>Amount</th>
+                                {([
+                                    ['#', 'center', '2px 1px'],
+                                    ['Product', 'left', '2px 4px'],
+                                    ['Company', 'center', '2px 2px'],
+                                    ['Batch No.', 'center', '2px 2px'],
+                                    ['Exp', 'center', '2px 1px'],
+                                    ['Per', 'center', '2px 1px'],
+                                    ['Qty', 'center', '2px 1px'],
+                                    ['Rate', 'right', '2px 3px'],
+                                    ['GST%', 'center', '2px 1px'],
+                                    ['Amount', 'right', '2px 3px'],
+                                ] as const).map(([label, align, pad]) => (
+                                    <th key={label} style={{ border: '1px solid #ccc', padding: pad, textAlign: align as const, fontWeight: 700, fontSize: '0.60rem', overflow: 'hidden', whiteSpace: 'nowrap' }}>
+                                        {label}
+                                    </th>
+                                ))}
                             </tr>
                         </thead>
                         <tbody>
                             {cart.map((item, i) => (
                                 <tr key={i}>
-                                    <td style={{ border: '1px solid #e0e0e0', padding: '1.5px 1px', textAlign: 'center' as const, fontSize: '0.57rem' }}>{i + 1}</td>
-                                    <td style={{ border: '1px solid #e0e0e0', padding: '1.5px 3px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: '0.60rem' }}>{item.name}</td>
-                                    <td style={{ border: '1px solid #e0e0e0', padding: '1.5px 1px', textAlign: 'center' as const, fontSize: '0.53rem', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{item.mfgCompany || ''}</td>
-                                    <td style={{ border: '1px solid #e0e0e0', padding: '1.5px 1px', textAlign: 'center' as const, fontSize: '0.52rem', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{item.batchNo || ''}</td>
-                                    <td style={{ border: '1px solid #e0e0e0', padding: '1.5px 1px', textAlign: 'center' as const, fontSize: '0.52rem', whiteSpace: 'nowrap' }}>{toMonthYear(item.expDate || '')}</td>
-                                    <td style={{ border: '1px solid #e0e0e0', padding: '1.5px 1px', textAlign: 'center' as const, fontSize: '0.57rem', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{item.unit || item.baseUnit || ''}</td>
-                                    <td style={{ border: '1px solid #e0e0e0', padding: '1.5px 1px', textAlign: 'center' as const, fontWeight: 700, fontSize: '0.57rem' }}>{item.cartQuantity}</td>
-                                    <td style={{ border: '1px solid #e0e0e0', padding: '1.5px 2px', textAlign: 'right' as const, fontSize: '0.57rem' }}>{rate(item)}</td>
-                                    <td style={{ border: '1px solid #e0e0e0', padding: '1.5px 1px', textAlign: 'center' as const, fontSize: '0.55rem' }}>{lineGst(item)}%</td>
-                                    <td style={{ border: '1px solid #e0e0e0', padding: '1.5px 2px', textAlign: 'right' as const, fontWeight: 700, fontSize: '0.57rem' }}>{fmt(item.cartTotal)}</td>
+                                    <td style={{ border: '1px solid #e0e0e0', padding: '1.5px 1px', textAlign: 'center' as const }}>{i + 1}</td>
+                                    <td style={{ border: '1px solid #e0e0e0', padding: '1.5px 4px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontWeight: 600 }}>{item.name}</td>
+                                    <td style={{ border: '1px solid #e0e0e0', padding: '1.5px 2px', textAlign: 'center' as const, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{item.mfgCompany || ''}</td>
+                                    <td style={{ border: '1px solid #e0e0e0', padding: '1.5px 2px', textAlign: 'center' as const, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{item.batchNo || ''}</td>
+                                    <td style={{ border: '1px solid #e0e0e0', padding: '1.5px 1px', textAlign: 'center' as const, whiteSpace: 'nowrap' }}>{toMonthYear(item.expDate || '')}</td>
+                                    <td style={{ border: '1px solid #e0e0e0', padding: '1.5px 1px', textAlign: 'center' as const, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{item.unit || item.baseUnit || ''}</td>
+                                    <td style={{ border: '1px solid #e0e0e0', padding: '1.5px 1px', textAlign: 'center' as const, fontWeight: 700 }}>{item.cartQuantity}</td>
+                                    <td style={{ border: '1px solid #e0e0e0', padding: '1.5px 3px', textAlign: 'right' as const }}>{rate(item)}</td>
+                                    <td style={{ border: '1px solid #e0e0e0', padding: '1.5px 1px', textAlign: 'center' as const }}>{lineGst(item)}%</td>
+                                    <td style={{ border: '1px solid #e0e0e0', padding: '1.5px 3px', textAlign: 'right' as const, fontWeight: 700 }}>{fmt(item.cartTotal)}</td>
                                 </tr>
                             ))}
                             {Array.from({ length: Math.max(0, 5 - cart.length) }).map((_, i) => (
-                                <tr key={`e-${i}`} style={{ height: '11px' }}>
+                                <tr key={`e-${i}`} style={{ height: '13px' }}>
                                     {Array.from({ length: 10 }).map((_, j) => <td key={j} style={{ border: '1px solid #e0e0e0' }}></td>)}
                                 </tr>
                             ))}
                             <tr style={{ background: '#f5f5f5', borderTop: '1.5px solid #333' }}>
-                                <td colSpan={9} style={{ border: '1px solid #ccc', padding: '2px 5px', textAlign: 'right' as const, fontWeight: 800, fontSize: '0.57rem', textTransform: 'uppercase' as const }}>Total</td>
-                                <td style={{ border: '1px solid #ccc', padding: '2px 2px', textAlign: 'right' as const, fontWeight: 800, fontSize: '0.57rem' }}>{fmt(taxable + tax)}</td>
+                                <td colSpan={9} style={{ border: '1px solid #ccc', padding: '2px 6px', textAlign: 'right' as const, fontWeight: 800, fontSize: '0.62rem', textTransform: 'uppercase' as const }}>Total</td>
+                                <td style={{ border: '1px solid #ccc', padding: '2px 3px', textAlign: 'right' as const, fontWeight: 900, fontSize: '0.62rem' }}>{fmt(taxable + tax)}</td>
                             </tr>
                         </tbody>
                     </table>
