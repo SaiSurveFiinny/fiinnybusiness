@@ -745,13 +745,18 @@ export default function POSPage() {
             }));
 
             const deductionResult = !editingOrder
-                ? await prepareStockDeduction(tenantId, saleLines)
-                : { valid: true, errors: [], batchUpdates: [], productUpdates: [], movements: [] };
+                ? await prepareStockDeduction(tenantId, saleLines, true)
+                : { valid: true, errors: [], warnings: [], batchUpdates: [], productUpdates: [], movements: [] };
 
             if (!deductionResult.valid) {
+                // Fatal errors (e.g. product not found) — block the sale
                 showToast(deductionResult.errors.join('\n'), 'error');
                 setIsProcessing(false);
                 return;
+            }
+            if (deductionResult.warnings.length > 0) {
+                // Non-fatal: stock goes negative — warn but allow the sale
+                showToast('⚠ Low stock: ' + deductionResult.warnings.join(' | '), 'error');
             }
 
             // Persist the bill and deduct stock atomically in one batch — a
@@ -1301,82 +1306,78 @@ export default function POSPage() {
                     </div>
 
                     {/* Invoice card (editable on screen; printed copy is rendered separately) */}
-                    <div style={{ maxWidth: billFormat === 'A5' ? '960px' : '1040px', margin: '0 auto', background: '#fff', color: '#000', fontFamily: "'Times New Roman', serif", boxShadow: '0 8px 30px rgba(0,0,0,0.08)', borderRadius: '10px', border: '1px solid #ddd', padding: '16px 18px' }}>
+                    <div style={{ maxWidth: billFormat === 'A5' ? '970px' : '1040px', margin: '0 auto', background: '#fff', color: '#000', fontFamily: billFormat === 'A5' ? 'Arial, Helvetica, sans-serif' : "'Times New Roman', serif", boxShadow: '0 4px 24px rgba(0,0,0,0.10)', borderRadius: billFormat === 'A5' ? '3px' : '10px', border: 'none', padding: billFormat === 'A5' ? '0' : '16px 18px' }}>
 
                         {billFormat === 'A5' ? (
-                            // ── A5 REDESIGNED LAYOUT ────────────────────────────────────────
-                            <>
-                                {/* HEADER: Business Info | GST INVOICE + Bill Type | Bill Meta */}
-                                <div style={{ display: 'grid', gridTemplateColumns: '1fr auto 1fr', alignItems: 'center', borderBottom: '2px solid #111', paddingBottom: '8px', marginBottom: '0' }}>
-                                    <div style={{ display: 'flex', alignItems: 'center', gap: '10px', paddingRight: '14px', borderRight: '1px solid #bbb' }}>
-                                        {branding?.logoUrl && <img src={branding.logoUrl} alt="Logo" style={{ height: '38px', objectFit: 'contain' }} />}
-                                        <div>
-                                            <div style={{ fontWeight: 900, fontSize: '1.15rem', letterSpacing: '-0.01em' }}>{branding?.businessName || 'Your Business Name'}</div>
-                                            <div style={{ fontSize: '0.7rem', color: '#444', marginTop: '2px' }}>
-                                                {branding?.address && <span>{branding.address}</span>}
-                                                {branding?.gstin && <span> &nbsp;| &nbsp;<strong>GSTIN:</strong> {branding.gstin}</span>}
-                                                {branding?.contact && <span> &nbsp;| &nbsp;{branding.contact}</span>}
-                                            </div>
-                                            {(() => {
-                                                const lics = getApplicableLicenses(getInvoiceProductCategories(cart), branding);
-                                                return lics.length > 0 ? (
-                                                    <div style={{ fontSize: '0.62rem', color: '#444', marginTop: '2px', display: 'flex', gap: '10px', flexWrap: 'wrap' }}>
-                                                        {lics.map(lic => (
-                                                            <span key={lic.label}><strong>{lic.label}:</strong> {lic.number}</span>
-                                                        ))}
-                                                    </div>
-                                                ) : null;
-                                            })()}
-                                        </div>
-                                    </div>
-                                    <div style={{ textAlign: 'center', padding: '0 18px', borderRight: '1px solid #bbb' }}>
-                                        <div style={{ fontWeight: 900, fontSize: '1.05rem', letterSpacing: '0.12em', textTransform: 'uppercase' }}>{L('gst_invoice')}</div>
-                                        <div style={{ marginTop: '5px', fontWeight: 700, border: '1px solid #111', padding: '2px 10px', fontSize: '0.72rem', letterSpacing: '0.06em', display: 'inline-block' }}>
+                            // ── A5 LANDSCAPE — Reference Invoice Redesign ────────────────────
+                            <div style={{ border: '1.5px solid #333', fontFamily: 'Arial, Helvetica, sans-serif' }}>
+
+                                {/* ══ HEADER ═══════════════════════════════════════════════════ */}
+                                <div style={{ display: 'grid', gridTemplateColumns: '104px 1fr 156px', borderBottom: '1.5px solid #333' }}>
+
+                                    {/* Left col: Invoice type badge */}
+                                    <div style={{ borderRight: '1px solid #aaa', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: '6px 8px', gap: '5px' }}>
+                                        <div style={{ fontWeight: 900, fontSize: '0.88rem', letterSpacing: '0.04em', textAlign: 'center', lineHeight: 1.1 }}>GST<br />INVOICE</div>
+                                        <div style={{ width: '100%', border: '1px solid #555', padding: '2px 4px', fontSize: '0.7rem', fontWeight: 700, textAlign: 'center', letterSpacing: '0.02em' }}>
                                             {modeOfPayment === 'Khata' || modeOfPayment === 'Credit' ? L('credit_bill') : L('cash_bill')}
                                         </div>
                                     </div>
-                                    <div style={{ textAlign: 'right', paddingLeft: '14px', fontSize: '0.78rem', display: 'flex', flexDirection: 'column', gap: '3px' }}>
-                                        <div><strong>{L('bill_no')}:</strong> {nextBillNumber}</div>
-                                        <div style={{ display: 'flex', alignItems: 'center', gap: '6px', justifyContent: 'flex-end' }}>
-                                            <strong>{L('bill_date')}:</strong>
-                                            <input type="date" className="pinv-input" style={{ fontSize: '0.72rem', padding: '1px 4px', textAlign: 'right' }} value={invoiceDate} onChange={e => setInvoiceDate(e.target.value)} />
+
+                                    {/* Center col: Business info */}
+                                    <div style={{ borderRight: '1px solid #aaa', padding: '6px 10px', textAlign: 'center', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: '2px' }}>
+                                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', justifyContent: 'center' }}>
+                                            {branding?.logoUrl && <img src={branding.logoUrl} alt="Logo" style={{ height: '30px', objectFit: 'contain' }} />}
+                                            <div style={{ fontWeight: 900, fontSize: '1.25rem', lineHeight: 1.1, letterSpacing: '-0.01em' }}>{branding?.businessName || 'Your Business Name'}</div>
                                         </div>
-                                        <div style={{ display: 'flex', alignItems: 'center', gap: '6px', justifyContent: 'flex-end' }}>
-                                            <strong>Mode:</strong>
-                                            <select className="pinv-input" style={{ fontSize: '0.72rem', padding: '1px 4px' }} value={modeOfPayment} onChange={e => setModeOfPayment(e.target.value)}>
+                                        {branding?.address && <div style={{ fontSize: '0.72rem', color: '#333', lineHeight: 1.4 }}>{branding.address}</div>}
+                                        <div style={{ fontSize: '0.72rem', color: '#333', display: 'flex', gap: '8px', flexWrap: 'wrap', justifyContent: 'center' }}>
+                                            {branding?.gstin && <span><strong>GSTIN:</strong> {branding.gstin}</span>}
+                                            {branding?.contact && <span>| <strong>Ph:</strong> {branding.contact}</span>}
+                                        </div>
+                                        {(() => {
+                                            const lics = getApplicableLicenses(getInvoiceProductCategories(cart), branding);
+                                            return lics.length > 0 ? (
+                                                <div style={{ fontSize: '0.64rem', color: '#555', borderTop: '1px dashed #ccc', marginTop: '2px', paddingTop: '2px', display: 'flex', gap: '10px', flexWrap: 'wrap', justifyContent: 'center' }}>
+                                                    {lics.map(lic => <span key={lic.label}><strong>{lic.label}:</strong> {lic.number}</span>)}
+                                                </div>
+                                            ) : null;
+                                        })()}
+                                    </div>
+
+                                    {/* Right col: Bill meta */}
+                                    <div style={{ padding: '6px 10px', display: 'flex', flexDirection: 'column', justifyContent: 'center', gap: '5px', fontSize: '0.78rem' }}>
+                                        <div><strong>Bill No:</strong> <span style={{ fontWeight: 900 }}>{nextBillNumber}</span></div>
+                                        <div style={{ display: 'flex', gap: '4px', alignItems: 'center' }}>
+                                            <strong style={{ whiteSpace: 'nowrap' }}>Date:</strong>
+                                            <input type="date" className="pinv-input" style={{ fontSize: '0.73rem', flex: 1 }} value={invoiceDate} onChange={e => setInvoiceDate(e.target.value)} />
+                                        </div>
+                                        <div style={{ display: 'flex', gap: '4px', alignItems: 'center' }}>
+                                            <strong style={{ whiteSpace: 'nowrap' }}>Mode:</strong>
+                                            <select className="pinv-input" style={{ fontSize: '0.73rem', flex: 1 }} value={modeOfPayment} onChange={e => setModeOfPayment(e.target.value)}>
                                                 {['Cash', 'Credit'].map(m => <option key={m} value={m}>{m}</option>)}
                                             </select>
                                         </div>
                                     </div>
                                 </div>
 
-                                {/* BUYER ROW — single horizontal row with inline cells */}
-                                <div style={{ display: 'grid', gridTemplateColumns: '2.5fr 1fr 2.5fr 0.8fr', border: '1px solid #222', borderTop: 'none', marginBottom: '0' }}>
-                                    <div style={{ borderRight: '1px solid #222', padding: '4px 8px', display: 'flex', gap: '6px', alignItems: 'center', position: 'relative' }}>
-                                        <span className="pinv-label" style={{ fontSize: '0.72rem', whiteSpace: 'nowrap' }}>Buyer:</span>
-                                        <input
-                                            className="pinv-input"
-                                            style={{ fontWeight: 600, fontSize: '0.82rem', flex: 1 }}
-                                            placeholder={L('buyer_name_ph')}
-                                            value={customer.name}
+                                {/* ══ CUSTOMER ROW ═════════════════════════════════════════════ */}
+                                <div style={{ display: 'grid', gridTemplateColumns: '2.4fr 0.9fr 2fr 0.68fr', borderBottom: '1px solid #aaa', fontSize: '0.78rem' }}>
+                                    <div style={{ borderRight: '1px solid #ccc', padding: '4px 8px', display: 'flex', gap: '5px', alignItems: 'center', position: 'relative' }}>
+                                        <span style={{ fontWeight: 700, color: '#555', whiteSpace: 'nowrap', flexShrink: 0, fontSize: '0.72rem' }}>Buyer:</span>
+                                        <input className="pinv-input" style={{ fontWeight: 700, fontSize: '0.82rem', flex: 1 }} placeholder={L('buyer_name_ph')} value={customer.name}
                                             onChange={e => { setCustomer({ ...customer, name: e.target.value }); setShowFarmerDropdown(e.target.value.length > 0); }}
                                             onFocus={() => customer.name.length > 0 && setShowFarmerDropdown(true)}
-                                            onBlur={() => setTimeout(() => setShowFarmerDropdown(false), 200)}
-                                        />
+                                            onBlur={() => setTimeout(() => setShowFarmerDropdown(false), 200)} />
                                         {showFarmerDropdown && (
                                             <div className="pinv-dropdown" style={{ width: '100%' }}>
-                                                {farmers
-                                                    .filter(r => (r.name || '').toLowerCase().includes(customer.name.toLowerCase()) && customer.name.toLowerCase() !== (r.name || '').toLowerCase())
-                                                    .sort((a, b) => (a.channel === 'pos' ? -1 : 1) - (b.channel === 'pos' ? -1 : 1))
-                                                    .slice(0, 10)
+                                                {farmers.filter(r => (r.name || '').toLowerCase().includes(customer.name.toLowerCase()) && customer.name.toLowerCase() !== (r.name || '').toLowerCase())
+                                                    .sort((a, b) => (a.channel === 'pos' ? -1 : 1) - (b.channel === 'pos' ? -1 : 1)).slice(0, 10)
                                                     .map(r => (
-                                                        <div key={r.id} className="pinv-dropdown-item"
-                                                            onMouseDown={() => {
-                                                                lastMatchedPhoneRef.current = r.number || null;
-                                                                setCustomer({ name: r.name || '', phone: r.number || '', address: r.atPost || '', pin: r.pin || '' });
-                                                                setCustomerOutstanding(Number(r.outstandingAmount) || 0);
-                                                                setShowFarmerDropdown(false);
-                                                            }}>
+                                                        <div key={r.id} className="pinv-dropdown-item" onMouseDown={() => {
+                                                            lastMatchedPhoneRef.current = r.number || null;
+                                                            setCustomer({ name: r.name || '', phone: r.number || '', address: r.atPost || '', pin: r.pin || '' });
+                                                            setCustomerOutstanding(Number(r.outstandingAmount) || 0); setShowFarmerDropdown(false);
+                                                        }}>
                                                             <div style={{ fontWeight: 600 }}>{r.name}</div>
                                                             <div style={{ fontSize: '0.75rem', color: '#666' }}>{r.number} {r.atPost ? `• ${r.atPost}` : ''}</div>
                                                         </div>
@@ -1384,88 +1385,104 @@ export default function POSPage() {
                                             </div>
                                         )}
                                     </div>
-                                    <div style={{ borderRight: '1px solid #222', padding: '4px 8px', display: 'flex', gap: '6px', alignItems: 'center' }}>
-                                        <span className="pinv-label" style={{ fontSize: '0.72rem', whiteSpace: 'nowrap' }}>Contact:</span>
-                                        <input className="pinv-input" style={{ flex: 1, fontSize: '0.82rem' }} placeholder="Phone" value={customer.phone}
+                                    <div style={{ borderRight: '1px solid #ccc', padding: '4px 8px', display: 'flex', gap: '5px', alignItems: 'center' }}>
+                                        <span style={{ fontWeight: 700, color: '#555', whiteSpace: 'nowrap', flexShrink: 0, fontSize: '0.72rem' }}>Ph:</span>
+                                        <input className="pinv-input" style={{ flex: 1, fontSize: '0.8rem' }} placeholder="Phone" value={customer.phone}
                                             onChange={e => setCustomer({ ...customer, phone: e.target.value })} onBlur={handlePhoneLookup} />
                                     </div>
-                                    <div style={{ borderRight: '1px solid #222', padding: '4px 8px', display: 'flex', gap: '6px', alignItems: 'center' }}>
-                                        <span className="pinv-label" style={{ fontSize: '0.72rem', whiteSpace: 'nowrap' }}>Address:</span>
-                                        <input className="pinv-input" style={{ flex: 1, fontSize: '0.82rem' }} placeholder={L('village_ph')} value={customer.address}
+                                    <div style={{ borderRight: '1px solid #ccc', padding: '4px 8px', display: 'flex', gap: '5px', alignItems: 'center' }}>
+                                        <span style={{ fontWeight: 700, color: '#555', whiteSpace: 'nowrap', flexShrink: 0, fontSize: '0.72rem' }}>Addr:</span>
+                                        <input className="pinv-input" style={{ flex: 1, fontSize: '0.8rem' }} placeholder={L('village_ph')} value={customer.address}
                                             onChange={e => setCustomer({ ...customer, address: e.target.value })} />
                                     </div>
-                                    <div style={{ padding: '4px 8px', display: 'flex', gap: '6px', alignItems: 'center' }}>
-                                        <span className="pinv-label" style={{ fontSize: '0.72rem', whiteSpace: 'nowrap' }}>PIN:</span>
-                                        <input className="pinv-input" style={{ flex: 1, fontSize: '0.82rem' }} placeholder={L('pin')} value={customer.pin}
+                                    <div style={{ padding: '4px 8px', display: 'flex', gap: '5px', alignItems: 'center' }}>
+                                        <span style={{ fontWeight: 700, color: '#555', whiteSpace: 'nowrap', flexShrink: 0, fontSize: '0.72rem' }}>PIN:</span>
+                                        <input className="pinv-input" style={{ flex: 1, fontSize: '0.8rem' }} placeholder={L('pin')} value={customer.pin}
                                             onChange={e => setCustomer({ ...customer, pin: e.target.value })} />
                                     </div>
                                 </div>
 
-                                {/* ITEMS TABLE */}
-                                <div style={{ marginBottom: '0', overflowX: 'auto' }}>
-                                    <table className="pinv-table">
+                                {/* ══ ITEMS TABLE ══════════════════════════════════════════════ */}
+                                <div style={{ overflowX: 'auto' }}>
+                                    <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.80rem', tableLayout: 'fixed' }}>
+                                        <colgroup>
+                                            {/* # */}      <col style={{ width: '24px' }} />
+                                            {/* Product */} <col />
+                                            {/* Company */} <col style={{ width: '82px' }} />
+                                            {/* Batch */}   <col style={{ width: '80px' }} />
+                                            {/* Exp */}     <col style={{ width: '52px' }} />
+                                            {/* Per */}     <col style={{ width: '32px' }} />
+                                            {/* Qty */}     <col style={{ width: '40px' }} />
+                                            {/* Rate */}    <col style={{ width: '62px' }} />
+                                            {/* GST% */}    <col style={{ width: '38px' }} />
+                                            {/* Amount */}  <col style={{ width: '76px' }} />
+                                            {/* Del */}     <col style={{ width: '22px' }} />
+                                        </colgroup>
                                         <thead>
-                                            <tr>
-                                                <th style={{ width: '28px' }}>#</th>
-                                                <th style={{ minWidth: '160px', textAlign: 'left' }}>Item Descriptions</th>
-                                                <th style={{ width: '90px' }}>{L('company')}</th>
-                                                <th style={{ width: '72px' }}>Batch</th>
-                                                <th style={{ width: '60px' }}>Exp</th>
-                                                <th style={{ width: '44px' }}>GST%</th>
-                                                <th style={{ width: '40px' }}>Per</th>
-                                                <th style={{ width: '52px' }}>Qty</th>
-                                                <th style={{ width: '64px' }}>Rate</th>
-                                                <th style={{ width: '82px' }}>Amount</th>
-                                                <th style={{ width: '28px' }}></th>
+                                            <tr style={{ background: '#f5f5f5', borderBottom: '1.5px solid #333' }}>
+                                                <th style={{ border: '1px solid #ccc', padding: '4px 2px', textAlign: 'center', fontWeight: 700, fontSize: '0.76rem' }}>#</th>
+                                                <th style={{ border: '1px solid #ccc', padding: '4px 6px', textAlign: 'left', fontWeight: 700, fontSize: '0.76rem' }}>Product</th>
+                                                <th style={{ border: '1px solid #ccc', padding: '4px 2px', textAlign: 'center', fontWeight: 700, fontSize: '0.76rem' }}>Company</th>
+                                                <th style={{ border: '1px solid #ccc', padding: '4px 2px', textAlign: 'center', fontWeight: 700, fontSize: '0.76rem' }}>Batch No.</th>
+                                                <th style={{ border: '1px solid #ccc', padding: '4px 2px', textAlign: 'center', fontWeight: 700, fontSize: '0.76rem' }}>Exp</th>
+                                                <th style={{ border: '1px solid #ccc', padding: '4px 2px', textAlign: 'center', fontWeight: 700, fontSize: '0.76rem' }}>Per</th>
+                                                <th style={{ border: '1px solid #ccc', padding: '4px 2px', textAlign: 'center', fontWeight: 700, fontSize: '0.76rem' }}>Qty</th>
+                                                <th style={{ border: '1px solid #ccc', padding: '4px 3px', textAlign: 'right', fontWeight: 700, fontSize: '0.76rem' }}>Rate</th>
+                                                <th style={{ border: '1px solid #ccc', padding: '4px 2px', textAlign: 'center', fontWeight: 700, fontSize: '0.76rem' }}>GST%</th>
+                                                <th style={{ border: '1px solid #ccc', padding: '4px 4px', textAlign: 'right', fontWeight: 700, fontSize: '0.76rem' }}>Amount</th>
+                                                <th style={{ border: '1px solid #ccc' }}></th>
                                             </tr>
                                         </thead>
                                         <tbody>
                                             {cart.map((item, idx) => (
-                                                <tr key={item.id}>
-                                                    <td style={{ textAlign: 'center' }}>{idx + 1}</td>
-                                                    <td style={{ fontWeight: 600, textAlign: 'left' }}>{item.name}</td>
-                                                    <td style={{ fontSize: '0.78rem', textAlign: 'center' }}>{item.mfgCompany || ''}</td>
-                                                    <td><input className="pinv-input" style={{ textAlign: 'center' }} value={rowMeta[item.id]?.batchNo ?? (item.batchNumber || '')}
-                                                        onChange={e => setRowMeta(m => ({ ...m, [item.id]: { ...m[item.id], batchNo: e.target.value } }))} /></td>
-                                                    <td><input type="text" className="pinv-input" style={{ textAlign: 'center', fontSize: '0.72rem', width: '100%' }} placeholder="MM/YY" value={toMonthYear(rowMeta[item.id]?.expDate ?? (item.expiryDate || ''))}
-                                                        onChange={e => setRowMeta(m => ({ ...m, [item.id]: { ...m[item.id], expDate: fromMonthYear(e.target.value) } }))} /></td>
-                                                    <td style={{ textAlign: 'center' }}><input type="number" className="pinv-input" style={{ textAlign: 'center' }} value={item.gstPct ?? 5}
-                                                        onChange={e => setCart(prev => prev.map(c => c.id === item.id ? { ...c, gstPct: Number(e.target.value) } : c))}
-                                                        onWheel={e => e.currentTarget.blur()} /></td>
-                                                    <td style={{ textAlign: 'center' }}>{item.unit || item.baseUnit}</td>
-                                                    <td style={{ textAlign: 'center', fontWeight: 600 }}><input type="number" min="0" className="pinv-input" style={{ textAlign: 'center', fontWeight: 600 }} value={item.cartQuantity}
-                                                        onChange={e => setQty(item.id, Number(e.target.value))}
-                                                        onWheel={e => e.currentTarget.blur()} /></td>
-                                                    <td style={{ textAlign: 'center' }}><input type="number" min="0" className="pinv-input" style={{ textAlign: 'center' }} value={posSellingRate(item)}
-                                                        onChange={e => setRate(item.id, Number(e.target.value))}
-                                                        onWheel={e => e.currentTarget.blur()} /></td>
-                                                    <td style={{ textAlign: 'right', fontWeight: 600, paddingRight: '6px' }}>{item.cartTotal ? invFmt(item.cartTotal) : ''}</td>
-                                                    <td style={{ textAlign: 'center', padding: '2px' }}>
+                                                <tr key={item.id} style={{ borderBottom: '1px solid #eee' }}>
+                                                    <td style={{ border: '1px solid #e8e8e8', padding: '3px 2px', textAlign: 'center', fontSize: '0.74rem' }}>{idx + 1}</td>
+                                                    <td style={{ border: '1px solid #e8e8e8', padding: '3px 6px', fontWeight: 600, fontSize: '0.80rem', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{item.name}</td>
+                                                    <td style={{ border: '1px solid #e8e8e8', padding: '3px 2px', fontSize: '0.74rem', textAlign: 'center', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{item.mfgCompany || ''}</td>
+                                                    <td style={{ border: '1px solid #e8e8e8', padding: '1px 2px' }}>
+                                                        <input className="pinv-input" style={{ textAlign: 'center', fontSize: '0.74rem' }} value={rowMeta[item.id]?.batchNo ?? (item.batchNumber || '')}
+                                                            onChange={e => setRowMeta(m => ({ ...m, [item.id]: { ...m[item.id], batchNo: e.target.value } }))} />
+                                                    </td>
+                                                    <td style={{ border: '1px solid #e8e8e8', padding: '1px 2px' }}>
+                                                        <input type="text" className="pinv-input" style={{ textAlign: 'center', fontSize: '0.72rem', width: '100%' }} placeholder="MM/YY"
+                                                            value={toMonthYear(rowMeta[item.id]?.expDate ?? (item.expiryDate || ''))}
+                                                            onChange={e => setRowMeta(m => ({ ...m, [item.id]: { ...m[item.id], expDate: fromMonthYear(e.target.value) } }))} />
+                                                    </td>
+                                                    <td style={{ border: '1px solid #e8e8e8', padding: '3px 2px', textAlign: 'center', fontSize: '0.76rem', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{item.unit || item.baseUnit}</td>
+                                                    <td style={{ border: '1px solid #e8e8e8', padding: '1px 2px' }}>
+                                                        <input type="number" min="0" className="pinv-input" style={{ textAlign: 'center', fontWeight: 700, fontSize: '0.80rem' }} value={item.cartQuantity}
+                                                            onChange={e => setQty(item.id, Number(e.target.value))} onWheel={e => e.currentTarget.blur()} />
+                                                    </td>
+                                                    <td style={{ border: '1px solid #e8e8e8', padding: '1px 2px' }}>
+                                                        <input type="number" min="0" className="pinv-input" style={{ textAlign: 'right', paddingRight: '3px', fontSize: '0.80rem' }} value={posSellingRate(item)}
+                                                            onChange={e => setRate(item.id, Number(e.target.value))} onWheel={e => e.currentTarget.blur()} />
+                                                    </td>
+                                                    <td style={{ border: '1px solid #e8e8e8', padding: '1px 2px' }}>
+                                                        <input type="number" className="pinv-input" style={{ textAlign: 'center', fontSize: '0.74rem' }} value={item.gstPct ?? 5}
+                                                            onChange={e => setCart(prev => prev.map(c => c.id === item.id ? { ...c, gstPct: Number(e.target.value) } : c))}
+                                                            onWheel={e => e.currentTarget.blur()} />
+                                                    </td>
+                                                    <td style={{ border: '1px solid #e8e8e8', padding: '3px 4px', textAlign: 'right', fontWeight: 700, fontSize: '0.80rem' }}>{item.cartTotal ? invFmt(item.cartTotal) : ''}</td>
+                                                    <td style={{ border: '1px solid #e8e8e8', padding: '1px', textAlign: 'center' }}>
                                                         <button onClick={() => removeCartItem(item.id)} style={{ border: 'none', background: 'transparent', cursor: 'pointer', color: '#e53935', padding: '2px' }}>
-                                                            <Trash2 size={14} />
+                                                            <Trash2 size={12} />
                                                         </button>
                                                     </td>
                                                 </tr>
                                             ))}
+                                            {/* Add-product search row */}
                                             <tr>
-                                                <td style={{ textAlign: 'center', color: '#999' }}>{cart.length + 1}</td>
-                                                <td colSpan={3} style={{ position: 'relative' }}>
-                                                    <input
-                                                        className="pinv-input"
-                                                        placeholder={L('search_product')}
-                                                        value={rowSearch[cart.length] || ''}
+                                                <td style={{ border: '1px solid #e8e8e8', padding: '2px', textAlign: 'center', color: '#bbb', fontSize: '0.74rem' }}>{cart.length + 1}</td>
+                                                <td colSpan={3} style={{ border: '1px solid #e8e8e8', padding: '1px 3px', position: 'relative' }}>
+                                                    <input className="pinv-input" placeholder={L('search_product')} value={rowSearch[cart.length] || ''}
                                                         onChange={e => { setRowSearch(s => ({ ...s, [cart.length]: e.target.value })); setActiveRowIndex(e.target.value.length > 0 ? cart.length : null); }}
                                                         onFocus={() => (rowSearch[cart.length] || '').length > 0 && setActiveRowIndex(cart.length)}
-                                                        onBlur={() => setTimeout(() => setActiveRowIndex(null), 200)}
-                                                    />
+                                                        onBlur={() => setTimeout(() => setActiveRowIndex(null), 200)} />
                                                     {activeRowIndex === cart.length && (
                                                         <div className="pinv-dropdown">
-                                                            {products
-                                                                .filter(p => p.name.toLowerCase().includes((rowSearch[cart.length] || '').toLowerCase()) || p.barcode === (rowSearch[cart.length] || ''))
-                                                                .slice(0, 50)
+                                                            {products.filter(p => p.name.toLowerCase().includes((rowSearch[cart.length] || '').toLowerCase()) || p.barcode === (rowSearch[cart.length] || '')).slice(0, 50)
                                                                 .map(p => (
-                                                                    <div key={p.id} className="pinv-dropdown-item"
-                                                                        onMouseDown={() => { addToCart(p); setRowSearch(s => ({ ...s, [cart.length]: '' })); setActiveRowIndex(null); }}>
+                                                                    <div key={p.id} className="pinv-dropdown-item" onMouseDown={() => { addToCart(p); setRowSearch(s => ({ ...s, [cart.length]: '' })); setActiveRowIndex(null); }}>
                                                                         {p.name} <span style={{ color: '#888' }}>· ₹{posSellingRate(p)}</span>
                                                                     </div>
                                                                 ))}
@@ -1477,128 +1494,116 @@ export default function POSPage() {
                                                         </div>
                                                     )}
                                                 </td>
-                                                <td colSpan={7}></td>
+                                                <td colSpan={7} style={{ border: '1px solid #e8e8e8' }}></td>
                                             </tr>
+                                            {/* Empty padding rows */}
                                             {Array.from({ length: Math.max(0, 5 - cart.length) }).map((_, i) => (
-                                                <tr key={`pad-${i}`}>
-                                                    <td style={{ textAlign: 'center', color: '#bbb' }}>{cart.length + 2 + i}</td>
-                                                    <td></td><td></td><td></td><td></td><td></td><td></td><td></td><td></td><td></td><td></td>
+                                                <tr key={`pad-${i}`} style={{ height: '26px' }}>
+                                                    <td style={{ border: '1px solid #e8e8e8', color: '#ccc', textAlign: 'center', fontSize: '0.74rem', padding: '2px' }}>{cart.length + 2 + i}</td>
+                                                    {Array.from({ length: 10 }).map((_, j) => <td key={j} style={{ border: '1px solid #e8e8e8' }}></td>)}
                                                 </tr>
                                             ))}
-                                            <tr style={{ fontWeight: 700, background: '#f9f9f9' }}>
-                                                <td colSpan={9} style={{ textAlign: 'right', paddingRight: '8px', textTransform: 'uppercase', letterSpacing: '0.06em' }}>TOTAL</td>
-                                                <td style={{ textAlign: 'right', paddingRight: '6px' }}>{invFmt(cartSubtotal)}</td>
-                                                <td></td>
+                                            {/* Total row */}
+                                            <tr style={{ background: '#f5f5f5', borderTop: '1.5px solid #333' }}>
+                                                <td colSpan={9} style={{ border: '1px solid #ccc', padding: '4px 8px', textAlign: 'right', fontWeight: 800, textTransform: 'uppercase', letterSpacing: '0.04em', fontSize: '0.78rem' }}>Total</td>
+                                                <td style={{ border: '1px solid #ccc', padding: '4px 4px', textAlign: 'right', fontWeight: 900, fontSize: '0.88rem' }}>{invFmt(cartSubtotal)}</td>
+                                                <td style={{ border: '1px solid #ccc' }}></td>
                                             </tr>
                                         </tbody>
                                     </table>
                                 </div>
 
-                                {/* 3-COLUMN FOOTER */}
-                                <div style={{ display: 'grid', gridTemplateColumns: '2fr 1.8fr 1.2fr', border: '1px solid #222', borderTop: 'none' }}>
+                                {/* ══ FOOTER ═══════════════════════════════════════════════════ */}
+                                <div style={{ display: 'grid', gridTemplateColumns: '1.55fr 1.1fr 0.68fr', borderTop: '1.5px solid #333' }}>
 
                                     {/* Col 1 – GST Summary + Declaration */}
-                                    <div style={{ borderRight: '1px solid #222' }}>
-                                        <div style={{ background: '#f2f2f2', fontWeight: 700, padding: '3px 8px', borderBottom: '1px solid #222', fontSize: '0.72rem', textTransform: 'uppercase', letterSpacing: '0.08em', textAlign: 'center' }}>GST Summary</div>
-                                        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.72rem' }}>
+                                    <div style={{ borderRight: '1px solid #aaa', display: 'flex', flexDirection: 'column' }}>
+                                        <div style={{ background: '#f5f5f5', padding: '3px 8px', borderBottom: '1px solid #ccc', fontSize: '0.74rem', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.06em', textAlign: 'center' }}>GST Summary</div>
+                                        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.74rem' }}>
                                             <thead>
                                                 <tr>
-                                                    <th style={{ border: '1px solid #ccc', padding: '3px 4px', background: '#f9f9f9', textAlign: 'center' }}>Taxable</th>
-                                                    <th style={{ border: '1px solid #ccc', padding: '3px 4px', background: '#f9f9f9', textAlign: 'center' }}>CGST 2.5%</th>
-                                                    <th style={{ border: '1px solid #ccc', padding: '3px 4px', background: '#f9f9f9', textAlign: 'center' }}>SGST 2.5%</th>
-                                                    <th style={{ border: '1px solid #ccc', padding: '3px 4px', background: '#f9f9f9', textAlign: 'center' }}>Total Tax</th>
+                                                    {['Taxable', 'CGST 2.5%', 'SGST 2.5%', 'Total Tax'].map(h => (
+                                                        <th key={h} style={{ border: '1px solid #ddd', padding: '3px 3px', textAlign: 'center', background: '#fafafa', fontWeight: 700 }}>{h}</th>
+                                                    ))}
                                                 </tr>
                                             </thead>
                                             <tbody>
                                                 <tr>
-                                                    <td style={{ border: '1px solid #ccc', padding: '3px 4px', textAlign: 'center' }}>{invFmt(computedTaxable)}</td>
-                                                    <td style={{ border: '1px solid #ccc', padding: '3px 4px', textAlign: 'center' }}>{invFmt(totalCgst)}</td>
-                                                    <td style={{ border: '1px solid #ccc', padding: '3px 4px', textAlign: 'center' }}>{invFmt(totalSgst)}</td>
-                                                    <td style={{ border: '1px solid #ccc', padding: '3px 4px', textAlign: 'center' }}>{invFmt(totalTax)}</td>
+                                                    {[computedTaxable, totalCgst, totalSgst, totalTax].map((v, vi) => (
+                                                        <td key={vi} style={{ border: '1px solid #ddd', padding: '3px 3px', textAlign: 'center' }}>{invFmt(v)}</td>
+                                                    ))}
                                                 </tr>
                                             </tbody>
                                         </table>
-                                        <div style={{ padding: '5px 8px', fontSize: '0.68rem', color: '#444', borderTop: '1px solid #ddd', lineHeight: 1.5 }}>
+                                        <div style={{ padding: '5px 8px', fontSize: '0.67rem', color: '#555', lineHeight: 1.45, flex: 1 }}>
                                             <strong>{L('declaration')}:</strong> {L('declaration_text')}
                                         </div>
                                     </div>
 
-                                    {/* Col 2 – Net totals + Amount in Words + Category */}
-                                    <div style={{ borderRight: '1px solid #222', display: 'flex', flexDirection: 'column' }}>
-                                        <div style={{ padding: '5px 8px', display: 'flex', flexDirection: 'column', gap: '3px', fontSize: '0.75rem', flex: 1 }}>
-                                            <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                                                <span>Round Off</span>
-                                                <span>{invFmt(invNetAmount - (computedTaxable + totalTax + transportCharges - loyaltyDiscount))}</span>
-                                            </div>
+                                    {/* Col 2 – Net Amount + Words + Categories */}
+                                    <div style={{ borderRight: '1px solid #aaa', display: 'flex', flexDirection: 'column' }}>
+                                        <div style={{ padding: '5px 8px', flex: 1, fontSize: '0.78rem', display: 'flex', flexDirection: 'column', gap: '3px' }}>
                                             {loyaltyDiscount > 0 && (
                                                 <div style={{ display: 'flex', justifyContent: 'space-between', color: '#2E7D32' }}>
                                                     <span>{L('discount')} ({effectiveRedeemPoints} pts)</span><span>-{invFmt(loyaltyDiscount)}</span>
                                                 </div>
                                             )}
                                             {transportCharges > 0 && (
-                                                <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                                                    <span>{L('transport_charges')}</span><span>+{invFmt(transportCharges)}</span>
-                                                </div>
+                                                <div style={{ display: 'flex', justifyContent: 'space-between' }}><span>{L('transport_charges')}</span><span>+{invFmt(transportCharges)}</span></div>
                                             )}
                                             {laborCharges > 0 && (
-                                                <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                                                    <span>{L('labor_charges')}</span><span>+{invFmt(laborCharges)}</span>
-                                                </div>
+                                                <div style={{ display: 'flex', justifyContent: 'space-between' }}><span>{L('labor_charges')}</span><span>+{invFmt(laborCharges)}</span></div>
                                             )}
-                                            <div style={{ borderTop: '2px solid #111', paddingTop: '3px', display: 'flex', justifyContent: 'space-between', fontWeight: 900, fontSize: '0.95rem' }}>
+                                            <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                                                <span>Round Off</span>
+                                                <span>{invFmt(invNetAmount - (computedTaxable + totalTax + transportCharges - loyaltyDiscount))}</span>
+                                            </div>
+                                            <div style={{ borderTop: '2px solid #333', paddingTop: '3px', display: 'flex', justifyContent: 'space-between', fontWeight: 900, fontSize: '0.95rem' }}>
                                                 <span>NET AMOUNT</span><span>₹{invNetAmount.toLocaleString('en-IN')}</span>
                                             </div>
-                                            {isCreditBill && (
-                                                <>
-                                                    <div style={{ display: 'flex', justifyContent: 'space-between', color: '#10b981' }}>
-                                                        <span>{L('amount_paid')}</span><span>₹{effectiveCreditPaidNow.toLocaleString('en-IN')}</span>
-                                                    </div>
-                                                    <div style={{ borderTop: '1px solid #111', paddingTop: '2px', display: 'flex', justifyContent: 'space-between', fontWeight: 900, color: effectiveCreditAmount > 0 ? '#c62828' : '#10b981' }}>
-                                                        <span>{L('credit_amount')}</span><span>₹{effectiveCreditAmount.toLocaleString('en-IN')}</span>
-                                                    </div>
-                                                </>
-                                            )}
-                                            {customerOutstanding > 0 && (
-                                                <>
-                                                    <div style={{ display: 'flex', justifyContent: 'space-between', color: '#c62828' }}>
-                                                        <span>{L('previous_outstanding')} (Dr)</span><span>₹{customerOutstanding.toLocaleString('en-IN')}</span>
-                                                    </div>
-                                                    <div style={{ borderTop: '1px solid #111', paddingTop: '2px', display: 'flex', justifyContent: 'space-between', fontWeight: 900 }}>
-                                                        <span>{L('total_payable')}</span><span>₹{(invNetAmount + customerOutstanding).toLocaleString('en-IN')}</span>
-                                                    </div>
-                                                </>
-                                            )}
+                                            {isCreditBill && (<>
+                                                <div style={{ display: 'flex', justifyContent: 'space-between', color: '#10b981' }}>
+                                                    <span>{L('amount_paid')}</span><span>₹{effectiveCreditPaidNow.toLocaleString('en-IN')}</span>
+                                                </div>
+                                                <div style={{ borderTop: '1px solid #555', paddingTop: '2px', display: 'flex', justifyContent: 'space-between', fontWeight: 900, color: effectiveCreditAmount > 0 ? '#c62828' : '#10b981' }}>
+                                                    <span>{L('credit_amount')}</span><span>₹{effectiveCreditAmount.toLocaleString('en-IN')}</span>
+                                                </div>
+                                            </>)}
+                                            {customerOutstanding > 0 && (<>
+                                                <div style={{ display: 'flex', justifyContent: 'space-between', color: '#c62828' }}>
+                                                    <span>{L('previous_outstanding')} (Dr)</span><span>₹{customerOutstanding.toLocaleString('en-IN')}</span>
+                                                </div>
+                                                <div style={{ borderTop: '1.5px solid #333', paddingTop: '2px', display: 'flex', justifyContent: 'space-between', fontWeight: 900 }}>
+                                                    <span>{L('total_payable')}</span><span>₹{(invNetAmount + customerOutstanding).toLocaleString('en-IN')}</span>
+                                                </div>
+                                            </>)}
                                         </div>
-                                        <div style={{ borderTop: '1px solid #222', padding: '4px 8px', fontSize: '0.68rem' }}>
+                                        <div style={{ borderTop: '1px solid #ddd', padding: '3px 8px', fontSize: '0.66rem' }}>
                                             <strong>Amt in Words:</strong>{' '}
                                             <span style={{ fontStyle: 'italic', fontWeight: 600 }}>INR {numberToWords(invNetAmount)}</span>
                                         </div>
-                                        <div style={{ borderTop: '1px solid #222', padding: '5px 8px' }}>
-                                            <div style={{ fontWeight: 700, fontSize: '0.72rem', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: '4px' }}>Category</div>
-                                            <div style={{ display: 'flex', gap: '5px', flexWrap: 'wrap', fontSize: '0.72rem' }}>
-                                                {getInvoiceProductCategories(cart).map(cat => (
-                                                    <span key={cat} style={{ border: '1px solid #555', padding: '2px 6px', display: 'inline-flex', alignItems: 'center', gap: '3px', background: '#e8f5e9', fontWeight: 600 }}>
-                                                        ✓ {cat}
-                                                    </span>
-                                                ))}
-                                            </div>
+                                        <div style={{ borderTop: '1px solid #ddd', padding: '4px 8px' }}>
+                                            <span style={{ fontSize: '0.66rem', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.04em' }}>Category: </span>
+                                            {getInvoiceProductCategories(cart).map(cat => (
+                                                <span key={cat} style={{ fontSize: '0.66rem', border: '1px solid #777', padding: '1px 5px', fontWeight: 600, marginLeft: '3px', background: '#e8f5e9' }}>✓ {cat}</span>
+                                            ))}
                                         </div>
                                     </div>
 
-                                    {/* Col 3 – Customer Signature + Authorized Signature stacked */}
+                                    {/* Col 3 – Signatures */}
                                     <div style={{ display: 'flex', flexDirection: 'column' }}>
-                                        <div style={{ flex: 1, borderBottom: '1px solid #222', padding: '6px 8px', display: 'flex', flexDirection: 'column', justifyContent: 'flex-end', alignItems: 'center', minHeight: '60px' }}>
-                                            <div style={{ borderTop: '1px solid #555', paddingTop: '3px', fontSize: '0.72rem', fontWeight: 700, textAlign: 'center', width: '100%' }}>Customer Signature</div>
+                                        <div style={{ flex: 1, borderBottom: '1px solid #ccc', display: 'flex', flexDirection: 'column', justifyContent: 'flex-end', padding: '6px 8px', alignItems: 'center', minHeight: '72px' }}>
+                                            <div style={{ borderTop: '1px solid #555', paddingTop: '3px', fontSize: '0.7rem', fontWeight: 700, textAlign: 'center', width: '100%' }}>Customer Signature</div>
                                         </div>
-                                        <div style={{ flex: 1, padding: '6px 8px', display: 'flex', flexDirection: 'column', justifyContent: 'flex-end', alignItems: 'center', minHeight: '60px' }}>
+                                        <div style={{ flex: 1, display: 'flex', flexDirection: 'column', justifyContent: 'flex-end', padding: '6px 8px', alignItems: 'center', minHeight: '72px' }}>
                                             {branding?.signatureUrl && (
-                                                <img src={branding.signatureUrl} alt="" style={{ height: '32px', maxWidth: '100%', objectFit: 'contain', display: 'block', margin: '0 auto 4px' }} />
+                                                <img src={branding.signatureUrl} alt="" style={{ height: '34px', maxWidth: '100%', objectFit: 'contain', display: 'block', margin: '0 auto 4px' }} />
                                             )}
-                                            <div style={{ borderTop: '1px solid #555', paddingTop: '3px', fontSize: '0.72rem', fontWeight: 700, textAlign: 'center', width: '100%' }}>Authorized Signature</div>
+                                            <div style={{ borderTop: '1px solid #555', paddingTop: '3px', fontSize: '0.7rem', fontWeight: 700, textAlign: 'center', width: '100%' }}>Authorized Signature</div>
                                         </div>
                                     </div>
                                 </div>
-                            </>
+                            </div>
                         ) : (
                             // ── A4 PORTRAIT ON-SCREEN LAYOUT (unchanged) ─────────────────────
                             <>

@@ -89,7 +89,7 @@ const emptyForm = () => ({
   productNumber: '', name: '', type: '', mfgCompany: '', description: '',
   unitSize: 1, unitMeasure: 'pcs' as string, baseUnit: 'pcs' as string,
   gstPct: 5, maxRetailPrice: 0, retailerPrice: 0, purchasePrice: 0, sellingPrice: 0,
-  imageUrl: '',
+  imageUrl: '', stockQty: 0,
 });
 
 // ── Component ─────────────────────────────────────────────────────────────────
@@ -184,6 +184,7 @@ export default function RateSheetPage() {
         purchasePrice: canSeeCost ? (product.purchasePrice || 0) : 0,
         sellingPrice: product.sellingPrice || 0,
         imageUrl: product.imageUrl || '',
+        stockQty: totalStock(product),
       });
       setImagePreview(product.imageUrl || null);
     } else {
@@ -262,10 +263,13 @@ export default function RateSheetPage() {
       ? `${Math.round(((formData.maxRetailPrice - formData.retailerPrice) / formData.maxRetailPrice) * 100)}%`
       : 'N/A';
 
-    const { purchasePrice, ...costFree } = formData;
+    const { purchasePrice, stockQty, ...costFree } = formData;
+    const { stockQty: _sq, ...withCost } = formData;
+    const baseData = canSeeCost ? withCost : costFree;
     const data: Record<string, unknown> = {
-      ...(canSeeCost ? formData : costFree),
+      ...baseData,
       margin,
+      loosePieces: stockQty,
       updatedAt: serverTimestamp(),
     };
 
@@ -274,7 +278,7 @@ export default function RateSheetPage() {
         await updateDoc(getTenantDoc(db, tenantId, 'products', editingProduct.id), data);
       } else {
         await addDoc(getTenantCollection(db, tenantId, 'products'), {
-          category: 'B2B', boxCapacity: 1, quantity: 0, loosePieces: 0,
+          category: 'B2B', boxCapacity: 1, quantity: 0,
           ...data,
           createdAt: serverTimestamp(),
         });
@@ -667,6 +671,22 @@ export default function RateSheetPage() {
                 <p style={{ fontSize: '0.75rem', color: 'var(--text-tertiary)', marginTop: '0.5rem' }}>
                   These are defaults only. Rates on individual Purchase Invoices override them without changing the master.
                 </p>
+              </section>
+
+              {/* Section 4: Stock */}
+              <section>
+                <div style={{ fontSize: '0.72rem', fontWeight: 700, textTransform: 'uppercase', color: 'var(--text-tertiary)', letterSpacing: '0.08em', marginBottom: '0.85rem' }}>4 · Stock</div>
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 3fr', gap: '0.75rem', alignItems: 'end' }}>
+                  <div>
+                    <label className="input-label">Stock Quantity</label>
+                    <input type="number" min="0" step="1" className="input-field" value={formData.stockQty === 0 ? '' : formData.stockQty} onChange={e => set({ stockQty: Number(e.target.value) })} onWheel={e => e.currentTarget.blur()} placeholder="0" />
+                  </div>
+                  <p style={{ fontSize: '0.75rem', color: 'var(--text-tertiary)', margin: 0 }}>
+                    {editingProduct
+                      ? 'Direct edit for correction. For regular stock-in, use Purchase Invoices to keep the audit trail intact.'
+                      : 'Opening stock for this product. Leave 0 if stock will be added via Purchase Invoices.'}
+                  </p>
+                </div>
               </section>
 
               <button type="submit" className="btn btn-primary" style={{ width: '100%', height: '3rem', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '0.5rem', fontSize: '1rem', flexShrink: 0 }}>

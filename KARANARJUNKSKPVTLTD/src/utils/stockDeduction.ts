@@ -68,6 +68,7 @@ export interface StockMovementInput {
 export interface DeductionResult {
   valid: boolean;
   errors: string[];
+  warnings: string[];   // non-fatal: negative stock allowed when caller opts in
   batchUpdates: BatchUpdate[];
   productUpdates: ProductStockUpdate[];
   movements: Omit<StockMovementInput, 'type' | 'sourceType' | 'sourceId' | 'sourceNumber' | 'date'>[];
@@ -87,12 +88,18 @@ function fefoSort(a: BatchDoc, b: BatchDoc): number {
 /**
  * Reads current batch state, validates stock, and returns the exact Firestore
  * updates needed. The caller applies these inside its own writeBatch.
+ *
+ * @param allowNegative When true, insufficient stock generates a warning and
+ *   still produces deduction updates (stock goes negative). When false
+ *   (default), insufficient stock is a fatal error and no updates are produced.
  */
 export async function prepareStockDeduction(
   tenantId: string,
   lines: SaleLine[],
+  allowNegative = false,
 ): Promise<DeductionResult> {
   const errors: string[] = [];
+  const warnings: string[] = [];
   const batchUpdates: BatchUpdate[] = [];
   const productUpdates: ProductStockUpdate[] = [];
   const movements: DeductionResult['movements'] = [];
@@ -125,22 +132,24 @@ export async function prepareStockDeduction(
       const totalPieces = (pData.loosePieces ?? 0) + (pData.quantity ?? 0) * cap;
 
       if (totalPieces < line.qty) {
-        errors.push(`Insufficient stock for "${line.productName}": available ${totalPieces}, requested ${line.qty}.`);
-        continue;
+        const msg = `Low stock for "${line.productName}": available ${totalPieces}, requested ${line.qty}.`;
+        if (!allowNegative) { errors.push(msg); continue; }
+        warnings.push(msg);
       }
       // Compute new box / loose split (keep old model for these products)
       let newLoose = (pData.loosePieces ?? 0) - line.qty;
       let newBoxes = pData.quantity ?? 0;
       while (newLoose < 0 && newBoxes > 0) { newBoxes--; newLoose += cap; }
-      productUpdates.push({ productId: line.productId, newLoosePieces: Math.max(0, newLoose), newQuantity: Math.max(0, newBoxes) });
-      movements.push({ productId: line.productId, productName: line.productName, batchNumber: '', qtyIn: 0, qtyOut: line.qty, remainingBatchQty: 0, remainingStock: Math.max(0, totalPieces - line.qty) });
+      productUpdates.push({ productId: line.productId, newLoosePieces: newLoose, newQuantity: newBoxes });
+      movements.push({ productId: line.productId, productName: line.productName, batchNumber: '', qtyIn: 0, qtyOut: line.qty, remainingBatchQty: 0, remainingStock: totalPieces - line.qty });
       continue;
     }
 
     // ── Batch-level stock ────────────────────────────────────────────────────
     if (batchTotal < line.qty) {
-      errors.push(`Insufficient stock for "${line.productName}": available ${batchTotal}, requested ${line.qty}.`);
-      continue;
+      const msg = `Low stock for "${line.productName}": available ${batchTotal}, requested ${line.qty}.`;
+      if (!allowNegative) { errors.push(msg); continue; }
+      warnings.push(msg);
     }
 
     // Preferred batch first (user specified batchNo on the invoice line)
@@ -162,11 +171,11 @@ export async function prepareStockDeduction(
       batchUpdates.push({ batchDocId: b.id, newQty, batchNumber: b.batchNumber, productId: line.productId, productName: line.productName, qtyDeducted: deduct });
       movements.push({ productId: line.productId, productName: line.productName, batchNumber: b.batchNumber, qtyIn: 0, qtyOut: deduct, remainingBatchQty: newQty, remainingStock: batchTotal - line.qty });
     }
-    // Update product.loosePieces to match new batch total
-    productUpdates.push({ productId: line.productId, newLoosePieces: Math.max(0, batchTotal - line.qty) });
+    // Update product.loosePieces to match new batch total (may be negative when allowNegative)
+    productUpdates.push({ productId: line.productId, newLoosePieces: batchTotal - line.qty });
   }
 
-  return { valid: errors.length === 0, errors, batchUpdates, productUpdates, movements };
+  return { valid: errors.length === 0, errors, warnings, batchUpdates, productUpdates, movements };
 }
 
 // ── Record movements (best-effort, called after the sale batch commits) ───────
