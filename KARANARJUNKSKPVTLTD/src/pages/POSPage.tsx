@@ -2394,7 +2394,6 @@ export default function POSPage() {
                             customer={{ name: reprintOrder.retailerName, phone: reprintOrder.phoneNumber, address: reprintOrder.address, pin: reprintOrder.pin }}
                             branding={branding}
                             billNumber={reprintOrder.orderNumber}
-                            subtotal={reprintOrder.subtotal || 0}
                             discount={reprintOrder.discount || 0}
                             grandTotal={reprintOrder.grandTotal || 0}
                             billFormat={billFormat}
@@ -2408,7 +2407,6 @@ export default function POSPage() {
                             customer={customer}
                             branding={branding}
                             billNumber={nextBillNumber}
-                            subtotal={cartSubtotal}
                             transportCharges={transportCharges}
                             laborCharges={laborCharges}
                             discount={loyaltyDiscount}
