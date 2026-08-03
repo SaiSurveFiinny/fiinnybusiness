@@ -72,10 +72,11 @@ export function numberToWords(num: number): string {
     return result + ' only';
 }
 
-// "2026-03" → "03/26" for compact display
+// "2026-03" or "2026-03-15" → "03/26" for compact display
 export function toMonthYear(val: string): string {
-    const m = /^(\d{4})-(\d{2})$/.exec((val || '').trim());
-    return m ? `${m[2]}/${m[1].slice(2)}` : val;
+    // Matches YYYY-MM or YYYY-MM-DD; we only need year+month
+    const m = /^(\d{4})-(\d{2})/.exec((val || '').trim());
+    return m ? `${m[2]}/${m[1].slice(2)}` : (val || '');
 }
 
 // ── Types ────────────────────────────────────────────────────────────────────
@@ -180,178 +181,226 @@ export function PosInvoicePreview({
             `}</style>
 
             {isA5 ? (
-                // ── A5 LANDSCAPE ──────────────────────────────────────────────
-                <>
-                    {/* HEADER: Seller + Licenses | Title + Type | Bill Meta */}
-                    <div style={{ display: 'grid', gridTemplateColumns: '1fr auto 130px', alignItems: 'stretch', gap: '0', borderBottom: '2px solid #111', paddingBottom: '3px', marginBottom: '3px' }}>
-                        <div style={{ display: 'flex', alignItems: 'flex-start', gap: '6px', paddingRight: '8px' }}>
-                            {branding?.logoUrl && <img src={branding.logoUrl} alt="Logo" style={{ height: '28px', objectFit: 'contain', flexShrink: 0, marginTop: '1px' }} />}
-                            <div style={{ flex: 1 }}>
-                                <div style={{ fontWeight: 900, fontSize: '0.92rem', lineHeight: 1.15 }}>{sellerName}</div>
-                                <div style={{ fontSize: '0.56rem', color: '#333', marginTop: '1px' }}>
-                                    {branding?.address && <span>{branding.address}</span>}
-                                    {branding?.gstin && <span>&nbsp; | &nbsp;<strong>GSTIN:</strong> {branding.gstin}</span>}
-                                    {branding?.contact && <span>&nbsp; | &nbsp;{branding.contact}</span>}
-                                </div>
-                                {getApplicableLicenses(activeCats, branding).length > 0 && (
-                                    <div style={{ fontSize: '0.53rem', color: '#444', marginTop: '2px', display: 'flex', gap: '10px', flexWrap: 'wrap' }}>
-                                        {getApplicableLicenses(activeCats, branding).map(lic => (
-                                            <span key={lic.label}><strong>{lic.label}:</strong> {lic.number}</span>
-                                        ))}
-                                    </div>
-                                )}
-                            </div>
-                        </div>
-                        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', borderLeft: '1px solid #bbb', borderRight: '1px solid #bbb', padding: '0 10px', gap: '2px' }}>
-                            <div style={{ fontWeight: 900, fontSize: '0.85rem', letterSpacing: '0.1em' }}>{L('gst_invoice')}</div>
-                            <div style={{ fontWeight: 700, border: '1px solid #111', padding: '0px 6px', fontSize: '0.56rem' }}>
+                // ── A5 LANDSCAPE — Reference Invoice Redesign ─────────────────
+                <div style={{ border: '1.5px solid #333', fontFamily: 'Arial, Helvetica, sans-serif' }}>
+
+                    {/* ══ HEADER ══════════════════════════════════════════════════ */}
+                    <div style={{ display: 'grid', gridTemplateColumns: '80px 1fr 112px', borderBottom: '1.5px solid #333' }}>
+
+                        {/* Left: Invoice type badge */}
+                        <div style={{ borderRight: '1px solid #aaa', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: '4px 6px', gap: '4px' }}>
+                            <div style={{ fontWeight: 900, fontSize: '0.72rem', letterSpacing: '0.04em', textAlign: 'center' as const, lineHeight: 1.1 }}>GST<br />INVOICE</div>
+                            <div style={{ width: '100%', border: '1px solid #555', padding: '1px 3px', fontSize: '0.58rem', fontWeight: 700, textAlign: 'center' as const }}>
                                 {modeOfPayment === 'Khata' || modeOfPayment === 'Credit' ? L('credit_bill') : L('cash_bill')}
                             </div>
                         </div>
-                        <div style={{ paddingLeft: '7px', fontSize: '0.58rem', display: 'grid', gridTemplateColumns: 'auto 1fr', gap: '1px 5px', alignContent: 'center' }}>
-                            <strong>{L('bill_no')}:</strong><span style={{ fontWeight: 700 }}>{billNumber}</span>
-                            <strong>{L('bill_date')}:</strong><span>{dateLabel}</span>
-                            <strong>{L('mode_of_payment')}:</strong><span>{modeOfPayment}</span>
+
+                        {/* Center: Business name + address + GSTIN + licenses */}
+                        <div style={{ borderRight: '1px solid #aaa', padding: '4px 8px', textAlign: 'center' as const, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: '1px' }}>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '6px', justifyContent: 'center' }}>
+                                {branding?.logoUrl && <img src={branding.logoUrl} alt="Logo" style={{ height: '24px', objectFit: 'contain' }} />}
+                                <div style={{ fontWeight: 900, fontSize: '1.05rem', lineHeight: 1.1, letterSpacing: '-0.01em' }}>{sellerName}</div>
+                            </div>
+                            {branding?.address && <div style={{ fontSize: '0.55rem', color: '#333', lineHeight: 1.4 }}>{branding.address}</div>}
+                            <div style={{ fontSize: '0.55rem', color: '#333', display: 'flex', gap: '6px', flexWrap: 'wrap' as const, justifyContent: 'center' }}>
+                                {branding?.gstin && <span><strong>GSTIN:</strong> {branding.gstin}</span>}
+                                {branding?.contact && <span>| <strong>Ph:</strong> {branding.contact}</span>}
+                            </div>
+                            {getApplicableLicenses(activeCats, branding).length > 0 && (
+                                <div style={{ fontSize: '0.50rem', color: '#555', borderTop: '1px dashed #ccc', marginTop: '2px', paddingTop: '1.5px', display: 'flex', gap: '6px', flexWrap: 'wrap' as const, justifyContent: 'center' }}>
+                                    {getApplicableLicenses(activeCats, branding).map(lic => (
+                                        <span key={lic.label}><strong>{lic.label}:</strong> {lic.number}</span>
+                                    ))}
+                                </div>
+                            )}
+                        </div>
+
+                        {/* Right: Bill meta */}
+                        <div style={{ padding: '4px 7px', display: 'flex', flexDirection: 'column', justifyContent: 'center', gap: '2px', fontSize: '0.56rem' }}>
+                            <div style={{ display: 'flex', gap: '3px' }}><strong style={{ whiteSpace: 'nowrap' }}>Bill No:</strong><span style={{ fontWeight: 900 }}>{billNumber}</span></div>
+                            <div style={{ display: 'flex', gap: '3px' }}><strong style={{ whiteSpace: 'nowrap' }}>Date:</strong><span>{dateLabel}</span></div>
+                            <div style={{ display: 'flex', gap: '3px' }}><strong style={{ whiteSpace: 'nowrap' }}>Mode:</strong><span>{modeOfPayment}</span></div>
                         </div>
                     </div>
 
-                    {/* CUSTOMER INFO */}
-                    <div style={{ border: '1px solid #222', marginBottom: '3px', padding: '2px 5px', display: 'grid', gridTemplateColumns: '2.5fr 1fr 1.8fr 0.6fr', gap: '0 8px', alignItems: 'center', fontSize: '0.60rem' }}>
-                        <div><strong style={{ color: '#555' }}>Buyer: </strong><span style={{ fontWeight: 700 }}>{customer.name || '—'}</span></div>
-                        <div><strong style={{ color: '#555' }}>Contact: </strong>{customer.phone || '—'}</div>
-                        <div><strong style={{ color: '#555' }}>Address: </strong>{customer.address || '—'}{customer.pin ? ` – ${customer.pin}` : ''}</div>
-                        <div><strong style={{ color: '#555' }}>PIN: </strong>{customer.pin || '—'}</div>
+                    {/* ══ CUSTOMER ROW ════════════════════════════════════════════ */}
+                    <div style={{ display: 'grid', gridTemplateColumns: '2.4fr 0.9fr 2fr 0.65fr', borderBottom: '1px solid #aaa', fontSize: '0.57rem' }}>
+                        <div style={{ borderRight: '1px solid #ccc', padding: '2px 6px', display: 'flex', gap: '3px', alignItems: 'baseline' }}>
+                            <strong style={{ color: '#666', whiteSpace: 'nowrap', flexShrink: 0 }}>Buyer:</strong>
+                            <span style={{ fontWeight: 800, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{customer.name || '—'}</span>
+                        </div>
+                        <div style={{ borderRight: '1px solid #ccc', padding: '2px 6px', display: 'flex', gap: '3px', alignItems: 'baseline' }}>
+                            <strong style={{ color: '#666', whiteSpace: 'nowrap', flexShrink: 0 }}>Ph:</strong>
+                            <span>{customer.phone || '—'}</span>
+                        </div>
+                        <div style={{ borderRight: '1px solid #ccc', padding: '2px 6px', display: 'flex', gap: '3px', alignItems: 'baseline' }}>
+                            <strong style={{ color: '#666', whiteSpace: 'nowrap', flexShrink: 0 }}>Addr:</strong>
+                            <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{customer.address || '—'}</span>
+                        </div>
+                        <div style={{ padding: '2px 6px', display: 'flex', gap: '3px', alignItems: 'baseline' }}>
+                            <strong style={{ color: '#666', whiteSpace: 'nowrap', flexShrink: 0 }}>PIN:</strong>
+                            <span>{customer.pin || '—'}</span>
+                        </div>
                     </div>
 
-                    {/* ITEMS TABLE */}
-                    <table className="kaprint-table" style={{ marginBottom: '3px', tableLayout: 'fixed', width: '100%' }}>
+                    {/* ══ ITEMS TABLE ══════════════════════════════════════════════ */}
+                    {/* Column widths in % so they scale identically on screen and print.
+                        Product is left as auto so it absorbs all remaining space (~38%). */}
+                    <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.62rem', tableLayout: 'fixed' }}>
                         <colgroup>
-                            <col style={{ width: '18px' }} /><col /><col style={{ width: '66px' }} /><col style={{ width: '44px' }} />
-                            <col style={{ width: '40px' }} /><col style={{ width: '24px' }} /><col style={{ width: '26px' }} />
-                            <col style={{ width: '28px' }} /><col style={{ width: '52px' }} /><col style={{ width: '56px' }} />
+                            <col style={{ width: '2.5%' }} />   {/* # */}
+                            <col />                              {/* Product — auto (~38%) */}
+                            <col style={{ width: '11%' }} />    {/* Company */}
+                            <col style={{ width: '9.5%' }} />   {/* Batch */}
+                            <col style={{ width: '6%' }} />     {/* Exp */}
+                            <col style={{ width: '4.5%' }} />   {/* Per */}
+                            <col style={{ width: '5%' }} />     {/* Qty */}
+                            <col style={{ width: '8.5%' }} />   {/* Rate */}
+                            <col style={{ width: '5%' }} />     {/* GST% */}
+                            <col style={{ width: '10%' }} />    {/* Amount */}
                         </colgroup>
                         <thead>
-                            <tr>
-                                <th>{L('sno')}</th>
-                                <th style={{ textAlign: 'left', paddingLeft: '3px' }}>{L('item_description')}</th>
-                                <th>{L('company')}</th>
-                                <th>{L('batch_no')}</th>
-                                <th>{L('exp_date')}</th>
-                                <th>{L('gst_pct')}</th>
-                                <th>{L('per')}</th>
-                                <th>{L('qty')}</th>
-                                <th style={{ textAlign: 'right', paddingRight: '3px' }}>{L('rate')}</th>
-                                <th style={{ textAlign: 'right', paddingRight: '3px' }}>{L('gross_amount')}</th>
+                            <tr style={{ background: '#f5f5f5', borderBottom: '1.5px solid #333' }}>
+                                {([
+                                    ['#', 'center', '2px 1px'],
+                                    ['Product', 'left', '2px 4px'],
+                                    ['Company', 'center', '2px 2px'],
+                                    ['Batch No.', 'center', '2px 2px'],
+                                    ['Exp', 'center', '2px 1px'],
+                                    ['Per', 'center', '2px 1px'],
+                                    ['Qty', 'center', '2px 1px'],
+                                    ['Rate', 'right', '2px 3px'],
+                                    ['GST%', 'center', '2px 1px'],
+                                    ['Amount', 'right', '2px 3px'],
+                                ] as const).map(([label, align, pad]) => (
+                                    <th key={label} style={{ border: '1px solid #ccc', padding: pad, textAlign: align as const, fontWeight: 700, fontSize: '0.60rem', overflow: 'hidden', whiteSpace: 'nowrap' }}>
+                                        {label}
+                                    </th>
+                                ))}
                             </tr>
                         </thead>
                         <tbody>
                             {cart.map((item, i) => (
                                 <tr key={i}>
-                                    <td style={{ textAlign: 'center' }}>{i + 1}</td>
-                                    <td style={{ paddingLeft: '3px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{item.name}</td>
-                                    <td style={{ textAlign: 'center', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{item.mfgCompany || ''}</td>
-                                    <td style={{ textAlign: 'center' }}>{item.batchNo || ''}</td>
-                                    <td style={{ textAlign: 'center' }}>{toMonthYear(item.expDate || '')}</td>
-                                    <td style={{ textAlign: 'center' }}>{lineGst(item)}</td>
-                                    <td style={{ textAlign: 'center' }}>{item.unit || item.baseUnit || ''}</td>
-                                    <td style={{ textAlign: 'center' }}>{item.cartQuantity}</td>
-                                    <td style={{ textAlign: 'right', paddingRight: '3px' }}>{rate(item)}</td>
-                                    <td style={{ textAlign: 'right', paddingRight: '3px' }}>{fmt(item.cartTotal)}</td>
+                                    <td style={{ border: '1px solid #e0e0e0', padding: '1.5px 1px', textAlign: 'center' as const }}>{i + 1}</td>
+                                    <td style={{ border: '1px solid #e0e0e0', padding: '1.5px 4px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontWeight: 600 }}>{item.name}</td>
+                                    <td style={{ border: '1px solid #e0e0e0', padding: '1.5px 2px', textAlign: 'center' as const, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{item.mfgCompany || ''}</td>
+                                    <td style={{ border: '1px solid #e0e0e0', padding: '1.5px 2px', textAlign: 'center' as const, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{item.batchNo || ''}</td>
+                                    <td style={{ border: '1px solid #e0e0e0', padding: '1.5px 1px', textAlign: 'center' as const, whiteSpace: 'nowrap' }}>{toMonthYear(item.expDate || '')}</td>
+                                    <td style={{ border: '1px solid #e0e0e0', padding: '1.5px 1px', textAlign: 'center' as const, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{item.unit || item.baseUnit || ''}</td>
+                                    <td style={{ border: '1px solid #e0e0e0', padding: '1.5px 1px', textAlign: 'center' as const, fontWeight: 700 }}>{item.cartQuantity}</td>
+                                    <td style={{ border: '1px solid #e0e0e0', padding: '1.5px 3px', textAlign: 'right' as const }}>{rate(item)}</td>
+                                    <td style={{ border: '1px solid #e0e0e0', padding: '1.5px 1px', textAlign: 'center' as const }}>{lineGst(item)}%</td>
+                                    <td style={{ border: '1px solid #e0e0e0', padding: '1.5px 3px', textAlign: 'right' as const, fontWeight: 700 }}>{fmt(item.cartTotal)}</td>
                                 </tr>
                             ))}
-                            {Array.from({ length: Math.max(0, 3 - cart.length) }).map((_, i) => (
+                            {Array.from({ length: Math.max(0, 5 - cart.length) }).map((_, i) => (
                                 <tr key={`e-${i}`} style={{ height: '13px' }}>
-                                    <td></td><td></td><td></td><td></td><td></td><td></td><td></td><td></td><td></td><td></td>
+                                    {Array.from({ length: 10 }).map((_, j) => <td key={j} style={{ border: '1px solid #e0e0e0' }}></td>)}
                                 </tr>
                             ))}
-                            <tr style={{ fontWeight: 700, background: '#f2f2f2' }}>
-                                <td colSpan={9} style={{ textAlign: 'right', paddingRight: '5px' }}>{L('total')}</td>
-                                <td style={{ textAlign: 'right', paddingRight: '3px' }}>{fmt(taxable + tax)}</td>
+                            <tr style={{ background: '#f5f5f5', borderTop: '1.5px solid #333' }}>
+                                <td colSpan={9} style={{ border: '1px solid #ccc', padding: '2px 6px', textAlign: 'right' as const, fontWeight: 800, fontSize: '0.62rem', textTransform: 'uppercase' as const }}>Total</td>
+                                <td style={{ border: '1px solid #ccc', padding: '2px 3px', textAlign: 'right' as const, fontWeight: 900, fontSize: '0.62rem' }}>{fmt(taxable + tax)}</td>
                             </tr>
                         </tbody>
                     </table>
 
-                    {/* 3-COLUMN FOOTER */}
-                    <div style={{ display: 'grid', gridTemplateColumns: '1.2fr 1fr 0.85fr', gap: '4px', alignItems: 'stretch' }}>
+                    {/* ══ FOOTER ══════════════════════════════════════════════════ */}
+                    <div style={{ display: 'grid', gridTemplateColumns: '1.55fr 1.1fr 0.68fr', borderTop: '1.5px solid #333' }}>
 
-                        {/* Col 1 – GST Summary + Declaration */}
-                        <div style={{ border: '1px solid #222', display: 'flex', flexDirection: 'column' }}>
-                            <div style={{ background: '#f2f2f2', fontWeight: 700, padding: '1px 4px', borderBottom: '1px solid #222', fontSize: '0.56rem', textTransform: 'uppercase' as const, letterSpacing: '0.05em', textAlign: 'center' as const }}>GST Summary</div>
-                            <table style={{ width: '100%', borderCollapse: 'collapse' as const, fontSize: '0.56rem' }}>
-                                <thead><tr>
-                                    <th style={{ border: '1px solid #ccc', padding: '1px 2px', background: '#fafafa' }}>Taxable</th>
-                                    <th style={{ border: '1px solid #ccc', padding: '1px 2px', background: '#fafafa' }}>CGST 2.5%</th>
-                                    <th style={{ border: '1px solid #ccc', padding: '1px 2px', background: '#fafafa' }}>SGST 2.5%</th>
-                                    <th style={{ border: '1px solid #ccc', padding: '1px 2px', background: '#fafafa' }}>Total Tax</th>
-                                </tr></thead>
-                                <tbody><tr>
-                                    <td style={{ border: '1px solid #ccc', padding: '1px 2px', textAlign: 'center' as const }}>{fmt(taxable)}</td>
-                                    <td style={{ border: '1px solid #ccc', padding: '1px 2px', textAlign: 'center' as const }}>{fmt(cgst)}</td>
-                                    <td style={{ border: '1px solid #ccc', padding: '1px 2px', textAlign: 'center' as const }}>{fmt(sgst)}</td>
-                                    <td style={{ border: '1px solid #ccc', padding: '1px 2px', textAlign: 'center' as const }}>{fmt(tax)}</td>
-                                </tr></tbody>
+                        {/* Col 1: GST Summary + Declaration */}
+                        <div style={{ borderRight: '1px solid #aaa', display: 'flex', flexDirection: 'column' }}>
+                            <div style={{ background: '#f5f5f5', padding: '1.5px 5px', borderBottom: '1px solid #ccc', fontSize: '0.52rem', fontWeight: 700, textTransform: 'uppercase' as const, letterSpacing: '0.05em', textAlign: 'center' as const }}>GST Summary</div>
+                            <table style={{ width: '100%', borderCollapse: 'collapse' as const, fontSize: '0.52rem' }}>
+                                <thead>
+                                    <tr>
+                                        {['Taxable', 'CGST 2.5%', 'SGST 2.5%', 'Total Tax'].map(h => (
+                                            <th key={h} style={{ border: '1px solid #ddd', padding: '1.5px 2px', textAlign: 'center' as const, background: '#fafafa', fontWeight: 700 }}>{h}</th>
+                                        ))}
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    <tr>
+                                        {[taxable, cgst, sgst, tax].map((v, vi) => (
+                                            <td key={vi} style={{ border: '1px solid #ddd', padding: '1.5px 2px', textAlign: 'center' as const }}>{fmt(v)}</td>
+                                        ))}
+                                    </tr>
+                                </tbody>
                             </table>
-                            <div style={{ padding: '2px 4px', fontSize: '0.50rem', color: '#444', borderTop: '1px solid #ddd', lineHeight: 1.3, flex: 1 }}>
+                            <div style={{ padding: '3px 5px', fontSize: '0.46rem', color: '#555', lineHeight: 1.35, flex: 1 }}>
                                 <strong>{L('declaration')}:</strong> {L('declaration_text')}
                             </div>
                         </div>
 
-                        {/* Col 2 – Net Amount + Amount in Words + Category */}
-                        <div style={{ border: '1px solid #222', display: 'flex', flexDirection: 'column' }}>
-                            <div style={{ padding: '2px 5px', display: 'flex', flexDirection: 'column', gap: '1px', fontSize: '0.58rem', flex: 1 }}>
-                                {discount > 0 && <div style={{ display: 'flex', justifyContent: 'space-between', color: '#2E7D32' }}><span>{L('discount')}</span><span>-{fmt(discount)}</span></div>}
-                                {transportCharges > 0 && <div style={{ display: 'flex', justifyContent: 'space-between' }}><span>{L('transport_charges')}</span><span>+{fmt(transportCharges)}</span></div>}
-                                {laborCharges > 0 && <div style={{ display: 'flex', justifyContent: 'space-between' }}><span>{L('labor_charges')}</span><span>+{fmt(laborCharges)}</span></div>}
-                                <div style={{ display: 'flex', justifyContent: 'space-between' }}><span>{L('round_off')}</span><span>{fmt(roundOff)}</span></div>
-                                <div style={{ borderTop: '2px solid #111', paddingTop: '1px', display: 'flex', justifyContent: 'space-between', fontWeight: 900, fontSize: '0.73rem' }}>
+                        {/* Col 2: Net Amount + Words + Categories */}
+                        <div style={{ borderRight: '1px solid #aaa', display: 'flex', flexDirection: 'column' }}>
+                            <div style={{ padding: '3px 6px', flex: 1, fontSize: '0.56rem', display: 'flex', flexDirection: 'column', gap: '1.5px' }}>
+                                {discount > 0 && (
+                                    <div style={{ display: 'flex', justifyContent: 'space-between', color: '#2E7D32' }}>
+                                        <span>{L('discount')}</span><span>-{fmt(discount)}</span>
+                                    </div>
+                                )}
+                                {transportCharges > 0 && (
+                                    <div style={{ display: 'flex', justifyContent: 'space-between' }}><span>{L('transport_charges')}</span><span>+{fmt(transportCharges)}</span></div>
+                                )}
+                                {laborCharges > 0 && (
+                                    <div style={{ display: 'flex', justifyContent: 'space-between' }}><span>{L('labor_charges')}</span><span>+{fmt(laborCharges)}</span></div>
+                                )}
+                                <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                                    <span>{L('round_off')}</span><span>{fmt(roundOff)}</span>
+                                </div>
+                                <div style={{ borderTop: '1.5px solid #333', paddingTop: '1.5px', display: 'flex', justifyContent: 'space-between', fontWeight: 900, fontSize: '0.70rem' }}>
                                     <span>{L('net_amount')}</span><span>₹{net.toLocaleString('en-IN')}</span>
                                 </div>
                                 {(modeOfPayment === 'Khata' || modeOfPayment === 'Credit') && (<>
-                                    <div style={{ display: 'flex', justifyContent: 'space-between', color: '#2E7D32' }}><span>{L('amount_paid')}</span><span>₹{Number(creditPaidNow).toLocaleString('en-IN')}</span></div>
+                                    <div style={{ display: 'flex', justifyContent: 'space-between', color: '#2E7D32' }}>
+                                        <span>{L('amount_paid')}</span><span>₹{Number(creditPaidNow).toLocaleString('en-IN')}</span>
+                                    </div>
                                     <div style={{ borderTop: '1px solid #555', paddingTop: '1px', display: 'flex', justifyContent: 'space-between', fontWeight: 900, color: creditAmount > 0 ? '#c62828' : '#2E7D32' }}>
                                         <span>{L('credit_amount')}</span><span>₹{Number(creditAmount).toLocaleString('en-IN')}</span>
                                     </div>
                                 </>)}
                                 {previousOutstanding > 0 && (<>
-                                    <div style={{ display: 'flex', justifyContent: 'space-between' }}><span>{L('previous_outstanding')} (Dr)</span><span>₹{Number(previousOutstanding).toLocaleString('en-IN')}</span></div>
-                                    <div style={{ borderTop: '1px solid #111', paddingTop: '1px', display: 'flex', justifyContent: 'space-between', fontWeight: 900 }}>
+                                    <div style={{ display: 'flex', justifyContent: 'space-between', color: '#c62828' }}>
+                                        <span>{L('previous_outstanding')} (Dr)</span><span>₹{Number(previousOutstanding).toLocaleString('en-IN')}</span>
+                                    </div>
+                                    <div style={{ borderTop: '1.5px solid #333', paddingTop: '1.5px', display: 'flex', justifyContent: 'space-between', fontWeight: 900 }}>
                                         <span>{L('total_payable')}</span><span>₹{(net + Number(previousOutstanding)).toLocaleString('en-IN')}</span>
                                     </div>
                                 </>)}
                             </div>
-                            <div style={{ borderTop: '1px solid #222', padding: '2px 5px', fontSize: '0.54rem', lineHeight: 1.3 }}>
-                                <strong>{L('amount_in_words')}: </strong><span style={{ fontStyle: 'italic' }}>INR {numberToWords(net)}</span>
+                            <div style={{ borderTop: '1px solid #ddd', padding: '2px 6px', fontSize: '0.48rem', lineHeight: 1.3 }}>
+                                <strong>{L('amount_in_words')}:</strong> <span style={{ fontStyle: 'italic' }}>INR {numberToWords(net)}</span>
                             </div>
-                            <div style={{ borderTop: '1px solid #222', padding: '2px 5px' }}>
-                                <div style={{ fontSize: '0.52rem', textTransform: 'uppercase' as const, letterSpacing: '0.04em', fontWeight: 700, marginBottom: '2px' }}>Category</div>
-                                <div style={{ display: 'flex', flexWrap: 'wrap' as const, gap: '2px' }}>
-                                    {activeCats.map(cat => (
-                                        <span key={cat} style={{ fontSize: '0.52rem', border: '1px solid #555', padding: '0px 4px', fontWeight: 600 }}>✓ {cat}</span>
-                                    ))}
-                                </div>
+                            <div style={{ borderTop: '1px solid #ddd', padding: '2px 6px' }}>
+                                <span style={{ fontSize: '0.46rem', fontWeight: 700, textTransform: 'uppercase' as const, letterSpacing: '0.04em' }}>Category: </span>
+                                {activeCats.map(cat => (
+                                    <span key={cat} style={{ fontSize: '0.46rem', border: '1px solid #777', padding: '0px 3px', fontWeight: 600, marginLeft: '2px', background: '#e8f5e9' }}>✓ {cat}</span>
+                                ))}
                             </div>
                         </div>
 
-                        {/* Col 3 – Signatures + optional UPI QR */}
-                        <div style={{ display: 'flex', flexDirection: 'column', gap: '3px' }}>
-                            <div style={{ border: '1px solid #222', flex: 1, padding: '2px 4px', textAlign: 'center' as const, display: 'flex', flexDirection: 'column', justifyContent: 'flex-end', minHeight: '38px' }}>
-                                <div style={{ borderTop: '1px solid #555', paddingTop: '2px', fontSize: '0.55rem', fontWeight: 700 }}>Customer Signature</div>
+                        {/* Col 3: Signatures + optional QR */}
+                        <div style={{ display: 'flex', flexDirection: 'column' }}>
+                            <div style={{ flex: 1, borderBottom: '1px solid #ccc', display: 'flex', flexDirection: 'column', justifyContent: 'flex-end', padding: '3px 6px', alignItems: 'center', minHeight: '42px' }}>
+                                <div style={{ borderTop: '1px solid #555', paddingTop: '2px', fontSize: '0.50rem', fontWeight: 700, textAlign: 'center' as const, width: '100%' }}>Customer Signature</div>
                             </div>
-                            <div style={{ border: '1px solid #222', flex: 1, padding: '2px 4px', textAlign: 'center' as const, display: 'flex', flexDirection: 'column', justifyContent: 'flex-end', minHeight: '38px' }}>
+                            <div style={{ flex: 1, display: 'flex', flexDirection: 'column', justifyContent: 'flex-end', padding: '3px 6px', alignItems: 'center', minHeight: '42px' }}>
                                 {branding?.signatureUrl && (
-                                    <img src={branding.signatureUrl} alt="" style={{ height: '26px', maxWidth: '100%', objectFit: 'contain', display: 'block', margin: '0 auto 2px' }} />
+                                    <img src={branding.signatureUrl} alt="" style={{ height: '22px', maxWidth: '100%', objectFit: 'contain', display: 'block', margin: '0 auto 2px' }} />
                                 )}
-                                <div style={{ borderTop: '1px solid #555', paddingTop: '2px', fontSize: '0.55rem', fontWeight: 700 }}>Authorized Signature</div>
+                                <div style={{ borderTop: '1px solid #555', paddingTop: '2px', fontSize: '0.50rem', fontWeight: 700, textAlign: 'center' as const, width: '100%' }}>Authorized Signature</div>
                             </div>
                             {branding?.upiId && (
-                                <div style={{ textAlign: 'center' as const }}>
-                                    <UpiQrCode upiId={branding.upiId} payeeName={sellerName} amount={net} transactionNote={billNumber} size={42} />
-                                    <div style={{ fontSize: '7px' }}>{L('scan_to_pay')}</div>
+                                <div style={{ borderTop: '1px solid #ddd', textAlign: 'center' as const, padding: '2px 5px' }}>
+                                    <UpiQrCode upiId={branding.upiId} payeeName={sellerName} amount={net} transactionNote={billNumber} size={38} />
+                                    <div style={{ fontSize: '6px' }}>{L('scan_to_pay')}</div>
                                 </div>
                             )}
                         </div>
                     </div>
-                </>
+                </div>
             ) : (
                 // ── A4 PORTRAIT ───────────────────────────────────────────────
                 <>

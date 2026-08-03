@@ -90,7 +90,7 @@ export default function StockMovementPage() {
   }, [filtered]);
 
   return (
-    <div className="animate-fade-in" style={{ maxWidth: '1200px', margin: '0 auto' }}>
+    <div className="animate-fade-in">
 
       {/* Header */}
       <div style={{ marginBottom: '1.5rem' }}>
