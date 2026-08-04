@@ -23,6 +23,13 @@ class StoreModel {
   /// action — the listing shows photos, reviews and live timings.
   final String? googleMapsUrl;
 
+  /// Short one-line pitch set on the web dashboard profile editor — shown as
+  /// a subtitle under the shop name.
+  final String? tagline;
+  final String? website;
+  /// Cover/banner image URL, set on the web dashboard profile editor.
+  final String? banner;
+
   // Distance from the user in km. Set client-side after a Haversine calc;
   // null when either the store or the user has no usable location.
   double? distanceKm;
@@ -44,6 +51,9 @@ class StoreModel {
     this.pincode,
     this.role = '',
     this.googleMapsUrl,
+    this.tagline,
+    this.website,
+    this.banner,
     this.distanceKm,
   });
 

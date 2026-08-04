@@ -272,6 +272,13 @@ class _ReelsFeedScreenState extends ConsumerState<ReelsFeedScreen>
                 PageView.builder(
                   controller: _pageController,
                   scrollDirection: Axis.vertical,
+                  // Explicit physics — without this, iOS falls back to
+                  // BouncingScrollPhysics (vs Android's ClampingScrollPhysics),
+                  // and a bouncing PageView contesting the gesture arena
+                  // against nested tap targets (the product-link card) is a
+                  // known class of iOS-only tap-swallowing bug. Matches
+                  // Android's existing behavior exactly, so no change there.
+                  physics: const ClampingScrollPhysics(),
                   onPageChanged: _onPageChanged,
                   itemCount: reels.length,
                   itemBuilder: (context, index) {
@@ -1302,6 +1309,10 @@ class _ProductCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return GestureDetector(
+      // Opaque hit-testing (matches _ActionButton) rather than the default
+      // deferToChild — rules out any edge-of-widget dead zone contributing
+      // to the iOS tap-swallowing reports.
+      behavior: HitTestBehavior.opaque,
       onTap: () {
         context.push('/product/$productId');
       },

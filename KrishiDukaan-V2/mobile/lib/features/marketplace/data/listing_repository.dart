@@ -282,6 +282,10 @@ class ListingRepository {
       averageRating: (data['averageRating'] as num?)?.toDouble(),
       totalReviews: (data['totalReviews'] as num?)?.toInt(),
       role: (data['role'] ?? 'retailer').toString(),
+      logo: data['logo']?.toString(),
+      tagline: data['tagline']?.toString(),
+      website: data['website']?.toString(),
+      banner: data['banner']?.toString(),
     );
   }
 
