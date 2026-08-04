@@ -5,13 +5,16 @@ import 'package:go_router/go_router.dart';
 import 'package:intl/intl.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:url_launcher/url_launcher.dart';
+import 'package:youtube_player_iframe/youtube_player_iframe.dart';
 import '../../../core/constants/app_colors.dart';
 import '../../../core/constants/app_text_styles.dart';
+import '../../../core/utils/category_info.dart';
 import '../../../core/models/catalog_model.dart';
 import '../../../core/models/brand_model.dart';
 import '../../../core/models/listing_model.dart';
 import '../../../core/models/reel_model.dart';
 import '../../../core/models/review_model.dart';
+import '../../../core/models/store_model.dart';
 import '../../../core/providers/cart_provider.dart';
 import '../../../core/models/cart_model.dart';
 import '../../../core/utils/currency_utils.dart';
@@ -69,6 +72,23 @@ class _ProductDetailScreenState extends ConsumerState<ProductDetailScreen> {
         ? ref.watch(brandProductsProvider(brandAsync.value!.phone))
         : null;
 
+    // Retailer Profile section — mirrors web's `product.retailerPhone` guard:
+    // shown only for a retailer's own single-seller listing, as opposed to a
+    // manufacturer-assigned multi-seller product (already covered by the
+    // Manufacturer Brand Section + per-store list above).
+    final retailerPhone = catalogValue?.retailerPhone;
+    final hasRetailer = retailerPhone != null && retailerPhone.isNotEmpty;
+    final retailerProfileAsync =
+        hasRetailer ? ref.watch(retailerProfileProvider(retailerPhone)) : null;
+    final moreFromRetailerAsync = hasRetailer
+        ? ref.watch(
+            moreFromRetailerProvider((
+              phone: retailerPhone,
+              excludeId: widget.catalogId,
+            )),
+          )
+        : null;
+
     return Scaffold(
       backgroundColor: AppColors.background,
       body: catalogAsync.when(
@@ -101,7 +121,7 @@ class _ProductDetailScreenState extends ConsumerState<ProductDetailScreen> {
           final hasDetails =
               (catalog.description != null &&
                   catalog.description!.isNotEmpty) ||
-              catalog.hasNpk;
+              _hasProductInsights(catalog);
 
           return CustomScrollView(
             slivers: [
@@ -197,7 +217,10 @@ class _ProductDetailScreenState extends ConsumerState<ProductDetailScreen> {
                     if (catalog.description != null &&
                         catalog.description!.isNotEmpty)
                       _buildDescription(catalog),
-                    if (catalog.hasNpk) _buildNpkSection(catalog),
+                    if (_hasProductInsights(catalog))
+                      _buildProductInsightsSection(catalog),
+                    if (_youtubeVideoId(catalog.videoUrl) != null)
+                      _buildProductDemonstrationSection(catalog),
 
                     const Divider(height: 1, thickness: 1),
 
@@ -229,6 +252,36 @@ class _ProductDetailScreenState extends ConsumerState<ProductDetailScreen> {
                         error: (_, _) => const SizedBox.shrink(),
                       ),
                     ],
+
+                    // ── Retailer Profile Section ────────────────────────────
+                    if (hasRetailer &&
+                        retailerProfileAsync != null &&
+                        moreFromRetailerAsync != null)
+                      retailerProfileAsync.when(
+                        data: (profile) {
+                          if (profile == null) return const SizedBox.shrink();
+                          return Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              const Divider(height: 1, thickness: 1),
+                              _buildRetailerProfileSection(
+                                profile,
+                                moreFromRetailerAsync,
+                              ),
+                            ],
+                          );
+                        },
+                        loading: () => const Column(
+                          children: [
+                            Divider(height: 1, thickness: 1),
+                            Padding(
+                              padding: EdgeInsets.all(16),
+                              child: Center(child: CircularProgressIndicator()),
+                            ),
+                          ],
+                        ),
+                        error: (_, _) => const SizedBox.shrink(),
+                      ),
 
                     const Divider(height: 1, thickness: 1),
 
@@ -809,25 +862,163 @@ class _ProductDetailScreenState extends ConsumerState<ProductDetailScreen> {
     );
   }
 
-  // ─────────────────────────── NPK ───────────────────────────────────────────
+  // ─────────────────────────── Product Insights ──────────────────────────────
+  //
+  // Mirrors web's "Product Insights" section (ProductDetailView.tsx:1851-1928):
+  // category-specific spec fields (active ingredient, target pest, tank
+  // capacity, etc. — see core/utils/category_info.dart) plus any seller-added
+  // custom fields. Replaces the old NPK-only block, which showed nothing for
+  // any category other than Fertilizers and never showed seller custom fields.
 
-  Widget _buildNpkSection(CatalogModel catalog) {
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+  /// Whether [_buildProductInsightsSection] would render anything for
+  /// [catalog] — used to decide whether to show the section's Divider.
+  bool _hasProductInsights(CatalogModel catalog) {
+    final ci = effectiveCategoryInfo(catalog);
+    final cat = isStandardCategory(catalog.category) ? catalog.category : 'Other';
+    final fields = categoryFields[cat] ?? const [];
+    final hasCategoryField = ci != null &&
+        fields.any((f) => _fieldHasValue(ci[f.key]));
+    final hasCustomField =
+        (catalog.customFields ?? const []).any((f) => (f['title'] ?? '').trim().isNotEmpty);
+    return hasCategoryField || hasCustomField;
+  }
+
+  static bool _fieldHasValue(dynamic v) {
+    if (v == null) return false;
+    if (v is List) return v.isNotEmpty;
+    return v.toString().trim().isNotEmpty;
+  }
+
+  Widget _buildProductInsightsSection(CatalogModel catalog) {
+    final ci = effectiveCategoryInfo(catalog);
+    final cat = isStandardCategory(catalog.category) ? catalog.category : 'Other';
+    final fields = categoryFields[cat] ?? const [];
+    final filledFields = ci == null
+        ? const <CategoryField>[]
+        : fields.where((f) => _fieldHasValue(ci[f.key])).toList();
+    final customFields = (catalog.customFields ?? const [])
+        .where((f) => (f['title'] ?? '').trim().isNotEmpty)
+        .toList();
+
+    if (filledFields.isEmpty && customFields.isEmpty) {
+      return const SizedBox.shrink();
+    }
+
+    Widget fieldBlock(String label, Widget value) => Padding(
+      padding: const EdgeInsets.symmetric(vertical: 10),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text('Composition (NPK)', style: AppTextStyles.heading3),
-          const SizedBox(height: 12),
-          Row(
-            children: [
-              _NpkChip('N', catalog.nitrogen!, Colors.blue),
-              const SizedBox(width: 12),
-              _NpkChip('P', catalog.phosphorus!, Colors.orange),
-              const SizedBox(width: 12),
-              _NpkChip('K', catalog.potassium!, Colors.purple),
-            ],
+          Text(
+            label.toUpperCase(),
+            style: AppTextStyles.caption.copyWith(
+              color: AppColors.onSurfaceVariant,
+              fontWeight: FontWeight.w700,
+              letterSpacing: 0.4,
+            ),
           ),
+          const SizedBox(height: 6),
+          value,
+        ],
+      ),
+    );
+
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 16, 16, 16),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text('Product Insights', style: AppTextStyles.heading3),
+          const SizedBox(height: 4),
+          const Divider(height: 1),
+          for (final f in filledFields)
+            fieldBlock(
+              f.label,
+              () {
+                final v = ci![f.key];
+                final isChips = chipsFields.contains(f.key) || v is List;
+                if (isChips && v is List) {
+                  return Wrap(
+                    spacing: 8,
+                    runSpacing: 8,
+                    children: v
+                        .map(
+                          (chip) => Container(
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 12,
+                              vertical: 6,
+                            ),
+                            decoration: BoxDecoration(
+                              color: AppColors.surfaceVariant,
+                              borderRadius: BorderRadius.circular(20),
+                              border: Border.all(color: AppColors.divider),
+                            ),
+                            child: Text(
+                              chip.toString(),
+                              style: AppTextStyles.caption.copyWith(
+                                color: AppColors.onSurfaceVariant,
+                                fontWeight: FontWeight.w600,
+                              ),
+                            ),
+                          ),
+                        )
+                        .toList(),
+                  );
+                }
+                return Text(
+                  v.toString(),
+                  style: f.type == CategoryFieldType.textarea
+                      ? AppTextStyles.body
+                      : AppTextStyles.bodyMedium.copyWith(fontWeight: FontWeight.w700),
+                );
+              }(),
+            ),
+          for (final f in customFields)
+            fieldBlock(
+              f['title'] ?? '',
+              Text(
+                f['value'] ?? '',
+                style: AppTextStyles.bodyMedium.copyWith(fontWeight: FontWeight.w700),
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+
+  // ───────────────────────── Product Demonstration ───────────────────────────
+  //
+  // Mirrors web's YouTube iframe embed (ProductDetailView.tsx:1930-1957),
+  // sourced from the product doc's own `videoUrl` field.
+
+  static final _youtubeIdRegex = RegExp(
+    r'(?:youtube\.com/watch\?v=|youtu\.be/|youtube\.com/embed/|youtube\.com/shorts/)([a-zA-Z0-9_-]{11})',
+  );
+
+  static String? _youtubeVideoId(String? rawUrl) {
+    if (rawUrl == null || rawUrl.trim().isEmpty) return null;
+    return _youtubeIdRegex.firstMatch(rawUrl)?.group(1);
+  }
+
+  Widget _buildProductDemonstrationSection(CatalogModel catalog) {
+    final videoId = _youtubeVideoId(catalog.videoUrl)!;
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 16, 16, 16),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            'SEE IT IN ACTION',
+            style: AppTextStyles.caption.copyWith(
+              color: AppColors.primary,
+              fontWeight: FontWeight.w900,
+              letterSpacing: 0.6,
+            ),
+          ),
+          const SizedBox(height: 2),
+          Text('Product Demonstration', style: AppTextStyles.heading3),
+          const SizedBox(height: 12),
+          _ProductDemonstrationPlayer(videoId: videoId),
         ],
       ),
     );
@@ -1336,6 +1527,227 @@ class _ProductDetailScreenState extends ConsumerState<ProductDetailScreen> {
     );
   }
 
+  // ─────────────────────────── Retailer Profile ──────────────────────────────
+  //
+  // Mirrors web's RetailerProfileSection (ProductDetailView.tsx:143-284):
+  // "Sold by [shop]" header + rating, tap-through to store reviews (reusing
+  // the existing showStoreReviewsBottomSheet rather than a duplicate inline
+  // review widget), and a "More products from this seller" rail.
+
+  Widget _buildRetailerProfileSection(
+    StoreModel profile,
+    AsyncValue<List<CatalogModel>> moreProductsAsync,
+  ) {
+    final shopName = profile.name.trim().isNotEmpty ? profile.name.trim() : 'This Retailer';
+    final locationParts = [
+      profile.city,
+      profile.state,
+    ].where((s) => s != null && s.trim().isNotEmpty).toList();
+
+    return Container(
+      margin: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: AppColors.divider),
+        boxShadow: [
+          BoxShadow(
+            color: AppColors.cardShadow,
+            blurRadius: 4,
+            offset: const Offset(0, 2),
+          ),
+        ],
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          // Header
+          Padding(
+            padding: const EdgeInsets.all(16),
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Container(
+                  width: 44,
+                  height: 44,
+                  decoration: BoxDecoration(
+                    color: AppColors.primary.withValues(alpha: 0.1),
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  child: const Icon(Icons.storefront, color: AppColors.primary),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        'SOLD & FULFILLED BY',
+                        style: AppTextStyles.caption.copyWith(
+                          color: AppColors.onSurfaceVariant,
+                          fontWeight: FontWeight.w900,
+                          letterSpacing: 0.6,
+                        ),
+                      ),
+                      const SizedBox(height: 2),
+                      Text(
+                        shopName,
+                        style: AppTextStyles.bodyMedium.copyWith(fontWeight: FontWeight.bold),
+                      ),
+                      if (locationParts.isNotEmpty)
+                        Padding(
+                          padding: const EdgeInsets.only(top: 2),
+                          child: Text(
+                            locationParts.join(', '),
+                            style: AppTextStyles.caption.copyWith(
+                              color: AppColors.onSurfaceVariant,
+                            ),
+                          ),
+                        ),
+                    ],
+                  ),
+                ),
+                GestureDetector(
+                  onTap: () => showStoreReviewsBottomSheet(
+                    context: context,
+                    ref: ref,
+                    store: profile,
+                  ),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.end,
+                    children: [
+                      Row(
+                        children: [
+                          const Icon(Icons.star, size: 16, color: AppColors.secondary),
+                          const SizedBox(width: 2),
+                          Text(
+                            (profile.averageRating ?? 0.0).toStringAsFixed(1),
+                            style: AppTextStyles.bodyMedium.copyWith(fontWeight: FontWeight.w900),
+                          ),
+                        ],
+                      ),
+                      Text(
+                        '${profile.totalReviews ?? 0} reviews',
+                        style: AppTextStyles.caption.copyWith(
+                          color: AppColors.onSurfaceVariant,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          ),
+
+          const Divider(height: 1),
+
+          // More products
+          moreProductsAsync.when(
+            data: (products) {
+              if (products.isEmpty) return const SizedBox.shrink();
+              return Padding(
+                padding: const EdgeInsets.all(16),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      'More from $shopName',
+                      style: AppTextStyles.bodyMedium.copyWith(fontWeight: FontWeight.bold),
+                    ),
+                    const SizedBox(height: 12),
+                    SizedBox(
+                      height: 180,
+                      child: ListView.separated(
+                        scrollDirection: Axis.horizontal,
+                        itemCount: products.length,
+                        separatorBuilder: (_, _) => const SizedBox(width: 12),
+                        itemBuilder: (context, index) {
+                          final p = products[index];
+                          return GestureDetector(
+                            onTap: () => context.push('/product/${p.id}'),
+                            child: Container(
+                              width: 130,
+                              decoration: BoxDecoration(
+                                color: AppColors.background,
+                                borderRadius: BorderRadius.circular(12),
+                                border: Border.all(color: AppColors.divider),
+                              ),
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Expanded(
+                                    child: ClipRRect(
+                                      borderRadius: const BorderRadius.vertical(
+                                        top: Radius.circular(11),
+                                      ),
+                                      child: SizedBox(
+                                        width: double.infinity,
+                                        child: p.hasImages
+                                            ? CachedNetworkImage(
+                                                imageUrl: p.imageUrl,
+                                                fit: BoxFit.cover,
+                                              )
+                                            : Container(
+                                                color: AppColors.surfaceVariant,
+                                                child: const Center(
+                                                  child: Icon(Icons.grass,
+                                                      color: AppColors.primaryLight),
+                                                ),
+                                              ),
+                                      ),
+                                    ),
+                                  ),
+                                  Padding(
+                                    padding: const EdgeInsets.all(8.0),
+                                    child: Column(
+                                      crossAxisAlignment: CrossAxisAlignment.start,
+                                      children: [
+                                        Text(
+                                          p.category.toUpperCase(),
+                                          style: AppTextStyles.caption.copyWith(
+                                            color: AppColors.primary,
+                                            fontWeight: FontWeight.w900,
+                                            fontSize: 9,
+                                            letterSpacing: 0.5,
+                                          ),
+                                        ),
+                                        const SizedBox(height: 2),
+                                        Text(
+                                          p.name,
+                                          style: AppTextStyles.bodyMedium.copyWith(fontSize: 12),
+                                          maxLines: 1,
+                                          overflow: TextOverflow.ellipsis,
+                                        ),
+                                        const SizedBox(height: 2),
+                                        Text(
+                                          CurrencyUtils.format(p.price),
+                                          style: AppTextStyles.price.copyWith(fontSize: 12),
+                                        ),
+                                      ],
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          );
+                        },
+                      ),
+                    ),
+                  ],
+                ),
+              );
+            },
+            loading: () => const Padding(
+              padding: EdgeInsets.all(16),
+              child: Center(child: CircularProgressIndicator()),
+            ),
+            error: (_, _) => const SizedBox.shrink(),
+          ),
+        ],
+      ),
+    );
+  }
+
   // ─────────────────────────── Similar products ──────────────────────────────
 
   /// Reel poster: the generated video frame if present, else the linked
@@ -1635,43 +2047,6 @@ class _ProductDetailScreenState extends ConsumerState<ProductDetailScreen> {
                 );
               },
             ),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-// ─────────────────────────── NPK Chip ──────────────────────────────────────
-
-class _NpkChip extends StatelessWidget {
-  final String label;
-  final double value;
-  final Color color;
-
-  const _NpkChip(this.label, this.value, this.color);
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
-      decoration: BoxDecoration(
-        color: color.withValues(alpha: 0.1),
-        borderRadius: BorderRadius.circular(8),
-        border: Border.all(color: color.withValues(alpha: 0.3)),
-      ),
-      child: Column(
-        children: [
-          Text(
-            label,
-            style: AppTextStyles.caption.copyWith(
-              color: color,
-              fontWeight: FontWeight.w700,
-            ),
-          ),
-          Text(
-            '${value.toInt()}%',
-            style: AppTextStyles.bodyMedium.copyWith(color: color),
           ),
         ],
       ),
@@ -2588,6 +2963,52 @@ class _ReviewTile extends StatelessWidget {
             ),
           ],
         ],
+      ),
+    );
+  }
+}
+
+// ───────────────────────── Product Demonstration Player ───────────────────────
+
+/// Isolated stateful widget so the [YoutubePlayerController] is created once
+/// per video id and disposed correctly, independent of the parent screen's
+/// own rebuild cycle.
+class _ProductDemonstrationPlayer extends StatefulWidget {
+  final String videoId;
+  const _ProductDemonstrationPlayer({required this.videoId});
+
+  @override
+  State<_ProductDemonstrationPlayer> createState() =>
+      _ProductDemonstrationPlayerState();
+}
+
+class _ProductDemonstrationPlayerState
+    extends State<_ProductDemonstrationPlayer> {
+  late YoutubePlayerController _controller;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = YoutubePlayerController.fromVideoId(
+      videoId: widget.videoId,
+      autoPlay: false,
+      params: const YoutubePlayerParams(showFullscreenButton: true),
+    );
+  }
+
+  @override
+  void dispose() {
+    _controller.close();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return ClipRRect(
+      borderRadius: BorderRadius.circular(12),
+      child: AspectRatio(
+        aspectRatio: 16 / 9,
+        child: YoutubePlayer(controller: _controller),
       ),
     );
   }

@@ -406,6 +406,40 @@ class CatalogRepository {
     final list = await fetchAllMergedProducts();
     return list.take(limit).toList();
   }
+
+  /// "More products from this seller" rail on the product page's Retailer
+  /// Profile section. Queries the global `products` collection directly by
+  /// `retailerPhone` rather than a per-retailer subcollection mirror — that
+  /// mirror (`retailers/{phone}/products`) is only written by the web
+  /// dashboard, so a retailer who only ever used the mobile app to manage
+  /// their inventory would show an empty rail if this read it instead.
+  ///
+  /// Equality-only filter, sorted in memory rather than via `orderBy` — an
+  /// `orderBy` on a field other than the equality filter needs a composite
+  /// index (this repo has been bitten by undeployed indexes before, see
+  /// ReelsRepository.fetchSellerReels), so a plain `retailerPhone==` query is
+  /// deliberately kept index-free.
+  Future<List<CatalogModel>> fetchMoreFromRetailer(
+    String retailerPhone, {
+    required String excludeId,
+    int limit = 8,
+  }) async {
+    if (retailerPhone.isEmpty) return [];
+    try {
+      final snap = await _db
+          .collection(_col)
+          .where('retailerPhone', isEqualTo: retailerPhone)
+          .get();
+      final products = snap.docs
+          .map(CatalogModel.fromFirestore)
+          .where((p) => p.id != excludeId && p.isActive && p.name.isNotEmpty)
+          .toList()
+        ..sort((a, b) => (b.createdAt ?? DateTime(0)).compareTo(a.createdAt ?? DateTime(0)));
+      return products.take(limit).toList();
+    } catch (_) {
+      return [];
+    }
+  }
 }
 
 class _RatingAgg {
