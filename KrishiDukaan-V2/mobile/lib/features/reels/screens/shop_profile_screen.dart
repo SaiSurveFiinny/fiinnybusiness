@@ -1,6 +1,8 @@
+import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
+import 'package:url_launcher/url_launcher.dart';
 import 'package:video_player/video_player.dart';
 import '../../../core/constants/app_colors.dart';
 import '../../../core/constants/app_text_styles.dart';
@@ -9,6 +11,7 @@ import '../../../core/models/listing_model.dart';
 import '../../../core/models/reel_model.dart';
 import '../../../core/providers/user_provider.dart';
 import '../../../core/utils/format_count.dart';
+import '../../marketplace/providers/marketplace_provider.dart';
 import '../providers/reels_provider.dart';
 import '../widgets/reel_filters.dart';
 
@@ -19,6 +22,12 @@ class ShopProfileScreen extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final shopAsync = ref.watch(shopUserProvider(shopPhone));
+    // Richer profile data (tagline/website/logo/banner) the web dashboard
+    // profile editor writes to `profiles/{phone}` — additive on top of
+    // shopUserProvider's users/{phone} fields, never a replacement, so a
+    // seller who never touched the web dashboard still sees exactly what
+    // they saw before.
+    final storeProfileAsync = ref.watch(retailerProfileProvider(shopPhone));
     final reelsAsync = ref.watch(sellerReelsProvider(shopPhone));
     final followersAsync = ref.watch(followerCountProvider(shopPhone));
     final productsAsync = ref.watch(shopListingsProvider(shopPhone));
@@ -47,79 +56,168 @@ class ShopProfileScreen extends ConsumerWidget {
                 child: shopAsync.when(
                   loading: () => const SizedBox.shrink(),
                   error: (_, _) => const SizedBox.shrink(),
-                  data: (user) => Padding(
-                    padding: const EdgeInsets.fromLTRB(20, 80, 20, 16),
-                    child: Row(
-                      crossAxisAlignment: CrossAxisAlignment.end,
+                  data: (user) {
+                    // Additive on top of `user` (users/{phone}) — present
+                    // only for sellers who've set these on the web dashboard
+                    // profile editor (profiles/{phone}). Null-safe throughout
+                    // so a seller with no web profile sees exactly what they
+                    // saw before this change.
+                    final storeProfile = storeProfileAsync.value;
+                    final banner = storeProfile?.banner;
+                    final logo = storeProfile?.logo;
+                    final tagline = storeProfile?.tagline?.trim();
+                    final website = storeProfile?.website?.trim();
+
+                    return Stack(
+                      fit: StackFit.expand,
                       children: [
-                        CircleAvatar(
-                          radius: 36,
-                          backgroundColor: Colors.white24,
-                          child: Text(
-                            (user?.businessName ?? user?.name ?? '?')
-                                .substring(0, 1)
-                                .toUpperCase(),
-                            style: const TextStyle(
-                              color: Colors.white,
-                              fontSize: 28,
-                              fontWeight: FontWeight.bold,
+                        if (banner != null && banner.isNotEmpty)
+                          CachedNetworkImage(
+                            imageUrl: banner,
+                            fit: BoxFit.cover,
+                            errorWidget: (_, _, _) => const SizedBox.shrink(),
+                          ),
+                        // Scrim so the header text stays legible over any banner.
+                        Container(
+                          decoration: BoxDecoration(
+                            gradient: LinearGradient(
+                              colors: [
+                                Colors.black.withValues(alpha: banner != null ? 0.45 : 0.0),
+                                Colors.black.withValues(alpha: banner != null ? 0.15 : 0.0),
+                              ],
+                              begin: Alignment.bottomCenter,
+                              end: Alignment.topCenter,
                             ),
                           ),
                         ),
-                        const SizedBox(width: 14),
-                        Expanded(
-                          child: Column(
-                            mainAxisSize: MainAxisSize.min,
-                            crossAxisAlignment: CrossAxisAlignment.start,
+                        Padding(
+                          padding: const EdgeInsets.fromLTRB(20, 80, 20, 16),
+                          child: Row(
+                            crossAxisAlignment: CrossAxisAlignment.end,
                             children: [
-                              Text(
-                                user?.businessName ?? user?.name ?? shopPhone,
-                                style: AppTextStyles.heading2.copyWith(
-                                  color: Colors.white,
-                                ),
-                                maxLines: 1,
-                                overflow: TextOverflow.ellipsis,
+                              CircleAvatar(
+                                radius: 36,
+                                backgroundColor: Colors.white24,
+                                backgroundImage: (logo != null && logo.isNotEmpty)
+                                    ? CachedNetworkImageProvider(logo)
+                                    : null,
+                                child: (logo == null || logo.isEmpty)
+                                    ? Text(
+                                        (user?.businessName ?? user?.name ?? '?')
+                                            .substring(0, 1)
+                                            .toUpperCase(),
+                                        style: const TextStyle(
+                                          color: Colors.white,
+                                          fontSize: 28,
+                                          fontWeight: FontWeight.bold,
+                                        ),
+                                      )
+                                    : null,
                               ),
-                              if ((user?.username ?? '').isNotEmpty)
-                                Text(
-                                  '@${user!.username}',
-                                  style: const TextStyle(
-                                    color: Colors.white70,
-                                    fontSize: 13,
-                                  ),
-                                ),
-                              if ((user?.city ?? '').isNotEmpty)
-                                Row(
+                              const SizedBox(width: 14),
+                              Expanded(
+                                child: Column(
+                                  mainAxisSize: MainAxisSize.min,
+                                  crossAxisAlignment: CrossAxisAlignment.start,
                                   children: [
-                                    const Icon(
-                                      Icons.location_on,
-                                      size: 12,
-                                      color: Colors.white70,
+                                    Text(
+                                      user?.businessName ?? user?.name ?? shopPhone,
+                                      style: AppTextStyles.heading2.copyWith(
+                                        color: Colors.white,
+                                      ),
+                                      maxLines: 1,
+                                      overflow: TextOverflow.ellipsis,
                                     ),
-                                    const SizedBox(width: 3),
-                                    Flexible(
-                                      child: Text(
-                                        [user?.city, user?.state]
-                                            .where(
-                                              (s) => s != null && s.isNotEmpty,
-                                            )
-                                            .join(', '),
+                                    if ((user?.username ?? '').isNotEmpty)
+                                      Text(
+                                        '@${user!.username}',
                                         style: const TextStyle(
                                           color: Colors.white70,
-                                          fontSize: 12,
+                                          fontSize: 13,
                                         ),
-                                        maxLines: 1,
-                                        overflow: TextOverflow.ellipsis,
                                       ),
-                                    ),
+                                    if (tagline != null && tagline.isNotEmpty)
+                                      Padding(
+                                        padding: const EdgeInsets.only(top: 2),
+                                        child: Text(
+                                          tagline,
+                                          style: const TextStyle(
+                                            color: Colors.white,
+                                            fontSize: 12,
+                                            fontStyle: FontStyle.italic,
+                                          ),
+                                          maxLines: 2,
+                                          overflow: TextOverflow.ellipsis,
+                                        ),
+                                      ),
+                                    if ((user?.city ?? '').isNotEmpty)
+                                      Padding(
+                                        padding: const EdgeInsets.only(top: 2),
+                                        child: Row(
+                                          children: [
+                                            const Icon(
+                                              Icons.location_on,
+                                              size: 12,
+                                              color: Colors.white70,
+                                            ),
+                                            const SizedBox(width: 3),
+                                            Flexible(
+                                              child: Text(
+                                                [user?.city, user?.state]
+                                                    .where(
+                                                      (s) => s != null && s.isNotEmpty,
+                                                    )
+                                                    .join(', '),
+                                                style: const TextStyle(
+                                                  color: Colors.white70,
+                                                  fontSize: 12,
+                                                ),
+                                                maxLines: 1,
+                                                overflow: TextOverflow.ellipsis,
+                                              ),
+                                            ),
+                                          ],
+                                        ),
+                                      ),
+                                    if (website != null && website.isNotEmpty)
+                                      Padding(
+                                        padding: const EdgeInsets.only(top: 2),
+                                        child: GestureDetector(
+                                          behavior: HitTestBehavior.opaque,
+                                          onTap: () => _openWebsite(website),
+                                          child: Row(
+                                            children: [
+                                              const Icon(
+                                                Icons.link,
+                                                size: 12,
+                                                color: Colors.white70,
+                                              ),
+                                              const SizedBox(width: 3),
+                                              Flexible(
+                                                child: Text(
+                                                  website,
+                                                  style: const TextStyle(
+                                                    color: Colors.white70,
+                                                    fontSize: 12,
+                                                    decoration: TextDecoration.underline,
+                                                  ),
+                                                  maxLines: 1,
+                                                  overflow: TextOverflow.ellipsis,
+                                                ),
+                                              ),
+                                            ],
+                                          ),
+                                        ),
+                                      ),
                                   ],
                                 ),
+                              ),
                             ],
                           ),
                         ),
                       ],
-                    ),
-                  ),
+                    );
+                  },
                 ),
               ),
             ),
@@ -332,6 +430,15 @@ class ShopProfileScreen extends ConsumerWidget {
   }
 
   String _fmt(int n) => formatCount(n);
+
+  Future<void> _openWebsite(String website) async {
+    final withScheme = website.startsWith('http') ? website : 'https://$website';
+    final url = Uri.tryParse(withScheme);
+    if (url == null) return;
+    if (await canLaunchUrl(url)) {
+      await launchUrl(url, mode: LaunchMode.externalApplication);
+    }
+  }
 }
 
 // ── Stat column ───────────────────────────────────────────────────────────────
@@ -1170,6 +1277,10 @@ class _StandaloneReelsFeedState extends ConsumerState<StandaloneReelsFeed>
           PageView.builder(
             controller: _pageController,
             scrollDirection: Axis.vertical,
+            // See reels_feed_screen.dart's matching comment — explicit
+            // physics avoids iOS's default BouncingScrollPhysics contesting
+            // the gesture arena against the nested product-link tap target.
+            physics: const ClampingScrollPhysics(),
             onPageChanged: _onPageChanged,
             itemCount: widget.reels.length,
             itemBuilder: (_, index) {
@@ -1675,6 +1786,9 @@ class _ProductBadge extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return GestureDetector(
+      // Opaque hit-testing — see the matching comment on _ProductCard in
+      // reels_feed_screen.dart.
+      behavior: HitTestBehavior.opaque,
       onTap: () {
         if (currentUserId == null) {
           // Carry the product as the post-login destination so the buyer

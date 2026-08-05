@@ -1169,6 +1169,14 @@ export async function fetchManufacturerProducts(manufacturerId: string): Promise
     // Query both field names: legacy schema uses ownerId, newer schema uses manufacturerId.
     // The public brand page queries manufacturerId; the dashboard uses ownerId.
     // Both must return the same set so all views stay in sync.
+    //
+    // The manufacturerId branch is scoped to ownerType=='manufacturer' —
+    // every retailer-assignment copy of this manufacturer's products also
+    // stamps manufacturerId with the original manufacturer's uid for
+    // traceability, even though the copy is owned by the retailer
+    // (ownerType: 'retailer'). Without this scope, a manufacturer with a
+    // handful of real products assigned out to many retailers showed
+    // hundreds of "products" here (and paid for every one of those reads).
     const [byOwnerId, byManufacturerId] = await Promise.all([
       getDocs(query(
         collection(db, 'products'),
@@ -1178,6 +1186,7 @@ export async function fetchManufacturerProducts(manufacturerId: string): Promise
       getDocs(query(
         collection(db, 'products'),
         where('manufacturerId', '==', manufacturerId),
+        where('ownerType', '==', 'manufacturer'),
       )),
     ]);
     const seen = new Set<string>();

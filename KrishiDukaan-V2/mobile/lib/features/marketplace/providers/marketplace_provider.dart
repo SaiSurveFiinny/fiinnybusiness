@@ -702,3 +702,21 @@ final brandProductsProvider = FutureProvider.family<List<CatalogModel>, String>(
     return ref.read(brandRepositoryProvider).fetchBrandProducts(phone);
   },
 );
+
+/// Retailer profile shown in the product page's "Sold by [shop]" section.
+final retailerProfileProvider =
+    FutureProvider.family<StoreModel?, String>((ref, phone) {
+      return ref.read(listingRepositoryProvider).fetchStoreProfile(phone);
+    });
+
+/// "More products from this seller" rail, keyed by retailer phone + the
+/// current product id (so it's excluded from its own "more from" rail).
+final moreFromRetailerProvider =
+    FutureProvider.family<List<CatalogModel>, ({String phone, String excludeId})>((
+      ref,
+      args,
+    ) {
+      return ref
+          .read(catalogRepositoryProvider)
+          .fetchMoreFromRetailer(args.phone, excludeId: args.excludeId);
+    });

@@ -57,6 +57,19 @@ class CatalogModel {
   final double? nitrogen;
   final double? phosphorus;
   final double? potassium;
+  // Legacy flat fertilizer fields web falls back to when categoryInfo is
+  // absent — see synthesizeFertilizerInfo in app/dashboard/_lib/category-info.ts.
+  final String? applicationDesc;
+  final String? dosage;
+  final List<String>? bestForCrops;
+  /// Category-specific structured spec fields (`CATEGORY_FIELDS`), e.g. active
+  /// ingredient, target pest, tank capacity — set by the seller at listing
+  /// time. Values are String or a list of strings (chips fields).
+  final Map<String, dynamic>? categoryInfo;
+  /// Free-form seller-added title/value pairs, rendered alongside categoryInfo.
+  final List<Map<String, String>>? customFields;
+  /// YouTube URL for the "Product Demonstration" video embed.
+  final String? videoUrl;
   final String? createdByPhone;
   final int sellerCount;
   final double? rating;
@@ -111,6 +124,12 @@ class CatalogModel {
     this.nitrogen,
     this.phosphorus,
     this.potassium,
+    this.applicationDesc,
+    this.dosage,
+    this.bestForCrops,
+    this.categoryInfo,
+    this.customFields,
+    this.videoUrl,
     this.createdByPhone,
     required this.sellerCount,
     this.rating,
@@ -160,6 +179,12 @@ class CatalogModel {
     double? nitrogen,
     double? phosphorus,
     double? potassium,
+    String? applicationDesc,
+    String? dosage,
+    List<String>? bestForCrops,
+    Map<String, dynamic>? categoryInfo,
+    List<Map<String, String>>? customFields,
+    String? videoUrl,
     String? createdByPhone,
     int? sellerCount,
     double? rating,
@@ -198,6 +223,12 @@ class CatalogModel {
       nitrogen: nitrogen ?? this.nitrogen,
       phosphorus: phosphorus ?? this.phosphorus,
       potassium: potassium ?? this.potassium,
+      applicationDesc: applicationDesc ?? this.applicationDesc,
+      dosage: dosage ?? this.dosage,
+      bestForCrops: bestForCrops ?? this.bestForCrops,
+      categoryInfo: categoryInfo ?? this.categoryInfo,
+      customFields: customFields ?? this.customFields,
+      videoUrl: videoUrl ?? this.videoUrl,
       createdByPhone: createdByPhone ?? this.createdByPhone,
       sellerCount: sellerCount ?? this.sellerCount,
       rating: rating ?? this.rating,
@@ -329,6 +360,31 @@ class CatalogModel {
         )
         .toList();
 
+    final rawCategoryInfo = d['categoryInfo'];
+    final categoryInfo =
+        (rawCategoryInfo is Map && rawCategoryInfo.isNotEmpty)
+        ? Map<String, dynamic>.from(rawCategoryInfo)
+        : null;
+
+    final rawCustomFields = d['customFields'] as List?;
+    final customFields = rawCustomFields
+        ?.whereType<Map>()
+        .map(
+          (f) => {
+            'title': (f['title'] ?? '').toString(),
+            'value': (f['value'] ?? '').toString(),
+          },
+        )
+        .where((f) => (f['title'] ?? '').trim().isNotEmpty)
+        .toList();
+
+    final rawBestForCrops = d['bestForCrops'];
+    final bestForCrops = rawBestForCrops is List
+        ? List<String>.from(rawBestForCrops.map((e) => e.toString()))
+        : (rawBestForCrops is String && rawBestForCrops.isNotEmpty
+              ? [rawBestForCrops]
+              : null);
+
     final rawUpdatedAt = d['updatedAt'] ?? d['createdAt'];
     final updatedAt = rawUpdatedAt is Timestamp
         ? rawUpdatedAt.toDate()
@@ -346,6 +402,12 @@ class CatalogModel {
       nitrogen: _parseNum(d['nitrogen']),
       phosphorus: _parseNum(d['phosphorus']),
       potassium: _parseNum(d['potassium']),
+      applicationDesc: d['applicationDesc'] as String?,
+      dosage: d['dosage'] as String?,
+      bestForCrops: bestForCrops,
+      categoryInfo: categoryInfo,
+      customFields: customFields,
+      videoUrl: d['videoUrl'] as String?,
       createdByPhone: createdByPhone,
       sellerCount: sellerCount,
       rating: (d['averageRating'] as num?)?.toDouble(),
