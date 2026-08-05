@@ -1,5 +1,6 @@
 ﻿{
     "common":  {
+                   "help_center": "Help Center",
                    "dashboard":  "Dashboard",
                    "retailers":  "Retailers",
                    "inventory":  "Inventory",

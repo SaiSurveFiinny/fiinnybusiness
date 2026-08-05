@@ -1,6 +1,6 @@
 import { useState, useEffect, lazy, Suspense } from 'react';
 import { BrowserRouter, Routes, Route, Link, useLocation, Navigate, useNavigate } from 'react-router-dom';
-import { Home, Users, UserPlus, LogOut, ReceiptText, ShieldAlert, Calculator, Settings, Package, ChevronDown, Layers, Palette, Database, Factory, Truck, Store, ShoppingCart, BarChart3, Activity, FileText, Bell, ClipboardList, Star, Link2, Bot, Loader2, Menu, X, Lock, Target, Sun, Moon, Receipt } from 'lucide-react';
+import { Home, Users, UserPlus, LogOut, ReceiptText, ShieldAlert, Calculator, Settings, Package, ChevronDown, Layers, Palette, Database, Factory, Truck, Store, ShoppingCart, BarChart3, Activity, FileText, Bell, ClipboardList, Star, Link2, Bot, Loader2, Menu, X, Lock, Target, Sun, Moon, Receipt, HelpCircle } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import LanguageSwitcher from './components/LanguageSwitcher';
 import OfflineBanner from './components/OfflineBanner';
@@ -93,6 +93,8 @@ const SalesTargetsPage        = lazy(() => import('./pages/SalesTargetsPage'));
 const TeamPerformancePage     = lazy(() => import('./pages/TeamPerformancePage'));
 const ExpensePage             = lazy(() => import('./pages/ExpensePage'));
 const NotFoundPage            = lazy(() => import('./pages/NotFoundPage'));
+const HelpCenterPage          = lazy(() => import('./pages/HelpCenterPage'));
+const HelpArticlePage         = lazy(() => import('./pages/HelpArticlePage'));
 
 // Full-page spinner shown while a lazy chunk is loading
 function PageLoader() {
@@ -365,6 +367,16 @@ function Layout({ children, currentTheme, toggleTheme }: { children: React.React
           </div>
         )}
 
+        {/* Help Center — visible to all authenticated users */}
+        {currentUser && (
+          <div style={{ marginTop: '1rem', paddingTop: '0.75rem', borderTop: '1px solid var(--surface-border)' }}>
+            <div style={{ fontSize: '0.68rem', fontWeight: 700, color: 'var(--text-tertiary)', textTransform: 'uppercase', letterSpacing: '0.08em', padding: '0.25rem 1rem', marginBottom: '0.2rem' }}>Support</div>
+            <Link to="/help" style={navLinkStyle('/help')} onClick={() => setDrawerOpen(false)}>
+              <HelpCircle size={19} /> Help Center
+            </Link>
+          </div>
+        )}
+
         {/* Logout */}
         {currentUser && (
           <div style={{ marginTop: 'auto', borderTop: '1px solid var(--surface-border)', paddingTop: '1rem' }}>
@@ -434,7 +446,7 @@ function AppRoutes() {
   }
 
   // Role-based auto-redirect after login
-  const RETAILER_ALLOWED_PATHS = ['/worklist', '/settings'];
+  const RETAILER_ALLOWED_PATHS = ['/worklist', '/settings', '/help'];
   if (currentUser && tenantId) {
     if (userRole === 'retailer' && !RETAILER_ALLOWED_PATHS.some(p => locationHook.pathname.startsWith(p))) {
       return <Navigate to="/worklist" replace />;
@@ -447,7 +459,7 @@ function AppRoutes() {
       return <Navigate to="/dashboard" replace />;
     }
     // Sales users are confined to /sales-targets and /worklist
-    if (userRole === 'sales' && !locationHook.pathname.startsWith('/sales-targets') && !locationHook.pathname.startsWith('/worklist')) {
+    if (userRole === 'sales' && !locationHook.pathname.startsWith('/sales-targets') && !locationHook.pathname.startsWith('/worklist') && !locationHook.pathname.startsWith('/help')) {
       return <Navigate to="/sales-targets" replace />;
     }
   }
@@ -561,6 +573,10 @@ function AppRoutes() {
       <Route path="/admin/schema-builder" element={<ProtectedRoute requireRole={['admin', 'analyst']} appScreen="schema_builder"><SchemaBuilderPage /></ProtectedRoute>} />
       <Route path="/admin/invoice-templates" element={<ProtectedRoute requireRole={['admin', 'analyst']} appScreen="invoice_templates"><InvoiceTemplateBuilderPage /></ProtectedRoute>} />
       <Route path="/admin/team-performance" element={<ProtectedRoute requireRole={['admin']} appScreen="admin"><TeamPerformancePage /></ProtectedRoute>} />
+
+      {/* Help Center */}
+      <Route path="/help" element={<ProtectedRoute><HelpCenterPage /></ProtectedRoute>} />
+      <Route path="/help/:articleId" element={<ProtectedRoute><HelpArticlePage /></ProtectedRoute>} />
 
       {/* Catch-all: 404 for logged-in users, /login redirect for guests */}
       <Route path="*" element={<NotFoundPage />} />
