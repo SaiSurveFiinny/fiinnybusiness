@@ -7,7 +7,7 @@ import {
     X, Copy, CheckSquare, FileText, ChevronDown, ChevronRight, Phone, Clock,
 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
-import { getDocs, orderBy, query, where, collectionGroup } from 'firebase/firestore';
+import { getDocs, orderBy, query, where, collectionGroup, collection } from 'firebase/firestore';
 import { db } from '../firebase';
 import Papa from 'papaparse';
 import { useAuth } from '../contexts/AuthContext';
@@ -50,6 +50,7 @@ interface Retailer {
     totalPaid?: number;
     closestCreditDays?: number | null;
     computedOutstanding?: number;
+    assignedSalespersons?: string[];
 }
 
 interface ReminderEntry {
@@ -64,6 +65,7 @@ interface ReminderEntry {
 
 // 'purchase-orders' removed from the union — TEMPORARILY DISABLED (2026-07-03), see note above.
 type ModuleTab = 'partners' | 'invoices' | 'payment-reminders' | 'tracking-info' | 'online-orders' /* | 'purchase-orders' */;
+type WLSortCol = 'name' | 'district' | 'salesperson' | 'contact' | 'outstanding' | 'totalSales' | 'date';
 
 const MODULE_TABS: { id: ModuleTab; label: string; icon: React.ReactNode }[] = [
     { id: 'partners',          label: 'Partners',          icon: <Building2 size={16} /> },
@@ -173,25 +175,19 @@ function PartnersTab() {
 
     const [searchTerm, setSearchTerm] = useState('');
     const [filterSize, setFilterSize] = useState('All');
-    const [sortBy, setSortBy] = useState('newest');
+    const [colSort, setColSort] = useState<{ col: WLSortCol; dir: 'asc' | 'desc' }>({ col: 'date', dir: 'desc' });
     const [partnerView, setPartnerView] = useState<'all' | 'active' | 'cleared'>('all');
 
     const paymentsFileRef = useRef<HTMLInputElement>(null);
     const followupsFileRef = useRef<HTMLInputElement>(null);
     const [uploadingCSV, setUploadingCSV] = useState(false);
 
-    // Responsive: hide Taluka/Village columns on narrow screens, show expand chevron instead
-    const [isCompact, setIsCompact] = useState(() => typeof window !== 'undefined' && window.innerWidth < 860);
-    useEffect(() => {
-        const handler = () => setIsCompact(window.innerWidth < 860);
-        window.addEventListener('resize', handler);
-        return () => window.removeEventListener('resize', handler);
-    }, []);
     const [expandedRows, setExpandedRows] = useState<Set<string>>(new Set());
     const toggleExpand = (id: string, e: React.MouseEvent) => {
         e.stopPropagation();
         setExpandedRows(prev => { const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n; });
     };
+    const [spTooltip, setSpTooltip] = useState<string | null>(null);
 
     // ── Selection & bulk correspondence ──────────────────────────────────────
     const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
@@ -253,15 +249,40 @@ function PartnersTab() {
         const fetchRetailers = async () => {
             if (!tenantId) return;
             try {
-                // 3 parallel reads — retailers, salesOrders, and ALL payments for
-                // every retailer via a collection group query.  The payments fetch gives
-                // us the exact same "sum(payments.amount)" the profile page uses, so
-                // the Outstanding column and Active/Cleared filter match exactly.
-                const [retailersSnap, salesOrdersSnap, paymentsGroupSnap] = await Promise.all([
+                // 4 parallel reads — retailers, salesOrders, payments (collection group),
+                // and sales users (for the Assigned Salesperson column).
+                const isMasterTenant = tenantId === 'master';
+                const [retailersSnap, salesOrdersSnap, paymentsGroupSnap, salesUsersSnap] = await Promise.all([
                     getDocs(query(getTenantCollection(db, tenantId, 'retailers'), orderBy('createdAt', 'desc'))),
                     getDocs(getTenantCollection(db, tenantId, 'salesOrders')),
                     getDocs(collectionGroup(db, 'payments')),
+                    getDocs(
+                        isMasterTenant
+                            ? collection(db, 'users')
+                            : query(collection(db, 'users'), where('tenantId', '==', tenantId))
+                    ),
                 ]);
+
+                // Build retailer → salesperson(s) reverse map from user assignments.
+                // Each retailer may have multiple salespersons (district-wide + direct).
+                const spByRetailerId = new Map<string, string[]>();
+                const spByDistrict   = new Map<string, string[]>();
+                salesUsersSnap.docs.forEach(udoc => {
+                    const u = udoc.data();
+                    if (u.role !== 'sales') return;
+                    const spName: string = u.name || '—';
+                    (u.assignedRetailers ?? []).forEach((rId: string) => {
+                        const arr = spByRetailerId.get(rId) ?? [];
+                        if (!arr.includes(spName)) arr.push(spName);
+                        spByRetailerId.set(rId, arr);
+                    });
+                    (u.assignedDistricts ?? []).forEach((d: string) => {
+                        const key = d.toLowerCase();
+                        const arr = spByDistrict.get(key) ?? [];
+                        if (!arr.includes(spName)) arr.push(spName);
+                        spByDistrict.set(key, arr);
+                    });
+                });
 
                 // Sum payment amounts per retailer, filtering strictly to this tenant.
                 // getTenantCollection uses two different path layouts depending on tenantId:
@@ -269,7 +290,6 @@ function PartnersTab() {
                 //   non-master→  tenants/{tenantId}/retailers/{retailerId}/payments/{paymentId}  (6 parts)
                 // The previous filter hard-coded the 6-part form and silently dropped all
                 // master-tenant payments, which caused the Outstanding mismatch.
-                const isMasterTenant = tenantId === 'master';
                 const paymentsByRetailer = new Map<string, number>();
                 const rawPmtsByRetailerMap = new Map<string, { amount: number; paymentDate?: string }[]>();
                 paymentsGroupSnap.docs.forEach(pdoc => {
@@ -342,7 +362,14 @@ function PartnersTab() {
                     const soTotalPaid  = paymentsByRetailer.get(r.id) ?? 0;
                     const computedOutstanding = Math.max(0, soTotalSales - soTotalPaid);
 
-                    return { ...r, closestCreditDays, computedOutstanding };
+                    // Merge direct assignments and district-based assignments, deduplicated.
+                    // Direct assignments come first so they appear before district-based ones.
+                    const directSPs  = spByRetailerId.get(r.id) ?? [];
+                    const districtSPs = spByDistrict.get((r.district || '').toLowerCase()) ?? [];
+                    const merged = [...directSPs];
+                    districtSPs.forEach(sp => { if (!merged.includes(sp)) merged.push(sp); });
+                    const assignedSalespersons = merged;
+                    return { ...r, closestCreditDays, computedOutstanding, assignedSalespersons };
                 });
 
                 // Sales users see retailers matching assignedDistricts OR assignedRetailers (union).
@@ -391,23 +418,35 @@ function PartnersTab() {
                 r.district?.toLowerCase().includes(ls) ||
                 r.taluka?.toLowerCase().includes(ls) ||
                 r.atPost?.toLowerCase().includes(ls) ||
-                r.number?.includes(searchTerm)
+                r.number?.includes(searchTerm) ||
+                r.assignedSalespersons?.some(sp => sp.toLowerCase().includes(ls))
             );
         }
         if (filterSize !== 'All') result = result.filter(r => r.portfolioSize === filterSize);
 
+        const { col, dir } = colSort;
+        const asc = dir === 'asc' ? 1 : -1;
         result.sort((a, b) => {
-            if (sortBy === 'a-z') return (a.name || '').localeCompare(b.name || '');
-            if (sortBy === 'z-a') return (b.name || '').localeCompare(a.name || '');
-            if (sortBy === 'credit-days-asc') {
-                return (a.closestCreditDays ?? Infinity) - (b.closestCreditDays ?? Infinity);
+            switch (col) {
+                case 'name':
+                    return asc * (a.name || '').localeCompare(b.name || '');
+                case 'district':
+                    return asc * (a.district || '').localeCompare(b.district || '');
+                case 'salesperson':
+                    return asc * (a.assignedSalespersons?.[0] || '').localeCompare(b.assignedSalespersons?.[0] || '');
+                case 'contact':
+                    return asc * (a.number || '').localeCompare(b.number || '');
+                case 'outstanding':
+                    return asc * ((a.computedOutstanding ?? 0) - (b.computedOutstanding ?? 0));
+                case 'totalSales':
+                    return asc * ((a.totalSales ?? 0) - (b.totalSales ?? 0));
+                case 'date':
+                default:
+                    return asc * ((a.createdAt?.toMillis?.() ?? 0) - (b.createdAt?.toMillis?.() ?? 0));
             }
-            const tA = a.createdAt?.toMillis?.() ?? 0;
-            const tB = b.createdAt?.toMillis?.() ?? 0;
-            return sortBy === 'oldest' ? tA - tB : tB - tA;
         });
         return result;
-    }, [retailers, searchTerm, filterSize, sortBy, partnerView]);
+    }, [retailers, searchTerm, filterSize, colSort, partnerView]);
 
     const handleExportCSV = () => {
         const schema = getSchema('retailers');
@@ -541,6 +580,30 @@ function PartnersTab() {
             totalOutstanding: Math.max(0, totalInvoiceValue - totalPaymentsReceived),
         };
     }, [financialPeriod, customFrom, customTo, retailers, sosByRetailer, pmtsByRetailer, kpi]);
+
+    // ── Column sort helpers (mirrors SupplierLedgerPage pattern) ──────────────
+    const handleSort = (col: WLSortCol) => {
+        setColSort(prev =>
+            prev.col === col
+                ? { col, dir: prev.dir === 'asc' ? 'desc' : 'asc' }
+                : { col, dir: col === 'name' || col === 'district' || col === 'salesperson' || col === 'contact' ? 'asc' : 'desc' }
+        );
+    };
+    const sortIndicator = (col: WLSortCol) =>
+        colSort.col === col ? (colSort.dir === 'asc' ? ' ↑' : ' ↓') : '';
+    const thStyle = (col: WLSortCol, align: 'left' | 'right' | 'center' = 'left'): React.CSSProperties => ({
+        padding: '0.7rem 0.75rem',
+        fontWeight: 600,
+        fontSize: '0.72rem',
+        textTransform: 'uppercase',
+        letterSpacing: '0.05em',
+        textAlign: align,
+        whiteSpace: 'nowrap',
+        cursor: 'pointer',
+        userSelect: 'none',
+        color: colSort.col === col ? 'var(--primary-light)' : 'var(--text-secondary)',
+        transition: 'color 0.15s',
+    });
 
     return (
         <div>
@@ -705,16 +768,6 @@ function PartnersTab() {
                         <option value="Small">{t('onboarding.small_retailer')}</option>
                     </select>
                 </div>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', background: 'var(--surface-base)', padding: '0.25rem 0.75rem', borderRadius: '10px', border: '1px solid var(--surface-border)' }}>
-                    <ArrowUpDown size={14} color="var(--text-secondary)" />
-                    <select value={sortBy} onChange={e => setSortBy(e.target.value)} style={{ background: 'transparent', color: 'var(--text-primary)', border: 'none', outline: 'none', padding: '0.35rem 0.25rem', cursor: 'pointer', fontSize: '0.85rem' }}>
-                        <option value="newest">{t('worklist.newest_first')}</option>
-                        <option value="oldest">{t('worklist.oldest_first')}</option>
-                        <option value="a-z">{t('worklist.name_az')}</option>
-                        <option value="z-a">{t('worklist.name_za')}</option>
-                        <option value="credit-days-asc">Closest Credit Days</option>
-                    </select>
-                </div>
                 <span style={{ color: 'var(--text-tertiary)', fontSize: '0.82rem', marginLeft: 'auto' }}>{processedRetailers.length} partners</span>
             </div>
 
@@ -783,14 +836,13 @@ function PartnersTab() {
                                             />
                                         </th>
                                     )}
-                                    {[
-                                        'Retailer Name', 'Contact', 'District',
-                                        ...(!isCompact ? ['Taluka', 'Village'] : []),
-                                        'Portfolio', 'Outstanding',
-                                    ].map((h, i) => (
-                                        <th key={h} style={{ padding: '0.7rem 0.75rem', fontWeight: 600, color: 'var(--text-secondary)', fontSize: '0.72rem', textTransform: 'uppercase', letterSpacing: '0.05em', textAlign: i === (isCompact ? 4 : 6) ? 'right' : 'left', whiteSpace: 'nowrap' }}>{h}</th>
-                                    ))}
-                                    {isCompact && <th style={{ width: '36px' }} />}
+                                    <th style={thStyle('name')}              onClick={() => handleSort('name')}>Retailer Name{sortIndicator('name')}</th>
+                                    <th style={thStyle('contact')}           onClick={() => handleSort('contact')}>Contact{sortIndicator('contact')}</th>
+                                    <th style={thStyle('district')}          onClick={() => handleSort('district')}>District{sortIndicator('district')}</th>
+                                    <th style={thStyle('salesperson')}       onClick={() => handleSort('salesperson')}>Salesperson{sortIndicator('salesperson')}</th>
+                                    <th style={{ padding: '0.7rem 0.75rem', fontWeight: 600, fontSize: '0.72rem', textTransform: 'uppercase', letterSpacing: '0.05em', color: 'var(--text-secondary)', whiteSpace: 'nowrap' }}>Portfolio</th>
+                                    <th style={thStyle('outstanding', 'right')} onClick={() => handleSort('outstanding')}>Outstanding{sortIndicator('outstanding')}</th>
+                                    <th style={{ width: '36px' }} />
                                 </tr>
                             </thead>
                             <tbody>
@@ -799,7 +851,8 @@ function PartnersTab() {
                                     const isSelected = selectedIds.has(r.id);
                                     const isExpanded = expandedRows.has(r.id);
                                     const psBadge = ({ 'Big': { bg: '#0ea5e922', color: '#0ea5e9' }, 'Medium': { bg: '#8b5cf622', color: '#8b5cf6' }, 'Small': { bg: '#10b98122', color: '#10b981' } } as Record<string, { bg: string; color: string }>)[r.portfolioSize || ''] || { bg: 'var(--surface-raised)', color: 'var(--text-tertiary)' };
-                                    const compactCols = isCompact ? 6 : 8;
+                                    // checkbox + 6 data cols + chevron = 8; viewOnly skips checkbox = 7
+                                    const expandColSpan = isViewOnly ? 7 : 8;
                                     return (
                                         <Fragment key={r.id}>
                                             <tr
@@ -822,10 +875,35 @@ function PartnersTab() {
                                                         : <span style={{ color: 'var(--text-tertiary)' }}>—</span>}
                                                 </td>
                                                 <td style={{ padding: '0.8rem 0.75rem', color: 'var(--text-secondary)', fontSize: '0.85rem' }}>{r.district || '—'}</td>
-                                                {!isCompact && <>
-                                                    <td style={{ padding: '0.8rem 0.75rem', color: 'var(--text-tertiary)', fontSize: '0.85rem' }}>{r.taluka || '—'}</td>
-                                                    <td style={{ padding: '0.8rem 0.75rem', color: 'var(--text-tertiary)', fontSize: '0.85rem' }}>{r.atPost || '—'}</td>
-                                                </>}
+                                                <td
+                                                    style={{ padding: '0.8rem 0.75rem', fontSize: '0.85rem', position: 'relative' }}
+                                                    onMouseEnter={() => (r.assignedSalespersons?.length ?? 0) > 1 && setSpTooltip(r.id)}
+                                                    onMouseLeave={() => setSpTooltip(null)}
+                                                >
+                                                    {(r.assignedSalespersons?.length ?? 0) === 0 ? (
+                                                        <span style={{ color: 'var(--text-tertiary)' }}>Unassigned</span>
+                                                    ) : (
+                                                        <span style={{ display: 'inline-flex', alignItems: 'center', gap: '0.35rem', color: 'var(--text-primary)', fontWeight: 500 }}>
+                                                            <Users size={12} color="var(--primary-light)" />
+                                                            {r.assignedSalespersons![0]}
+                                                            {(r.assignedSalespersons!.length > 1) && (
+                                                                <span style={{ fontSize: '0.68rem', fontWeight: 700, background: 'rgba(14,165,233,0.12)', color: '#0ea5e9', padding: '0.1rem 0.4rem', borderRadius: '99px' }}>
+                                                                    +{r.assignedSalespersons!.length - 1}
+                                                                </span>
+                                                            )}
+                                                        </span>
+                                                    )}
+                                                    {spTooltip === r.id && (r.assignedSalespersons?.length ?? 0) > 1 && (
+                                                        <div style={{ position: 'absolute', top: '100%', left: 0, zIndex: 200, background: 'var(--surface-raised)', border: '1px solid var(--surface-border)', borderRadius: '8px', padding: '0.5rem 0.75rem', minWidth: '160px', boxShadow: '0 4px 16px rgba(0,0,0,0.18)', pointerEvents: 'none' }}>
+                                                            <p style={{ margin: '0 0 0.3rem', fontSize: '0.65rem', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em', color: 'var(--text-tertiary)' }}>Assigned Salespersons</p>
+                                                            {r.assignedSalespersons!.map(sp => (
+                                                                <div key={sp} style={{ display: 'flex', alignItems: 'center', gap: '0.3rem', padding: '0.2rem 0', fontSize: '0.82rem', color: 'var(--text-primary)', fontWeight: 500 }}>
+                                                                    <Users size={11} color="var(--primary-light)" />{sp}
+                                                                </div>
+                                                            ))}
+                                                        </div>
+                                                    )}
+                                                </td>
                                                 <td style={{ padding: '0.8rem 0.75rem' }}>
                                                     <span style={{ background: psBadge.bg, color: psBadge.color, padding: '0.15rem 0.55rem', borderRadius: '99px', fontSize: '0.72rem', fontWeight: 700, whiteSpace: 'nowrap' }}>
                                                         {r.portfolioSize || '—'}
@@ -836,22 +914,20 @@ function PartnersTab() {
                                                         ? <span style={{ color: '#ef4444', fontWeight: 700 }}>₹{outstanding.toLocaleString('en-IN')}</span>
                                                         : <span style={{ color: '#10b981', fontWeight: 700 }}>₹0</span>}
                                                 </td>
-                                                {isCompact && (
-                                                    <td style={{ padding: '0.8rem 0.5rem', textAlign: 'center' }} onClick={e => toggleExpand(r.id, e)}>
-                                                        {isExpanded ? <ChevronDown size={15} color="var(--text-tertiary)" /> : <ChevronRight size={15} color="var(--text-tertiary)" />}
-                                                    </td>
-                                                )}
+                                                <td style={{ padding: '0.8rem 0.5rem', textAlign: 'center' }} onClick={e => toggleExpand(r.id, e)}>
+                                                    {isExpanded ? <ChevronDown size={15} color="var(--text-tertiary)" /> : <ChevronRight size={15} color="var(--text-tertiary)" />}
+                                                </td>
                                             </tr>
-                                            {isCompact && isExpanded && (
+                                            {isExpanded && (
                                                 <tr style={{ borderBottom: '1px solid var(--surface-border)', background: 'var(--surface-raised)' }}>
-                                                    <td colSpan={compactCols} style={{ padding: '0.5rem 1rem 0.65rem 3.5rem' }}>
+                                                    <td colSpan={expandColSpan} style={{ padding: '0.5rem 1rem 0.65rem 3.5rem' }}>
                                                         <div style={{ display: 'flex', gap: '2rem', fontSize: '0.82rem' }}>
                                                             <div>
                                                                 <div style={{ fontSize: '0.65rem', fontWeight: 600, textTransform: 'uppercase', color: 'var(--text-tertiary)', letterSpacing: '0.05em' }}>Taluka</div>
                                                                 <div style={{ fontWeight: 500, color: 'var(--text-secondary)', marginTop: '0.1rem' }}>{r.taluka || '—'}</div>
                                                             </div>
                                                             <div>
-                                                                <div style={{ fontSize: '0.65rem', fontWeight: 600, textTransform: 'uppercase', color: 'var(--text-tertiary)', letterSpacing: '0.05em' }}>Village</div>
+                                                                <div style={{ fontSize: '0.65rem', fontWeight: 600, textTransform: 'uppercase', color: 'var(--text-tertiary)', letterSpacing: '0.05em' }}>Village / At Post</div>
                                                                 <div style={{ fontWeight: 500, color: 'var(--text-secondary)', marginTop: '0.1rem' }}>{r.atPost || '—'}</div>
                                                             </div>
                                                         </div>

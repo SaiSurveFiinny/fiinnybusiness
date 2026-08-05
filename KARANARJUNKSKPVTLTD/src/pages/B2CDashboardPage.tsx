@@ -18,6 +18,7 @@ interface SalesOrder {
     subtotal?: number;
     grandTotal?: number;
     netAmount?: number;
+    totalAmount?: number;
     amount?: number;
     paymentStatus?: string;
     modeOfPayment?: string;
@@ -46,7 +47,7 @@ export default function B2CDashboardPage() {
         monthRevenue: 0, monthCount: 0,
         avgOrderValue: 0,
         cashRevenue: 0, creditRevenue: 0,
-        pendingCount: 0,
+        pendingCount: 0, pendingDues: 0,
     });
     const [chartData, setChartData] = useState<DailyBucket[]>([]);
     const [chartMode, setChartMode] = useState<'30d' | '7d'>('30d');
@@ -63,14 +64,16 @@ export default function B2CDashboardPage() {
                 ));
 
                 const now = new Date();
-                const todayStr = now.toISOString().split('T')[0];
+                // Use local midnight for both Today and This Month so they share the same timezone baseline
+                const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+                const startOfTomorrow = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1);
                 const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
 
                 let totalOrders = 0, totalRevenue = 0;
                 let todayRevenue = 0, todayCount = 0;
                 let monthRevenue = 0, monthCount = 0;
-                let cashRevenue = 0, creditRevenue = 0;
-                let pendingCount = 0;
+                let monthCashRevenue = 0, monthCreditRevenue = 0;
+                let pendingCount = 0, pendingDues = 0;
                 const dailyMap = new Map<string, DailyBucket>();
                 const fetchedOrders: SalesOrder[] = [];
 
@@ -79,23 +82,26 @@ export default function B2CDashboardPage() {
                     // POS only — skip B2B GST invoices
                     if (data.invoiceType === 'B2B_GST') return;
 
-                    const amount = Number(data.grandTotal || data.netAmount || data.amount || data.subtotal || 0);
+                    const amount = Number(data.grandTotal ?? data.netAmount ?? data.totalAmount ?? data.amount ?? 0);
                     const ts: Date = data.createdAt?.toDate ? data.createdAt.toDate() : new Date(data.createdAt || 0);
-                    const dateStr = ts.toISOString().split('T')[0];
+                    // Local-time date string for chart bucketing
+                    const dateStr = `${ts.getFullYear()}-${String(ts.getMonth() + 1).padStart(2, '0')}-${String(ts.getDate()).padStart(2, '0')}`;
 
                     fetchedOrders.push({ ...data, id: doc.id });
                     totalOrders++;
                     totalRevenue += amount;
 
-                    if (dateStr === todayStr) { todayRevenue += amount; todayCount++; }
-                    if (ts >= startOfMonth) { monthRevenue += amount; monthCount++; }
+                    if (ts >= startOfToday && ts < startOfTomorrow) { todayRevenue += amount; todayCount++; }
+                    if (ts >= startOfMonth) {
+                        monthRevenue += amount;
+                        monthCount++;
+                        const mode = (data.modeOfPayment || '').toLowerCase();
+                        if (mode === 'cash') monthCashRevenue += amount;
+                        else monthCreditRevenue += amount;
+                    }
 
-                    const mode = (data.modeOfPayment || '').toLowerCase();
-                    if (mode === 'cash') cashRevenue += amount;
-                    else creditRevenue += amount;
-
-                    const isPending = data.status === 'pending' || (data.modeOfPayment && data.modeOfPayment !== 'Cash' && data.status !== 'paid');
-                    if (isPending) pendingCount++;
+                    const isPending = data.status === 'pending' || data.paymentStatus === 'pending';
+                    if (isPending) { pendingCount++; pendingDues += amount; }
 
                     // Daily bucket
                     if (!dailyMap.has(dateStr)) dailyMap.set(dateStr, { date: dateStr, revenue: 0, orders: 0 });
@@ -109,8 +115,9 @@ export default function B2CDashboardPage() {
                     totalOrders, totalRevenue,
                     todayRevenue, todayCount,
                     monthRevenue, monthCount,
-                    avgOrderValue: totalOrders > 0 ? totalRevenue / totalOrders : 0,
-                    cashRevenue, creditRevenue, pendingCount,
+                    avgOrderValue: monthCount > 0 ? monthRevenue / monthCount : 0,
+                    cashRevenue: monthCashRevenue, creditRevenue: monthCreditRevenue,
+                    pendingCount, pendingDues,
                 });
 
                 const sorted = Array.from(dailyMap.values())
@@ -175,10 +182,10 @@ export default function B2CDashboardPage() {
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '1rem', marginBottom: '2rem' }}>
                 <KpiCard label="Today's Revenue" value={fmtINR(stats.todayRevenue)} sub={`${stats.todayCount} bills today`} icon={IndianRupee} color="rgba(16,185,129,0.07)" border="#10b981" />
                 <KpiCard label="This Month" value={fmtINR(stats.monthRevenue)} sub={`${stats.monthCount} bills this month`} icon={Calendar} color="rgba(99,102,241,0.07)" border="#818cf8" />
-                <KpiCard label="Avg Order Value" value={fmtINR(stats.avgOrderValue)} sub={`across ${stats.totalOrders} orders`} icon={TrendingUp} color="rgba(245,158,11,0.07)" border="#f59e0b" />
-                <KpiCard label="Cash Sales" value={fmtINR(stats.cashRevenue)} sub="mode: Cash" icon={IndianRupee} color="rgba(16,185,129,0.05)" border="#34d399" />
-                <KpiCard label="Credit / UPI Sales" value={fmtINR(stats.creditRevenue)} sub="non-cash modes" icon={CreditCard} color="rgba(96,165,250,0.07)" border="#60a5fa" />
-                <KpiCard label="Pending / Unpaid" value={String(stats.pendingCount)} sub="open invoices" icon={Clock} color="rgba(239,68,68,0.07)" border="#f87171" />
+                <KpiCard label="Avg Order Value" value={fmtINR(stats.avgOrderValue)} sub={`across ${stats.monthCount} bills this month`} icon={TrendingUp} color="rgba(245,158,11,0.07)" border="#f59e0b" />
+                <KpiCard label="Cash Sales" value={fmtINR(stats.cashRevenue)} sub="this month · Cash" icon={IndianRupee} color="rgba(16,185,129,0.05)" border="#34d399" />
+                <KpiCard label="Credit / UPI Sales" value={fmtINR(stats.creditRevenue)} sub="this month · non-cash" icon={CreditCard} color="rgba(96,165,250,0.07)" border="#60a5fa" />
+                <KpiCard label="Pending / Unpaid" value={fmtINR(stats.pendingDues)} sub={`${stats.pendingCount} open invoices`} icon={Clock} color="rgba(239,68,68,0.07)" border="#f87171" />
             </div>
 
             {/* Chart */}
@@ -227,15 +234,15 @@ export default function B2CDashboardPage() {
             </div>
 
             {/* Cash vs Credit Visual Split */}
-            {!loading && stats.totalRevenue > 0 && (
+            {!loading && stats.monthRevenue > 0 && (
                 <div className="glass-panel" style={{ padding: '1.25rem 1.5rem', marginBottom: '2rem' }}>
-                    <p style={{ margin: '0 0 0.6rem', fontWeight: 600, fontSize: '0.9rem', color: 'var(--text-secondary)' }}>Payment Mode Split</p>
+                    <p style={{ margin: '0 0 0.6rem', fontWeight: 600, fontSize: '0.9rem', color: 'var(--text-secondary)' }}>Payment Mode Split · This Month</p>
                     <div style={{ display: 'flex', borderRadius: '8px', overflow: 'hidden', height: '28px', gap: '2px' }}>
                         <div style={{ flex: stats.cashRevenue, background: '#10b981', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#fff', fontSize: '0.75rem', fontWeight: 700, minWidth: '2px' }}>
-                            {stats.totalRevenue > 0 && Math.round(stats.cashRevenue * 100 / stats.totalRevenue) > 8 ? `Cash ${Math.round(stats.cashRevenue * 100 / stats.totalRevenue)}%` : ''}
+                            {stats.monthRevenue > 0 && Math.round(stats.cashRevenue * 100 / stats.monthRevenue) > 8 ? `Cash ${Math.round(stats.cashRevenue * 100 / stats.monthRevenue)}%` : ''}
                         </div>
                         <div style={{ flex: stats.creditRevenue, background: '#818cf8', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#fff', fontSize: '0.75rem', fontWeight: 700, minWidth: '2px' }}>
-                            {stats.totalRevenue > 0 && Math.round(stats.creditRevenue * 100 / stats.totalRevenue) > 8 ? `Credit/UPI ${Math.round(stats.creditRevenue * 100 / stats.totalRevenue)}%` : ''}
+                            {stats.monthRevenue > 0 && Math.round(stats.creditRevenue * 100 / stats.monthRevenue) > 8 ? `Credit/UPI ${Math.round(stats.creditRevenue * 100 / stats.monthRevenue)}%` : ''}
                         </div>
                     </div>
                     <div style={{ display: 'flex', gap: '1.5rem', marginTop: '0.5rem', fontSize: '0.78rem', color: 'var(--text-tertiary)' }}>
@@ -261,7 +268,7 @@ export default function B2CDashboardPage() {
             ) : (
                 <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(260px, 1fr))', gap: '1rem' }}>
                     {orders.map((o) => {
-                        const amt = Number(o.grandTotal || o.netAmount || o.amount || 0);
+                        const amt = Number(o.grandTotal ?? o.netAmount ?? o.totalAmount ?? o.amount ?? 0);
                         const isPaid = o.status === 'paid' || o.modeOfPayment === 'Cash';
                         return (
                             <div key={o.id} className="glass-panel" style={{ padding: '1rem 1.25rem' }}>
