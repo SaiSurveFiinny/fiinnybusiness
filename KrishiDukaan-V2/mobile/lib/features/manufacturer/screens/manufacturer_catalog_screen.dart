@@ -21,7 +21,11 @@ import '../data/manufacturer_repository.dart';
 import '../providers/manufacturer_provider.dart';
 
 class ManufacturerCatalogScreen extends ConsumerWidget {
-  const ManufacturerCatalogScreen({super.key});
+  // Set when arriving via the Profile screen's "Add Product" shortcut
+  // (?autoAdd=1) so the add-product sheet opens immediately instead of
+  // requiring a second tap on the in-page + button.
+  final bool autoOpenAdd;
+  const ManufacturerCatalogScreen({super.key, this.autoOpenAdd = false});
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -35,7 +39,10 @@ class ManufacturerCatalogScreen extends ConsumerWidget {
         if (user == null) {
           return const Scaffold(body: ErrorView(message: 'Not logged in.'));
         }
-        return _CatalogBody(manufacturerPhone: user.phone);
+        return _CatalogBody(
+          manufacturerPhone: user.phone,
+          autoOpenAdd: autoOpenAdd,
+        );
       },
     );
   }
@@ -43,7 +50,8 @@ class ManufacturerCatalogScreen extends ConsumerWidget {
 
 class _CatalogBody extends ConsumerStatefulWidget {
   final String manufacturerPhone;
-  const _CatalogBody({required this.manufacturerPhone});
+  final bool autoOpenAdd;
+  const _CatalogBody({required this.manufacturerPhone, this.autoOpenAdd = false});
 
   @override
   ConsumerState<_CatalogBody> createState() => _CatalogBodyState();
@@ -52,6 +60,16 @@ class _CatalogBody extends ConsumerStatefulWidget {
 class _CatalogBodyState extends ConsumerState<_CatalogBody> {
   final _searchController = TextEditingController();
   String _searchQuery = '';
+
+  @override
+  void initState() {
+    super.initState();
+    if (widget.autoOpenAdd) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) _showAddSheet(context);
+      });
+    }
+  }
 
   @override
   void dispose() {
@@ -72,7 +90,7 @@ class _CatalogBodyState extends ConsumerState<_CatalogBody> {
         backgroundColor: AppColors.primary,
         foregroundColor: Colors.white,
         title: Text(
-          'My Catalog',
+          'My Inventory',
           style: AppTextStyles.heading2.copyWith(color: Colors.white),
         ),
         actions: [
@@ -792,7 +810,7 @@ class _ProductSheetState extends State<_ProductSheet> {
                   mainAxisAlignment: MainAxisAlignment.spaceBetween,
                   children: [
                     Text(
-                      isEdit ? 'Edit Catalog Product' : 'Add Catalog Product',
+                      isEdit ? 'Edit Product' : 'Add Product',
                       style: AppTextStyles.heading2,
                     ),
                     IconButton(
@@ -1264,7 +1282,7 @@ class _ProductSheetState extends State<_ProductSheet> {
                           ),
                         )
                       : Text(
-                          isEdit ? 'Save Changes' : 'Add to Catalog',
+                          isEdit ? 'Save Changes' : 'Add to Inventory',
                           style: const TextStyle(
                             fontSize: 16,
                             fontWeight: FontWeight.bold,

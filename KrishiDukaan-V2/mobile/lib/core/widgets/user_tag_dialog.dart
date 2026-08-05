@@ -47,88 +47,13 @@ Future<List<TaggedUser>> searchTaggableUsers(String query) async {
   return all.where((u) => u.name.toLowerCase().contains(q)).take(8).toList();
 }
 
-class UserTagDialog extends StatefulWidget {
-  const UserTagDialog({super.key});
-
-  @override
-  State<UserTagDialog> createState() => _UserTagDialogState();
-}
-
-class _UserTagDialogState extends State<UserTagDialog> {
-  final _searchController = TextEditingController();
-  List<TaggedUser> _results = [];
-  bool _loading = false;
-
-  Future<void> _search() async {
-    final query = _searchController.text.trim();
-    if (query.isEmpty) {
-      setState(() => _results = []);
-      return;
-    }
-    setState(() => _loading = true);
-    final matches = await searchTaggableUsers(query);
-    if (!mounted) return;
-    setState(() {
-      _results = matches;
-      _loading = false;
-    });
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return Dialog(
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-      child: Container(
-        padding: const EdgeInsets.all(16),
-        height: 400,
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            const Text('Tag User or Seller', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
-            const SizedBox(height: 12),
-            TextField(
-              controller: _searchController,
-              decoration: InputDecoration(
-                hintText: 'Search by name...',
-                prefixIcon: const Icon(Icons.search),
-                border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
-              ),
-              onChanged: (val) => _search(),
-            ),
-            const SizedBox(height: 12),
-            if (_loading)
-              const Center(child: CircularProgressIndicator())
-            else
-              Expanded(
-                child: ListView.builder(
-                  itemCount: _results.length,
-                  itemBuilder: (context, index) {
-                    final u = _results[index];
-                    return ListTile(
-                      leading: CircleAvatar(
-                        backgroundColor: u.role == 'seller' ? Colors.green.shade100 : Colors.blue.shade100,
-                        child: Icon(u.role == 'seller' ? Icons.store : Icons.person, size: 16, color: Colors.black87),
-                      ),
-                      title: Text(u.name),
-                      subtitle: Text(u.role.toUpperCase(), style: const TextStyle(fontSize: 10)),
-                      onTap: () {
-                        Navigator.of(context).pop(u);
-                      },
-                    );
-                  },
-                ),
-              ),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
 /// Inline "@mention" suggestions list — shown above a comment input while
-/// the user is mid-way through typing "@partial-name". Distinct from
-/// [UserTagDialog] (a tap-to-open modal); this one lives inline in the
-/// composer so suggestions appear as you type, Instagram/Twitter-style.
+/// the user is mid-way through typing "@partial-name". Lives inline in the
+/// composer so suggestions appear as you type, Instagram/Twitter-style. This
+/// is the only tagging entry point — a separate tap-to-open "Tag User"
+/// dialog/icon used to exist alongside it but was removed since having two
+/// ways to tag was confusing and the icon's flow independently duplicated
+/// the tagged name into the comment text.
 class MentionSuggestions extends StatelessWidget {
   final List<TaggedUser> results;
   final bool loading;

@@ -1922,14 +1922,18 @@ class _CommentSheetSimpleState extends ConsumerState<_CommentSheetSimple> {
   }
 
   void _pickMention(TaggedUser u) {
+    // Strip the in-progress "@partial" trigger text back out — the tag
+    // itself is rendered separately (the "Tagging: @name" chip below, and
+    // the bold @name prefix on the posted comment), so leaving "@Name " in
+    // the free-text comment too made every tagged comment show the name twice.
     final text = _ctrl.text;
     final caret = _ctrl.selection.baseOffset;
     final uptoCaret = caret >= 0 ? text.substring(0, caret) : text;
-    final replaced = uptoCaret.replaceFirst(RegExp(r'@([^\s@]*)$'), '@${u.name} ');
+    final stripped = uptoCaret.replaceFirst(RegExp(r'@([^\s@]*)$'), '');
     final rest = caret >= 0 ? text.substring(caret) : '';
     _ctrl.value = TextEditingValue(
-      text: replaced + rest,
-      selection: TextSelection.collapsed(offset: replaced.length),
+      text: stripped + rest,
+      selection: TextSelection.collapsed(offset: stripped.length),
     );
     setState(() {
       _taggedUserId = u.id;
@@ -2066,7 +2070,7 @@ class _CommentSheetSimpleState extends ConsumerState<_CommentSheetSimple> {
           ),
           Padding(
             padding: EdgeInsets.only(
-              left: 4,
+              left: 12,
               right: 8,
               top: 8,
               bottom: MediaQuery.of(context).viewInsets.bottom + 12,
@@ -2103,21 +2107,6 @@ class _CommentSheetSimpleState extends ConsumerState<_CommentSheetSimple> {
                   ),
                 Row(
                   children: [
-                    IconButton(
-                      icon: const Icon(Icons.alternate_email, color: AppColors.primary),
-                      onPressed: () async {
-                        final res = await showDialog(
-                          context: context,
-                          builder: (_) => const UserTagDialog(),
-                        );
-                        if (res != null && res is TaggedUser) {
-                          setState(() {
-                            _taggedUserId = res.id;
-                            _taggedUserName = res.name;
-                          });
-                        }
-                      },
-                    ),
                     Expanded(
                       child: TextField(
                     controller: _ctrl,
