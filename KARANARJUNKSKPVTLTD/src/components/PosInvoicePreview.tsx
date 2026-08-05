@@ -99,7 +99,9 @@ export interface PosInvoiceItem {
 export interface PosInvoiceCustomer {
     name?: string;
     phone?: string;
-    address?: string;
+    address?: string; // village / atPost
+    taluka?: string;
+    district?: string;
     pin?: string;
 }
 
@@ -188,57 +190,63 @@ export function PosInvoicePreview({
                 <div style={{ border: '1.5px solid #333', fontFamily: 'Arial, Helvetica, sans-serif' }}>
 
                     {/* ══ HEADER ══════════════════════════════════════════════════ */}
-                    <div style={{ display: 'grid', gridTemplateColumns: '80px 1fr 112px', borderBottom: '1.5px solid #333' }}>
+                    {/* License box is its own auto-width column so it never stretches */}
+                    <div style={{ display: 'grid', gridTemplateColumns: `${allLicenses.length > 0 ? 'auto ' : ''}1fr 130px`, borderBottom: '1.5px solid #333' }}>
 
-                        {/* Left: Invoice type badge */}
-                        <div style={{ borderRight: '1px solid #aaa', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: '4px 6px', gap: '4px' }}>
-                            <div style={{ fontWeight: 900, fontSize: '0.72rem', letterSpacing: '0.04em', textAlign: 'center' as const, lineHeight: 1.1 }}>GST<br />INVOICE</div>
-                            <div style={{ width: '100%', border: '1px solid #555', padding: '1px 3px', fontSize: '0.58rem', fontWeight: 700, textAlign: 'center' as const }}>
-                                {modeOfPayment === 'Khata' || modeOfPayment === 'Credit' ? L('credit_bill') : L('cash_bill')}
+                        {/* License box — compact, left-most, sized to content */}
+                        {allLicenses.length > 0 && (
+                            <div style={{ borderRight: '1px solid #aaa', padding: '4px 8px', display: 'flex', flexDirection: 'column', justifyContent: 'center', gap: '2px' }}>
+                                {allLicenses.map(lic => (
+                                    <div key={lic.label} style={{ fontSize: '0.44rem', color: '#333', whiteSpace: 'nowrap' }}>
+                                        <strong>{lic.label}:</strong> {lic.number}
+                                    </div>
+                                ))}
                             </div>
-                        </div>
+                        )}
 
-                        {/* Center: Business name + address + GSTIN + licenses */}
-                        <div style={{ borderRight: '1px solid #aaa', padding: '4px 8px', textAlign: 'center' as const, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: '1px' }}>
-                            <div style={{ display: 'flex', alignItems: 'center', gap: '6px', justifyContent: 'center' }}>
-                                {branding?.logoUrl && <img src={branding.logoUrl} alt="Logo" style={{ height: '24px', objectFit: 'contain' }} />}
-                                <div style={{ fontWeight: 900, fontSize: '1.05rem', lineHeight: 1.1, letterSpacing: '-0.01em' }}>{sellerName}</div>
+                        {/* Center: GST INVOICE (primary) + Business info */}
+                        <div style={{ borderRight: '1px solid #aaa', padding: '4px 10px', textAlign: 'center' as const, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: '1.5px' }}>
+                            <div style={{ fontWeight: 900, fontSize: '0.82rem', letterSpacing: '0.10em', textTransform: 'uppercase' as const, color: '#111', lineHeight: 1.1 }}>GST INVOICE</div>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '5px', justifyContent: 'center' }}>
+                                {branding?.logoUrl && <img src={branding.logoUrl} alt="Logo" style={{ height: '18px', objectFit: 'contain' }} />}
+                                <div style={{ fontWeight: 800, fontSize: '0.68rem', lineHeight: 1.15 }}>{sellerName}</div>
                             </div>
-                            {branding?.address && <div style={{ fontSize: '0.55rem', color: '#333', lineHeight: 1.4 }}>{branding.address}</div>}
-                            <div style={{ fontSize: '0.55rem', color: '#333', display: 'flex', gap: '6px', flexWrap: 'wrap' as const, justifyContent: 'center' }}>
+                            {branding?.address && <div style={{ fontSize: '0.50rem', color: '#333', lineHeight: 1.35 }}>{branding.address}</div>}
+                            <div style={{ fontSize: '0.48rem', color: '#333', display: 'flex', gap: '5px', flexWrap: 'wrap' as const, justifyContent: 'center' }}>
                                 {branding?.gstin && <span><strong>GSTIN:</strong> {branding.gstin}</span>}
                                 {branding?.contact && <span>| <strong>Ph:</strong> {branding.contact}</span>}
                             </div>
-                            {allLicenses.length > 0 && (
-                                <div style={{ fontSize: '0.50rem', color: '#555', borderTop: '1px dashed #ccc', marginTop: '2px', paddingTop: '1.5px', display: 'flex', gap: '6px', flexWrap: 'wrap' as const, justifyContent: 'center' }}>
-                                    {allLicenses.map(lic => (
-                                        <span key={lic.label}><strong>{lic.label}:</strong> {lic.number}</span>
-                                    ))}
-                                </div>
-                            )}
                         </div>
 
                         {/* Right: Bill meta */}
-                        <div style={{ padding: '4px 7px', display: 'flex', flexDirection: 'column', justifyContent: 'center', gap: '2px', fontSize: '0.56rem' }}>
+                        <div style={{ padding: '4px 7px', display: 'flex', flexDirection: 'column', justifyContent: 'center', fontSize: '0.52rem', gap: '2.5px' }}>
                             <div style={{ display: 'flex', gap: '3px' }}><strong style={{ whiteSpace: 'nowrap' }}>Bill No:</strong><span style={{ fontWeight: 900 }}>{billNumber}</span></div>
                             <div style={{ display: 'flex', gap: '3px' }}><strong style={{ whiteSpace: 'nowrap' }}>Date:</strong><span>{dateLabel}</span></div>
-                            <div style={{ display: 'flex', gap: '3px' }}><strong style={{ whiteSpace: 'nowrap' }}>Mode:</strong><span>{modeOfPayment}</span></div>
+                            <div style={{ display: 'flex', gap: '3px' }}><strong style={{ whiteSpace: 'nowrap' }}>Mode:</strong><strong style={{ fontWeight: 900 }}>{modeOfPayment}</strong></div>
                         </div>
                     </div>
 
                     {/* ══ CUSTOMER ROW ════════════════════════════════════════════ */}
-                    <div style={{ display: 'grid', gridTemplateColumns: '2.4fr 0.9fr 2fr 0.65fr', borderBottom: '1px solid #aaa', fontSize: '0.57rem' }}>
+                    <div style={{ display: 'grid', gridTemplateColumns: '1.4fr 0.75fr 0.85fr 0.85fr 1.0fr 0.45fr', borderBottom: '1px solid #aaa', fontSize: '0.57rem' }}>
                         <div style={{ borderRight: '1px solid #ccc', padding: '2px 6px', display: 'flex', gap: '3px', alignItems: 'baseline' }}>
                             <strong style={{ color: '#666', whiteSpace: 'nowrap', flexShrink: 0 }}>Buyer:</strong>
                             <span style={{ fontWeight: 800, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{customer.name || '—'}</span>
                         </div>
                         <div style={{ borderRight: '1px solid #ccc', padding: '2px 6px', display: 'flex', gap: '3px', alignItems: 'baseline' }}>
                             <strong style={{ color: '#666', whiteSpace: 'nowrap', flexShrink: 0 }}>Ph:</strong>
-                            <span>{customer.phone || '—'}</span>
+                            <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{customer.phone || '—'}</span>
                         </div>
                         <div style={{ borderRight: '1px solid #ccc', padding: '2px 6px', display: 'flex', gap: '3px', alignItems: 'baseline' }}>
-                            <strong style={{ color: '#666', whiteSpace: 'nowrap', flexShrink: 0 }}>Addr:</strong>
+                            <strong style={{ color: '#666', whiteSpace: 'nowrap', flexShrink: 0 }}>Village:</strong>
                             <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{customer.address || '—'}</span>
+                        </div>
+                        <div style={{ borderRight: '1px solid #ccc', padding: '2px 6px', display: 'flex', gap: '3px', alignItems: 'baseline' }}>
+                            <strong style={{ color: '#666', whiteSpace: 'nowrap', flexShrink: 0 }}>Taluka:</strong>
+                            <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{customer.taluka || '—'}</span>
+                        </div>
+                        <div style={{ borderRight: '1px solid #ccc', padding: '2px 6px', display: 'flex', gap: '3px', alignItems: 'baseline' }}>
+                            <strong style={{ color: '#666', whiteSpace: 'nowrap', flexShrink: 0 }}>District:</strong>
+                            <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{customer.district || '—'}</span>
                         </div>
                         <div style={{ padding: '2px 6px', display: 'flex', gap: '3px', alignItems: 'baseline' }}>
                             <strong style={{ color: '#666', whiteSpace: 'nowrap', flexShrink: 0 }}>PIN:</strong>
@@ -252,15 +260,15 @@ export function PosInvoicePreview({
                     <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.62rem', tableLayout: 'fixed' }}>
                         <colgroup>
                             <col style={{ width: '2.5%' }} />   {/* # */}
-                            <col />                              {/* Product — auto (~38%) */}
-                            <col style={{ width: '11%' }} />    {/* Company */}
+                            <col />                              {/* Product — auto */}
+                            <col style={{ width: '9%' }} />     {/* Company */}
                             <col style={{ width: '9.5%' }} />   {/* Batch */}
-                            <col style={{ width: '6%' }} />     {/* Exp */}
+                            <col style={{ width: '8%' }} />     {/* Exp */}
                             <col style={{ width: '4.5%' }} />   {/* Per */}
                             <col style={{ width: '5%' }} />     {/* Qty */}
-                            <col style={{ width: '8.5%' }} />   {/* Rate */}
+                            <col style={{ width: '10%' }} />    {/* Rate */}
                             <col style={{ width: '5%' }} />     {/* GST% */}
-                            <col style={{ width: '10%' }} />    {/* Amount */}
+                            <col style={{ width: '12%' }} />    {/* Amount */}
                         </colgroup>
                         <thead>
                             <tr style={{ background: '#f5f5f5', borderBottom: '1.5px solid #333' }}>
@@ -529,14 +537,7 @@ export function PosInvoicePreview({
                         <div style={{ padding: '5px', fontWeight: 600, fontStyle: 'italic' }}>INR {numberToWords(net)}</div>
                     </div>
 
-                    {activeCats.length > 0 && (
-                        <div style={{ border: '1px solid #222', marginBottom: '8px', padding: '4px 8px', fontSize: '0.72rem' }}>
-                            <strong style={{ marginRight: '6px' }}>Category:</strong>
-                            {activeCats.map(cat => (
-                                <span key={cat} style={{ border: '1px solid #777', padding: '1px 5px', fontWeight: 600, marginLeft: '3px', background: '#e8f5e9' }}>✓ {cat}</span>
-                            ))}
-                        </div>
-                    )}
+                    {/* Category omitted from printed invoice */}
 
                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end', gap: '10px', marginTop: '6px' }}>
                         <div style={{ fontSize: '0.72rem', color: '#444', maxWidth: '60%' }}>

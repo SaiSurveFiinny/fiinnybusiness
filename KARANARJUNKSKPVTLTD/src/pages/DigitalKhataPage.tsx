@@ -3,6 +3,7 @@ import { createPortal } from 'react-dom';
 import {
     query, onSnapshot, orderBy, addDoc, updateDoc, deleteDoc, setDoc, serverTimestamp, Timestamp, writeBatch,
 } from 'firebase/firestore';
+import * as XLSX from 'xlsx';
 import { db } from '../firebase';
 import { useAuth } from '../contexts/AuthContext';
 import { getTenantCollection, getTenantDoc } from '../utils/tenantPath';
@@ -10,6 +11,7 @@ import { useToast } from '../contexts/ToastContext';
 import {
     BookOpen, Search, IndianRupee, Clock, CheckCircle2, AlertCircle, Phone, User, Calendar, ArrowUpRight,
     ArrowLeft, FileText, Printer, Pencil, Plus, Receipt, X, Trash2, Wallet, AlertTriangle, Ban,
+    Download, ChevronUp, ChevronDown,
 } from 'lucide-react';
 import { Link, useNavigate } from 'react-router-dom';
 
@@ -108,6 +110,9 @@ export default function DigitalKhataPage() {
     const [loading, setLoading] = useState(true);
     const [search, setSearch] = useState('');
     const [tab, setTab] = useState<FilterTab>('all');
+    type SortCol = 'name' | 'outstanding' | 'total' | 'paid' | 'lastTs';
+    const [sortCol, setSortCol] = useState<SortCol>('outstanding');
+    const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc');
     // Which customer's ledger is open (master/detail within this page).
     const [selectedKey, setSelectedKey] = useState<string | null>(null);
     const navigate = useNavigate();
@@ -485,6 +490,51 @@ export default function DigitalKhataPage() {
         }
         return list;
     }, [customers, tab, search]);
+
+    const sorted = useMemo(() => {
+        const mult = sortDir === 'asc' ? 1 : -1;
+        return [...filtered].sort((a, b) => {
+            switch (sortCol) {
+                case 'name': return mult * a.name.localeCompare(b.name);
+                case 'outstanding': return mult * (a.outstanding - b.outstanding);
+                case 'total': return mult * (a.total - b.total);
+                case 'paid': return mult * (a.paid - b.paid);
+                case 'lastTs': return mult * (a.lastTs.getTime() - b.lastTs.getTime());
+                default: return 0;
+            }
+        });
+    }, [filtered, sortCol, sortDir]);
+
+    const toggleSort = (col: SortCol) => {
+        if (sortCol === col) setSortDir(d => d === 'asc' ? 'desc' : 'asc');
+        else { setSortCol(col); setSortDir('desc'); }
+    };
+
+    const exportPendingCustomers = () => {
+        const rows = customers
+            .filter(c => c.status === 'pending' || c.status === 'partial')
+            .sort((a, b) => b.outstanding - a.outstanding)
+            .map(c => ({
+                'Customer Name': c.name,
+                'Phone': c.phone || '',
+                'Address': c.address || '',
+                'PIN': c.pin || '',
+                'Total Billed (₹)': c.total,
+                'Total Paid (₹)': c.paid,
+                'Outstanding (₹)': c.outstanding,
+                'Last Transaction': c.lastTs.toLocaleDateString('en-IN'),
+                'Status': c.status === 'pending' ? 'Pending' : 'Partial',
+            }));
+        const ws = XLSX.utils.json_to_sheet(rows);
+        const colWidths = [
+            { wch: 28 }, { wch: 14 }, { wch: 32 }, { wch: 8 },
+            { wch: 16 }, { wch: 14 }, { wch: 16 }, { wch: 18 }, { wch: 10 },
+        ];
+        ws['!cols'] = colWidths;
+        const wb = XLSX.utils.book_new();
+        XLSX.utils.book_append_sheet(wb, ws, 'Pending Customers');
+        XLSX.writeFile(wb, `pending-customers-${new Date().toISOString().slice(0, 10)}.xlsx`);
+    };
 
     // Selected customer for the details view (re-derived so it stays live).
     const selected: CustomerRow | null = selectedKey
@@ -1028,7 +1078,16 @@ export default function DigitalKhataPage() {
                         onChange={e => setSearch(e.target.value)}
                     />
                 </div>
-                <span style={{ color: 'var(--text-tertiary)', fontSize: '0.82rem', marginLeft: 'auto' }}>{filtered.length} customers</span>
+                <span style={{ color: 'var(--text-tertiary)', fontSize: '0.82rem' }}>{filtered.length} customers</span>
+                <button
+                    onClick={exportPendingCustomers}
+                    title="Export pending & partial customers to Excel"
+                    style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', padding: '0.45rem 1rem', borderRadius: '20px', border: '1px solid #ef4444', background: 'rgba(239,68,68,0.08)', color: '#ef4444', fontWeight: 600, fontSize: '0.82rem', cursor: 'pointer', fontFamily: 'inherit', whiteSpace: 'nowrap', transition: 'all 0.15s' }}
+                    onMouseOver={e => (e.currentTarget.style.background = 'rgba(239,68,68,0.18)')}
+                    onMouseOut={e => (e.currentTarget.style.background = 'rgba(239,68,68,0.08)')}
+                >
+                    <Download size={14} /> Download Pending Customers
+                </button>
             </div>
 
             {/* Customer list */}
@@ -1044,13 +1103,26 @@ export default function DigitalKhataPage() {
                         <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.875rem' }}>
                             <thead>
                                 <tr style={{ borderBottom: '1px solid var(--surface-border)', background: 'var(--surface-raised)' }}>
-                                    {['Customer', 'Phone', 'Bills', 'Last Bill', 'Billed', 'Paid', 'Outstanding', 'Status', ''].map(h => (
-                                        <th key={h} style={{ padding: '0.85rem 1rem', fontWeight: 600, color: 'var(--text-secondary)', textAlign: h === '' ? 'center' : 'left', whiteSpace: 'nowrap' }}>{h}</th>
-                                    ))}
+                                    {([['Customer', 'name'], ['Phone', null], ['Bills', null], ['Last Bill', 'lastTs'], ['Billed', 'total'], ['Paid', 'paid'], ['Outstanding', 'outstanding'], ['Status', null], ['', null]] as [string, SortCol | null][]).map(([label, col]) => {
+                                        const active = col && sortCol === col;
+                                        return (
+                                            <th key={label}
+                                                onClick={col ? () => toggleSort(col) : undefined}
+                                                style={{ padding: '0.85rem 1rem', fontWeight: 600, color: active ? 'var(--primary-light)' : 'var(--text-secondary)', textAlign: label === '' ? 'center' : 'left', whiteSpace: 'nowrap', cursor: col ? 'pointer' : 'default', userSelect: 'none' }}>
+                                                <div style={{ display: 'inline-flex', alignItems: 'center', gap: '0.25rem' }}>
+                                                    {label}
+                                                    {col && (active
+                                                        ? (sortDir === 'desc' ? <ChevronDown size={13} /> : <ChevronUp size={13} />)
+                                                        : <ChevronDown size={13} style={{ opacity: 0.3 }} />
+                                                    )}
+                                                </div>
+                                            </th>
+                                        );
+                                    })}
                                 </tr>
                             </thead>
                             <tbody>
-                                {filtered.map(c => (
+                                {sorted.map(c => (
                                     <tr key={c.key}
                                         onClick={() => setSelectedKey(c.key)}
                                         style={{ borderBottom: '1px solid var(--surface-border)', cursor: 'pointer', transition: 'background 0.15s' }}
