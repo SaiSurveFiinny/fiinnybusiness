@@ -101,6 +101,14 @@ service cloud.firestore {
         allow write: if false;
       }
 
+      // Audit Log — append-only by any authenticated tenant member; read by admin only.
+      // Documents must never be updated or deleted (immutable audit trail).
+      match /auditLogs/{logId} {
+        allow create: if request.auth != null && getUserData() != null && getUserData().tenantId == tenantId;
+        allow read:   if request.auth != null && getUserData() != null && getUserData().tenantId == tenantId && isAdminOrAnalyst();
+        allow update, delete: if false;
+      }
+
       // Returns — admin/analyst full access
       match /returns/{returnId} {
         allow read, write: if request.auth != null && getUserData() != null && getUserData().tenantId == tenantId && isAdminOrAnalyst();

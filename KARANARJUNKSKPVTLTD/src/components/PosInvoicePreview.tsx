@@ -1,5 +1,5 @@
 import UpiQrCode from './UpiQrCode';
-import { getInvoiceProductCategories, getApplicableLicenses } from '../utils/invoiceCategories';
+import { getInvoiceProductCategories, getAllConfiguredLicenses } from '../utils/invoiceCategories';
 
 // ── English fallback for the L() translation helper ─────────────────────────
 // When the component is used without a translation function (e.g. from
@@ -133,6 +133,7 @@ interface Props {
     modeOfPayment?: string;
     previousOutstanding?: number;
     L?: (key: string) => string;
+    activeCats?: string[];
 }
 
 // ── Component — single source of truth for the POS GST invoice layout ────────
@@ -153,6 +154,7 @@ export function PosInvoicePreview({
     modeOfPayment = 'Cash',
     previousOutstanding = 0,
     L = defaultL,
+    activeCats: activeCatsProp,
 }: Props) {
     const fmt = (n: number) => (Number.isFinite(n) ? n : 0).toFixed(2);
     const lineGst = (i: PosInvoiceItem) => (typeof i.gstPct === 'number' ? i.gstPct : 5);
@@ -168,7 +170,8 @@ export function PosInvoicePreview({
     const isA5 = billFormat === 'A5';
     const baseFont = isA5 ? '0.65rem' : '0.82rem';
     const dateLabel = invoiceDate || new Date().toISOString().split('T')[0];
-    const activeCats = getInvoiceProductCategories(cart);
+    const activeCats = activeCatsProp ?? getInvoiceProductCategories(cart);
+    const allLicenses = getAllConfiguredLicenses(branding);
 
     return (
         <div style={{ padding: isA5 ? '4mm 6mm' : '12mm', fontFamily: "'Times New Roman', serif", background: '#fff', color: '#000', fontSize: baseFont }}>
@@ -206,9 +209,9 @@ export function PosInvoicePreview({
                                 {branding?.gstin && <span><strong>GSTIN:</strong> {branding.gstin}</span>}
                                 {branding?.contact && <span>| <strong>Ph:</strong> {branding.contact}</span>}
                             </div>
-                            {getApplicableLicenses(activeCats, branding).length > 0 && (
+                            {allLicenses.length > 0 && (
                                 <div style={{ fontSize: '0.50rem', color: '#555', borderTop: '1px dashed #ccc', marginTop: '2px', paddingTop: '1.5px', display: 'flex', gap: '6px', flexWrap: 'wrap' as const, justifyContent: 'center' }}>
-                                    {getApplicableLicenses(activeCats, branding).map(lic => (
+                                    {allLicenses.map(lic => (
                                         <span key={lic.label}><strong>{lic.label}:</strong> {lic.number}</span>
                                     ))}
                                 </div>
@@ -307,7 +310,7 @@ export function PosInvoicePreview({
                     </table>
 
                     {/* ══ FOOTER ══════════════════════════════════════════════════ */}
-                    <div style={{ display: 'grid', gridTemplateColumns: '1.55fr 1.1fr 0.68fr', borderTop: '1.5px solid #333' }}>
+                    <div style={{ display: 'grid', gridTemplateColumns: '1.2fr 1.1fr 1.0fr', borderTop: '1.5px solid #333' }}>
 
                         {/* Col 1: GST Summary + Declaration */}
                         <div style={{ borderRight: '1px solid #aaa', display: 'flex', flexDirection: 'column' }}>
@@ -373,24 +376,20 @@ export function PosInvoicePreview({
                             <div style={{ borderTop: '1px solid #ddd', padding: '2px 6px', fontSize: '0.48rem', lineHeight: 1.3 }}>
                                 <strong>{L('amount_in_words')}:</strong> <span style={{ fontStyle: 'italic' }}>INR {numberToWords(net)}</span>
                             </div>
-                            <div style={{ borderTop: '1px solid #ddd', padding: '2px 6px' }}>
-                                <span style={{ fontSize: '0.46rem', fontWeight: 700, textTransform: 'uppercase' as const, letterSpacing: '0.04em' }}>Category: </span>
-                                {activeCats.map(cat => (
-                                    <span key={cat} style={{ fontSize: '0.46rem', border: '1px solid #777', padding: '0px 3px', fontWeight: 600, marginLeft: '2px', background: '#e8f5e9' }}>✓ {cat}</span>
-                                ))}
-                            </div>
                         </div>
 
-                        {/* Col 3: Signatures + optional QR */}
+                        {/* Col 3: Signatures side by side + optional QR */}
                         <div style={{ display: 'flex', flexDirection: 'column' }}>
-                            <div style={{ flex: 1, borderBottom: '1px solid #ccc', display: 'flex', flexDirection: 'column', justifyContent: 'flex-end', padding: '3px 6px', alignItems: 'center', minHeight: '42px' }}>
-                                <div style={{ borderTop: '1px solid #555', paddingTop: '2px', fontSize: '0.50rem', fontWeight: 700, textAlign: 'center' as const, width: '100%' }}>Customer Signature</div>
-                            </div>
-                            <div style={{ flex: 1, display: 'flex', flexDirection: 'column', justifyContent: 'flex-end', padding: '3px 6px', alignItems: 'center', minHeight: '42px' }}>
-                                {branding?.signatureUrl && (
-                                    <img src={branding.signatureUrl} alt="" style={{ height: '22px', maxWidth: '100%', objectFit: 'contain', display: 'block', margin: '0 auto 2px' }} />
-                                )}
-                                <div style={{ borderTop: '1px solid #555', paddingTop: '2px', fontSize: '0.50rem', fontWeight: 700, textAlign: 'center' as const, width: '100%' }}>Authorized Signature</div>
+                            <div style={{ flex: 1, display: 'flex', flexDirection: 'row' }}>
+                                <div style={{ flex: 1, display: 'flex', flexDirection: 'column', justifyContent: 'flex-end', padding: '3px 8px', alignItems: 'center' }}>
+                                    <div style={{ borderTop: '1px solid #555', paddingTop: '2px', fontSize: '0.50rem', fontWeight: 700, textAlign: 'center' as const, width: '100%' }}>Customer Signature</div>
+                                </div>
+                                <div style={{ flex: 1, borderLeft: '1px solid #ccc', display: 'flex', flexDirection: 'column', justifyContent: 'flex-end', padding: '3px 8px', alignItems: 'center' }}>
+                                    {branding?.signatureUrl && (
+                                        <img src={branding.signatureUrl} alt="" style={{ height: '30px', maxWidth: '100%', objectFit: 'contain', display: 'block', margin: '0 auto 2px' }} />
+                                    )}
+                                    <div style={{ borderTop: '1px solid #555', paddingTop: '2px', fontSize: '0.50rem', fontWeight: 700, textAlign: 'center' as const, width: '100%' }}>Authorized Signature</div>
+                                </div>
                             </div>
                             {branding?.upiId && (
                                 <div style={{ borderTop: '1px solid #ddd', textAlign: 'center' as const, padding: '2px 5px' }}>
@@ -415,6 +414,11 @@ export function PosInvoicePreview({
                                     {branding?.gstin && <><strong>GSTIN:</strong> {branding.gstin} &nbsp;</>}
                                     {branding?.contact && <>Contact: {branding.contact}</>}
                                 </div>
+                                {allLicenses.length > 0 && (
+                                    <div style={{ fontSize: '0.70rem', color: '#555', marginTop: '2px', display: 'flex', gap: '10px', flexWrap: 'wrap' as const }}>
+                                        {allLicenses.map(lic => <span key={lic.label}><strong>{lic.label}:</strong> {lic.number}</span>)}
+                                    </div>
+                                )}
                             </div>
                         </div>
                         <div style={{ textAlign: 'right', fontWeight: 700, border: '2px solid #111', padding: '3px 10px', borderRadius: '6px', whiteSpace: 'nowrap' }}>
@@ -524,6 +528,15 @@ export function PosInvoicePreview({
                         <div style={{ borderRight: '1px solid #222', padding: '5px', fontWeight: 700, display: 'flex', alignItems: 'center' }}>{L('amount_in_words')}</div>
                         <div style={{ padding: '5px', fontWeight: 600, fontStyle: 'italic' }}>INR {numberToWords(net)}</div>
                     </div>
+
+                    {activeCats.length > 0 && (
+                        <div style={{ border: '1px solid #222', marginBottom: '8px', padding: '4px 8px', fontSize: '0.72rem' }}>
+                            <strong style={{ marginRight: '6px' }}>Category:</strong>
+                            {activeCats.map(cat => (
+                                <span key={cat} style={{ border: '1px solid #777', padding: '1px 5px', fontWeight: 600, marginLeft: '3px', background: '#e8f5e9' }}>✓ {cat}</span>
+                            ))}
+                        </div>
+                    )}
 
                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end', gap: '10px', marginTop: '6px' }}>
                         <div style={{ fontSize: '0.72rem', color: '#444', maxWidth: '60%' }}>

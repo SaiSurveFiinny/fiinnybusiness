@@ -4,6 +4,7 @@ import { initializeApp, deleteApp } from "firebase/app";
 import { getAuth, createUserWithEmailAndPassword } from 'firebase/auth';
 import { firebaseConfig, db } from '../firebase';
 import { getTenantCollection } from '../utils/tenantPath';
+import { logAudit } from '../utils/auditLog';
 import { Shield, ShieldAlert, UserCog, UserPlus, Loader2, Mail, Lock, User as UserIcon, Edit2, Trash2, X, Save, Store, Factory, Target } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 import { useToast } from '../contexts/ToastContext';
@@ -34,7 +35,7 @@ function fyLabel(ym: string): string {
 
 export default function AdminPage() {
     const { t } = useTranslation();
-    const { userRole, currentUser, tenantId } = useAuth();
+    const { userRole, currentUser, tenantId, userName } = useAuth();
     const { showToast } = useToast();
     const [activeSection, setActiveSection] = useState<'staff' | 'retailer' | 'manufacturer' | 'targets'>('staff');
     const [users, setUsers] = useState<any[]>([]);
@@ -197,6 +198,10 @@ export default function AdminPage() {
             const querySnapshot = await getDocs(collection(db, 'users'));
             setUsers(querySnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
 
+            if (tenantId && currentUser) {
+                logAudit({ db, tenantId, userId: currentUser.uid, userName: userName || currentUser.email || 'Admin', userRole: userRole || 'admin', module: 'Manage Users', action: 'Create', entityName: newName, entityId: newUser.uid, remarks: `Role: ${newRole} · Email: ${newEmail}` });
+            }
+
             // Reset form
             setNewName('');
             setNewEmail('');
@@ -273,6 +278,10 @@ export default function AdminPage() {
                 role: newRole
             });
             setUsers(users.map(u => u.id === userId ? { ...u, role: newRole } : u));
+            const targetUser = users.find(u => u.id === userId);
+            if (tenantId && currentUser && targetUser) {
+                logAudit({ db, tenantId, userId: currentUser.uid, userName: userName || currentUser.email || 'Admin', userRole: userRole || 'admin', module: 'Manage Users', action: 'Update', entityName: targetUser.name || targetUser.email || userId, entityId: userId, remarks: `Role changed to: ${newRole}` });
+            }
         } catch (error) {
             console.error("Error updating role:", error);
             alert(t('admin.update_error'));
@@ -323,9 +332,13 @@ export default function AdminPage() {
         if (!window.confirm(t('admin.delete_confirm'))) return;
 
         setUpdatingId(userId);
+        const targetUser = users.find(u => u.id === userId);
         try {
             await deleteDoc(doc(db, 'users', userId));
             setUsers(users.filter(u => u.id !== userId));
+            if (tenantId && currentUser && targetUser) {
+                logAudit({ db, tenantId, userId: currentUser.uid, userName: userName || currentUser.email || 'Admin', userRole: userRole || 'admin', module: 'Manage Users', action: 'Delete', entityName: targetUser.name || targetUser.email || userId, entityId: userId, remarks: `Role was: ${targetUser.role}` });
+            }
         } catch (error) {
             console.error("Error deleting user:", error);
             alert(t('admin.delete_error'));

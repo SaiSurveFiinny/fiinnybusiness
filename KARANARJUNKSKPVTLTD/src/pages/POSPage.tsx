@@ -22,7 +22,8 @@ import { useAuth } from '../contexts/AuthContext';
 import { useToast } from '../contexts/ToastContext';
 import { getTenantCollection, getTenantDoc } from '../utils/tenantPath';
 import { prepareStockDeduction, recordStockMovements } from '../utils/stockDeduction';
-import { getInvoiceProductCategories, getApplicableLicenses } from '../utils/invoiceCategories';
+import { getInvoiceProductCategories, getAllConfiguredLicenses } from '../utils/invoiceCategories';
+import { logAudit } from '../utils/auditLog';
 import { PosInvoicePreview, numberToWords, toMonthYear } from '../components/PosInvoicePreview';
 import { resolveDateRange, DATE_RANGE_PERIODS, type DateRangePeriod } from '../utils/dateRanges';
 import { AGRI_CATEGORIES } from '../utils/constants';
@@ -149,7 +150,7 @@ function fromMonthYear(val: string): string {
 export default function POSPage() {
     const { t, i18n } = useTranslation();
     const [searchParams] = useSearchParams();
-    const { tenantId, hasModule } = useAuth();
+    const { tenantId, hasModule, currentUser, userName, userRole } = useAuth();
     const { showToast } = useToast();
     const [products, setProducts] = useState<Product[]>([]);
     const [loading, setLoading] = useState(true);
@@ -235,6 +236,8 @@ export default function POSPage() {
     const L = (key: string): string => t(`pos_bill.${key}`, { lng: billLang }) as string;
     const today = new Date().toISOString().split('T')[0];
     const [invoiceDate, setInvoiceDate] = useState<string>(today);
+    // null = auto-detect from cart products; string[] = user's manual selection
+    const [invoiceCategories, setInvoiceCategories] = useState<string[] | null>(null);
     // Mode shown on the invoice; also decides which checkout path "Save & Print" takes.
     const [modeOfPayment, setModeOfPayment] = useState<string>('Cash');
     // Farmers (counter customers) — POS saves walk-ins into `retailers` tagged
@@ -528,7 +531,7 @@ export default function POSPage() {
             if (Array.isArray(draft.billTabs) && draft.billTabs.length > 0) setBillTabs(draft.billTabs);
             if (draft.activeTabId) setActiveTabId(draft.activeTabId);
             if (draft.modeOfPayment) setModeOfPayment(draft.modeOfPayment);
-            if (draft.invoiceDate) setInvoiceDate(draft.invoiceDate);
+            // invoiceDate intentionally NOT restored — always defaults to today for new sessions
             if (draft.billFormat === 'A4' || draft.billFormat === 'A5') setBillFormat(draft.billFormat);
             if (draft.billLang) setBillLang(draft.billLang);
             if (typeof draft.transportCharges === 'number') setTransportCharges(draft.transportCharges);
@@ -537,6 +540,7 @@ export default function POSPage() {
             if (typeof draft.khataNote === 'string') setKhataNote(draft.khataNote);
             if (typeof draft.redeemPoints === 'number') setRedeemPoints(draft.redeemPoints);
             if (draft.rowMeta && typeof draft.rowMeta === 'object') setRowMeta(draft.rowMeta);
+            if (Array.isArray(draft.invoiceCategories)) setInvoiceCategories(draft.invoiceCategories);
         } catch { /* ignore parse errors */ }
     }, [tenantId]);
 
@@ -546,14 +550,16 @@ export default function POSPage() {
         const timer = setTimeout(() => {
             try {
                 localStorage.setItem(`pos_draft_${tenantId}`, JSON.stringify({
-                    billTabs, activeTabId, modeOfPayment, invoiceDate, billFormat, billLang,
+                    billTabs, activeTabId, modeOfPayment, billFormat, billLang,
                     transportCharges, laborCharges, creditPaidNow, khataNote, redeemPoints, rowMeta,
+                    invoiceCategories,
                 }));
             } catch { /* storage quota exceeded — ignore */ }
         }, 500);
         return () => clearTimeout(timer);
-    }, [tenantId, billTabs, activeTabId, modeOfPayment, invoiceDate, billFormat, billLang,
-        transportCharges, laborCharges, creditPaidNow, khataNote, redeemPoints, rowMeta]);
+    }, [tenantId, billTabs, activeTabId, modeOfPayment, billFormat, billLang,
+        transportCharges, laborCharges, creditPaidNow, khataNote, redeemPoints, rowMeta,
+        invoiceCategories]);
 
     // Reset dropdown highlight when the active search row changes.
     useEffect(() => { setHighlightedProductIdx(-1); }, [activeRowIndex]);
@@ -980,6 +986,19 @@ export default function POSPage() {
             }
 
             showToast(`Sale saved · ${billNumber} · ₹${Math.round(grandTotal).toLocaleString('en-IN')}`, 'success');
+            if (tenantId && currentUser) {
+                logAudit({
+                    db, tenantId,
+                    userId: currentUser.uid,
+                    userName: userName || currentUser.email || 'Unknown',
+                    userRole: userRole || 'unknown',
+                    module: 'POS Billing',
+                    action: 'Generate Invoice',
+                    entityName: customer.name || 'Walk-in Customer',
+                    entityId: billNumber,
+                    remarks: `₹${Math.round(grandTotal).toLocaleString('en-IN')} · ${modeOfPayment}`,
+                });
+            }
 
             // Reset after save
             setTimeout(() => {
@@ -992,6 +1011,7 @@ export default function POSPage() {
                         : t,
                 ));
                 setRedeemPoints(0);
+                setInvoiceCategories(null);
                 // Clear the carried balance with the bill — re-entering the phone
                 // re-fetches the (now updated) outstanding for the next sale.
                 setCustomerOutstanding(0);
@@ -1345,25 +1365,49 @@ export default function POSPage() {
                     )}
 
                     {/* Bill-format selector — accountant can print A4 or A5 */}
-                    <div style={{ maxWidth: billFormat === 'A5' ? '960px' : '1040px', margin: '0 auto 0.9rem', display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '0.75rem', flexWrap: 'wrap' }}>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap' }}>
-                            <FileText size={16} color="var(--text-secondary)" />
-                            <span style={{ fontWeight: 700, fontSize: '0.85rem', color: 'var(--text-secondary)' }}>{L('bill_format')}:</span>
-                            {(['A4', 'A5'] as BillFormat[]).map(f => (
-                                <button key={f} onClick={() => setBillFormat(f)} className={`pinv-fmt-btn${billFormat === f ? ' active' : ''}`}>
-                                    {f}
-                                </button>
-                            ))}
-                            <span style={{ width: '1px', height: '20px', background: 'var(--surface-border)', margin: '0 0.35rem' }} />
-                            <span style={{ fontWeight: 700, fontSize: '0.85rem', color: 'var(--text-secondary)' }}>{L('bill_language')}:</span>
-                            {([['en', 'EN'], ['mr', 'मराठी'], ['hi', 'हिंदी']] as const).map(([code, label]) => (
-                                <button key={code} onClick={() => setBillLang(code)} className={`pinv-fmt-btn${billLang === code ? ' active' : ''}`}>
-                                    {label}
-                                </button>
-                            ))}
-                        </div>
-                        <span style={{ fontSize: '0.8rem', color: 'var(--text-tertiary)', fontWeight: 600 }}>{L('bill_no')} #{nextBillNumber}</span>
-                    </div>
+                    {(() => {
+                        const ALL_INVOICE_CATS = ['Fertilizers', 'Pesticides', 'Seeds', 'Others'];
+                        const selectedCategories = invoiceCategories ?? getInvoiceProductCategories(cart);
+                        const isManualCat = invoiceCategories !== null;
+                        const toggleCategory = (cat: string) => {
+                            const current = invoiceCategories ?? getInvoiceProductCategories(cart);
+                            const next = current.includes(cat) ? current.filter(c => c !== cat) : [...current, cat];
+                            setInvoiceCategories(next.length > 0 ? next : current);
+                        };
+                        return (
+                            <div style={{ maxWidth: billFormat === 'A5' ? '960px' : '1040px', margin: '0 auto 0.9rem', display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '0.75rem', flexWrap: 'wrap' }}>
+                                <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap' }}>
+                                    <FileText size={16} color="var(--text-secondary)" />
+                                    <span style={{ fontWeight: 700, fontSize: '0.85rem', color: 'var(--text-secondary)' }}>{L('bill_format')}:</span>
+                                    {(['A4', 'A5'] as BillFormat[]).map(f => (
+                                        <button key={f} onClick={() => setBillFormat(f)} className={`pinv-fmt-btn${billFormat === f ? ' active' : ''}`}>
+                                            {f}
+                                        </button>
+                                    ))}
+                                    <span style={{ width: '1px', height: '20px', background: 'var(--surface-border)', margin: '0 0.35rem' }} />
+                                    <span style={{ fontWeight: 700, fontSize: '0.85rem', color: 'var(--text-secondary)' }}>{L('bill_language')}:</span>
+                                    {([['en', 'EN'], ['mr', 'मराठी'], ['hi', 'हिंदी']] as const).map(([code, label]) => (
+                                        <button key={code} onClick={() => setBillLang(code)} className={`pinv-fmt-btn${billLang === code ? ' active' : ''}`}>
+                                            {label}
+                                        </button>
+                                    ))}
+                                    <span style={{ width: '1px', height: '20px', background: 'var(--surface-border)', margin: '0 0.35rem' }} />
+                                    <span style={{ fontWeight: 700, fontSize: '0.85rem', color: 'var(--text-secondary)' }}>Category:</span>
+                                    {ALL_INVOICE_CATS.map(cat => (
+                                        <button key={cat} onClick={() => toggleCategory(cat)} className={`pinv-fmt-btn${selectedCategories.includes(cat) ? ' active' : ''}`} title={isManualCat ? 'Manual selection' : 'Auto-detected from cart'}>
+                                            {cat.length > 6 ? cat.slice(0, 5) + '.' : cat}
+                                        </button>
+                                    ))}
+                                    {isManualCat && (
+                                        <button onClick={() => setInvoiceCategories(null)} className="pinv-fmt-btn" title="Reset to auto-detect from cart products" style={{ opacity: 0.75 }}>
+                                            Auto
+                                        </button>
+                                    )}
+                                </div>
+                                <span style={{ fontSize: '0.8rem', color: 'var(--text-tertiary)', fontWeight: 600 }}>{L('bill_no')} #{nextBillNumber}</span>
+                            </div>
+                        );
+                    })()}
 
                     {/* Invoice card (editable on screen; printed copy is rendered separately) */}
                     <div style={{ maxWidth: billFormat === 'A5' ? '970px' : '1040px', margin: '0 auto', background: '#fff', color: '#000', fontFamily: billFormat === 'A5' ? 'Arial, Helvetica, sans-serif' : "'Times New Roman', serif", boxShadow: '0 4px 24px rgba(0,0,0,0.10)', borderRadius: billFormat === 'A5' ? '3px' : '10px', border: 'none', padding: billFormat === 'A5' ? '0' : '16px 18px' }}>
@@ -1395,7 +1439,7 @@ export default function POSPage() {
                                             {branding?.contact && <span>| <strong>Ph:</strong> {branding.contact}</span>}
                                         </div>
                                         {(() => {
-                                            const lics = getApplicableLicenses(getInvoiceProductCategories(cart), branding);
+                                            const lics = getAllConfiguredLicenses(branding);
                                             return lics.length > 0 ? (
                                                 <div style={{ fontSize: '0.64rem', color: '#555', borderTop: '1px dashed #ccc', marginTop: '2px', paddingTop: '2px', display: 'flex', gap: '10px', flexWrap: 'wrap', justifyContent: 'center' }}>
                                                     {lics.map(lic => <span key={lic.label}><strong>{lic.label}:</strong> {lic.number}</span>)}
@@ -1601,28 +1645,28 @@ export default function POSPage() {
                                 </div>
 
                                 {/* ══ FOOTER ═══════════════════════════════════════════════════ */}
-                                <div style={{ display: 'grid', gridTemplateColumns: '1.55fr 1.1fr 0.68fr', borderTop: '1.5px solid #333' }}>
+                                <div style={{ display: 'grid', gridTemplateColumns: '1.2fr 1.1fr 1.0fr', borderTop: '1.5px solid #333' }}>
 
                                     {/* Col 1 – GST Summary + Declaration */}
                                     <div style={{ borderRight: '1px solid #aaa', display: 'flex', flexDirection: 'column' }}>
-                                        <div style={{ background: '#f5f5f5', padding: '3px 8px', borderBottom: '1px solid #ccc', fontSize: '0.74rem', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.06em', textAlign: 'center' }}>GST Summary</div>
-                                        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.74rem' }}>
+                                        <div style={{ background: '#f5f5f5', padding: '2px 4px', borderBottom: '1px solid #ccc', fontSize: '0.68rem', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em', textAlign: 'center' }}>GST Summary</div>
+                                        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.68rem' }}>
                                             <thead>
                                                 <tr>
                                                     {['Taxable', 'CGST 2.5%', 'SGST 2.5%', 'Total Tax'].map(h => (
-                                                        <th key={h} style={{ border: '1px solid #ddd', padding: '3px 3px', textAlign: 'center', background: '#fafafa', fontWeight: 700 }}>{h}</th>
+                                                        <th key={h} style={{ border: '1px solid #ddd', padding: '2px 2px', textAlign: 'center', background: '#fafafa', fontWeight: 700 }}>{h}</th>
                                                     ))}
                                                 </tr>
                                             </thead>
                                             <tbody>
                                                 <tr>
                                                     {[computedTaxable, totalCgst, totalSgst, totalTax].map((v, vi) => (
-                                                        <td key={vi} style={{ border: '1px solid #ddd', padding: '3px 3px', textAlign: 'center' }}>{invFmt(v)}</td>
+                                                        <td key={vi} style={{ border: '1px solid #ddd', padding: '2px 2px', textAlign: 'center' }}>{invFmt(v)}</td>
                                                     ))}
                                                 </tr>
                                             </tbody>
                                         </table>
-                                        <div style={{ padding: '5px 8px', fontSize: '0.67rem', color: '#555', lineHeight: 1.45, flex: 1 }}>
+                                        <div style={{ padding: '4px 6px', fontSize: '0.63rem', color: '#555', lineHeight: 1.4, flex: 1 }}>
                                             <strong>{L('declaration')}:</strong> {L('declaration_text')}
                                         </div>
                                     </div>
@@ -1669,22 +1713,16 @@ export default function POSPage() {
                                             <strong>Amt in Words:</strong>{' '}
                                             <span style={{ fontStyle: 'italic', fontWeight: 600 }}>INR {numberToWords(invNetAmount)}</span>
                                         </div>
-                                        <div style={{ borderTop: '1px solid #ddd', padding: '4px 8px' }}>
-                                            <span style={{ fontSize: '0.66rem', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.04em' }}>Category: </span>
-                                            {getInvoiceProductCategories(cart).map(cat => (
-                                                <span key={cat} style={{ fontSize: '0.66rem', border: '1px solid #777', padding: '1px 5px', fontWeight: 600, marginLeft: '3px', background: '#e8f5e9' }}>✓ {cat}</span>
-                                            ))}
-                                        </div>
                                     </div>
 
-                                    {/* Col 3 – Signatures */}
-                                    <div style={{ display: 'flex', flexDirection: 'column' }}>
-                                        <div style={{ flex: 1, borderBottom: '1px solid #ccc', display: 'flex', flexDirection: 'column', justifyContent: 'flex-end', padding: '6px 8px', alignItems: 'center', minHeight: '72px' }}>
+                                    {/* Col 3 – Signatures side by side */}
+                                    <div style={{ display: 'flex', flexDirection: 'row' }}>
+                                        <div style={{ flex: 1, display: 'flex', flexDirection: 'column', justifyContent: 'flex-end', padding: '6px 10px', alignItems: 'center' }}>
                                             <div style={{ borderTop: '1px solid #555', paddingTop: '3px', fontSize: '0.7rem', fontWeight: 700, textAlign: 'center', width: '100%' }}>Customer Signature</div>
                                         </div>
-                                        <div style={{ flex: 1, display: 'flex', flexDirection: 'column', justifyContent: 'flex-end', padding: '6px 8px', alignItems: 'center', minHeight: '72px' }}>
+                                        <div style={{ flex: 1, borderLeft: '1px solid #ccc', display: 'flex', flexDirection: 'column', justifyContent: 'flex-end', padding: '6px 10px', alignItems: 'center' }}>
                                             {branding?.signatureUrl && (
-                                                <img src={branding.signatureUrl} alt="" style={{ height: '34px', maxWidth: '100%', objectFit: 'contain', display: 'block', margin: '0 auto 4px' }} />
+                                                <img src={branding.signatureUrl} alt="" style={{ height: '44px', maxWidth: '100%', objectFit: 'contain', display: 'block', margin: '0 auto 4px' }} />
                                             )}
                                             <div style={{ borderTop: '1px solid #555', paddingTop: '3px', fontSize: '0.7rem', fontWeight: 700, textAlign: 'center', width: '100%' }}>Authorized Signature</div>
                                         </div>
@@ -1706,6 +1744,14 @@ export default function POSPage() {
                                                 {branding?.gstin && <><strong>GSTIN:</strong> {branding.gstin} &nbsp;</>}
                                                 {branding?.contact && <>Contact No.: {branding.contact}</>}
                                             </div>
+                                            {(() => {
+                                                const lics = getAllConfiguredLicenses(branding);
+                                                return lics.length > 0 ? (
+                                                    <div style={{ fontSize: '0.72rem', color: '#555', marginTop: '2px', display: 'flex', gap: '10px', flexWrap: 'wrap' }}>
+                                                        {lics.map(lic => <span key={lic.label}><strong>{lic.label}:</strong> {lic.number}</span>)}
+                                                    </div>
+                                                ) : null;
+                                            })()}
                                         </div>
                                     </div>
                                     <div style={{ textAlign: 'right', fontWeight: 700, fontSize: '0.95rem', color: '#111', border: '2px solid #111', padding: '4px 12px', borderRadius: '6px' }}>
@@ -1970,6 +2016,16 @@ export default function POSPage() {
                                     <div style={{ borderRight: '1px solid #222', padding: '6px', fontWeight: 700, display: 'flex', alignItems: 'center', fontSize: '0.82rem' }}>{L('amount_in_words')}</div>
                                     <div style={{ padding: '6px', fontWeight: 600, fontSize: '0.85rem', fontStyle: 'italic' }}>INR {numberToWords(invNetAmount)}</div>
                                 </div>
+
+                                {/* CATEGORY */}
+                                {(invoiceCategories ?? getInvoiceProductCategories(cart)).length > 0 && (
+                                    <div style={{ border: '1px solid #222', marginBottom: '10px', padding: '5px 8px', fontSize: '0.75rem' }}>
+                                        <strong style={{ marginRight: '6px' }}>Category:</strong>
+                                        {(invoiceCategories ?? getInvoiceProductCategories(cart)).map(cat => (
+                                            <span key={cat} style={{ border: '1px solid #777', padding: '1px 5px', fontWeight: 600, marginLeft: '3px', background: '#e8f5e9' }}>✓ {cat}</span>
+                                        ))}
+                                    </div>
+                                )}
 
                                 {/* DECLARATION + SIGNATURE */}
                                 <div style={{ border: '1px solid #222', display: 'grid', gridTemplateColumns: '1fr 1fr' }}>
@@ -2417,6 +2473,7 @@ export default function POSPage() {
                             invoiceDate={invoiceDate}
                             modeOfPayment={modeOfPayment}
                             previousOutstanding={customerOutstanding}
+                            activeCats={invoiceCategories ?? getInvoiceProductCategories(cart)}
                             L={L}
                         />
                     )}

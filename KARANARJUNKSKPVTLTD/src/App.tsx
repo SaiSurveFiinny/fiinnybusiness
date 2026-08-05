@@ -1,6 +1,6 @@
 import { useState, useEffect, lazy, Suspense } from 'react';
 import { BrowserRouter, Routes, Route, Link, useLocation, Navigate, useNavigate } from 'react-router-dom';
-import { Home, Users, UserPlus, LogOut, ReceiptText, ShieldAlert, Calculator, Settings, Package, ChevronDown, Layers, Palette, Database, Factory, Truck, Store, ShoppingCart, BarChart3, Activity, FileText, Bell, ClipboardList, Star, Link2, Bot, Loader2, Menu, X, Lock, Target, Sun, Moon, Receipt, HelpCircle } from 'lucide-react';
+import { Home, Users, UserPlus, LogOut, ReceiptText, ShieldAlert, Shield, Calculator, Settings, Package, ChevronDown, Layers, Palette, Database, Factory, Truck, Store, ShoppingCart, BarChart3, Activity, FileText, Bell, ClipboardList, Star, Link2, Bot, Loader2, Menu, X, Lock, Target, Sun, Moon, Receipt, HelpCircle } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import LanguageSwitcher from './components/LanguageSwitcher';
 import OfflineBanner from './components/OfflineBanner';
@@ -65,6 +65,7 @@ const InventoryPage          = lazy(() => import('./pages/InventoryPage'));
 const ReportsPage            = lazy(() => import('./pages/ReportsPage'));
 const ManageTransportPage    = lazy(() => import('./pages/ManageTransportPage'));
 const AdministrationPage     = lazy(() => import('./pages/AdministrationPage'));
+const AuditLogPage           = lazy(() => import('./pages/AuditLogPage'));
 const PricingPage            = lazy(() => import('./pages/PricingPage'));
 const PaymentLinkPage        = lazy(() => import('./pages/PaymentLinkPage'));
 const PaymentLandingPage     = lazy(() => import('./pages/PaymentLandingPage'));
@@ -210,6 +211,7 @@ function Layout({ children, currentTheme, toggleTheme }: { children: React.React
     { path: '/admin/team-performance', icon: <Target size={17} />, label: 'Team Performance', screenKey: 'admin' },
     { path: '/admin/data-security', icon: <Lock size={17} />, label: 'Data Security', screenKey: 'admin' },
     { path: '/admin/manage-roles', icon: <ShieldAlert size={17} />, label: 'Role Matrix', screenKey: 'admin' },
+    { path: '/admin/audit-log', icon: <Shield size={17} />, label: 'Audit Log', screenKey: 'audit_log' },
     { path: '/admin/manage-retailers', icon: <Users size={17} />, label: t('common.manage_retailers'), screenKey: 'manage_retailers' },
     { path: '/admin/manage-store', icon: <Store size={17} />, label: 'Manage Store', screenKey: 'manage_store' },
     { path: '/admin/manufacturers', icon: <Factory size={17} />, label: 'Manufacturers', screenKey: 'manufacturers' },
@@ -567,6 +569,7 @@ function AppRoutes() {
       <Route path="/admin" element={<ProtectedRoute requireRole={['admin']} appScreen="admin"><AdminPage /></ProtectedRoute>} />
       <Route path="/admin/manage-roles" element={<ProtectedRoute requireRole={['admin']} appScreen="admin"><ManageRolesPage /></ProtectedRoute>} />
       <Route path="/admin/data-security" element={<ProtectedRoute requireRole={['admin']} appScreen="admin"><DataSecurityPage /></ProtectedRoute>} />
+      <Route path="/admin/audit-log" element={<ProtectedRoute requireRole={['admin']} appScreen="audit_log"><AuditLogPage /></ProtectedRoute>} />
       <Route path="/admin/manage-retailers" element={<ProtectedRoute requireRole={['admin', 'analyst']} appScreen="manage_retailers"><ManageRetailersPage /></ProtectedRoute>} />
       <Route path="/admin/manufacturers" element={<ProtectedRoute requireRole={['admin', 'analyst']} appScreen="manufacturers"><ManufacturersPage /></ProtectedRoute>} />
       <Route path="/admin/invoice-settings" element={<ProtectedRoute requireRole={['admin', 'analyst']} appScreen="invoice_settings"><InvoiceSettingsPage /></ProtectedRoute>} />
