@@ -2,13 +2,22 @@ import { useState, useEffect, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
   Building2, Plus, Loader2,
-  IndianRupee, Package, Truck, ChevronRight, ChevronDown, Link2, Search, X, Bell,
+  IndianRupee, Package, Truck, ChevronRight, ChevronDown, Link2, Search, X, Bell, FileText,
 } from 'lucide-react';
 import { getDocs } from 'firebase/firestore';
 import { db } from '../firebase';
 import { useAuth } from '../contexts/AuthContext';
 import { getTenantCollection } from '../utils/tenantPath';
 import SupplierFormModal from '../components/SupplierFormModal';
+
+interface InvoiceHit {
+  invoiceId: string;
+  supplierId: string;
+  supplierName: string;
+  invoiceNumber: string;
+  invoiceDate: string;
+  matchedProducts: string[];
+}
 
 interface UpcomingReminder {
   id: string;
@@ -82,7 +91,17 @@ export default function SupplierLedgerPage() {
     } catch (e) { console.error(e); }
   };
 
-  useEffect(() => { loadSuppliers(); loadUpcomingReminders(); }, [tenantId]);
+  // All supplier invoices loaded once for product/invoice-number search
+  const [allInvoices, setAllInvoices] = useState<any[]>([]);
+  const loadAllInvoices = async () => {
+    if (!tenantId) return;
+    try {
+      const snap = await getDocs(getTenantCollection(db, tenantId, 'supplierInvoices'));
+      setAllInvoices(snap.docs.map(d => ({ id: d.id, ...d.data() })));
+    } catch (e) { console.error('Invoice search load error:', e); }
+  };
+
+  useEffect(() => { loadSuppliers(); loadUpcomingReminders(); loadAllInvoices(); }, [tenantId]);
 
   const handleCreated = (openId?: string) => {
     setShowAddSupplier(false);
@@ -154,6 +173,58 @@ export default function SupplierLedgerPage() {
     });
     return arr;
   }, [filtered, sortBy, sortDir, remindersBySupplierId]);
+
+  // Product / invoice-number hits — only computed when the query doesn't already
+  // match a supplier name/phone/email (avoids duplicate results).
+  const productHits = useMemo<InvoiceHit[]>(() => {
+    if (q.length < 2) return [];
+    // If any supplier name/phone/email matches, show normal supplier results only.
+    const supplierMatch = suppliers.some(s =>
+      (s.name || '').toLowerCase().includes(q) ||
+      (s.phone || '').toLowerCase().includes(q) ||
+      (s.email || '').toLowerCase().includes(q),
+    );
+    if (supplierMatch) return [];
+
+    const hits: InvoiceHit[] = [];
+    for (const inv of allInvoices) {
+      const invNum = (inv.supplierInvoiceNumber || inv.internalPurchaseId || '').toLowerCase();
+      const lines: any[] = inv.lines || [];
+      const matchedProducts = lines
+        .filter((l: any) =>
+          (l.productName || '').toLowerCase().includes(q) ||
+          (l.batchNumber || '').toLowerCase().includes(q),
+        )
+        .map((l: any) => l.productName);
+
+      if (invNum.includes(q) || matchedProducts.length > 0) {
+        hits.push({
+          invoiceId: inv.id,
+          supplierId: inv.supplierId || '',
+          supplierName: inv.supplierName || '—',
+          invoiceNumber: inv.supplierInvoiceNumber || inv.internalPurchaseId || inv.id.slice(0, 8).toUpperCase(),
+          invoiceDate: inv.invoiceDate || '',
+          matchedProducts: [...new Set(matchedProducts)],
+        });
+      }
+    }
+    // Sort by date descending
+    hits.sort((a, b) => b.invoiceDate.localeCompare(a.invoiceDate));
+
+    // Group by supplier: keep all hits but deduplicate products per supplier for the summary
+    return hits;
+  }, [q, allInvoices, suppliers]);
+
+  // Group product hits by supplier for the summary display
+  const productHitsBySupplier = useMemo(() => {
+    const map = new Map<string, { supplierName: string; supplierId: string; invoices: InvoiceHit[] }>();
+    for (const h of productHits) {
+      const key = h.supplierId || h.supplierName;
+      if (!map.has(key)) map.set(key, { supplierName: h.supplierName, supplierId: h.supplierId, invoices: [] });
+      map.get(key)!.invoices.push(h);
+    }
+    return [...map.values()];
+  }, [productHits]);
 
   const sortIndicator = (col: SortCol) =>
     sortBy === col ? (sortDir === 'asc' ? ' ↑' : ' ↓') : '';
@@ -299,7 +370,7 @@ export default function SupplierLedgerPage() {
           <Search size={14} style={{ position: 'absolute', left: '0.7rem', top: '50%', transform: 'translateY(-50%)', color: 'var(--text-tertiary)', pointerEvents: 'none' }} />
           <input
             className="input-field"
-            placeholder="Search by name, phone, email…"
+            placeholder="Search by name, phone, email, product, invoice no, batch…"
             value={search}
             onChange={e => setSearch(e.target.value)}
             style={{ paddingLeft: '2.1rem', paddingRight: search ? '2rem' : undefined, margin: 0, height: '36px', fontSize: '0.85rem' }}
@@ -316,6 +387,65 @@ export default function SupplierLedgerPage() {
           {sortedSuppliers.length}{q ? ` of ${suppliers.length}` : ''} supplier{sortedSuppliers.length !== 1 ? 's' : ''}
         </span>
       </div>
+
+      {/* Product / invoice-number search results */}
+      {productHits.length > 0 && (
+        <div className="glass-panel" style={{ borderRadius: '12px', padding: '1rem 1.25rem', marginBottom: '1rem', border: '1px solid hsla(220,70%,55%,0.25)' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.75rem' }}>
+            <Package size={15} color="#4f8ef7" />
+            <span style={{ fontWeight: 700, fontSize: '0.9rem', color: 'var(--text-primary)' }}>
+              Product Search Results
+            </span>
+            <span style={{ fontSize: '0.72rem', color: 'var(--text-tertiary)' }}>
+              — "{search}" found in {productHits.length} invoice{productHits.length !== 1 ? 's' : ''} across {productHitsBySupplier.length} supplier{productHitsBySupplier.length !== 1 ? 's' : ''}
+            </span>
+          </div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.6rem' }}>
+            {productHitsBySupplier.map(group => (
+              <div key={group.supplierId || group.supplierName} style={{ background: 'var(--surface-raised)', borderRadius: '8px', overflow: 'hidden', border: '1px solid var(--surface-border)' }}>
+                {/* Supplier header row */}
+                <button
+                  onClick={() => group.supplierId && navigate(`/supplier-ledger/${group.supplierId}`)}
+                  style={{ width: '100%', display: 'flex', alignItems: 'center', gap: '0.5rem', padding: '0.55rem 0.85rem', background: 'none', border: 'none', cursor: group.supplierId ? 'pointer' : 'default', textAlign: 'left' }}
+                >
+                  <Building2 size={13} color="var(--primary-light)" />
+                  <span style={{ fontWeight: 700, fontSize: '0.85rem', color: 'var(--text-primary)' }}>{group.supplierName}</span>
+                  <span style={{ fontSize: '0.72rem', color: 'var(--text-tertiary)' }}>{group.invoices.length} invoice{group.invoices.length !== 1 ? 's' : ''}</span>
+                  {group.supplierId && <ChevronRight size={13} style={{ marginLeft: 'auto', color: 'var(--text-tertiary)' }} />}
+                </button>
+                {/* Individual invoice rows */}
+                <div style={{ borderTop: '1px solid var(--surface-border)' }}>
+                  {group.invoices.map(hit => (
+                    <button
+                      key={hit.invoiceId}
+                      onClick={() => navigate(hit.supplierId ? `/supplier-ledger/${hit.supplierId}?tab=invoices` : `/supplier-invoice?id=${hit.invoiceId}`)}
+                      style={{ width: '100%', display: 'flex', alignItems: 'center', gap: '0.75rem', padding: '0.45rem 0.85rem 0.45rem 1.75rem', background: 'none', border: 'none', borderTop: '1px solid var(--surface-border)', cursor: 'pointer', textAlign: 'left', transition: 'background 0.12s' }}
+                      onMouseEnter={e => (e.currentTarget.style.background = 'hsla(220,70%,55%,0.06)')}
+                      onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}
+                    >
+                      <FileText size={12} color="#4f8ef7" style={{ flexShrink: 0 }} />
+                      <span style={{ fontWeight: 600, fontSize: '0.8rem', color: '#4f8ef7', whiteSpace: 'nowrap' }}>
+                        {hit.invoiceNumber}
+                      </span>
+                      {hit.invoiceDate && (
+                        <span style={{ fontSize: '0.75rem', color: 'var(--text-tertiary)', whiteSpace: 'nowrap' }}>
+                          {fmtDate(hit.invoiceDate)}
+                        </span>
+                      )}
+                      {hit.matchedProducts.length > 0 && (
+                        <span style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                          · {hit.matchedProducts.join(', ')}
+                        </span>
+                      )}
+                      <ChevronRight size={12} style={{ marginLeft: 'auto', color: 'var(--text-tertiary)', flexShrink: 0 }} />
+                    </button>
+                  ))}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* Table */}
       {loading ? (
@@ -334,7 +464,7 @@ export default function SupplierLedgerPage() {
           ) : (
             <>
               <div style={{ fontWeight: 600, marginBottom: '0.25rem' }}>No suppliers match "{search}"</div>
-              <div style={{ fontSize: '0.82rem' }}>Try a different name, phone or email.</div>
+              <div style={{ fontSize: '0.82rem' }}>Try a different name, phone, email, product or invoice number.</div>
             </>
           )}
         </div>

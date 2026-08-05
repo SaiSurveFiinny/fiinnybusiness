@@ -243,6 +243,7 @@ export default function SupplierLedgerDetailPage() {
 
   // Account Statement / Purchase Orders / Payments / Supplier Invoices / Price List / Reminders — single tabbed view.
   const [activeTab, setActiveTab] = useState<'account' | 'purchaseOrders' | 'payments' | 'invoices' | 'priceList' | 'reminders'>('account');
+  const [stmtDir, setStmtDir] = useState<'asc' | 'desc'>('desc'); // newest first by default
 
   // Supplier Purchase Invoices (read-only list; created/edited via SupplierInvoicePage).
   const [invoices, setInvoices] = useState<SupplierInvoice[]>([]);
@@ -736,6 +737,7 @@ export default function SupplierLedgerDetailPage() {
   }, [pos, payments]);
 
   const statementRows = useMemo(() => {
+    // Always accumulate balance oldest → newest (chronological is the only correct direction).
     const entries = [
       ...pos.map(po => ({ date: poDateVal(po), particulars: `PO ${po.poNumber ?? po.id.slice(0, 6)}${po.notes ? ' — ' + po.notes : ''}`, debit: poAmount(po), credit: 0 })),
       ...invoices.map(inv => ({ date: (inv.invoiceDate ?? inv.createdAt) as any, particulars: `Invoice ${inv.supplierInvoiceNumber || inv.internalPurchaseId || inv.id.slice(0, 6)}`, debit: Number(inv.netAmount) || 0, credit: 0 })),
@@ -744,6 +746,11 @@ export default function SupplierLedgerDetailPage() {
     let bal = 0;
     return entries.map(e => { bal += e.debit - e.credit; return { ...e, balance: bal }; });
   }, [pos, invoices, payments]);
+
+  const displayedStatementRows = useMemo(
+    () => stmtDir === 'desc' ? [...statementRows].reverse() : statementRows,
+    [statementRows, stmtDir],
+  );
 
   // Purchase Orders + Supplier Invoices a payment can optionally be tagged against.
   const applicableDocs = useMemo<ApplicableDoc[]>(() => [
@@ -1101,16 +1108,21 @@ export default function SupplierLedgerDetailPage() {
             <div style={{ marginTop: '1rem', overflowX: 'auto' }}>
               <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.8rem' }}>
                 <thead>
-                  <tr style={{ color: 'var(--text-tertiary)', textAlign: 'left' }}>
-                    <th style={{ padding: '0.4rem 0.5rem', fontWeight: 600, whiteSpace: 'nowrap' }}>Date</th>
-                    <th style={{ padding: '0.4rem 0.5rem', fontWeight: 600 }}>Particulars</th>
-                    <th style={{ padding: '0.4rem 0.5rem', fontWeight: 600, textAlign: 'right' }}>Debit (PO)</th>
-                    <th style={{ padding: '0.4rem 0.5rem', fontWeight: 600, textAlign: 'right' }}>Credit (Paid)</th>
-                    <th style={{ padding: '0.4rem 0.5rem', fontWeight: 600, textAlign: 'right' }}>Balance</th>
+                  <tr style={{ color: 'var(--text-tertiary)', textAlign: 'left', borderBottom: '2px solid var(--surface-border)', background: 'var(--surface-raised)' }}>
+                    <th
+                      onClick={() => setStmtDir(d => d === 'asc' ? 'desc' : 'asc')}
+                      style={{ padding: '0.5rem 0.5rem', fontWeight: 600, whiteSpace: 'nowrap', cursor: 'pointer', userSelect: 'none', color: 'var(--primary-light)' }}
+                    >
+                      Date {stmtDir === 'desc' ? '↓' : '↑'}
+                    </th>
+                    <th style={{ padding: '0.5rem 0.5rem', fontWeight: 600 }}>Particulars</th>
+                    <th style={{ padding: '0.5rem 0.5rem', fontWeight: 600, textAlign: 'right' }}>Debit (PO)</th>
+                    <th style={{ padding: '0.5rem 0.5rem', fontWeight: 600, textAlign: 'right' }}>Credit (Paid)</th>
+                    <th style={{ padding: '0.5rem 0.5rem', fontWeight: 600, textAlign: 'right' }}>Balance</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {statementRows.map((r, i) => (
+                  {displayedStatementRows.map((r, i) => (
                     <tr key={i} style={{ borderTop: '1px solid var(--surface-border)' }}>
                       <td style={{ padding: '0.4rem 0.5rem', whiteSpace: 'nowrap', color: 'var(--text-tertiary)' }}>{fmtDate(r.date)}</td>
                       <td style={{ padding: '0.4rem 0.5rem' }}>{r.particulars}</td>
