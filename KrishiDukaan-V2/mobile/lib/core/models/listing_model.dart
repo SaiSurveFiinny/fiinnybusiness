@@ -25,6 +25,12 @@ class ListingModel {
   final double? gstRate;
   final DateTime? updatedAt;
 
+  /// Product-detail-page view count, bumped by `ProductDetailScreen` (and by
+  /// web's `trackProductClick`) on the SAME doc — the canonical product page
+  /// a shopper actually opens. Summed across a seller's own listings for the
+  /// Profile mini-dashboard's "Views" stat.
+  final int clicks;
+
   final String collectionPath;
 
   // Set client-side after Haversine calculation
@@ -55,6 +61,7 @@ class ListingModel {
     this.gstRate,
     this.updatedAt,
     this.distanceKm,
+    this.clicks = 0,
     this.collectionPath = 'products',
   });
 
@@ -127,6 +134,7 @@ class ListingModel {
       gstApplicable: d['gstApplicable'] as bool?,
       gstRate: (d['gstRate'] as num?)?.toDouble(),
       updatedAt: updatedAt,
+      clicks: (d['clicks'] as num?)?.toInt() ?? 0,
     );
   }
 

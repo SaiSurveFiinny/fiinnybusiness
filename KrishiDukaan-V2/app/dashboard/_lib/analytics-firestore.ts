@@ -172,7 +172,12 @@ export async function fetchRetailerAnalytics(
 
   const orderSnaps = await Promise.all(
     ["sellerPhone", "sellerId"].flatMap((field) =>
-      Array.from(phoneCandidates).map((idVal) =>
+      // Real orders (especially older/web-checkout ones) store the seller's
+      // Firebase Auth UID in sellerId, not a phone — phoneCandidates alone
+      // never matched them, so totalOrders/totalRevenue silently read zero
+      // for every seller. allCandidates (uid + phone) matches what the
+      // products query above already does.
+      allCandidates.map((idVal) =>
         getDocs(query(collection(db, "orders"), where(field, "==", idVal))).catch(
           (err) => {
             errors.push(err);

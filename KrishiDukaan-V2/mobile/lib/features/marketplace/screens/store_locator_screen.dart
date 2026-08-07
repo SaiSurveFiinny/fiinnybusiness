@@ -13,6 +13,8 @@ import '../../../core/widgets/app_brand_icon.dart';
 import '../../../core/widgets/app_top_bar.dart';
 import '../../../core/utils/geo_utils.dart';
 import '../providers/marketplace_provider.dart';
+import '../providers/selected_location_provider.dart';
+import '../widgets/location_picker_sheet.dart';
 import '../widgets/review_sheet.dart';
 import '../widgets/route_planner_sheet.dart';
 import '../widgets/store_detail_sheet.dart';
@@ -89,6 +91,11 @@ class _StoreLocatorScreenState extends ConsumerState<StoreLocatorScreen> {
   String? _selectedStoreId;
   String _searchQuery = '';
 
+  // Ephemeral (resets each app launch) — the persisted part of the location
+  // preference is the area itself (`selectedLocationProvider`), not the
+  // radius. null = "All", no distance cutoff.
+  double? _radiusKm = 50;
+
   // Whether the map is expanded (full screen overlay)
   bool _mapExpanded = false;
 
@@ -128,6 +135,29 @@ class _StoreLocatorScreenState extends ConsumerState<StoreLocatorScreen> {
     _stripMapController?.dispose();
     _overlayMapController?.dispose();
     super.dispose();
+  }
+
+  /// Declutters the map/list to stores within [radiusKm] of (lat, lng).
+  /// [keepId] (the deep-link focus store, if any) always survives regardless
+  /// of distance — a store someone was specifically directed to must never
+  /// be silently hidden by an unrelated area/radius choice. Stores with no
+  /// usable location are kept when radiusKm is null (today's behavior) but
+  /// dropped once a numeric radius is active, since there's no way to verify
+  /// they're actually in range.
+  List<StoreModel> _applyRadius(
+    List<StoreModel> stores,
+    double lat,
+    double lng,
+    double? radiusKm, {
+    String? keepId,
+  }) {
+    if (radiusKm == null) return stores;
+    return stores.where((s) {
+      if (keepId != null && s.id == keepId) return true;
+      if (!s.hasLocation) return false;
+      final d = s.distanceKm ?? GeoUtils.distanceKm(lat, lng, s.lat!, s.lng!);
+      return d <= radiusKm;
+    }).toList();
   }
 
   List<StoreModel> _filteredStores(List<StoreModel> stores) {
@@ -190,11 +220,17 @@ class _StoreLocatorScreenState extends ConsumerState<StoreLocatorScreen> {
   Widget build(BuildContext context) {
     final storesAsync = ref.watch(storesByDistanceProvider);
     final locationAsync = ref.watch(loc.locationProvider);
+    final manualLoc = ref.watch(selectedLocationProvider);
 
-    // Always use a usable center — don't block on location
-    final userLat = locationAsync.value?.lat ?? AppConfig.defaultLat;
-    final userLng = locationAsync.value?.lng ?? AppConfig.defaultLng;
-    final locationLoading = locationAsync.isLoading;
+    // Always use a usable center — don't block on location. A manually
+    // picked browsing area (if set) always wins over live GPS.
+    final userLat = manualLoc?.lat ?? locationAsync.value?.lat ?? AppConfig.defaultLat;
+    final userLng = manualLoc?.lng ?? locationAsync.value?.lng ?? AppConfig.defaultLng;
+    final locationLoading = manualLoc == null && locationAsync.isLoading;
+    final locationNameAsync = ref.watch(loc.locationNameProvider);
+    final areaLabel = manualLoc?.label ??
+        locationNameAsync.value ??
+        (locationLoading ? 'Locating…' : 'Current Location');
 
     return Scaffold(
       backgroundColor: AppColors.background,
@@ -244,7 +280,17 @@ class _StoreLocatorScreenState extends ConsumerState<StoreLocatorScreen> {
           final allStores = focus != null && !rawStores.any((s) => s.id == focus.id)
               ? [...rawStores, focus]
               : rawStores;
-          final stores = _filteredStores(allStores);
+          // Radius declutters both the map and the list; the deep-link focus
+          // store (if any) always survives it. Text search only affects the
+          // list, matching the existing behavior where the map ignores it.
+          final radiusFiltered = _applyRadius(
+            allStores,
+            userLat,
+            userLng,
+            _radiusKm,
+            keepId: focus?.id,
+          );
+          final stores = _filteredStores(radiusFiltered);
           _visibleStores = stores;
           final selected = stores.firstWhere(
             (s) => s.id == _selectedStoreId,
@@ -263,7 +309,7 @@ class _StoreLocatorScreenState extends ConsumerState<StoreLocatorScreen> {
                   SizedBox(
                     height: 240,
                     child: _buildMap(
-                      stores: allStores,
+                      stores: radiusFiltered,
                       userLat: userLat,
                       userLng: userLng,
                       locationLoading: locationLoading,
@@ -277,6 +323,42 @@ class _StoreLocatorScreenState extends ConsumerState<StoreLocatorScreen> {
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
+                        // ── Location chip ─ tap to pick a different area or
+                        // switch back to current location.
+                        InkWell(
+                          onTap: () =>
+                              showLocationPickerSheet(context: context, ref: ref),
+                          borderRadius: BorderRadius.circular(10),
+                          child: Padding(
+                            padding: const EdgeInsets.symmetric(vertical: 6),
+                            child: Row(
+                              children: [
+                                const Icon(
+                                  Icons.location_on_outlined,
+                                  size: 16,
+                                  color: AppColors.primary,
+                                ),
+                                const SizedBox(width: 6),
+                                Expanded(
+                                  child: Text(
+                                    areaLabel,
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: AppTextStyles.bodySmall.copyWith(
+                                      color: AppColors.primary,
+                                      fontWeight: FontWeight.w700,
+                                    ),
+                                  ),
+                                ),
+                                const Icon(
+                                  Icons.expand_more,
+                                  size: 16,
+                                  color: AppColors.primary,
+                                ),
+                              ],
+                            ),
+                          ),
+                        ),
                         TextField(
                           controller: _searchCtrl,
                           onChanged: (v) => setState(() => _searchQuery = v),
@@ -318,9 +400,39 @@ class _StoreLocatorScreenState extends ConsumerState<StoreLocatorScreen> {
                             fillColor: AppColors.surfaceVariant,
                           ),
                         ),
+                        const SizedBox(height: 8),
+                        // ── Radius chips ─ purely local/instant filter, no
+                        // network round-trip.
+                        Wrap(
+                          spacing: 8,
+                          children: [
+                            _RadiusChip(
+                              label: '25 km',
+                              selected: _radiusKm == 25,
+                              onTap: () => setState(() => _radiusKm = 25),
+                            ),
+                            _RadiusChip(
+                              label: '50 km',
+                              selected: _radiusKm == 50,
+                              onTap: () => setState(() => _radiusKm = 50),
+                            ),
+                            _RadiusChip(
+                              label: '100 km',
+                              selected: _radiusKm == 100,
+                              onTap: () => setState(() => _radiusKm = 100),
+                            ),
+                            _RadiusChip(
+                              label: 'All',
+                              selected: _radiusKm == null,
+                              onTap: () => setState(() => _radiusKm = null),
+                            ),
+                          ],
+                        ),
                         const SizedBox(height: 6),
                         Text(
-                          '${stores.length} store${stores.length != 1 ? 's' : ''} found',
+                          _radiusKm == null
+                              ? '${stores.length} store${stores.length != 1 ? 's' : ''} found'
+                              : '${stores.length} store${stores.length != 1 ? 's' : ''} found within ${_radiusKm!.round()} km',
                           style: AppTextStyles.caption.copyWith(
                             color: AppColors.onSurfaceVariant,
                             fontWeight: FontWeight.w700,
@@ -346,13 +458,30 @@ class _StoreLocatorScreenState extends ConsumerState<StoreLocatorScreen> {
                                 ),
                                 const SizedBox(height: 12),
                                 Text(
-                                  _searchQuery.isEmpty
-                                      ? 'No stores available'
-                                      : 'No stores match "$_searchQuery"',
+                                  _searchQuery.isNotEmpty
+                                      ? 'No stores match "$_searchQuery"'
+                                      : (_radiusKm != null && allStores.isNotEmpty)
+                                          // The radius, not an empty DB, is
+                                          // why nothing shows — always give a
+                                          // one-tap way back to a non-empty
+                                          // view instead of a dead end.
+                                          ? 'No stores within ${_radiusKm!.round()} km of $areaLabel'
+                                          : 'No stores available',
+                                  textAlign: TextAlign.center,
                                   style: AppTextStyles.bodyMedium.copyWith(
                                     color: AppColors.onSurfaceVariant,
                                   ),
                                 ),
+                                if (_searchQuery.isEmpty &&
+                                    _radiusKm != null &&
+                                    allStores.isNotEmpty) ...[
+                                  const SizedBox(height: 12),
+                                  OutlinedButton(
+                                    onPressed: () =>
+                                        setState(() => _radiusKm = null),
+                                    child: const Text('Show all stores'),
+                                  ),
+                                ],
                               ],
                             ),
                           )
@@ -431,7 +560,7 @@ class _StoreLocatorScreenState extends ConsumerState<StoreLocatorScreen> {
                       _animateTo(c, focused.lat!, focused.lng!, 15);
                     }
                   },
-                  stores: allStores,
+                  stores: radiusFiltered,
                   userLat: userLat,
                   userLng: userLng,
                   selectedStoreId: _selectedStoreId,
@@ -707,6 +836,38 @@ class _MapOverlay extends StatelessWidget {
           ],
         ),
       ),
+    );
+  }
+}
+
+// ── Radius chip ───────────────────────────────────────────────────────────────
+
+class _RadiusChip extends StatelessWidget {
+  final String label;
+  final bool selected;
+  final VoidCallback onTap;
+  const _RadiusChip({
+    required this.label,
+    required this.selected,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return ChoiceChip(
+      label: Text(label),
+      selected: selected,
+      onSelected: (_) => onTap(),
+      showCheckmark: false,
+      labelStyle: AppTextStyles.caption.copyWith(
+        color: selected ? Colors.white : AppColors.onSurfaceVariant,
+        fontWeight: FontWeight.w700,
+      ),
+      backgroundColor: AppColors.surfaceVariant,
+      selectedColor: AppColors.primary,
+      padding: const EdgeInsets.symmetric(horizontal: 4),
+      materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+      visualDensity: VisualDensity.compact,
     );
   }
 }
