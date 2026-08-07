@@ -19,6 +19,7 @@ import { db } from '../firebase';
 import { useAuth } from '../contexts/AuthContext';
 import { getTenantCollection, getTenantDoc } from '../utils/tenantPath';
 import { logAudit } from '../utils/auditLog';
+import { softDelete } from '../utils/softDelete';
 import SupplierFormModal, { type SupplierLike } from '../components/SupplierFormModal';
 import PurchaseOrderModal, { type POForEdit } from '../components/PurchaseOrderModal';
 import PaymentModal, { type PaymentForEdit, type ApplicableDoc } from '../components/PaymentModal';
@@ -354,8 +355,10 @@ export default function SupplierLedgerDetailPage() {
       });
 
       const posList = Array.from(posDocsMap.values())
+        .filter((p: any) => !p.deleted)
         .sort((a, b) => sortVal(poDateVal(b)) - sortVal(poDateVal(a)));
       const pmtsList = Array.from(pmtDocsMap.values())
+        .filter((p: any) => !p.deleted)
         .sort((a, b) => sortVal(pmtEffectiveDate(b)) - sortVal(pmtEffectiveDate(a)));
       const cmtsList = cmtsSnap.docs
         .map(d => ({ id: d.id, ...d.data() } as Comment))
@@ -365,6 +368,7 @@ export default function SupplierLedgerDetailPage() {
         .sort((a, b) => (a.status === 'done' ? 1 : 0) - (b.status === 'done' ? 1 : 0) || sortVal(b.createdAt) - sortVal(a.createdAt));
       const invList = invSnap.docs
         .map(d => ({ id: d.id, ...d.data() } as SupplierInvoice))
+        .filter((inv: any) => !inv.deleted)
         .sort((a, b) => sortVal(b.createdAt) - sortVal(a.createdAt));
 
       // Same formula as utils/supplierLedgerSync.ts's syncSupplierTotals — kept
@@ -581,10 +585,18 @@ export default function SupplierLedgerDetailPage() {
 
   const handleDeletePO = async (po: PO) => {
     if (!tenantId) return;
-    if (!window.confirm(`Delete PO ${po.poNumber ?? ''} (${inr(poAmount(po))})? This cannot be undone.`)) return;
+    if (!window.confirm(`Delete PO ${po.poNumber ?? ''} (${inr(poAmount(po))})? It will be moved to trash and recoverable for 30 days.`)) return;
     try {
-      await deleteDoc(getTenantDoc(db, tenantId, 'purchaseOrders', po.id));
-      logAudit({ db, tenantId: tenantId!, userId: currentUser?.uid || '', userName: userName || currentUser?.email || 'Unknown', userRole: userRole || 'unknown', module: 'Purchase Orders', action: 'Delete', entityName: po.poNumber ?? po.id, entityId: po.id, description: `Purchase order deleted · ${po.poNumber ?? po.id} · Supplier: ${supplier?.name}` });
+      await softDelete({
+        db, tenantId: tenantId!,
+        collectionName: 'purchaseOrders',
+        docId: po.id,
+        userId: currentUser?.uid || '',
+        userName: userName || currentUser?.email || 'Unknown',
+        userRole: userRole || 'unknown',
+        module: 'Purchase Orders',
+        entityName: po.poNumber ?? po.id,
+      });
       await load(true);
     }
     catch (e: any) { alert(e.message); }
@@ -614,22 +626,38 @@ export default function SupplierLedgerDetailPage() {
 
   const handleDeletePayment = async (pmt: Payment) => {
     if (!tenantId) return;
-    if (!window.confirm(`Delete payment of ${inr(pmt.amount)} (${fmtDate(pmt.date)})? This cannot be undone.`)) return;
+    if (!window.confirm(`Delete payment of ${inr(pmt.amount)} (${fmtDate(pmt.date)})? It will be moved to trash and recoverable for 30 days.`)) return;
     try {
-      await deleteDoc(getTenantDoc(db, tenantId, 'supplierPayments', pmt.id));
-      logAudit({ db, tenantId: tenantId!, userId: currentUser?.uid || '', userName: userName || currentUser?.email || 'Unknown', userRole: userRole || 'unknown', module: 'Supplier Ledger', action: 'Delete', entityName: supplier?.name || id || '', entityId: pmt.id, description: `Supplier payment deleted · ${inr(pmt.amount)} · ${fmtDate(pmt.date)}`, before: { amount: pmt.amount, paymentMethod: pmt.paymentMethod } });
+      await softDelete({
+        db, tenantId: tenantId!,
+        collectionName: 'supplierPayments',
+        docId: pmt.id,
+        userId: currentUser?.uid || '',
+        userName: userName || currentUser?.email || 'Unknown',
+        userRole: userRole || 'unknown',
+        module: 'Supplier Ledger',
+        entityName: `Payment ${inr(pmt.amount)} · ${supplier?.name ?? ''}`,
+      });
       await load(true);
     }
     catch (e: any) { alert(e.message); }
   };
 
-  // ── Supplier Invoice delete (confirmation modal → deleteDoc → reload) ─────────
+  // ── Supplier Invoice delete (confirmation modal → softDelete → reload) ────────
   const handleDeleteInvoice = async (inv: SupplierInvoice) => {
     if (!tenantId) return;
     setDeletingInv(true);
     try {
-      await deleteDoc(getTenantDoc(db, tenantId, 'supplierInvoices', inv.id));
-      logAudit({ db, tenantId: tenantId!, userId: currentUser?.uid || '', userName: userName || currentUser?.email || 'Unknown', userRole: userRole || 'unknown', module: 'Supplier Ledger', action: 'Delete', entityName: supplier?.name || id || '', entityId: inv.id, description: `Supplier invoice deleted · Supplier: ${supplier?.name}` });
+      await softDelete({
+        db, tenantId: tenantId!,
+        collectionName: 'supplierInvoices',
+        docId: inv.id,
+        userId: currentUser?.uid || '',
+        userName: userName || currentUser?.email || 'Unknown',
+        userRole: userRole || 'unknown',
+        module: 'Supplier Ledger',
+        entityName: (inv as any).invoiceNumber || `Supplier Invoice · ${supplier?.name ?? ''}`,
+      });
       setInvToDelete(null);
       await load(true);
     } catch (e: any) { alert(e.message); }

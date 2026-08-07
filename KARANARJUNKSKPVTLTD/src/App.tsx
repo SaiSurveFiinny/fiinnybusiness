@@ -93,6 +93,7 @@ const CareOffReconcilePage    = lazy(() => import('./pages/CareOffReconcilePage'
 const SupplierInvoicePage     = lazy(() => import('./pages/SupplierInvoicePage'));
 const DataSecurityPage        = lazy(() => import('./pages/DataSecurityPage'));
 const SalesTargetsPage        = lazy(() => import('./pages/SalesTargetsPage'));
+const SalesTargetsAdminPage   = lazy(() => import('./pages/SalesTargetsAdminPage'));
 const TeamPerformancePage     = lazy(() => import('./pages/TeamPerformancePage'));
 const ExpensePage             = lazy(() => import('./pages/ExpensePage'));
 const NotFoundPage            = lazy(() => import('./pages/NotFoundPage'));
@@ -210,19 +211,20 @@ function Layout({ children, currentTheme, toggleTheme }: { children: React.React
   });
 
   const adminItems = [
-    { path: '/admin', icon: <ShieldAlert size={17} />, label: t('common.manage_users'), screenKey: 'admin' },
-    { path: '/admin/team-performance', icon: <Target size={17} />, label: 'Team Performance', screenKey: 'admin' },
-    { path: '/admin/data-security', icon: <Lock size={17} />, label: 'Data Security', screenKey: 'admin' },
-    { path: '/admin/manage-roles', icon: <ShieldAlert size={17} />, label: 'Role Matrix', screenKey: 'admin' },
-    { path: '/admin/audit-log', icon: <Shield size={17} />, label: 'Audit Log', screenKey: 'audit_log' },
-    { path: '/admin/manage-retailers', icon: <Users size={17} />, label: t('common.manage_retailers'), screenKey: 'manage_retailers' },
-    { path: '/admin/manage-store', icon: <Store size={17} />, label: 'Manage Store', screenKey: 'manage_store' },
-    { path: '/admin/manufacturers', icon: <Factory size={17} />, label: 'Manufacturers', screenKey: 'manufacturers' },
-    { path: '/admin/invoice-templates', icon: <Layers size={17} />, label: 'Invoice Templates', screenKey: 'invoice_templates' },
-    { path: '/admin/invoice-settings', icon: <Palette size={17} />, label: 'Invoice Branding', screenKey: 'invoice_settings' },
-    { path: '/admin/schema-builder', icon: <Database size={17} />, label: 'UI Layout Builder', screenKey: 'schema_builder' },
-    { path: '/settings', icon: <Settings size={17} />, label: t('common.settings'), screenKey: 'settings' },
-    { path: '/krishidukan', icon: <Package size={17} />, label: '🌾 KrishiDukan', screenKey: 'krishidukan' },
+    { path: '/admin',                      icon: <ShieldAlert size={17} />, label: t('common.manage_users'),          screenKey: 'admin' },
+    { path: '/admin/audit-log',            icon: <Shield size={17} />,      label: 'Audit Log',                       screenKey: 'audit_log' },
+    { path: '/admin/team-performance',     icon: <Target size={17} />,      label: 'Team Performance',                screenKey: 'admin' },
+    { path: '/admin/sales-targets',        icon: <Target size={17} />,      label: 'Sales Target',                    screenKey: 'admin' },
+    { path: '/admin/data-security',        icon: <Lock size={17} />,        label: 'Data Security',                   screenKey: 'admin' },
+    { path: '/admin/manage-roles',         icon: <ShieldAlert size={17} />, label: 'Role Matrix',                     screenKey: 'admin' },
+    { path: '/admin/manage-retailers',     icon: <Users size={17} />,       label: t('common.manage_retailers'),      screenKey: 'manage_retailers' },
+    { path: '/admin/manage-store',         icon: <Store size={17} />,       label: 'Manage Store',                    screenKey: 'manage_store' },
+    { path: '/admin/manufacturers',        icon: <Factory size={17} />,     label: 'Manufacturers',                   screenKey: 'manufacturers' },
+    { path: '/admin/invoice-templates',    icon: <Layers size={17} />,      label: 'Invoice Templates',               screenKey: 'invoice_templates' },
+    { path: '/admin/invoice-settings',     icon: <Palette size={17} />,     label: 'Invoice Branding',                screenKey: 'invoice_settings' },
+    { path: '/admin/schema-builder',       icon: <Database size={17} />,    label: 'UI Layout Builder',               screenKey: 'schema_builder' },
+    { path: '/settings',                   icon: <Settings size={17} />,    label: t('common.settings'),              screenKey: 'settings' },
+    { path: '/krishidukan',                icon: <Package size={17} />,     label: '🌾 KrishiDukan',                  screenKey: 'krishidukan' },
   ].filter(item => {
     if (userRole && permissions && !permissions[userRole]?.[item.screenKey as AppScreen]) return false;
     return true;
@@ -581,6 +583,7 @@ function AppRoutes() {
       <Route path="/admin/schema-builder" element={<ProtectedRoute requireRole={['admin', 'analyst']} appScreen="schema_builder"><SchemaBuilderPage /></ProtectedRoute>} />
       <Route path="/admin/invoice-templates" element={<ProtectedRoute requireRole={['admin', 'analyst']} appScreen="invoice_templates"><InvoiceTemplateBuilderPage /></ProtectedRoute>} />
       <Route path="/admin/team-performance" element={<ProtectedRoute requireRole={['admin']} appScreen="admin"><TeamPerformancePage /></ProtectedRoute>} />
+      <Route path="/admin/sales-targets" element={<ProtectedRoute requireRole={['admin']} appScreen="admin"><SalesTargetsAdminPage /></ProtectedRoute>} />
 
       {/* Help Center */}
       <Route path="/help" element={<ProtectedRoute><HelpCenterPage /></ProtectedRoute>} />

@@ -1,7 +1,8 @@
 import { useState, useEffect } from 'react';
 import { Users, Edit2, Trash2, Search, MapPin, Phone, Mail, X, Save, Loader2 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
-import { query, onSnapshot, updateDoc, deleteDoc } from 'firebase/firestore';
+import { query, onSnapshot, updateDoc } from 'firebase/firestore';
+import { softDelete } from '../utils/softDelete';
 import { db } from '../firebase';
 import { useAuth } from '../contexts/AuthContext';
 import { getTenantCollection, getTenantDoc } from '../utils/tenantPath';
@@ -62,10 +63,9 @@ export default function ManageRetailersPage() {
         if (!tenantId) return;
         const q = query(getTenantCollection(db, tenantId, 'retailers'));
         const unsubscribe = onSnapshot(q, (snapshot) => {
-            const data = snapshot.docs.map(doc => ({
-                id: doc.id,
-                ...doc.data()
-            })) as Retailer[];
+            const data = snapshot.docs
+                .map(doc => ({ id: doc.id, ...doc.data() }))
+                .filter((r: any) => !r.deleted) as Retailer[];
             setRetailers(data);
             setLoading(false);
         });
@@ -122,8 +122,16 @@ export default function ManageRetailersPage() {
         if (!tenantId || !window.confirm(t('manage_retailers.delete_confirm'))) return;
         const retailer = retailers.find(r => r.id === id);
         try {
-            await deleteDoc(getTenantDoc(db, tenantId, 'retailers', id));
-            logAudit({ db, tenantId, userId: currentUser?.uid || '', userName: userName || currentUser?.email || 'Unknown', userRole: userRole || 'unknown', module: 'Manage Retailers', action: 'Delete', entityName: retailer?.name || id, entityId: id, description: `Retailer deleted`, before: retailer ? { name: retailer.name, number: retailer.number, district: retailer.district } : undefined });
+            await softDelete({
+                db, tenantId,
+                collectionName: 'retailers',
+                docId: id,
+                userId: currentUser?.uid || '',
+                userName: userName || currentUser?.email || 'Unknown',
+                userRole: userRole || 'unknown',
+                module: 'Manage Retailers',
+                entityName: retailer?.name || id,
+            });
         } catch (error) {
             console.error("Error deleting retailer:", error);
             alert(t('manage_retailers.delete_error'));

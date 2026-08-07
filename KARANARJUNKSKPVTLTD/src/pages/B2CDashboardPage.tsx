@@ -24,6 +24,7 @@ interface SalesOrder {
     modeOfPayment?: string;
     status?: string;
     invoiceType?: string;
+    invoiceDate?: string;
     createdAt?: any;
     lineItems?: any[];
 }
@@ -57,17 +58,17 @@ export default function B2CDashboardPage() {
 
         const fetchData = async () => {
             try {
+                // orderBy invoiceDate so KPIs reflect the business transaction date, not
+                // the document creation timestamp.
                 const snap = await getDocs(query(
                     getTenantCollection(db, tenantId, 'salesOrders'),
-                    orderBy('createdAt', 'desc'),
+                    orderBy('invoiceDate', 'desc'),
                     limit(500)
                 ));
 
                 const now = new Date();
-                // Use local midnight for both Today and This Month so they share the same timezone baseline
-                const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-                const startOfTomorrow = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1);
-                const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+                const todayStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+                const startOfMonthStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-01`;
 
                 let totalOrders = 0, totalRevenue = 0;
                 let todayRevenue = 0, todayCount = 0;
@@ -83,16 +84,18 @@ export default function B2CDashboardPage() {
                     if (data.invoiceType === 'B2B_GST') return;
 
                     const amount = Number(data.grandTotal ?? data.netAmount ?? data.totalAmount ?? data.amount ?? 0);
-                    const ts: Date = data.createdAt?.toDate ? data.createdAt.toDate() : new Date(data.createdAt || 0);
-                    // Local-time date string for chart bucketing
-                    const dateStr = `${ts.getFullYear()}-${String(ts.getMonth() + 1).padStart(2, '0')}-${String(ts.getDate()).padStart(2, '0')}`;
+                    // Use invoiceDate (the user-set business date) for all KPI filtering and
+                    // chart bucketing. Fall back to createdAt only for legacy documents.
+                    const dateStr = (typeof data.invoiceDate === 'string' && data.invoiceDate)
+                        ? data.invoiceDate
+                        : (() => { const ts = data.createdAt?.toDate ? data.createdAt.toDate() : new Date(data.createdAt || 0); return `${ts.getFullYear()}-${String(ts.getMonth() + 1).padStart(2, '0')}-${String(ts.getDate()).padStart(2, '0')}`; })();
 
                     fetchedOrders.push({ ...data, id: doc.id });
                     totalOrders++;
                     totalRevenue += amount;
 
-                    if (ts >= startOfToday && ts < startOfTomorrow) { todayRevenue += amount; todayCount++; }
-                    if (ts >= startOfMonth) {
+                    if (dateStr === todayStr) { todayRevenue += amount; todayCount++; }
+                    if (dateStr >= startOfMonthStr) {
                         monthRevenue += amount;
                         monthCount++;
                         const mode = (data.modeOfPayment || '').toLowerCase();

@@ -36,6 +36,7 @@ export type AuditAction =
     | 'Create'
     | 'Update'
     | 'Delete'
+    | 'Restore'
     | 'Void'
     | 'Record Payment'
     | 'Link Payment'

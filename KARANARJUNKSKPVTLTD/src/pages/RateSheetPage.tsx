@@ -5,7 +5,8 @@ import {
   Package, Plus, Edit2, Trash2, Loader2, Save, X, Download,
   FileSpreadsheet, FileDown, Search, AlertTriangle,
 } from 'lucide-react';
-import { query, onSnapshot, addDoc, updateDoc, deleteDoc, serverTimestamp, getDocs, where } from 'firebase/firestore';
+import { query, onSnapshot, addDoc, updateDoc, serverTimestamp, getDocs, where } from 'firebase/firestore';
+import { softDelete } from '../utils/softDelete';
 import { db } from '../firebase';
 import { useAuth } from '../contexts/AuthContext';
 import { getTenantCollection, getTenantDoc } from '../utils/tenantPath';
@@ -119,7 +120,9 @@ export default function RateSheetPage() {
     const unsub1 = onSnapshot(
       query(getTenantCollection(db, tenantId, 'products')),
       snap => {
-        const data = snap.docs.map(d => ({ id: d.id, ...d.data() } as Product));
+        const data = snap.docs
+            .map(d => ({ id: d.id, ...d.data() } as Product))
+            .filter((p: any) => !p.deleted);
         data.sort((a, b) => a.name.localeCompare(b.name));
         setProducts(data);
         setLoading(false);
@@ -296,8 +299,16 @@ export default function RateSheetPage() {
   const handleDelete = async (id: string) => {
     if (!tenantId || !window.confirm('Delete this product from the master catalog?')) return;
     const product = products.find(p => p.id === id);
-    await deleteDoc(getTenantDoc(db, tenantId, 'products', id));
-    logAudit({ db, tenantId, userId: currentUser?.uid || '', userName: userName || currentUser?.email || 'Unknown', userRole: userRole || 'unknown', module: 'Inventory', action: 'Delete', entityName: product?.name || id, entityId: id, description: `Product deleted from catalog`, before: product ? { name: product.name, type: product.type, mfgCompany: product.mfgCompany } : undefined });
+    await softDelete({
+        db, tenantId,
+        collectionName: 'products',
+        docId: id,
+        userId: currentUser?.uid || '',
+        userName: userName || currentUser?.email || 'Unknown',
+        userRole: userRole || 'unknown',
+        module: 'Inventory',
+        entityName: product?.name || id,
+    });
   };
 
   // ── CSV ─────────────────────────────────────────────────────────────────────

@@ -4,7 +4,8 @@ import { useParams, useNavigate } from 'react-router-dom';
 import { ArrowLeft, User, Phone, MapPin, Calendar, MessageCircle, FileText, CheckSquare, ShoppingCart, Loader2, Trash2, Mic, TrendingUp, X, AlertTriangle, FilePen, Printer, PlusCircle, Square, Wallet, Pencil, Paperclip, Link2, Download, Package, Search } from 'lucide-react';
 import { ResponsiveContainer, BarChart, Bar, XAxis, YAxis, Tooltip, CartesianGrid, PieChart, Pie, Cell } from 'recharts';
 import { useTranslation } from 'react-i18next';
-import { getDoc, getDocs, query, orderBy, onSnapshot, addDoc, serverTimestamp, deleteDoc, updateDoc, where, writeBatch, arrayUnion, arrayRemove, doc as fsDoc, collection } from 'firebase/firestore';
+import { getDoc, getDocs, query, orderBy, onSnapshot, addDoc, serverTimestamp, updateDoc, where, writeBatch, arrayUnion, arrayRemove, doc as fsDoc, collection } from 'firebase/firestore';
+import { softDelete } from '../utils/softDelete';
 import { generateRetailerStatement } from '../utils/statementGenerator';
 import { generatePaymentId } from '../utils/paymentIdGenerator';
 import { uploadPaymentProof } from '../utils/uploadPaymentProof';
@@ -305,7 +306,9 @@ export default function WorklistDetailsPage() {
             salesOrdersQuery,
             (snap) => {
                 type SODoc = { id: string; invoiceDate?: string; createdAt?: { seconds?: number }; [key: string]: unknown };
-                const docs: SODoc[] = snap.docs.map(doc => ({ id: doc.id, ...doc.data() } as SODoc));
+                const docs: SODoc[] = snap.docs
+                    .map(doc => ({ id: doc.id, ...doc.data() } as SODoc))
+                    .filter((d: any) => !d.deleted);
                 docs.sort((a, b) => {
                     // Primary: invoiceDate (yyyy-mm-dd string); fallback to createdAt timestamp
                     const aVal = a.invoiceDate ? a.invoiceDate : '';
@@ -413,8 +416,16 @@ export default function WorklistDetailsPage() {
         if (!confirmDelete) return;
 
         try {
-            await deleteDoc(getTenantDoc(db, tenantId!, 'retailers', id));
-            logAudit({ db, tenantId: tenantId!, userId: currentUser?.uid || '', userName: userName || currentUser?.email || 'Unknown', userRole: userRole || 'unknown', module: 'Worklist', action: 'Delete', entityName: retailer?.name || id, entityId: id, description: `Retailer deleted` });
+            await softDelete({
+                db, tenantId: tenantId!,
+                collectionName: 'retailers',
+                docId: id,
+                userId: currentUser?.uid || '',
+                userName: userName || currentUser?.email || 'Unknown',
+                userRole: userRole || 'unknown',
+                module: 'Manage Retailers',
+                entityName: retailer?.name || id,
+            });
             navigate('/worklist');
         } catch (error) {
             console.error('Error deleting retailer:', error);
@@ -565,9 +576,17 @@ export default function WorklistDetailsPage() {
                 outstandingAmount: Math.max(0, (Number(retailer?.outstandingAmount) || 0) - outstandingSub),
             });
 
-            // Delete the order doc (the salesOrders listener removes the card automatically).
-            await deleteDoc(getTenantDoc(db, tenantId, 'salesOrders', so.id));
-            logAudit({ db, tenantId: tenantId!, userId: currentUser?.uid || '', userName: userName || currentUser?.email || 'Unknown', userRole: userRole || 'unknown', module: 'B2B Invoice', action: 'Delete', entityName: so.orderNumber || so.id, entityId: so.id, description: `B2B invoice deleted · ${so.orderNumber || so.id} · ₹${Number(so.grandTotal ?? so.netAmount ?? so.totalAmount ?? 0).toLocaleString('en-IN')}` });
+            // Soft-delete the order doc (financials already reversed above).
+            await softDelete({
+                db, tenantId: tenantId!,
+                collectionName: 'salesOrders',
+                docId: so.id,
+                userId: currentUser?.uid || '',
+                userName: userName || currentUser?.email || 'Unknown',
+                userRole: userRole || 'unknown',
+                module: 'B2B Invoice',
+                entityName: so.orderNumber || so.id,
+            });
 
             // Refresh retailer totals into state (same idiom used across this page).
             const updatedSnap = await getDoc(getTenantDoc(db, tenantId, 'retailers', id));
@@ -622,9 +641,18 @@ export default function WorklistDetailsPage() {
                 outstandingAmount: Math.max(0, (Number(retailer?.outstandingAmount) || 0) - totalOutstandingReversal),
             });
 
-            // Delete all selected order docs
+            // Soft-delete all selected order docs (financials already reversed above)
             await Promise.all(
-                selected.map((so: any) => deleteDoc(getTenantDoc(db, tenantId, 'salesOrders', so.id)))
+                selected.map((so: any) => softDelete({
+                    db, tenantId: tenantId!,
+                    collectionName: 'salesOrders',
+                    docId: so.id,
+                    userId: currentUser?.uid || '',
+                    userName: userName || currentUser?.email || 'Unknown',
+                    userRole: userRole || 'unknown',
+                    module: 'B2B Invoice',
+                    entityName: so.orderNumber || so.id,
+                }))
             );
             logAudit({ db, tenantId: tenantId!, userId: currentUser?.uid || '', userName: userName || currentUser?.email || 'Unknown', userRole: userRole || 'unknown', module: 'B2B Invoice', action: 'Delete', entityName: `${selected.length} invoice(s)`, description: `Bulk deleted: ${selected.map((so: any) => so.orderNumber || so.id).join(', ')}` });
 
