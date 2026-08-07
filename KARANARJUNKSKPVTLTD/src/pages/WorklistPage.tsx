@@ -1,4 +1,5 @@
 import { useState, useEffect, useMemo, useRef, Fragment } from 'react';
+import { useHashTab } from '../hooks/useHashTab';
 import { useNavigate } from 'react-router-dom';
 import {
     Download, FileSpreadsheet, Store, Search, Filter, ArrowUpDown,
@@ -64,28 +65,30 @@ interface ReminderEntry {
 }
 
 // 'purchase-orders' removed from the union — TEMPORARILY DISABLED (2026-07-03), see note above.
-type ModuleTab = 'partners' | 'invoices' | 'payment-reminders' | 'tracking-info' | 'online-orders' /* | 'purchase-orders' */;
+// Tab IDs are URL-hash-safe slugs. Renames: payment-reminders→payments, tracking-info→tracking.
+type ModuleTab = 'partners' | 'invoices' | 'payments' | 'tracking' | 'online-orders' /* | 'purchase-orders' */;
+const VALID_TABS: readonly ModuleTab[] = ['partners', 'invoices', 'payments', 'tracking', 'online-orders'];
 type WLSortCol = 'name' | 'district' | 'salesperson' | 'contact' | 'outstanding' | 'totalSales' | 'date';
 
 const MODULE_TABS: { id: ModuleTab; label: string; icon: React.ReactNode }[] = [
-    { id: 'partners',          label: 'Partners',          icon: <Building2 size={16} /> },
-    { id: 'invoices',          label: 'Invoices',          icon: <FileText size={16} /> },
-    { id: 'payment-reminders', label: 'Payment Reminders', icon: <Bell size={16} /> },
-    { id: 'tracking-info',     label: 'Tracking Info',     icon: <Truck size={16} /> },
-    { id: 'online-orders',     label: 'Online Orders',     icon: <ShoppingCart size={16} /> },
+    { id: 'partners',      label: 'Partners',          icon: <Building2 size={16} /> },
+    { id: 'invoices',      label: 'Invoices',          icon: <FileText size={16} /> },
+    { id: 'payments',      label: 'Payment Reminders', icon: <Bell size={16} /> },
+    { id: 'tracking',      label: 'Tracking Info',     icon: <Truck size={16} /> },
+    { id: 'online-orders', label: 'Online Orders',     icon: <ShoppingCart size={16} /> },
     // TEMPORARILY DISABLED (2026-07-03): Purchase Orders tab hidden until rebuilt — do not delete.
-    // { id: 'purchase-orders',     label: 'Purchase Orders',     icon: <ShoppingCart size={16} /> },
+    // { id: 'purchase-orders', label: 'Purchase Orders', icon: <ShoppingCart size={16} /> },
 ];
 
 // ─── Main Component ───────────────────────────────────────────────────────────
 
 export default function WorklistPage() {
-    const [moduleTab, setModuleTab] = useState<ModuleTab>('partners');
+    const [moduleTab, setModuleTab] = useHashTab<ModuleTab>(VALID_TABS, 'partners', 'fiinny-tab-worklist');
     const { userRole } = useAuth();
 
     const visibleTabs = MODULE_TABS.filter(tab => {
         if (userRole === 'sales' && tab.id === 'online-orders') return false;
-        if (userRole === 'retailer' && (tab.id === 'online-orders' || tab.id === 'tracking-info')) return false;
+        if (userRole === 'retailer' && (tab.id === 'online-orders' || tab.id === 'tracking')) return false;
         return true;
     });
 
@@ -141,13 +144,13 @@ export default function WorklistPage() {
             </div>
 
             {/* ── Tab Content ── */}
-            {moduleTab === 'partners'          && <PartnersTab />}
-            {moduleTab === 'invoices'          && <B2BInvoiceWorklistPage />}
-            {moduleTab === 'payment-reminders' && <PaymentRemindersPage />}
-            {moduleTab === 'tracking-info'     && <DispatchBoardPage />}
-            {moduleTab === 'online-orders'     && <OnlineOrdersPage />}
+            {moduleTab === 'partners'      && <PartnersTab />}
+            {moduleTab === 'invoices'      && <B2BInvoiceWorklistPage />}
+            {moduleTab === 'payments'      && <PaymentRemindersPage />}
+            {moduleTab === 'tracking'      && <DispatchBoardPage />}
+            {moduleTab === 'online-orders' && <OnlineOrdersPage />}
             {/* TEMPORARILY DISABLED (2026-07-03): Purchase Orders tab content hidden until rebuilt — do not delete. */}
-            {/* {moduleTab === 'purchase-orders'     && <PurchaseOrdersPage/>} */}
+            {/* {moduleTab === 'purchase-orders' && <PurchaseOrdersPage />} */}
         </div>
     );
 }
