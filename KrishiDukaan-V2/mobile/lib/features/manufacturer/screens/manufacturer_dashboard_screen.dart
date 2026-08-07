@@ -156,7 +156,7 @@ class _ManufacturerBody extends ConsumerWidget {
                       color: AppColors.secondary,
                     ),
                     _StatCard(
-                      label: 'Catalog Products',
+                      label: 'Inventory Products',
                       value:
                           '${analytics['catalogProducts'] ?? 0}',
                       icon: Icons.inventory_2_outlined,
@@ -304,7 +304,7 @@ class _ManufacturerBody extends ConsumerWidget {
                 ),
                 _ActionTile(
                   icon: Icons.inventory_2_outlined,
-                  label: 'My Catalog',
+                  label: 'My Inventory',
                   onTap: () =>
                       context.push('/dashboard/manufacturer/catalog'),
                 ),
@@ -328,7 +328,7 @@ class _ManufacturerBody extends ConsumerWidget {
                 ),
                 _ActionTile(
                   icon: Icons.local_shipping_outlined,
-                  label: 'Delivery Settings',
+                  label: 'Delivery',
                   onTap: () =>
                       context.push('/dashboard/delivery'),
                 ),

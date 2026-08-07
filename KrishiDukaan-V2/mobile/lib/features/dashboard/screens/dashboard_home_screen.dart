@@ -10,6 +10,7 @@ import '../../../core/utils/currency_utils.dart';
 import '../../notifications/notifications.dart';
 import '../data/dashboard_repository.dart' show SeatStats;
 import '../providers/dashboard_provider.dart';
+import '../widgets/dashboard_drawer.dart';
 import '../../manufacturer/providers/manufacturer_provider.dart';
 
 class DashboardHomeScreen extends ConsumerWidget {
@@ -63,16 +64,20 @@ class _DashboardBody extends ConsumerWidget {
 
     return Scaffold(
       backgroundColor: AppColors.background,
+      drawer: const DashboardDrawer(),
       appBar: AppBar(
         backgroundColor: AppColors.primary,
         foregroundColor: Colors.white,
-        title: Text('Dashboard',
+        title: Text('Overview',
             style: AppTextStyles.heading2.copyWith(color: Colors.white)),
         actions: [
           const NotificationBell(),
           IconButton(
             icon: const Icon(Icons.person_outline, color: Colors.white),
-            onPressed: () => context.go('/profile'),
+            // push (not go) — Profile needs to stay poppable back to
+            // Overview; go() would replace the whole stack and leave no
+            // back button once there.
+            onPressed: () => context.push('/profile'),
           ),
         ],
       ),
@@ -140,96 +145,18 @@ class _DashboardBody extends ConsumerWidget {
             const SizedBox(height: 20),
 
             // ── Quick actions ─────────────────────────────────────────────
-            Text('Quick Actions', style: AppTextStyles.heading3),
-            const SizedBox(height: 12),
-            GridView.count(
-              crossAxisCount: 2,
-              shrinkWrap: true,
-              physics: const NeverScrollableScrollPhysics(),
-              crossAxisSpacing: 12,
-              mainAxisSpacing: 12,
-              childAspectRatio: 2.2,
-              children: [
-                _ActionTile(
-                  icon: Icons.add_box_outlined,
-                  // Manufacturers go directly to their catalog
-                  label: isManufacturer ? 'My Catalog' : 'My Inventory',
-                  onTap: () => context.push(isManufacturer
-                      ? '/dashboard/manufacturer/catalog'
-                      : '/dashboard/inventory'),
-                ),
-                _ActionTile(
-                  icon: Icons.receipt_outlined,
-                  label: 'Orders',
-                  onTap: () => context.push('/dashboard/orders'),
-                ),
-                _ActionTile(
-                  icon: Icons.local_shipping_outlined,
-                  label: 'Delivery Settings',
-                  onTap: () => context.push('/dashboard/delivery'),
-                ),
-                _ActionTile(
-                  icon: Icons.star_outline,
-                  label: 'Subscription',
-                  onTap: () => context.push('/subscription'),
-                ),
-              ],
-            ),
-
-            // Manufacturer section — only for manufacturer accounts
+            // Inventory/Orders/Delivery/Subscription/Retailer Network/Brand
+            // Page all now live in the Dashboard drawer (see DashboardDrawer)
+            // mirroring web's persistent sidebar — Assign Products has no
+            // drawer slot (it isn't one of web's 11 sidebar items), so it
+            // stays here as the one remaining manufacturer quick action.
             if (isManufacturer) ...[
-              const SizedBox(height: 24),
-              Row(
-                children: [
-                  Container(
-                    padding: const EdgeInsets.symmetric(
-                        horizontal: 10, vertical: 4),
-                    decoration: BoxDecoration(
-                      color: AppColors.primary,
-                      borderRadius: BorderRadius.circular(20),
-                    ),
-                    child: Text('MANUFACTURER',
-                        style: AppTextStyles.caption
-                            .copyWith(color: Colors.white, letterSpacing: 1)),
-                  ),
-                  const SizedBox(width: 8),
-                  Text('Tools', style: AppTextStyles.heading3),
-                ],
-              ),
+              Text('Quick Actions', style: AppTextStyles.heading3),
               const SizedBox(height: 12),
-              GridView.count(
-                crossAxisCount: 2,
-                shrinkWrap: true,
-                physics: const NeverScrollableScrollPhysics(),
-                crossAxisSpacing: 12,
-                mainAxisSpacing: 12,
-                childAspectRatio: 2.2,
-                children: [
-                  _ActionTile(
-                    icon: Icons.people_outline,
-                    label: 'Retailer Network',
-                    onTap: () =>
-                        context.push('/dashboard/manufacturer/retailers'),
-                  ),
-                  _ActionTile(
-                    icon: Icons.inventory_2_outlined,
-                    label: 'My Catalog',
-                    onTap: () =>
-                        context.push('/dashboard/manufacturer/catalog'),
-                  ),
-                  _ActionTile(
-                    icon: Icons.assignment_outlined,
-                    label: 'Assign Products',
-                    onTap: () =>
-                        context.push('/dashboard/manufacturer/assign'),
-                  ),
-                  _ActionTile(
-                    icon: Icons.storefront_outlined,
-                    label: 'Brand Page',
-                    onTap: () =>
-                        context.push('/dashboard/manufacturer/brand'),
-                  ),
-                ],
+              _ActionTile(
+                icon: Icons.assignment_outlined,
+                label: 'Assign Products',
+                onTap: () => context.push('/dashboard/manufacturer/assign'),
               ),
             ],
           ],
@@ -310,7 +237,7 @@ class _ProfileHeader extends StatelessWidget {
             ),
           ),
           IconButton(
-            onPressed: () => context.go('/profile'),
+            onPressed: () => context.push('/profile'),
             icon: const Icon(Icons.edit_outlined,
                 color: Colors.white, size: 20),
             tooltip: 'Edit profile',
@@ -357,7 +284,7 @@ class _OverviewGrid extends StatelessWidget {
     final tiles = <Widget>[
       if (isManufacturer) ...[
         _StatCard(
-          label: 'Catalog Products',
+          label: 'Inventory Products',
           value: '${analyticsAsync?.value?['catalogProducts'] ?? listings.length}',
           icon: Icons.inventory_2_outlined,
           color: AppColors.primary,

@@ -24,6 +24,10 @@ import '../../features/dashboard/screens/inventory_screen.dart';
 import '../../features/dashboard/screens/seller_orders_screen.dart';
 import '../../features/dashboard/screens/delivery_settings_screen.dart';
 import '../../features/dashboard/screens/subscription_screen.dart';
+import '../../features/dashboard/screens/dashboard_profile_screen.dart';
+import '../../features/dashboard/screens/dashboard_analytics_screen.dart';
+import '../../features/dashboard/screens/dashboard_reviews_screen.dart';
+import '../../features/dashboard/screens/dashboard_reels_screen.dart';
 import '../../features/manufacturer/screens/manufacturer_dashboard_screen.dart';
 import '../../features/manufacturer/screens/retailer_network_screen.dart';
 import '../../features/manufacturer/screens/manufacturer_catalog_screen.dart';
@@ -387,7 +391,11 @@ final routerProvider = Provider<GoRouter>((ref) {
       GoRoute(
         path: '/dashboard/inventory',
         parentNavigatorKey: _rootKey,
-        builder: (_, _) => const _RootBackFallback(child: InventoryScreen()),
+        builder: (_, state) => _RootBackFallback(
+          child: InventoryScreen(
+            autoOpenAdd: state.uri.queryParameters['autoAdd'] == '1',
+          ),
+        ),
       ),
       GoRoute(
         path: '/dashboard/orders',
@@ -398,6 +406,26 @@ final routerProvider = Provider<GoRouter>((ref) {
         path: '/dashboard/delivery',
         parentNavigatorKey: _rootKey,
         builder: (_, _) => const _RootBackFallback(child: DeliverySettingsScreen()),
+      ),
+      GoRoute(
+        path: '/dashboard/profile',
+        parentNavigatorKey: _rootKey,
+        builder: (_, _) => const _RootBackFallback(child: DashboardProfileScreen()),
+      ),
+      GoRoute(
+        path: '/dashboard/analytics',
+        parentNavigatorKey: _rootKey,
+        builder: (_, _) => const _RootBackFallback(child: DashboardAnalyticsScreen()),
+      ),
+      GoRoute(
+        path: '/dashboard/reviews',
+        parentNavigatorKey: _rootKey,
+        builder: (_, _) => const _RootBackFallback(child: DashboardReviewsScreen()),
+      ),
+      GoRoute(
+        path: '/dashboard/reels',
+        parentNavigatorKey: _rootKey,
+        builder: (_, _) => const _RootBackFallback(child: DashboardReelsScreen()),
       ),
       // ── Manufacturer routes ───────────────────────────────────────────────
       GoRoute(
@@ -413,7 +441,11 @@ final routerProvider = Provider<GoRouter>((ref) {
       GoRoute(
         path: '/dashboard/manufacturer/catalog',
         parentNavigatorKey: _rootKey,
-        builder: (_, _) => const _RootBackFallback(child: ManufacturerCatalogScreen()),
+        builder: (_, state) => _RootBackFallback(
+          child: ManufacturerCatalogScreen(
+            autoOpenAdd: state.uri.queryParameters['autoAdd'] == '1',
+          ),
+        ),
       ),
       GoRoute(
         path: '/dashboard/manufacturer/assign',
