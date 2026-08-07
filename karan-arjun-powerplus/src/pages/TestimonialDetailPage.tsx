@@ -140,7 +140,7 @@ export default function TestimonialDetailPage() {
           {relatedProduct && (
             <div>
               <span className="font-sans text-xs font-bold uppercase tracking-[0.2em] text-secondary mb-3 block">Product Used</span>
-              <Link to="/shop" className="inline-flex items-center gap-3 px-4 py-3 border border-slate-200 rounded-lg hover:bg-slate-50 transition-colors">
+              <Link to="/products" className="inline-flex items-center gap-3 px-4 py-3 border border-slate-200 rounded-lg hover:bg-slate-50 transition-colors">
                 <img src={relatedProduct.image} alt={relatedProduct.name} className="w-10 h-10 object-cover rounded" />
                 <span className="font-sans font-semibold text-primary text-sm">{relatedProduct.name}</span>
               </Link>

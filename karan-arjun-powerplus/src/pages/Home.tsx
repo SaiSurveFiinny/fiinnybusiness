@@ -6,6 +6,7 @@ import { LearnAndGrow } from '../components/home/LearnAndGrow';
 import { SupportContactCTA } from '../components/home/SupportContactCTA';
 import { WhatWeDo } from '../components/home/WhatWeDo';
 import { WhyTrustUs } from '../components/home/WhyTrustUs';
+import { KrishiDukanShowcase } from '../components/home/KrishiDukanShowcase';
 import { RetailNetworkSection } from '../features/retail-network/components/RetailNetworkSection';
 import { useLanguage } from '../context/LanguageContext';
 
@@ -28,6 +29,7 @@ export default function Home() {
       <WhatWeDo />
       <FeaturedProducts />
       <WhyTrustUs />
+      <KrishiDukanShowcase />
       <RetailNetworkSection />
       <FarmerSuccess title={t.farmersuccess_title} description={t.farmersuccess_desc} variant="dark" />
       <LearnAndGrow />

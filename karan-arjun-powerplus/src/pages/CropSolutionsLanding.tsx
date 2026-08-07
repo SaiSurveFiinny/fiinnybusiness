@@ -6,7 +6,7 @@ import { useCropSolutions } from '../hooks/useCropSolutions';
 
 /**
  * Crop Solutions landing page — organizes agricultural knowledge by crop
- * category (not by product; products live at /shop). Hero + category
+ * category (not by product; products live at /products). Hero + category
  * showcase + featured crops + search, all backed by the same
  * cropCategories/crops Firestore collections the Admin manager writes to.
  */
