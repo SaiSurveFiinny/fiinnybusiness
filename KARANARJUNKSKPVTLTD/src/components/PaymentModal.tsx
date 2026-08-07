@@ -8,6 +8,7 @@ import { getTenantCollection, getTenantDoc } from '../utils/tenantPath';
 import { generatePaymentId } from '../utils/paymentIdGenerator';
 import { uploadPaymentProof } from '../utils/uploadPaymentProof';
 import PaymentAttachmentField from './PaymentAttachmentField';
+import { logAudit } from '../utils/auditLog';
 
 export interface PaymentForEdit {
   id: string;
@@ -137,7 +138,7 @@ export default function PaymentModal({
   supplierId, supplierName, outstandingBalance, editing, applicableDocs = [], onClose, onSaved,
   defaultAmount, defaultDate,
 }: PaymentModalProps) {
-  const { tenantId, currentUser } = useAuth();
+  const { tenantId, currentUser, userName, userRole } = useAuth();
   const isEdit = !!editing;
 
   const [form, setForm] = useState(() => editing
@@ -228,6 +229,7 @@ export default function PaymentModal({
           updateData.attachmentType = null;
         }
         await withTimeout(updateDoc(getTenantDoc(db, tenantId, 'supplierPayments', editing.id), updateData), 20000);
+        logAudit({ db, tenantId: tenantId!, userId: currentUser?.uid || '', userName: userName || currentUser?.email || 'Unknown', userRole: userRole || 'unknown', module: 'Supplier Ledger', action: 'Update', entityName: supplierName, entityId: editing.id, description: `Supplier payment updated · ₹${amt.toLocaleString('en-IN')} · ${form.paymentMethod}`, before: { amount: editing.amount }, after: { amount: amt, paymentMethod: form.paymentMethod } });
       } else {
         const paymentId = await withTimeout(generatePaymentId(tenantId), 15000).catch(() => `PAY-${new Date().getFullYear()}-${String((Date.now() % 9998) + 1).padStart(4, '0')}`);
         const proofData: Record<string, string> = {};
@@ -261,6 +263,7 @@ export default function PaymentModal({
           updatedAt: serverTimestamp(),
           createdBy: currentUser?.email ?? '',
         }), 20000);
+        logAudit({ db, tenantId: tenantId!, userId: currentUser?.uid || '', userName: userName || currentUser?.email || 'Unknown', userRole: userRole || 'unknown', module: 'Supplier Ledger', action: 'Record Payment', entityName: supplierName, description: `Supplier payment recorded · ₹${amt.toLocaleString('en-IN')} · ${form.paymentMethod}`, after: { amount: amt, paymentMethod: form.paymentMethod, paymentDate: form.paymentDate } });
       }
       if (attachmentWarning) alert(attachmentWarning);
       onSaved();

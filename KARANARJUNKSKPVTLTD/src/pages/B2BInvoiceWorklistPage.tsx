@@ -9,6 +9,7 @@ import { query, onSnapshot, orderBy, updateDoc, writeBatch, serverTimestamp, get
 import { db } from '../firebase';
 import { useAuth } from '../contexts/AuthContext';
 import { getTenantCollection, getTenantDoc } from '../utils/tenantPath';
+import { logAudit } from '../utils/auditLog';
 import { useSalesFilter, fetchSalesOrdersByRetailerIds } from '../hooks/useSalesFilter';
 import { printB2BInvoice } from '../utils/printB2BInvoice';
 
@@ -66,7 +67,7 @@ const PAYMENT_MODES = ['Cash', 'UPI', 'Cheque', 'NEFT', 'RTGS', 'Credit', 'Onlin
 
 export default function B2BInvoiceWorklistPage() {
     const navigate = useNavigate();
-    const { tenantId, userRole } = useAuth();
+    const { tenantId, userRole, currentUser, userName } = useAuth();
     const isSales = userRole === 'sales';
     const isViewOnly = isSales || userRole === 'retailer';
     const { allowedRetailerIds, filterLoading } = useSalesFilter();
@@ -144,6 +145,7 @@ export default function B2BInvoiceWorklistPage() {
             status: status === 'Paid' ? 'paid' : (o.status === 'paid' ? 'pending' : (o.status || 'pending')),
             updatedAt: serverTimestamp(),
         });
+        logAudit({ db, tenantId, userId: currentUser?.uid || '', userName: userName || currentUser?.email || 'Unknown', userRole: userRole || 'unknown', module: 'B2B Invoice', action: 'Record Payment', entityName: o.retailerName || o.orderNumber || o.id, entityId: o.id, description: `Payment marked as ${status} · ${o.orderNumber || o.id} · ₹${total.toLocaleString('en-IN')}`, before: { paymentStatus: o.paymentStatus || 'Pending' }, after: { paymentStatus: status } });
     };
 
     const selectAllFiltered = () => setSelectedIds(new Set(filtered.map(o => o.id)));
@@ -171,7 +173,12 @@ export default function B2BInvoiceWorklistPage() {
         ? { paymentStatus: 'Paid', amountPaid: amountOf(o), status: 'paid' }
         : { paymentStatus: 'Pending', amountPaid: 0, status: o.status === 'paid' ? 'pending' : (o.status || 'pending') });
 
-    const bulkOrderStatus = (value: string) => { if (value) applyToSelected(() => ({ status: value })); };
+    const bulkOrderStatus = async (value: string) => {
+        if (!value) return;
+        const affected = invoices.filter(o => selectedIds.has(o.id));
+        await applyToSelected(() => ({ status: value }));
+        logAudit({ db, tenantId: tenantId!, userId: currentUser?.uid || '', userName: userName || currentUser?.email || 'Unknown', userRole: userRole || 'unknown', module: 'B2B Invoice', action: 'Status Change', entityName: `${affected.length} invoice(s)`, description: `Bulk status → ${value} on: ${affected.map(o => o.orderNumber || o.id).join(', ')}`, after: { status: value } });
+    };
     const bulkPaymentMode = (value: string) => { if (value) applyToSelected(() => ({ modeOfPayment: value })); };
     const bulkInvoiceDate = (value: string) => { if (value) applyToSelected(() => ({ invoiceDate: value })); };
     const bulkDueDate = (value: string) => { if (value) applyToSelected(() => ({ dueDate: value })); };
@@ -179,10 +186,12 @@ export default function B2BInvoiceWorklistPage() {
     const bulkDelete = async () => {
         if (!tenantId || selectedIds.size === 0) return;
         setWorking(true);
+        const deletedInvoices = invoices.filter(o => selectedIds.has(o.id));
         try {
             const batch = writeBatch(db);
             [...selectedIds].forEach(id => batch.delete(getTenantDoc(db, tenantId, 'salesOrders', id)));
             await batch.commit();
+            logAudit({ db, tenantId, userId: currentUser?.uid || '', userName: userName || currentUser?.email || 'Unknown', userRole: userRole || 'unknown', module: 'B2B Invoice', action: 'Delete', entityName: `${selectedIds.size} B2B invoice(s)`, description: `Bulk deleted ${selectedIds.size} invoice(s): ${deletedInvoices.map(o => o.orderNumber || o.id).join(', ')}` });
             clearSelection();
             setShowBulkDelete(false);
         } catch (e) {

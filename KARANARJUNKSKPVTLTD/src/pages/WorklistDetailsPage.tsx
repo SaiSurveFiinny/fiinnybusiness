@@ -18,6 +18,7 @@ import OutstandingInvoice from '../components/OutstandingInvoice';
 import DatePeriodFilter from '../components/DatePeriodFilter';
 import { type FinancialPeriod, getFinancialDateRange } from '../utils/financialPeriod';
 import { printB2BInvoice } from '../utils/printB2BInvoice';
+import { logAudit } from '../utils/auditLog';
 
 
 interface Retailer {
@@ -108,7 +109,7 @@ interface Payment {
 export default function WorklistDetailsPage() {
     const { id } = useParams();
     const navigate = useNavigate();
-    const { userRole, tenantId } = useAuth();
+    const { userRole, tenantId, currentUser, userName } = useAuth();
     const isSales = userRole === 'sales';
     const { t } = useTranslation();
     const { getSchema: _getSchema } = useSchema(); // kept for schema referencing
@@ -413,6 +414,7 @@ export default function WorklistDetailsPage() {
 
         try {
             await deleteDoc(getTenantDoc(db, tenantId!, 'retailers', id));
+            logAudit({ db, tenantId: tenantId!, userId: currentUser?.uid || '', userName: userName || currentUser?.email || 'Unknown', userRole: userRole || 'unknown', module: 'Worklist', action: 'Delete', entityName: retailer?.name || id, entityId: id, description: `Retailer deleted` });
             navigate('/worklist');
         } catch (error) {
             console.error('Error deleting retailer:', error);
@@ -497,6 +499,7 @@ export default function WorklistDetailsPage() {
         }
 
         await updateDoc(getTenantDoc(db, tenantId, 'salesOrders', soId), update);
+        logAudit({ db, tenantId: tenantId!, userId: currentUser?.uid || '', userName: userName || currentUser?.email || 'Unknown', userRole: userRole || 'unknown', module: 'Worklist', action: field === 'paymentStatus' ? 'Record Payment' : 'Status Change', entityName: so.orderNumber || soId, entityId: soId, description: `${field} → ${value} on order ${so.orderNumber || soId}`, before: { [field]: (so as any)[field] }, after: { [field]: value } });
         // Retailer card will auto-refresh via onSnapshot
         const updatedSnap = await getDoc(getTenantDoc(db, tenantId, 'retailers', id));
         setRetailer({ id: updatedSnap.id, ...updatedSnap.data() } as Retailer);
@@ -564,6 +567,7 @@ export default function WorklistDetailsPage() {
 
             // Delete the order doc (the salesOrders listener removes the card automatically).
             await deleteDoc(getTenantDoc(db, tenantId, 'salesOrders', so.id));
+            logAudit({ db, tenantId: tenantId!, userId: currentUser?.uid || '', userName: userName || currentUser?.email || 'Unknown', userRole: userRole || 'unknown', module: 'B2B Invoice', action: 'Delete', entityName: so.orderNumber || so.id, entityId: so.id, description: `B2B invoice deleted · ${so.orderNumber || so.id} · ₹${Number(so.grandTotal ?? so.netAmount ?? so.totalAmount ?? 0).toLocaleString('en-IN')}` });
 
             // Refresh retailer totals into state (same idiom used across this page).
             const updatedSnap = await getDoc(getTenantDoc(db, tenantId, 'retailers', id));
@@ -622,6 +626,7 @@ export default function WorklistDetailsPage() {
             await Promise.all(
                 selected.map((so: any) => deleteDoc(getTenantDoc(db, tenantId, 'salesOrders', so.id)))
             );
+            logAudit({ db, tenantId: tenantId!, userId: currentUser?.uid || '', userName: userName || currentUser?.email || 'Unknown', userRole: userRole || 'unknown', module: 'B2B Invoice', action: 'Delete', entityName: `${selected.length} invoice(s)`, description: `Bulk deleted: ${selected.map((so: any) => so.orderNumber || so.id).join(', ')}` });
 
             // Re-fetch retailer to sync state (same idiom as single delete)
             const updatedSnap = await getDoc(getTenantDoc(db, tenantId, 'retailers', id));
@@ -721,6 +726,7 @@ export default function WorklistDetailsPage() {
             const updatedSnap = await getDoc(getTenantDoc(db, tenantId, 'retailers', id));
             setRetailer({ id: updatedSnap.id, ...updatedSnap.data() } as Retailer);
 
+            logAudit({ db, tenantId: tenantId!, userId: currentUser?.uid || '', userName: userName || currentUser?.email || 'Unknown', userRole: userRole || 'unknown', module: 'Worklist', action: 'Record Payment', entityName: retailer?.name || id, entityId: pmtId, description: `Payment recorded · ₹${paymentAmount.toLocaleString('en-IN')} · ${paymentMethod}`, after: { amount: paymentAmount, paymentMethod, paymentDate } });
             setShowPaymentModal(false);
             setPaymentAmount(0);
             setPaymentNotes('');
@@ -805,6 +811,7 @@ export default function WorklistDetailsPage() {
             setPayOrderTransactionRef('');
             setOrderPmtProofFile(null);
             setOrderPmtProofCleared(false);
+            logAudit({ db, tenantId: tenantId!, userId: currentUser?.uid || '', userName: userName || currentUser?.email || 'Unknown', userRole: userRole || 'unknown', module: 'Worklist', action: 'Record Payment', entityName: orderLabel, entityId: payOrder.id, description: `₹${applied.toLocaleString('en-IN')} recorded against ${orderLabel} · ${newStatus}`, after: { amountPaid: newPaid, paymentStatus: newStatus, paymentMethod: payOrderMethod } });
             alert(`₹${applied.toLocaleString()} recorded against ${orderLabel}` + (newStatus === 'Paid' ? ' — fully paid.' : ' — partially paid.'));
         } catch (error) {
             console.error("Error recording invoice payment:", error);
@@ -853,6 +860,7 @@ export default function WorklistDetailsPage() {
             // Reverse its effect (delta = -amount), then remove the ledger entry.
             await applyPaymentDelta(-(Number(p.amount) || 0), p.orderId);
             await deleteDoc(getTenantDoc(db, tenantId, 'retailers', id, 'payments', p.id));
+            logAudit({ db, tenantId: tenantId!, userId: currentUser?.uid || '', userName: userName || currentUser?.email || 'Unknown', userRole: userRole || 'unknown', module: 'Worklist', action: 'Delete', entityName: p.paymentId || p.id, entityId: p.id, description: `Payment deleted · ₹${Number(p.amount || 0).toLocaleString('en-IN')}`, before: { amount: p.amount, paymentMethod: p.paymentMethod } });
         } catch (error) {
             console.error("Error deleting payment:", error);
             alert(t('worklist_details.update_error') + ': ' + ((error as { message?: string })?.message || String(error)));
@@ -899,6 +907,7 @@ export default function WorklistDetailsPage() {
             }
 
             await updateDoc(getTenantDoc(db, tenantId, 'retailers', id, 'payments', editingPayment.id), update);
+            logAudit({ db, tenantId: tenantId!, userId: currentUser?.uid || '', userName: userName || currentUser?.email || 'Unknown', userRole: userRole || 'unknown', module: 'Worklist', action: 'Update', entityName: editingPayment.paymentId || editingPayment.id, entityId: editingPayment.id, description: `Payment updated · ₹${newAmount.toLocaleString('en-IN')} · ${editPayMethod}`, before: { amount: editingPayment.amount }, after: { amount: newAmount, paymentMethod: editPayMethod } });
             setEditingPayment(null);
             setEditProofFile(null);
             setEditProofCleared(false);
@@ -1040,6 +1049,7 @@ export default function WorklistDetailsPage() {
             });
 
             await batch.commit();
+            logAudit({ db, tenantId: tenantId!, userId: currentUser?.uid || '', userName: userName || currentUser?.email || 'Unknown', userRole: userRole || 'unknown', module: 'Worklist', action: 'Link Payment', entityName: linkPaymentOrder.orderNumber || linkPaymentOrder.id, entityId: linkPaymentOrder.id, description: `₹${totalToAllocate.toLocaleString('en-IN')} linked to ${linkPaymentOrder.orderNumber || linkPaymentOrder.id} · new status: ${newStatus}` });
 
             setLinkPaymentOrder(null);
             setLinkAllocations({});
@@ -1104,6 +1114,7 @@ export default function WorklistDetailsPage() {
             });
 
             await batch.commit();
+            logAudit({ db, tenantId: tenantId!, userId: currentUser?.uid || '', userName: userName || currentUser?.email || 'Unknown', userRole: userRole || 'unknown', module: 'Worklist', action: 'Link Payment', entityName: unlinkOrder.orderNumber || unlinkOrder.id, entityId: unlinkOrder.id, description: `Payment unlinked from ${unlinkOrder.orderNumber || unlinkOrder.id} · ₹${allocation.allocatedAmount.toLocaleString('en-IN')} returned to unallocated` });
 
             // Update local modal state so changes are visible immediately
             setUnlinkAllocations(prev => prev.filter(a => a.id !== allocation.id));
@@ -1150,6 +1161,7 @@ export default function WorklistDetailsPage() {
             batch.delete(getTenantDoc(db, tenantId, 'retailers', id, 'payments', p.id));
 
             await batch.commit();
+            logAudit({ db, tenantId: tenantId!, userId: currentUser?.uid || '', userName: userName || currentUser?.email || 'Unknown', userRole: userRole || 'unknown', module: 'Worklist', action: 'Delete', entityName: p.paymentId || p.id, entityId: p.id, description: `Linked payment deleted · ₹${Number(p.amount || 0).toLocaleString('en-IN')} · reversed ${allocSnap.docs.length} allocation(s)`, before: { amount: p.amount, linkedOrderIds: p.linkedOrderIds } });
 
             // Adjust retailer-level totals for the payment amount
             await applyPaymentDelta(-(Number(p.amount) || 0), undefined);

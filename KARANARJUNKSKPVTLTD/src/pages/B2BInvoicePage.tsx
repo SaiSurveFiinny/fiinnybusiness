@@ -12,6 +12,7 @@ import { useAuth } from '../contexts/AuthContext';
 import { getTenantCollection, getTenantDoc } from '../utils/tenantPath';
 import { fetchInvoiceBranding } from '../services/invoiceTemplateService';
 import { validateGSTIN } from '../utils/gstinValidator';
+import { logAudit } from '../utils/auditLog';
 
 // ─────────────────────────────────────────────
 // Types
@@ -91,7 +92,7 @@ function numberToWords(num: number): string {
 // Component
 // ─────────────────────────────────────────────
 export default function B2BInvoicePage() {
-    const { tenantId, tenantData } = useAuth();
+    const { tenantId, tenantData, currentUser, userName, userRole } = useAuth();
     const [searchParams] = useSearchParams();
     const navigate = useNavigate();
     const prefilledRetailerId = searchParams.get('retailerId') || '';
@@ -496,12 +497,14 @@ ${styles}
                     ...orderPayload,
                     updatedAt: serverTimestamp(),
                 });
+                logAudit({ db, tenantId: tenantId!, userId: currentUser?.uid || '', userName: userName || currentUser?.email || 'Unknown', userRole: userRole || 'unknown', module: 'B2B Invoice', action: 'Update', entityName: header.buyerName || 'Customer', entityId: prefilledOrderId, description: `B2B Invoice edited · ${invNo} · ₹${netAmount.toLocaleString('en-IN')}`, after: { orderNumber: invNo, grandTotal: netAmount, modeOfPayment: header.modeOfPayment } });
             } else {
                 const ref = await addDoc(getTenantCollection(db, tenantId, 'salesOrders'), {
                     ...orderPayload,
                     createdAt: serverTimestamp(),
                 });
                 savedOrderId = ref.id;
+                logAudit({ db, tenantId: tenantId!, userId: currentUser?.uid || '', userName: userName || currentUser?.email || 'Unknown', userRole: userRole || 'unknown', module: 'B2B Invoice', action: 'Generate Invoice', entityName: header.buyerName || 'Customer', entityId: savedOrderId, description: `B2B Invoice created · ${invNo} · ₹${netAmount.toLocaleString('en-IN')}`, after: { orderNumber: invNo, grandTotal: netAmount, modeOfPayment: header.modeOfPayment } });
 
                 // ── FIFO batch deduction for new invoices ─────────────────
                 const saleLines = lineItems

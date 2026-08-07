@@ -1010,9 +1010,12 @@ export default function POSPage() {
                     userName: userName || currentUser.email || 'Unknown',
                     userRole: userRole || 'unknown',
                     module: 'POS Billing',
-                    action: 'Generate Invoice',
+                    action: editingOrder ? 'Update' : 'Generate Invoice',
                     entityName: customer.name || 'Walk-in Customer',
                     entityId: billNumber,
+                    description: editingOrder
+                        ? `POS bill corrected · old: ${editingOrder.orderNumber || editingOrder.id} → new: ${billNumber}`
+                        : `POS bill created · ${billNumber}${modeOfPayment === 'Khata' ? ' · Khata/Credit' : ''}`,
                     remarks: `₹${Math.round(grandTotal).toLocaleString('en-IN')} · ${modeOfPayment}`,
                 });
             }

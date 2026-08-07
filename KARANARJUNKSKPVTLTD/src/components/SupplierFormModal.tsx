@@ -8,6 +8,7 @@ import { addDoc, updateDoc, getDocs, serverTimestamp } from 'firebase/firestore'
 import { db } from '../firebase';
 import { useAuth } from '../contexts/AuthContext';
 import { getTenantCollection, getTenantDoc } from '../utils/tenantPath';
+import { logAudit } from '../utils/auditLog';
 import {
   checkMobile, checkGstin, checkPan, checkIfsc, checkEmail,
   checkNonNegativeNumber, checkWebsite, findDuplicateName,
@@ -114,7 +115,7 @@ const groupTitle: React.CSSProperties = {
 export default function SupplierFormModal(props: SupplierFormModalProps) {
   const { mode, onClose } = props;
   const isEdit = mode === 'edit';
-  const { tenantId, currentUser } = useAuth();
+  const { tenantId, currentUser, userName, userRole } = useAuth();
 
   const [form, setForm] = useState<Form>(() => (isEdit ? toFormState(props.initial) : emptyForm));
   const [errors, setErrors] = useState<Errors>({});
@@ -222,6 +223,7 @@ export default function SupplierFormModal(props: SupplierFormModalProps) {
           updatedAt: serverTimestamp(),
           updatedBy: currentUser?.email ?? '',
         });
+        logAudit({ db, tenantId: tenantId!, userId: currentUser?.uid || '', userName: userName || currentUser?.email || 'Unknown', userRole: userRole || 'unknown', module: 'Supplier Ledger', action: 'Update', entityName: form.name.trim(), entityId: props.supplierId, description: `Supplier profile updated` });
         props.onSaved();
       } else {
         const ref = await addDoc(getTenantCollection(db, tenantId, 'suppliers'), {
@@ -232,6 +234,7 @@ export default function SupplierFormModal(props: SupplierFormModalProps) {
           createdAt: serverTimestamp(),
           createdBy: currentUser?.email ?? '',
         });
+        logAudit({ db, tenantId: tenantId!, userId: currentUser?.uid || '', userName: userName || currentUser?.email || 'Unknown', userRole: userRole || 'unknown', module: 'Supplier Ledger', action: 'Create', entityName: form.name.trim(), entityId: ref.id, description: `New supplier added` });
         props.onCreated(openAfter ? ref.id : undefined);
       }
     } catch (err) {

@@ -24,34 +24,48 @@ interface AuditEntry {
     action: AuditAction;
     entityName: string;
     entityId?: string;
+    description?: string;
     remarks?: string;
+    before?: Record<string, unknown>;
+    after?: Record<string, unknown>;
 }
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
 const ALL_MODULES: AuditModule[] = [
     'POS Billing', 'Worklist', 'Supplier Ledger', 'Inventory',
-    'Manage Retailers', 'Manage Users', 'Role Matrix', 'B2B Invoice',
+    'Manage Retailers', 'Customers', 'Manage Users', 'Role Matrix', 'B2B Invoice',
     'Digital Khata', 'Purchase Orders', 'Expenses', 'Online Orders',
     'Settings', 'Dispatch Board', 'Delivery Challans',
 ];
 
 const ALL_ACTIONS: AuditAction[] = [
-    'Create', 'Update', 'Delete', 'Record Payment', 'Link Payment',
-    'Generate Invoice', 'Cancel Invoice', 'Status Change', 'Login', 'Logout',
+    'Create', 'Update', 'Delete', 'Void',
+    'Record Payment', 'Link Payment', 'Split Payment',
+    'Generate Invoice', 'Cancel Invoice',
+    'Status Change', 'Assign Salesperson', 'Assign Transporter',
+    'Stock Adjustment', 'Rate Update', 'Batch Create',
+    'Login', 'Logout',
 ];
 
 const ACTION_COLORS: Record<AuditAction, { bg: string; color: string }> = {
-    'Create':          { bg: 'rgba(16,185,129,0.12)',  color: '#10b981' },
-    'Update':          { bg: 'rgba(14,165,233,0.12)',  color: '#0ea5e9' },
-    'Delete':          { bg: 'rgba(239,68,68,0.12)',   color: '#ef4444' },
-    'Record Payment':  { bg: 'rgba(20,184,166,0.12)',  color: '#14b8a6' },
-    'Link Payment':    { bg: 'rgba(99,102,241,0.12)',  color: '#6366f1' },
-    'Generate Invoice':{ bg: 'rgba(16,185,129,0.12)',  color: '#059669' },
-    'Cancel Invoice':  { bg: 'rgba(239,68,68,0.12)',   color: '#dc2626' },
-    'Status Change':   { bg: 'rgba(245,158,11,0.12)',  color: '#f59e0b' },
-    'Login':           { bg: 'rgba(167,139,250,0.12)', color: '#8b5cf6' },
-    'Logout':          { bg: 'rgba(107,114,128,0.12)', color: '#6b7280' },
+    'Create':              { bg: 'rgba(16,185,129,0.12)',  color: '#10b981' },
+    'Update':              { bg: 'rgba(14,165,233,0.12)',  color: '#0ea5e9' },
+    'Delete':              { bg: 'rgba(239,68,68,0.12)',   color: '#ef4444' },
+    'Void':                { bg: 'rgba(239,68,68,0.12)',   color: '#dc2626' },
+    'Record Payment':      { bg: 'rgba(20,184,166,0.12)',  color: '#14b8a6' },
+    'Link Payment':        { bg: 'rgba(99,102,241,0.12)',  color: '#6366f1' },
+    'Split Payment':       { bg: 'rgba(99,102,241,0.10)',  color: '#818cf8' },
+    'Generate Invoice':    { bg: 'rgba(16,185,129,0.12)',  color: '#059669' },
+    'Cancel Invoice':      { bg: 'rgba(239,68,68,0.12)',   color: '#dc2626' },
+    'Status Change':       { bg: 'rgba(245,158,11,0.12)',  color: '#f59e0b' },
+    'Assign Salesperson':  { bg: 'rgba(56,189,248,0.12)',  color: '#38bdf8' },
+    'Assign Transporter':  { bg: 'rgba(56,189,248,0.10)',  color: '#0ea5e9' },
+    'Stock Adjustment':    { bg: 'rgba(139,92,246,0.12)',  color: '#8b5cf6' },
+    'Rate Update':         { bg: 'rgba(249,115,22,0.12)',  color: '#f97316' },
+    'Batch Create':        { bg: 'rgba(139,92,246,0.10)',  color: '#a78bfa' },
+    'Login':               { bg: 'rgba(167,139,250,0.12)', color: '#8b5cf6' },
+    'Logout':              { bg: 'rgba(107,114,128,0.12)', color: '#6b7280' },
 };
 
 const MODULE_COLORS: Partial<Record<AuditModule, string>> = {
@@ -340,17 +354,39 @@ export default function AuditLogPage() {
                                             {/* Expanded detail row */}
                                             {isOpen && (
                                                 <tr key={`${e.id}-detail`} style={{ borderBottom: '1px solid var(--surface-border)', background: 'var(--surface-raised)' }}>
-                                                    <td colSpan={6} style={{ padding: '0.75rem 1rem 1rem 2.5rem' }}>
-                                                        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: '0.75rem 1.5rem' }}>
+                                                    <td colSpan={6} style={{ padding: '0.75rem 1rem 1.25rem 2.5rem' }}>
+                                                        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: '0.75rem 1.5rem', marginBottom: (e.description || e.before || e.after) ? '0.85rem' : 0 }}>
                                                             <DetailField icon={<Clock size={13} />} label="Timestamp" value={fmtTimestamp(e.timestamp)} />
                                                             <DetailField icon={<User size={13} />} label="User" value={`${e.userName} (${roleLabel(e.userRole)})`} />
                                                             <DetailField icon={<Shield size={13} />} label="User ID" value={e.userId} mono />
                                                             <DetailField icon={<Layers size={13} />} label="Module" value={e.module} />
                                                             <DetailField icon={<Activity size={13} />} label="Action" value={e.action} />
                                                             <DetailField icon={<Info size={13} />} label="Entity" value={e.entityName} />
-                                                            {e.entityId && <DetailField icon={<Info size={13} />} label="Entity ID" value={e.entityId} mono />}
-                                                            {e.remarks  && <DetailField icon={<Info size={13} />} label="Remarks" value={e.remarks} />}
+                                                            {e.entityId    && <DetailField icon={<Info size={13} />} label="Entity ID"   value={e.entityId}    mono />}
+                                                            {e.description && <DetailField icon={<Info size={13} />} label="Description" value={e.description} />}
+                                                            {e.remarks     && <DetailField icon={<Info size={13} />} label="Remarks"     value={e.remarks}     />}
                                                         </div>
+                                                        {/* Before / After diff */}
+                                                        {(e.before || e.after) && (
+                                                            <div style={{ display: 'grid', gridTemplateColumns: e.before && e.after ? '1fr 1fr' : '1fr', gap: '0.75rem' }}>
+                                                                {e.before && (
+                                                                    <div>
+                                                                        <div style={{ fontSize: '0.68rem', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em', color: '#ef4444', marginBottom: '0.3rem' }}>Before</div>
+                                                                        <pre style={{ margin: 0, fontSize: '0.75rem', background: 'rgba(239,68,68,0.06)', border: '1px solid rgba(239,68,68,0.18)', borderRadius: '8px', padding: '0.6rem 0.85rem', overflowX: 'auto', color: 'var(--text-primary)', fontFamily: 'monospace', whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}>
+                                                                            {JSON.stringify(e.before, null, 2)}
+                                                                        </pre>
+                                                                    </div>
+                                                                )}
+                                                                {e.after && (
+                                                                    <div>
+                                                                        <div style={{ fontSize: '0.68rem', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em', color: '#10b981', marginBottom: '0.3rem' }}>After</div>
+                                                                        <pre style={{ margin: 0, fontSize: '0.75rem', background: 'rgba(16,185,129,0.06)', border: '1px solid rgba(16,185,129,0.18)', borderRadius: '8px', padding: '0.6rem 0.85rem', overflowX: 'auto', color: 'var(--text-primary)', fontFamily: 'monospace', whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}>
+                                                                            {JSON.stringify(e.after, null, 2)}
+                                                                        </pre>
+                                                                    </div>
+                                                                )}
+                                                            </div>
+                                                        )}
                                                     </td>
                                                 </tr>
                                             )}

@@ -7,6 +7,7 @@ import { addDoc, updateDoc, getDocs, query, where, runTransaction, serverTimesta
 import { db } from '../firebase';
 import { useAuth } from '../contexts/AuthContext';
 import { getTenantCollection, getTenantDoc } from '../utils/tenantPath';
+import { logAudit } from '../utils/auditLog';
 
 /** A stored PO line item. */
 export interface POLine {
@@ -100,7 +101,7 @@ const labelStyle: React.CSSProperties = {
 };
 
 export default function PurchaseOrderModal({ supplierId, supplierName, editing, onClose, onSaved }: PurchaseOrderModalProps) {
-  const { tenantId, currentUser } = useAuth();
+  const { tenantId, currentUser, userName, userRole } = useAuth();
   const isEdit = !!editing;
 
   const [form, setForm] = useState<{ poNumber: string; internalPurchaseId: string; poDate: string; status: string; notes: string; lines: FormLine[] }>(
@@ -286,12 +287,14 @@ export default function PurchaseOrderModal({ supplierId, supplierName, editing, 
           supplierId, poNumber: poNum, internalPurchaseId: internalId, poDate: form.poDate, status: form.status,
           notes: form.notes.trim(), lines, totalAmount: total, taxableValue: total, updatedAt: serverTimestamp(),
         });
+        logAudit({ db, tenantId: tenantId!, userId: currentUser?.uid || '', userName: userName || currentUser?.email || 'Unknown', userRole: userRole || 'unknown', module: 'Purchase Orders', action: 'Update', entityName: poNum, entityId: editing.id, description: `PO updated · ${poNum} · ${supplierName} · ₹${total.toLocaleString('en-IN')}`, after: { poNumber: poNum, totalAmount: total, status: form.status } });
       } else {
         await addDoc(getTenantCollection(db, tenantId, 'purchaseOrders'), {
           supplierId, supplierName, poNumber: poNum, internalPurchaseId: internalId, poDate: form.poDate, status: form.status,
           notes: form.notes.trim(), lines, totalAmount: total, taxableValue: total,
           createdAt: serverTimestamp(), createdBy: currentUser?.email ?? '',
         });
+        logAudit({ db, tenantId: tenantId!, userId: currentUser?.uid || '', userName: userName || currentUser?.email || 'Unknown', userRole: userRole || 'unknown', module: 'Purchase Orders', action: 'Create', entityName: poNum, description: `PO created · ${poNum} · ${supplierName} · ₹${total.toLocaleString('en-IN')}`, after: { poNumber: poNum, supplierName, totalAmount: total, status: form.status } });
       }
       onSaved();
     } catch (e) {

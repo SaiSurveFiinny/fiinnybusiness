@@ -4,10 +4,10 @@
  * Usage (fire-and-forget):
  *   logAudit({ db, tenantId, userId, userName, userRole,
  *               module: 'POS Billing', action: 'Generate Invoice',
- *               entityName: 'KA-0042', entityId: docId });
- *
- * Adding a new module: extend AuditModule. Nothing else changes.
- * Adding a new action: extend AuditAction. Nothing else changes.
+ *               entityName: 'KA-0042', entityId: docId,
+ *               description: 'Bill generated for Walk-in ₹1,200',
+ *               before: { paymentStatus: 'Pending' },
+ *               after:  { paymentStatus: 'Paid' } });
  */
 import { addDoc, serverTimestamp, type Firestore } from 'firebase/firestore';
 import { getTenantCollection } from './tenantPath';
@@ -19,6 +19,7 @@ export type AuditModule =
     | 'Supplier Ledger'
     | 'Inventory'
     | 'Manage Retailers'
+    | 'Customers'
     | 'Manage Users'
     | 'Role Matrix'
     | 'B2B Invoice'
@@ -35,11 +36,18 @@ export type AuditAction =
     | 'Create'
     | 'Update'
     | 'Delete'
+    | 'Void'
     | 'Record Payment'
     | 'Link Payment'
+    | 'Split Payment'
     | 'Generate Invoice'
     | 'Cancel Invoice'
     | 'Status Change'
+    | 'Assign Salesperson'
+    | 'Assign Transporter'
+    | 'Stock Adjustment'
+    | 'Rate Update'
+    | 'Batch Create'
     | 'Login'
     | 'Logout';
 
@@ -53,7 +61,10 @@ export interface AuditParams {
     action: AuditAction;
     entityName: string;
     entityId?: string;
+    description?: string;
     remarks?: string;
+    before?: Record<string, unknown>;
+    after?: Record<string, unknown>;
 }
 
 /**
@@ -64,7 +75,8 @@ export interface AuditParams {
 export function logAudit(params: AuditParams): void {
     const {
         db, tenantId, userId, userName, userRole,
-        module, action, entityName, entityId, remarks,
+        module, action, entityName, entityId,
+        description, remarks, before, after,
     } = params;
 
     const entry: Record<string, unknown> = {
@@ -76,8 +88,11 @@ export function logAudit(params: AuditParams): void {
         action,
         entityName,
     };
-    if (entityId)  entry.entityId  = entityId;
-    if (remarks)   entry.remarks   = remarks;
+    if (entityId)     entry.entityId     = entityId;
+    if (description)  entry.description  = description;
+    if (remarks)      entry.remarks      = remarks;
+    if (before)       entry.before       = before;
+    if (after)        entry.after        = after;
 
     addDoc(getTenantCollection(db, tenantId, 'auditLogs'), entry).catch(err => {
         console.warn('[auditLog] write failed (non-fatal):', err);

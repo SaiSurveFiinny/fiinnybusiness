@@ -9,6 +9,7 @@ import { query, onSnapshot, addDoc, updateDoc, deleteDoc, serverTimestamp, getDo
 import { db } from '../firebase';
 import { useAuth } from '../contexts/AuthContext';
 import { getTenantCollection, getTenantDoc } from '../utils/tenantPath';
+import { logAudit } from '../utils/auditLog';
 import { AGRI_CATEGORIES } from '../utils/constants';
 import Papa from 'papaparse';
 
@@ -96,7 +97,7 @@ const emptyForm = () => ({
 
 export default function RateSheetPage() {
   const { t } = useTranslation();
-  const { userRole, tenantId } = useAuth();
+  const { userRole, tenantId, currentUser, userName } = useAuth();
   const [products, setProducts] = useState<Product[]>([]);
   const [batches, setBatches] = useState<BatchItem[]>([]);
   const [loading, setLoading] = useState(true);
@@ -275,13 +276,16 @@ export default function RateSheetPage() {
 
     try {
       if (editingProduct) {
+        const before = { name: editingProduct.name, maxRetailPrice: editingProduct.maxRetailPrice, sellingPrice: editingProduct.sellingPrice, purchasePrice: editingProduct.purchasePrice };
         await updateDoc(getTenantDoc(db, tenantId, 'products', editingProduct.id), data);
+        logAudit({ db, tenantId: tenantId!, userId: currentUser?.uid || '', userName: userName || currentUser?.email || 'Unknown', userRole: userRole || 'unknown', module: 'Inventory', action: 'Update', entityName: formData.name, entityId: editingProduct.id, description: `Product updated`, before, after: { name: formData.name, maxRetailPrice: formData.maxRetailPrice, sellingPrice: formData.sellingPrice, purchasePrice: formData.purchasePrice } });
       } else {
-        await addDoc(getTenantCollection(db, tenantId, 'products'), {
+        const ref = await addDoc(getTenantCollection(db, tenantId, 'products'), {
           category: 'B2B', boxCapacity: 1, quantity: 0,
           ...data,
           createdAt: serverTimestamp(),
         });
+        logAudit({ db, tenantId: tenantId!, userId: currentUser?.uid || '', userName: userName || currentUser?.email || 'Unknown', userRole: userRole || 'unknown', module: 'Inventory', action: 'Create', entityName: formData.name, entityId: ref.id, description: `Product added to catalog · MRP ₹${formData.maxRetailPrice}`, after: { name: formData.name, type: formData.type, mfgCompany: formData.mfgCompany, maxRetailPrice: formData.maxRetailPrice } });
       }
       handleCloseModal();
     } catch (err: unknown) {
@@ -291,7 +295,9 @@ export default function RateSheetPage() {
 
   const handleDelete = async (id: string) => {
     if (!tenantId || !window.confirm('Delete this product from the master catalog?')) return;
+    const product = products.find(p => p.id === id);
     await deleteDoc(getTenantDoc(db, tenantId, 'products', id));
+    logAudit({ db, tenantId, userId: currentUser?.uid || '', userName: userName || currentUser?.email || 'Unknown', userRole: userRole || 'unknown', module: 'Inventory', action: 'Delete', entityName: product?.name || id, entityId: id, description: `Product deleted from catalog`, before: product ? { name: product.name, type: product.type, mfgCompany: product.mfgCompany } : undefined });
   };
 
   // ── CSV ─────────────────────────────────────────────────────────────────────

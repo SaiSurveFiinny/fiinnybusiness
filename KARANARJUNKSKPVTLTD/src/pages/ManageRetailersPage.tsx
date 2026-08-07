@@ -5,6 +5,7 @@ import { query, onSnapshot, updateDoc, deleteDoc } from 'firebase/firestore';
 import { db } from '../firebase';
 import { useAuth } from '../contexts/AuthContext';
 import { getTenantCollection, getTenantDoc } from '../utils/tenantPath';
+import { logAudit } from '../utils/auditLog';
 
 const MAHARASHTRA_DISTRICTS = [
     'Ahmednagar', 'Akola', 'Amravati', 'Aurangabad', 'Beed', 'Bhandara', 'Buldhana',
@@ -32,7 +33,7 @@ interface Retailer {
 }
 
 export default function ManageRetailersPage() {
-    const { userRole, tenantId } = useAuth();
+    const { userRole, tenantId, currentUser, userName } = useAuth();
     const { t } = useTranslation();
     const [retailers, setRetailers] = useState<Retailer[]>([]);
     const [loading, setLoading] = useState(true);
@@ -99,10 +100,13 @@ export default function ManageRetailersPage() {
 
         try {
             const docRef = getTenantDoc(db, tenantId!, 'retailers', editingRetailer.id);
+            const before = { name: editingRetailer.name, number: editingRetailer.number, district: editingRetailer.district, portfolioSize: editingRetailer.portfolioSize };
+            const after  = { name: formData.name, number: formData.number, district: formData.district, portfolioSize: formData.portfolioSize };
             await updateDoc(docRef, {
                 ...formData,
                 location: `${formData.atPost}, ${formData.taluka}, ${formData.district}`
             });
+            logAudit({ db, tenantId: tenantId!, userId: currentUser?.uid || '', userName: userName || currentUser?.email || 'Unknown', userRole: userRole || 'unknown', module: 'Manage Retailers', action: 'Update', entityName: formData.name, entityId: editingRetailer.id, description: `Retailer profile updated`, before, after });
             setIsModalOpen(false);
             setEditingRetailer(null);
             alert(t('manage_retailers.update_success'));
@@ -116,8 +120,10 @@ export default function ManageRetailersPage() {
 
     const handleDelete = async (id: string) => {
         if (!tenantId || !window.confirm(t('manage_retailers.delete_confirm'))) return;
+        const retailer = retailers.find(r => r.id === id);
         try {
             await deleteDoc(getTenantDoc(db, tenantId, 'retailers', id));
+            logAudit({ db, tenantId, userId: currentUser?.uid || '', userName: userName || currentUser?.email || 'Unknown', userRole: userRole || 'unknown', module: 'Manage Retailers', action: 'Delete', entityName: retailer?.name || id, entityId: id, description: `Retailer deleted`, before: retailer ? { name: retailer.name, number: retailer.number, district: retailer.district } : undefined });
         } catch (error) {
             console.error("Error deleting retailer:", error);
             alert(t('manage_retailers.delete_error'));
