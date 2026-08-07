@@ -111,6 +111,7 @@ export default function DashboardPage() {
                 const retailersSnapshot = await getDocs(retailersQ);
 
                 let total = 0, big = 0, medium = 0, small = 0;
+                let outstandingKhata = 0;
                 const fetchedRetailers: Retailer[] = [];
 
                 retailersSnapshot.docs.forEach(doc => {
@@ -120,6 +121,7 @@ export default function DashboardPage() {
                     if (data.portfolioSize === 'Big') big++;
                     else if (data.portfolioSize === 'Medium') medium++;
                     else small++;
+                    outstandingKhata += Math.max(0, Number((data as any).totalSales ?? 0) - Number((data as any).totalPaid ?? 0));
                 });
 
                 let totalRevenue = 0;
@@ -141,7 +143,7 @@ export default function DashboardPage() {
                 const salesSnap = await getDocs(salesQ);
                 salesSnap.forEach(doc => {
                     const data = doc.data();
-                    const amount = Number(data.grandTotal || data.netAmount || data.amount || 0);
+                    const amount = Number(data.grandTotal ?? data.netAmount ?? (data as any).totalAmount ?? data.amount ?? 0);
                     totalRevenue += amount;
 
                     const ts: Date = data.createdAt?.toDate ? data.createdAt.toDate() : new Date(data.createdAt || 0);
@@ -151,7 +153,7 @@ export default function DashboardPage() {
                     if (ts >= startOfToday) { todaySales += amount; todayCount++; }
                     if (ts >= startOfMonth) { monthSales += amount; monthCount++; }
 
-                    const isPending = data.status === 'pending' || (data.modeOfPayment && data.modeOfPayment !== 'Cash' && data.status !== 'paid');
+                    const isPending = data.status === 'pending' || (data as any).paymentStatus === 'pending';
                     if (isPending) { pendingDues += amount; pendingCount++; }
                 });
 
@@ -159,7 +161,6 @@ export default function DashboardPage() {
 
                 const formattedChartData = Object.entries(dailyData).map(([date, amount]) => ({ date, amount })).sort((a, b) => a.date.localeCompare(b.date)).slice(-30);
 
-                let outstandingKhata = pendingDues; // Use consistent source
                 const pos: any[] = [];
                 if (userRole === 'admin') {
                     try {

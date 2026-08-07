@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { createPortal } from 'react-dom';
-import { useSearchParams } from 'react-router-dom';
+import { useSearchParams, Link } from 'react-router-dom';
 // 'Link' was only used by the Returns quick-access link, now disabled below (2026-07-03).
 // import { Link } from 'react-router-dom';
 import {
@@ -22,7 +22,8 @@ import { useAuth } from '../contexts/AuthContext';
 import { useToast } from '../contexts/ToastContext';
 import { getTenantCollection, getTenantDoc } from '../utils/tenantPath';
 import { prepareStockDeduction, recordStockMovements } from '../utils/stockDeduction';
-import { getInvoiceProductCategories, getApplicableLicenses } from '../utils/invoiceCategories';
+import { getInvoiceProductCategories, getAllConfiguredLicenses } from '../utils/invoiceCategories';
+import { logAudit } from '../utils/auditLog';
 import { PosInvoicePreview, numberToWords, toMonthYear } from '../components/PosInvoicePreview';
 import { resolveDateRange, DATE_RANGE_PERIODS, type DateRangePeriod } from '../utils/dateRanges';
 import { AGRI_CATEGORIES } from '../utils/constants';
@@ -61,8 +62,11 @@ interface CartItem extends Product {
 interface CustomerState {
     name: string;
     phone: string;
-    address: string;
+    address: string; // village / atPost
     pin: string;
+    taluka?: string;
+    district?: string;
+    retailerId?: string; // Firestore doc ID in `retailers` — set when a known customer is resolved
 }
 
 interface BillTab {
@@ -149,7 +153,7 @@ function fromMonthYear(val: string): string {
 export default function POSPage() {
     const { t, i18n } = useTranslation();
     const [searchParams] = useSearchParams();
-    const { tenantId, hasModule } = useAuth();
+    const { tenantId, hasModule, currentUser, userName, userRole } = useAuth();
     const { showToast } = useToast();
     const [products, setProducts] = useState<Product[]>([]);
     const [loading, setLoading] = useState(true);
@@ -166,6 +170,8 @@ export default function POSPage() {
     const qtyRefs = useRef<Record<string, HTMLInputElement | null>>({});
     const customerPhoneRef = useRef<HTMLInputElement>(null);
     const customerAddressRef = useRef<HTMLInputElement>(null);
+    const customerTalukaRef = useRef<HTMLInputElement>(null);
+    const customerDistrictRef = useRef<HTMLInputElement>(null);
     const customerPinRef = useRef<HTMLInputElement>(null);
     const rowSearchRef = useRef<HTMLInputElement>(null);
 
@@ -235,6 +241,8 @@ export default function POSPage() {
     const L = (key: string): string => t(`pos_bill.${key}`, { lng: billLang }) as string;
     const today = new Date().toISOString().split('T')[0];
     const [invoiceDate, setInvoiceDate] = useState<string>(today);
+    // null = auto-detect from cart products; string[] = user's manual selection
+    const [invoiceCategories, setInvoiceCategories] = useState<string[] | null>(null);
     // Mode shown on the invoice; also decides which checkout path "Save & Print" takes.
     const [modeOfPayment, setModeOfPayment] = useState<string>('Cash');
     // Farmers (counter customers) — POS saves walk-ins into `retailers` tagged
@@ -397,6 +405,9 @@ export default function POSPage() {
                 phone: phone || '',
                 address: searchParams.get('address') || '',
                 pin: searchParams.get('pin') || '',
+                taluka: searchParams.get('taluka') || '',
+                district: searchParams.get('district') || '',
+                retailerId: searchParams.get('retailerId') || undefined,
             });
             return;
         }
@@ -528,7 +539,7 @@ export default function POSPage() {
             if (Array.isArray(draft.billTabs) && draft.billTabs.length > 0) setBillTabs(draft.billTabs);
             if (draft.activeTabId) setActiveTabId(draft.activeTabId);
             if (draft.modeOfPayment) setModeOfPayment(draft.modeOfPayment);
-            if (draft.invoiceDate) setInvoiceDate(draft.invoiceDate);
+            // invoiceDate intentionally NOT restored — always defaults to today for new sessions
             if (draft.billFormat === 'A4' || draft.billFormat === 'A5') setBillFormat(draft.billFormat);
             if (draft.billLang) setBillLang(draft.billLang);
             if (typeof draft.transportCharges === 'number') setTransportCharges(draft.transportCharges);
@@ -537,6 +548,7 @@ export default function POSPage() {
             if (typeof draft.khataNote === 'string') setKhataNote(draft.khataNote);
             if (typeof draft.redeemPoints === 'number') setRedeemPoints(draft.redeemPoints);
             if (draft.rowMeta && typeof draft.rowMeta === 'object') setRowMeta(draft.rowMeta);
+            if (Array.isArray(draft.invoiceCategories)) setInvoiceCategories(draft.invoiceCategories);
         } catch { /* ignore parse errors */ }
     }, [tenantId]);
 
@@ -546,14 +558,16 @@ export default function POSPage() {
         const timer = setTimeout(() => {
             try {
                 localStorage.setItem(`pos_draft_${tenantId}`, JSON.stringify({
-                    billTabs, activeTabId, modeOfPayment, invoiceDate, billFormat, billLang,
+                    billTabs, activeTabId, modeOfPayment, billFormat, billLang,
                     transportCharges, laborCharges, creditPaidNow, khataNote, redeemPoints, rowMeta,
+                    invoiceCategories,
                 }));
             } catch { /* storage quota exceeded — ignore */ }
         }, 500);
         return () => clearTimeout(timer);
-    }, [tenantId, billTabs, activeTabId, modeOfPayment, invoiceDate, billFormat, billLang,
-        transportCharges, laborCharges, creditPaidNow, khataNote, redeemPoints, rowMeta]);
+    }, [tenantId, billTabs, activeTabId, modeOfPayment, billFormat, billLang,
+        transportCharges, laborCharges, creditPaidNow, khataNote, redeemPoints, rowMeta,
+        invoiceCategories]);
 
     // Reset dropdown highlight when the active search row changes.
     useEffect(() => { setHighlightedProductIdx(-1); }, [activeRowIndex]);
@@ -655,13 +669,16 @@ export default function POSPage() {
                 name: match.name ?? customer.name,
                 address: match.atPost ?? customer.address ?? '',
                 pin: match.pin ?? customer.pin ?? '',
+                taluka: match.taluka ?? customer.taluka ?? '',
+                district: match.district ?? customer.district ?? '',
+                retailerId: match.id,
             });
             setCustomerOutstanding(Number(match.outstandingAmount) || 0);
         } else if (lastMatchedPhoneRef.current !== null && lastMatchedPhoneRef.current !== customer.phone) {
             // The number that produced this auto-fill no longer matches (edited/changed) —
             // revert to a clean walk-in state instead of leaving the stale match displayed.
             lastMatchedPhoneRef.current = null;
-            setCustomer({ ...customer, name: '', address: '', pin: '' });
+            setCustomer({ ...customer, name: '', address: '', pin: '', taluka: '', district: '', retailerId: undefined });
             setCustomerOutstanding(0);
         }
     };
@@ -747,6 +764,9 @@ export default function POSPage() {
                 phoneNumber: customer.phone,
                 address: customer.address,
                 pin: customer.pin,
+                taluka: customer.taluka || '',
+                district: customer.district || '',
+                ...(customer.retailerId ? { retailerId: customer.retailerId } : {}),
                 lineItems: cart.map(item => ({
                     productId: item.id || '',
                     productName: item.name || 'Unknown Product',
@@ -895,7 +915,8 @@ export default function POSPage() {
                 if (snap.empty) {
                     await addDoc(getTenantCollection(db, tenantId, 'retailers'), {
                         name: customer.name, number: customer.phone, atPost: customer.address,
-                        pin: customer.pin, status: 'active', channel: 'pos',
+                        pin: customer.pin, taluka: customer.taluka || '', district: customer.district || '',
+                        status: 'active', channel: 'pos',
                         totalSales: grandTotal,
                         outstandingAmount: isCredit ? effectiveCreditAmount : 0,
                         totalPaid: isCredit ? effectiveCreditPaidNow : grandTotal,
@@ -916,6 +937,8 @@ export default function POSPage() {
                         ...(customer.name ? { name: customer.name } : {}),
                         ...(customer.address ? { atPost: customer.address } : {}),
                         ...(customer.pin ? { pin: customer.pin } : {}),
+                        ...(customer.taluka !== undefined ? { taluka: customer.taluka } : {}),
+                        ...(customer.district !== undefined ? { district: customer.district } : {}),
                         totalSales: Math.max(0, Number(rData.totalSales || 0) - prevTotal + grandTotal),
                         outstandingAmount: Math.max(0, Number(rData.outstandingAmount || 0)
                             - (prevWasCredit ? prevCreditAmt : 0) + (isCredit ? effectiveCreditAmount : 0)),
@@ -980,6 +1003,19 @@ export default function POSPage() {
             }
 
             showToast(`Sale saved · ${billNumber} · ₹${Math.round(grandTotal).toLocaleString('en-IN')}`, 'success');
+            if (tenantId && currentUser) {
+                logAudit({
+                    db, tenantId,
+                    userId: currentUser.uid,
+                    userName: userName || currentUser.email || 'Unknown',
+                    userRole: userRole || 'unknown',
+                    module: 'POS Billing',
+                    action: 'Generate Invoice',
+                    entityName: customer.name || 'Walk-in Customer',
+                    entityId: billNumber,
+                    remarks: `₹${Math.round(grandTotal).toLocaleString('en-IN')} · ${modeOfPayment}`,
+                });
+            }
 
             // Reset after save
             setTimeout(() => {
@@ -992,6 +1028,7 @@ export default function POSPage() {
                         : t,
                 ));
                 setRedeemPoints(0);
+                setInvoiceCategories(null);
                 // Clear the carried balance with the bill — re-entering the phone
                 // re-fetches the (now updated) outstanding for the next sale.
                 setCustomerOutstanding(0);
@@ -1345,25 +1382,47 @@ export default function POSPage() {
                     )}
 
                     {/* Bill-format selector — accountant can print A4 or A5 */}
-                    <div style={{ maxWidth: billFormat === 'A5' ? '960px' : '1040px', margin: '0 auto 0.9rem', display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '0.75rem', flexWrap: 'wrap' }}>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap' }}>
-                            <FileText size={16} color="var(--text-secondary)" />
-                            <span style={{ fontWeight: 700, fontSize: '0.85rem', color: 'var(--text-secondary)' }}>{L('bill_format')}:</span>
-                            {(['A4', 'A5'] as BillFormat[]).map(f => (
-                                <button key={f} onClick={() => setBillFormat(f)} className={`pinv-fmt-btn${billFormat === f ? ' active' : ''}`}>
-                                    {f}
-                                </button>
-                            ))}
-                            <span style={{ width: '1px', height: '20px', background: 'var(--surface-border)', margin: '0 0.35rem' }} />
-                            <span style={{ fontWeight: 700, fontSize: '0.85rem', color: 'var(--text-secondary)' }}>{L('bill_language')}:</span>
-                            {([['en', 'EN'], ['mr', 'मराठी'], ['hi', 'हिंदी']] as const).map(([code, label]) => (
-                                <button key={code} onClick={() => setBillLang(code)} className={`pinv-fmt-btn${billLang === code ? ' active' : ''}`}>
-                                    {label}
-                                </button>
-                            ))}
-                        </div>
-                        <span style={{ fontSize: '0.8rem', color: 'var(--text-tertiary)', fontWeight: 600 }}>{L('bill_no')} #{nextBillNumber}</span>
-                    </div>
+                    {(() => {
+                        const ALL_INVOICE_CATS = ['Fertilizers', 'Pesticides', 'Seeds', 'Others'];
+                        const selectedCategories = invoiceCategories ?? getInvoiceProductCategories(cart);
+                        const isManualCat = invoiceCategories !== null;
+                        const toggleCategory = (cat: string) => {
+                            const current = invoiceCategories ?? getInvoiceProductCategories(cart);
+                            const next = current.includes(cat) ? current.filter(c => c !== cat) : [...current, cat];
+                            setInvoiceCategories(next.length > 0 ? next : current);
+                        };
+                        return (
+                            <div style={{ maxWidth: billFormat === 'A5' ? '960px' : '1040px', margin: '0 auto 0.9rem', display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '0.75rem', flexWrap: 'wrap' }}>
+                                <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap' }}>
+                                    <FileText size={16} color="var(--text-secondary)" />
+                                    <span style={{ fontWeight: 700, fontSize: '0.85rem', color: 'var(--text-secondary)' }}>{L('bill_format')}:</span>
+                                    {(['A4', 'A5'] as BillFormat[]).map(f => (
+                                        <button key={f} onClick={() => setBillFormat(f)} className={`pinv-fmt-btn${billFormat === f ? ' active' : ''}`}>
+                                            {f}
+                                        </button>
+                                    ))}
+                                    <span style={{ width: '1px', height: '20px', background: 'var(--surface-border)', margin: '0 0.35rem' }} />
+                                    <span style={{ fontWeight: 700, fontSize: '0.85rem', color: 'var(--text-secondary)' }}>{L('bill_language')}:</span>
+                                    {([['en', 'EN'], ['mr', 'मराठी'], ['hi', 'हिंदी']] as const).map(([code, label]) => (
+                                        <button key={code} onClick={() => setBillLang(code)} className={`pinv-fmt-btn${billLang === code ? ' active' : ''}`}>
+                                            {label}
+                                        </button>
+                                    ))}
+                                    <span style={{ width: '1px', height: '20px', background: 'var(--surface-border)', margin: '0 0.35rem' }} />
+                                    <span style={{ fontWeight: 700, fontSize: '0.85rem', color: 'var(--text-secondary)' }}>Category:</span>
+                                    <select
+                                        value={isManualCat ? (selectedCategories[0] || '') : ''}
+                                        onChange={e => setInvoiceCategories(e.target.value ? [e.target.value] : null)}
+                                        style={{ padding: '0.3rem 0.55rem', borderRadius: '8px', border: '1px solid var(--surface-border)', background: 'var(--surface-base)', color: 'var(--text-secondary)', fontSize: '0.82rem', fontWeight: 600, cursor: 'pointer', outline: 'none', fontFamily: 'inherit' }}
+                                    >
+                                        <option value="">Auto</option>
+                                        {ALL_INVOICE_CATS.map(cat => <option key={cat} value={cat}>{cat}</option>)}
+                                    </select>
+                                </div>
+                                <span style={{ fontSize: '0.8rem', color: 'var(--text-tertiary)', fontWeight: 600 }}>{L('bill_no')} #{nextBillNumber}</span>
+                            </div>
+                        );
+                    })()}
 
                     {/* Invoice card (editable on screen; printed copy is rendered separately) */}
                     <div style={{ maxWidth: billFormat === 'A5' ? '970px' : '1040px', margin: '0 auto', background: '#fff', color: '#000', fontFamily: billFormat === 'A5' ? 'Arial, Helvetica, sans-serif' : "'Times New Roman', serif", boxShadow: '0 4px 24px rgba(0,0,0,0.10)', borderRadius: billFormat === 'A5' ? '3px' : '10px', border: 'none', padding: billFormat === 'A5' ? '0' : '16px 18px' }}>
@@ -1373,58 +1432,61 @@ export default function POSPage() {
                             <div style={{ border: '1.5px solid #333', fontFamily: 'Arial, Helvetica, sans-serif' }}>
 
                                 {/* ══ HEADER ═══════════════════════════════════════════════════ */}
-                                <div style={{ display: 'grid', gridTemplateColumns: '104px 1fr 156px', borderBottom: '1.5px solid #333' }}>
+                                {/* License box is its own auto-width column so it never stretches */}
+                                {(() => {
+                                    const lics = getAllConfiguredLicenses(branding);
+                                    return (
+                                        <div style={{ display: 'grid', gridTemplateColumns: `${lics.length > 0 ? 'auto ' : ''}1fr 162px`, borderBottom: '1.5px solid #333' }}>
 
-                                    {/* Left col: Invoice type badge */}
-                                    <div style={{ borderRight: '1px solid #aaa', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: '6px 8px', gap: '5px' }}>
-                                        <div style={{ fontWeight: 900, fontSize: '0.88rem', letterSpacing: '0.04em', textAlign: 'center', lineHeight: 1.1 }}>GST<br />INVOICE</div>
-                                        <div style={{ width: '100%', border: '1px solid #555', padding: '2px 4px', fontSize: '0.7rem', fontWeight: 700, textAlign: 'center', letterSpacing: '0.02em' }}>
-                                            {modeOfPayment === 'Khata' || modeOfPayment === 'Credit' ? L('credit_bill') : L('cash_bill')}
-                                        </div>
-                                    </div>
-
-                                    {/* Center col: Business info */}
-                                    <div style={{ borderRight: '1px solid #aaa', padding: '6px 10px', textAlign: 'center', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: '2px' }}>
-                                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', justifyContent: 'center' }}>
-                                            {branding?.logoUrl && <img src={branding.logoUrl} alt="Logo" style={{ height: '30px', objectFit: 'contain' }} />}
-                                            <div style={{ fontWeight: 900, fontSize: '1.25rem', lineHeight: 1.1, letterSpacing: '-0.01em' }}>{branding?.businessName || 'Your Business Name'}</div>
-                                        </div>
-                                        {branding?.address && <div style={{ fontSize: '0.72rem', color: '#333', lineHeight: 1.4 }}>{branding.address}</div>}
-                                        <div style={{ fontSize: '0.72rem', color: '#333', display: 'flex', gap: '8px', flexWrap: 'wrap', justifyContent: 'center' }}>
-                                            {branding?.gstin && <span><strong>GSTIN:</strong> {branding.gstin}</span>}
-                                            {branding?.contact && <span>| <strong>Ph:</strong> {branding.contact}</span>}
-                                        </div>
-                                        {(() => {
-                                            const lics = getApplicableLicenses(getInvoiceProductCategories(cart), branding);
-                                            return lics.length > 0 ? (
-                                                <div style={{ fontSize: '0.64rem', color: '#555', borderTop: '1px dashed #ccc', marginTop: '2px', paddingTop: '2px', display: 'flex', gap: '10px', flexWrap: 'wrap', justifyContent: 'center' }}>
-                                                    {lics.map(lic => <span key={lic.label}><strong>{lic.label}:</strong> {lic.number}</span>)}
+                                            {/* License box — compact, left-most, sized to content */}
+                                            {lics.length > 0 && (
+                                                <div style={{ borderRight: '1px solid #aaa', padding: '5px 10px', display: 'flex', flexDirection: 'column', justifyContent: 'center', gap: '3px' }}>
+                                                    {lics.map(lic => (
+                                                        <div key={lic.label} style={{ fontSize: '0.60rem', color: '#333', whiteSpace: 'nowrap' }}>
+                                                            <strong>{lic.label}:</strong> {lic.number}
+                                                        </div>
+                                                    ))}
                                                 </div>
-                                            ) : null;
-                                        })()}
-                                    </div>
+                                            )}
 
-                                    {/* Right col: Bill meta */}
-                                    <div style={{ padding: '6px 10px', display: 'flex', flexDirection: 'column', justifyContent: 'center', gap: '5px', fontSize: '0.78rem' }}>
-                                        <div><strong>Bill No:</strong> <span style={{ fontWeight: 900 }}>{nextBillNumber}</span></div>
-                                        <div style={{ display: 'flex', gap: '4px', alignItems: 'center' }}>
-                                            <strong style={{ whiteSpace: 'nowrap' }}>Date:</strong>
-                                            <input type="date" className="pinv-input" style={{ fontSize: '0.73rem', flex: 1 }} value={invoiceDate} onChange={e => setInvoiceDate(e.target.value)} />
+                                            {/* Center: GST INVOICE (primary) + Business info */}
+                                            <div style={{ borderRight: '1px solid #aaa', padding: '5px 12px 6px', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: '2px' }}>
+                                                <div style={{ fontWeight: 900, fontSize: '1.0rem', letterSpacing: '0.10em', textTransform: 'uppercase', color: '#111', textAlign: 'center', lineHeight: 1.1 }}>GST INVOICE</div>
+                                                <div style={{ display: 'flex', alignItems: 'center', gap: '7px', justifyContent: 'center' }}>
+                                                    {branding?.logoUrl && <img src={branding.logoUrl} alt="Logo" style={{ height: '22px', objectFit: 'contain' }} />}
+                                                    <div style={{ fontWeight: 800, fontSize: '0.88rem', lineHeight: 1.15 }}>{branding?.businessName || 'Your Business Name'}</div>
+                                                </div>
+                                                {branding?.address && <div style={{ fontSize: '0.68rem', color: '#333', lineHeight: 1.4, textAlign: 'center' }}>{branding.address}</div>}
+                                                <div style={{ fontSize: '0.66rem', color: '#333', display: 'flex', gap: '8px', flexWrap: 'wrap', justifyContent: 'center' }}>
+                                                    {branding?.gstin && <span><strong>GSTIN:</strong> {branding.gstin}</span>}
+                                                    {branding?.contact && <span>| <strong>Ph:</strong> {branding.contact}</span>}
+                                                </div>
+                                            </div>
+
+                                            {/* Right col: Bill meta */}
+                                            <div style={{ padding: '6px 10px', display: 'flex', flexDirection: 'column', justifyContent: 'center', fontSize: '0.70rem', gap: '4px' }}>
+                                                <div><strong>Bill No:</strong> <span style={{ fontWeight: 900 }}>{nextBillNumber}</span></div>
+                                                <div style={{ display: 'flex', gap: '4px', alignItems: 'center' }}>
+                                                    <strong style={{ whiteSpace: 'nowrap' }}>Date:</strong>
+                                                    <input type="date" className="pinv-input" style={{ fontSize: '0.68rem', flex: 1 }} value={invoiceDate} onChange={e => setInvoiceDate(e.target.value)} />
+                                                </div>
+                                                <div style={{ display: 'flex', gap: '4px', alignItems: 'center' }}>
+                                                    <strong style={{ whiteSpace: 'nowrap' }}>Mode:</strong>
+                                                    <select className="pinv-input" style={{ fontSize: '0.68rem', flex: 1, fontWeight: 700 }} value={modeOfPayment} onChange={e => setModeOfPayment(e.target.value)}>
+                                                        {['Cash', 'Credit'].map(m => <option key={m} value={m}>{m}</option>)}
+                                                    </select>
+                                                </div>
+                                            </div>
                                         </div>
-                                        <div style={{ display: 'flex', gap: '4px', alignItems: 'center' }}>
-                                            <strong style={{ whiteSpace: 'nowrap' }}>Mode:</strong>
-                                            <select className="pinv-input" style={{ fontSize: '0.73rem', flex: 1 }} value={modeOfPayment} onChange={e => setModeOfPayment(e.target.value)}>
-                                                {['Cash', 'Credit'].map(m => <option key={m} value={m}>{m}</option>)}
-                                            </select>
-                                        </div>
-                                    </div>
-                                </div>
+                                    );
+                                })()}
 
                                 {/* ══ CUSTOMER ROW ═════════════════════════════════════════════ */}
-                                <div style={{ display: 'grid', gridTemplateColumns: '2.4fr 0.9fr 2fr 0.68fr', borderBottom: '1px solid #aaa', fontSize: '0.78rem' }}>
+                                <div style={{ display: 'grid', gridTemplateColumns: '1.4fr 0.75fr 0.85fr 0.85fr 1.0fr 0.45fr', borderBottom: '1px solid #aaa', fontSize: '0.78rem' }}>
+                                    {/* Buyer Name */}
                                     <div style={{ borderRight: '1px solid #ccc', padding: '4px 8px', display: 'flex', gap: '5px', alignItems: 'center', position: 'relative' }}>
                                         <span style={{ fontWeight: 700, color: '#555', whiteSpace: 'nowrap', flexShrink: 0, fontSize: '0.72rem' }}>Buyer:</span>
-                                        <input className="pinv-input" style={{ fontWeight: 700, fontSize: '0.82rem', flex: 1 }} placeholder={L('buyer_name_ph')} value={customer.name}
+                                        <input className="pinv-input" style={{ fontWeight: 700, fontSize: '0.82rem', flex: 1, minWidth: 0 }} placeholder={L('buyer_name_ph')} value={customer.name}
                                             onChange={e => { setCustomer({ ...customer, name: e.target.value }); setShowFarmerDropdown(e.target.value.length > 0); }}
                                             onFocus={() => customer.name.length > 0 && setShowFarmerDropdown(true)}
                                             onBlur={() => setTimeout(() => setShowFarmerDropdown(false), 200)}
@@ -1436,7 +1498,7 @@ export default function POSPage() {
                                                     .map(r => (
                                                         <div key={r.id} className="pinv-dropdown-item" onMouseDown={() => {
                                                             lastMatchedPhoneRef.current = r.number || null;
-                                                            setCustomer({ name: r.name || '', phone: r.number || '', address: r.atPost || '', pin: r.pin || '' });
+                                                            setCustomer({ name: r.name || '', phone: r.number || '', address: r.atPost || '', pin: r.pin || '', taluka: r.taluka || '', district: r.district || '', retailerId: r.id });
                                                             setCustomerOutstanding(Number(r.outstandingAmount) || 0); setShowFarmerDropdown(false);
                                                         }}>
                                                             <div style={{ fontWeight: 600 }}>{r.name}</div>
@@ -1446,21 +1508,38 @@ export default function POSPage() {
                                             </div>
                                         )}
                                     </div>
+                                    {/* Phone */}
                                     <div style={{ borderRight: '1px solid #ccc', padding: '4px 8px', display: 'flex', gap: '5px', alignItems: 'center' }}>
                                         <span style={{ fontWeight: 700, color: '#555', whiteSpace: 'nowrap', flexShrink: 0, fontSize: '0.72rem' }}>Ph:</span>
-                                        <input ref={customerPhoneRef} className="pinv-input" style={{ flex: 1, fontSize: '0.8rem' }} placeholder="Phone" value={customer.phone}
+                                        <input ref={customerPhoneRef} className="pinv-input" style={{ flex: 1, fontSize: '0.8rem', minWidth: 0 }} placeholder="Phone" value={customer.phone}
                                             onChange={e => setCustomer({ ...customer, phone: e.target.value })} onBlur={handlePhoneLookup}
                                             onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); customerAddressRef.current?.focus(); } }} />
                                     </div>
+                                    {/* Village */}
                                     <div style={{ borderRight: '1px solid #ccc', padding: '4px 8px', display: 'flex', gap: '5px', alignItems: 'center' }}>
-                                        <span style={{ fontWeight: 700, color: '#555', whiteSpace: 'nowrap', flexShrink: 0, fontSize: '0.72rem' }}>Addr:</span>
-                                        <input ref={customerAddressRef} className="pinv-input" style={{ flex: 1, fontSize: '0.8rem' }} placeholder={L('village_ph')} value={customer.address}
+                                        <span style={{ fontWeight: 700, color: '#555', whiteSpace: 'nowrap', flexShrink: 0, fontSize: '0.72rem' }}>Village:</span>
+                                        <input ref={customerAddressRef} className="pinv-input" style={{ flex: 1, fontSize: '0.8rem', minWidth: 0 }} placeholder={L('village_ph')} value={customer.address}
                                             onChange={e => setCustomer({ ...customer, address: e.target.value })}
+                                            onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); customerTalukaRef.current?.focus(); } }} />
+                                    </div>
+                                    {/* Taluka */}
+                                    <div style={{ borderRight: '1px solid #ccc', padding: '4px 8px', display: 'flex', gap: '5px', alignItems: 'center' }}>
+                                        <span style={{ fontWeight: 700, color: '#555', whiteSpace: 'nowrap', flexShrink: 0, fontSize: '0.72rem' }}>Taluka:</span>
+                                        <input ref={customerTalukaRef} className="pinv-input" style={{ flex: 1, fontSize: '0.8rem', minWidth: 0 }} placeholder="Taluka" value={customer.taluka || ''}
+                                            onChange={e => setCustomer({ ...customer, taluka: e.target.value })}
+                                            onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); customerDistrictRef.current?.focus(); } }} />
+                                    </div>
+                                    {/* District */}
+                                    <div style={{ borderRight: '1px solid #ccc', padding: '4px 8px', display: 'flex', gap: '5px', alignItems: 'center' }}>
+                                        <span style={{ fontWeight: 700, color: '#555', whiteSpace: 'nowrap', flexShrink: 0, fontSize: '0.72rem' }}>District:</span>
+                                        <input ref={customerDistrictRef} className="pinv-input" style={{ flex: 1, fontSize: '0.8rem', minWidth: 0 }} placeholder="District" value={customer.district || ''}
+                                            onChange={e => setCustomer({ ...customer, district: e.target.value })}
                                             onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); customerPinRef.current?.focus(); } }} />
                                     </div>
+                                    {/* PIN */}
                                     <div style={{ padding: '4px 8px', display: 'flex', gap: '5px', alignItems: 'center' }}>
                                         <span style={{ fontWeight: 700, color: '#555', whiteSpace: 'nowrap', flexShrink: 0, fontSize: '0.72rem' }}>PIN:</span>
-                                        <input ref={customerPinRef} className="pinv-input" style={{ flex: 1, fontSize: '0.8rem' }} placeholder={L('pin')} value={customer.pin}
+                                        <input ref={customerPinRef} className="pinv-input" style={{ flex: 1, fontSize: '0.8rem', minWidth: 0 }} placeholder={L('pin')} value={customer.pin}
                                             onChange={e => setCustomer({ ...customer, pin: e.target.value })}
                                             onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); rowSearchRef.current?.focus(); } }} />
                                     </div>
@@ -1473,14 +1552,14 @@ export default function POSPage() {
                                         <colgroup>
                                             {/* # */}      <col style={{ width: '2.5%' }} />
                                             {/* Product */} <col />
-                                            {/* Company */} <col style={{ width: '11%' }} />
+                                            {/* Company */} <col style={{ width: '9%' }} />
                                             {/* Batch */}   <col style={{ width: '9.5%' }} />
-                                            {/* Exp */}     <col style={{ width: '6%' }} />
+                                            {/* Exp */}     <col style={{ width: '8%' }} />
                                             {/* Per */}     <col style={{ width: '4.5%' }} />
                                             {/* Qty */}     <col style={{ width: '5%' }} />
-                                            {/* Rate */}    <col style={{ width: '8.5%' }} />
+                                            {/* Rate */}    <col style={{ width: '10%' }} />
                                             {/* GST% */}    <col style={{ width: '5%' }} />
-                                            {/* Amount */}  <col style={{ width: '10%' }} />
+                                            {/* Amount */}  <col style={{ width: '12%' }} />
                                             {/* Del */}     <col style={{ width: '2.5%' }} />
                                         </colgroup>
                                         <thead>
@@ -1601,28 +1680,28 @@ export default function POSPage() {
                                 </div>
 
                                 {/* ══ FOOTER ═══════════════════════════════════════════════════ */}
-                                <div style={{ display: 'grid', gridTemplateColumns: '1.55fr 1.1fr 0.68fr', borderTop: '1.5px solid #333' }}>
+                                <div style={{ display: 'grid', gridTemplateColumns: '1.2fr 1.1fr 1.0fr', borderTop: '1.5px solid #333' }}>
 
                                     {/* Col 1 – GST Summary + Declaration */}
                                     <div style={{ borderRight: '1px solid #aaa', display: 'flex', flexDirection: 'column' }}>
-                                        <div style={{ background: '#f5f5f5', padding: '3px 8px', borderBottom: '1px solid #ccc', fontSize: '0.74rem', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.06em', textAlign: 'center' }}>GST Summary</div>
-                                        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.74rem' }}>
+                                        <div style={{ background: '#f5f5f5', padding: '2px 4px', borderBottom: '1px solid #ccc', fontSize: '0.68rem', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em', textAlign: 'center' }}>GST Summary</div>
+                                        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.68rem' }}>
                                             <thead>
                                                 <tr>
                                                     {['Taxable', 'CGST 2.5%', 'SGST 2.5%', 'Total Tax'].map(h => (
-                                                        <th key={h} style={{ border: '1px solid #ddd', padding: '3px 3px', textAlign: 'center', background: '#fafafa', fontWeight: 700 }}>{h}</th>
+                                                        <th key={h} style={{ border: '1px solid #ddd', padding: '2px 2px', textAlign: 'center', background: '#fafafa', fontWeight: 700 }}>{h}</th>
                                                     ))}
                                                 </tr>
                                             </thead>
                                             <tbody>
                                                 <tr>
                                                     {[computedTaxable, totalCgst, totalSgst, totalTax].map((v, vi) => (
-                                                        <td key={vi} style={{ border: '1px solid #ddd', padding: '3px 3px', textAlign: 'center' }}>{invFmt(v)}</td>
+                                                        <td key={vi} style={{ border: '1px solid #ddd', padding: '2px 2px', textAlign: 'center' }}>{invFmt(v)}</td>
                                                     ))}
                                                 </tr>
                                             </tbody>
                                         </table>
-                                        <div style={{ padding: '5px 8px', fontSize: '0.67rem', color: '#555', lineHeight: 1.45, flex: 1 }}>
+                                        <div style={{ padding: '4px 6px', fontSize: '0.63rem', color: '#555', lineHeight: 1.4, flex: 1 }}>
                                             <strong>{L('declaration')}:</strong> {L('declaration_text')}
                                         </div>
                                     </div>
@@ -1669,22 +1748,16 @@ export default function POSPage() {
                                             <strong>Amt in Words:</strong>{' '}
                                             <span style={{ fontStyle: 'italic', fontWeight: 600 }}>INR {numberToWords(invNetAmount)}</span>
                                         </div>
-                                        <div style={{ borderTop: '1px solid #ddd', padding: '4px 8px' }}>
-                                            <span style={{ fontSize: '0.66rem', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.04em' }}>Category: </span>
-                                            {getInvoiceProductCategories(cart).map(cat => (
-                                                <span key={cat} style={{ fontSize: '0.66rem', border: '1px solid #777', padding: '1px 5px', fontWeight: 600, marginLeft: '3px', background: '#e8f5e9' }}>✓ {cat}</span>
-                                            ))}
-                                        </div>
                                     </div>
 
-                                    {/* Col 3 – Signatures */}
-                                    <div style={{ display: 'flex', flexDirection: 'column' }}>
-                                        <div style={{ flex: 1, borderBottom: '1px solid #ccc', display: 'flex', flexDirection: 'column', justifyContent: 'flex-end', padding: '6px 8px', alignItems: 'center', minHeight: '72px' }}>
+                                    {/* Col 3 – Signatures side by side */}
+                                    <div style={{ display: 'flex', flexDirection: 'row' }}>
+                                        <div style={{ flex: 1, display: 'flex', flexDirection: 'column', justifyContent: 'flex-end', padding: '6px 10px', alignItems: 'center' }}>
                                             <div style={{ borderTop: '1px solid #555', paddingTop: '3px', fontSize: '0.7rem', fontWeight: 700, textAlign: 'center', width: '100%' }}>Customer Signature</div>
                                         </div>
-                                        <div style={{ flex: 1, display: 'flex', flexDirection: 'column', justifyContent: 'flex-end', padding: '6px 8px', alignItems: 'center', minHeight: '72px' }}>
+                                        <div style={{ flex: 1, borderLeft: '1px solid #ccc', display: 'flex', flexDirection: 'column', justifyContent: 'flex-end', padding: '6px 10px', alignItems: 'center' }}>
                                             {branding?.signatureUrl && (
-                                                <img src={branding.signatureUrl} alt="" style={{ height: '34px', maxWidth: '100%', objectFit: 'contain', display: 'block', margin: '0 auto 4px' }} />
+                                                <img src={branding.signatureUrl} alt="" style={{ height: '44px', maxWidth: '100%', objectFit: 'contain', display: 'block', margin: '0 auto 4px' }} />
                                             )}
                                             <div style={{ borderTop: '1px solid #555', paddingTop: '3px', fontSize: '0.7rem', fontWeight: 700, textAlign: 'center', width: '100%' }}>Authorized Signature</div>
                                         </div>
@@ -1706,6 +1779,14 @@ export default function POSPage() {
                                                 {branding?.gstin && <><strong>GSTIN:</strong> {branding.gstin} &nbsp;</>}
                                                 {branding?.contact && <>Contact No.: {branding.contact}</>}
                                             </div>
+                                            {(() => {
+                                                const lics = getAllConfiguredLicenses(branding);
+                                                return lics.length > 0 ? (
+                                                    <div style={{ fontSize: '0.72rem', color: '#555', marginTop: '2px', display: 'flex', gap: '10px', flexWrap: 'wrap' }}>
+                                                        {lics.map(lic => <span key={lic.label}><strong>{lic.label}:</strong> {lic.number}</span>)}
+                                                    </div>
+                                                ) : null;
+                                            })()}
                                         </div>
                                     </div>
                                     <div style={{ textAlign: 'right', fontWeight: 700, fontSize: '0.95rem', color: '#111', border: '2px solid #111', padding: '4px 12px', borderRadius: '6px' }}>
@@ -1745,7 +1826,7 @@ export default function POSPage() {
                                                             <div key={r.id} className="pinv-dropdown-item"
                                                                 onMouseDown={() => {
                                                                     lastMatchedPhoneRef.current = r.number || null;
-                                                                    setCustomer({ name: r.name || '', phone: r.number || '', address: r.atPost || '', pin: r.pin || '' });
+                                                                    setCustomer({ name: r.name || '', phone: r.number || '', address: r.atPost || '', pin: r.pin || '', taluka: r.taluka || '', district: r.district || '', retailerId: r.id });
                                                                     setCustomerOutstanding(Number(r.outstandingAmount) || 0);
                                                                     setShowFarmerDropdown(false);
                                                                 }}>
@@ -1971,6 +2052,8 @@ export default function POSPage() {
                                     <div style={{ padding: '6px', fontWeight: 600, fontSize: '0.85rem', fontStyle: 'italic' }}>INR {numberToWords(invNetAmount)}</div>
                                 </div>
 
+                                {/* Category intentionally omitted from printed invoice — tracked internally for analytics only */}
+
                                 {/* DECLARATION + SIGNATURE */}
                                 <div style={{ border: '1px solid #222', display: 'grid', gridTemplateColumns: '1fr 1fr' }}>
                                     <div style={{ borderRight: '1px solid #222', padding: '8px', fontSize: '0.75rem' }}>
@@ -2093,6 +2176,12 @@ export default function POSPage() {
                                                 <div style={{ fontWeight: 700, fontSize: '0.9rem', color: 'var(--text-primary)', display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
                                                     <User size={13} style={{ color: '#f59e0b' }} />
                                                     {customer.name || 'Unnamed Customer'}
+                                                    {customer.retailerId && (
+                                                        <Link to={`/customers/${customer.retailerId}`} target="_blank"
+                                                            style={{ fontSize: '0.7rem', fontWeight: 600, color: 'var(--primary-light)', textDecoration: 'none', padding: '1px 6px', borderRadius: '8px', background: 'hsla(152,60%,40%,0.1)', border: '1px solid hsla(152,60%,40%,0.2)', whiteSpace: 'nowrap' }}>
+                                                            View Profile ↗
+                                                        </Link>
+                                                    )}
                                                 </div>
                                                 {customer.phone && (
                                                     <div style={{ fontSize: '0.76rem', color: 'var(--text-tertiary)', display: 'flex', alignItems: 'center', gap: '0.3rem', marginTop: '0.1rem' }}>
@@ -2391,7 +2480,7 @@ export default function POSPage() {
                                 sellingPrice: li.mrp, maxRetailPrice: li.mrp, cartTotal: li.amount, gstPct: li.gstPct,
                                 mfgCompany: li.mfgCompany, batchNo: li.batchNo, expDate: li.expDate,
                             }))}
-                            customer={{ name: reprintOrder.retailerName, phone: reprintOrder.phoneNumber, address: reprintOrder.address, pin: reprintOrder.pin }}
+                            customer={{ name: reprintOrder.retailerName, phone: reprintOrder.phoneNumber, address: reprintOrder.address, pin: reprintOrder.pin, taluka: reprintOrder.taluka, district: reprintOrder.district }}
                             branding={branding}
                             billNumber={reprintOrder.orderNumber}
                             discount={reprintOrder.discount || 0}
@@ -2417,6 +2506,7 @@ export default function POSPage() {
                             invoiceDate={invoiceDate}
                             modeOfPayment={modeOfPayment}
                             previousOutstanding={customerOutstanding}
+                            activeCats={invoiceCategories ?? getInvoiceProductCategories(cart)}
                             L={L}
                         />
                     )}

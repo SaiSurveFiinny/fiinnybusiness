@@ -69,7 +69,7 @@ export function AnalyticsPage() {
                 salesSnap.docs.forEach(doc => {
                     const d = doc.data();
                     const isB2B = d.invoiceType === 'B2B_GST';
-                    const amount = Number(d.grandTotal || d.netAmount || d.totalAmount || d.amount || 0);
+                    const amount = Number(d.grandTotal ?? d.netAmount ?? d.totalAmount ?? d.amount ?? 0);
                     const createdAt = d.createdAt?.toDate ? d.createdAt.toDate() : new Date(d.createdAt || Date.now());
                     const o: RawOrder = { id: doc.id, channel: isB2B ? 'B2B' : 'B2C', amount, createdAt };
                     if (isB2B) b2bOrders.push(o); else b2cOrders.push(o);
@@ -83,7 +83,7 @@ export function AnalyticsPage() {
                     const d = doc.data();
                     return {
                         id: doc.id, channel: 'Online' as const,
-                        amount: Number(d.grandTotal || d.amount || 0),
+                        amount: Number(d.grandTotal ?? d.amount ?? 0),
                         createdAt: d.createdAt?.toDate ? d.createdAt.toDate() : new Date(d.createdAt || Date.now())
                     };
                 });
@@ -156,7 +156,7 @@ export function AnalyticsPage() {
         const now = new Date();
         const cuts: Record<Exclude<TimeRange,'custom'>, Date> = {
             today:   new Date(now.getFullYear(), now.getMonth(), now.getDate()),
-            week:    (() => { const d = new Date(now); d.setDate(now.getDate() - now.getDay()); d.setHours(0,0,0,0); return d; })(),
+            week:    (() => { const d = new Date(now); d.setDate(now.getDate() - ((now.getDay() || 7) - 1)); d.setHours(0,0,0,0); return d; })(),
             month:   new Date(now.getFullYear(), now.getMonth(), 1),
             quarter: new Date(now.getFullYear(), Math.floor(now.getMonth() / 3) * 3, 1),
             all:     new Date(0),
@@ -241,7 +241,9 @@ export function AnalyticsPage() {
         const bySupplier = new Map<string, { name: string; purchases: number; paid: number }>();
         suppliers.forEach(s => bySupplier.set(s.id, { name: s.name, purchases: 0, paid: 0 }));
         posInRange.forEach(po => {
-            const sup = suppliers.find(s => s.name === po.supplierName);
+            const sup = po.supplierId
+                ? suppliers.find(s => s.id === po.supplierId)
+                : suppliers.find(s => s.name === po.supplierName);
             if (!sup) return;
             bySupplier.get(sup.id)!.purchases += poAmount(po);
         });
@@ -250,7 +252,9 @@ export function AnalyticsPage() {
             bySupplier.get(inv.supplierId)!.purchases += invAmount(inv);
         });
         pmtsInRange.forEach(p => {
-            const sup = suppliers.find(s => s.name === p.supplierName);
+            const sup = p.supplierId
+                ? suppliers.find(s => s.id === p.supplierId)
+                : suppliers.find(s => s.name === p.supplierName);
             if (!sup) return;
             bySupplier.get(sup.id)!.paid += pmtAmount(p);
         });
@@ -590,7 +594,7 @@ export function AnalyticsPage() {
                         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '1rem', marginBottom: '1.5rem' }}>
                             <KpiCard label="Total Suppliers" value={String(supplierMetrics.supplierCount)} sub="active in ledger" icon={Building2} border="#0ea5e9" bg="rgba(14,165,233,0.07)" />
                             <KpiCard label="Total Purchases" value={fmtINR(supplierMetrics.totalPurchases)} sub={`${supplierMetrics.totalPOCount} POs · ${supplierMetrics.totalInvoiceCount} invoices`} icon={Package} border="#f97316" bg="rgba(249,115,22,0.07)" />
-                            <KpiCard label="Total Outstanding Payables" value={fmtINR(supplierMetrics.totalOutstanding)} sub={timeLabels[timeRange]} icon={IndianRupee} border="#ef4444" bg="rgba(239,68,68,0.07)" />
+                            <KpiCard label="Net Payable This Period" value={fmtINR(supplierMetrics.totalOutstanding)} sub={`purchases − payments · ${timeLabels[timeRange]}`} icon={IndianRupee} border="#ef4444" bg="rgba(239,68,68,0.07)" />
                             <KpiCard label="Total Payments Made" value={fmtINR(supplierMetrics.totalPaid)} sub={timeLabels[timeRange]} icon={Wallet} border="#10b981" bg="rgba(16,185,129,0.07)" />
                             <KpiCard label="Avg Purchase Value" value={fmtINR(supplierMetrics.avgPurchaseValue)} sub="per PO / invoice" icon={Receipt} border="#a78bfa" bg="rgba(167,139,250,0.07)" />
                             <KpiCard label="Avg Supplier Outstanding" value={fmtINR(supplierMetrics.avgOutstanding)} sub="across active suppliers" icon={TrendingUp} border="#f59e0b" bg="rgba(245,158,11,0.07)" />

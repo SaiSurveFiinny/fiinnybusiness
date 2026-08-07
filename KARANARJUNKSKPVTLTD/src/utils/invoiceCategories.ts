@@ -51,6 +51,22 @@ export interface LicenseEntry {
 }
 
 /**
+ * Returns ALL configured license numbers unconditionally, regardless of which
+ * product categories are on the invoice. Use this when the business wants every
+ * configured license to always appear on printed bills.
+ */
+export function getAllConfiguredLicenses(
+    branding: { fertilizerLicense?: string; pesticideLicense?: string; seedsLicense?: string } | null | undefined,
+): LicenseEntry[] {
+    if (!branding) return [];
+    const result: LicenseEntry[] = [];
+    if (branding.fertilizerLicense) result.push({ label: 'Fert. Lic', number: branding.fertilizerLicense });
+    if (branding.pesticideLicense)  result.push({ label: 'Pest. Lic', number: branding.pesticideLicense });
+    if (branding.seedsLicense)      result.push({ label: 'Seeds Lic', number: branding.seedsLicense });
+    return result;
+}
+
+/**
  * Returns only the license numbers that are relevant to the active product
  * categories AND are actually configured in branding.
  *

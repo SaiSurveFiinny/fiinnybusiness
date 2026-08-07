@@ -1,6 +1,6 @@
 import { useRef, useState, useEffect, useCallback } from 'react';
 import { Link, useLocation } from 'react-router-dom';
-import { Home, BarChart3, Layers, ReceiptText, Activity, FileText, ClipboardList, Package, ShieldAlert, Calculator, BookOpen, Target, Receipt, ChevronLeft, ChevronRight, HelpCircle } from 'lucide-react';
+import { Home, BarChart3, Layers, ReceiptText, Activity, FileText, ClipboardList, Package, ShieldAlert, Calculator, BookOpen, Target, Receipt, ChevronLeft, ChevronRight, HelpCircle, Users } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 import type { AppScreen } from '../contexts/AuthContext';
 
@@ -10,6 +10,7 @@ const PRIORITY_NAV = [
   { path: '/analytics',        label: 'Analytics',        icon: <Layers size={15} />,         screenKey: 'analytics' as AppScreen },
   { path: '/worklist',         label: 'Worklist',          icon: <ReceiptText size={15} />,    screenKey: 'worklist' as AppScreen },
   { path: '/pos',              label: 'POS Billing',       icon: <Calculator size={15} />,     screenKey: 'pos' as AppScreen },
+  { path: '/customers',        label: 'Customers',         icon: <Users size={15} />,          screenKey: 'customers' as AppScreen },
   { path: '/digital-khata',    label: 'Khata (Udhari)',   icon: <BookOpen size={15} />,       screenKey: 'khata' as AppScreen },
   { path: '/supplier-ledger', label: 'Supplier Ledger',   icon: <ClipboardList size={15} />,  screenKey: 'worklist' as AppScreen },
   { path: '/administration',   label: 'Administration',    icon: <ShieldAlert size={15} />,    screenKey: 'admin' as AppScreen },
@@ -18,7 +19,7 @@ const PRIORITY_NAV = [
   { path: '/b2b-invoice',      label: 'B2B GST Invoice',  icon: <ReceiptText size={15} />,   screenKey: 'worklist' as AppScreen },
   { path: '/sales-targets',    label: 'Sales Targets',    icon: <Target size={15} />,         screenKey: 'worklist' as AppScreen },
   { path: '/expenses',         label: 'Expenses',          icon: <Receipt size={15} />,        screenKey: 'expenses' as AppScreen },
-  { path: '/order-history',    label: 'Audit Log',        icon: <ClipboardList size={15} />,  screenKey: 'order_history' as AppScreen },
+  { path: '/order-history',    label: 'Order History',    icon: <ClipboardList size={15} />,  screenKey: 'order_history' as AppScreen },
   { path: '/barcode',          label: 'Barcode Labels',    icon: <Activity size={15} />,       screenKey: 'inventory' as AppScreen },
   { path: '/help',             label: 'Help Center',       icon: <HelpCircle size={15} />,     screenKey: 'settings' as AppScreen },
   // Sales-user-only items — filtered via SALES_NAV_PATHS below
