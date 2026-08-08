@@ -3,7 +3,9 @@ import { useNavigate } from 'react-router-dom';
 import {
   Building2, Plus, Loader2,
   IndianRupee, Package, Truck, ChevronRight, ChevronDown, Link2, Search, X, Bell, FileText,
+  BarChart3,
 } from 'lucide-react';
+import { useHashTab } from '../hooks/useHashTab';
 import { getDocs } from 'firebase/firestore';
 import { db } from '../firebase';
 import { useAuth } from '../contexts/AuthContext';
@@ -42,6 +44,16 @@ interface Supplier {
   totalPaid?: number;
 }
 
+type SupplierTab = 'suppliers' | 'payments' | 'reminders' | 'reports';
+const VALID_SUPPLIER_TABS: readonly SupplierTab[] = ['suppliers', 'payments', 'reminders', 'reports'];
+
+const SUPPLIER_MODULE_TABS: { id: SupplierTab; label: string; icon: React.ReactNode }[] = [
+  { id: 'suppliers', label: 'Suppliers',         icon: <Building2 size={16} /> },
+  { id: 'payments',  label: 'Invoices',           icon: <FileText size={16} /> },
+  { id: 'reminders', label: 'Payment Reminders',  icon: <Bell size={16} /> },
+  { id: 'reports',   label: 'Reports',            icon: <BarChart3 size={16} /> },
+];
+
 type PartyFilter = 'all' | 'suppliers' | 'transporters';
 type SortCol = 'name' | 'invoiced' | 'paid' | 'outstanding' | 'nextPayment';
 
@@ -55,6 +67,7 @@ export default function SupplierLedgerPage() {
   const { tenantId } = useAuth();
   const navigate = useNavigate();
 
+  const [activeTab, setActiveTab] = useHashTab<SupplierTab>(VALID_SUPPLIER_TABS, 'suppliers', 'fiinny-tab-supplier-ledger');
   const [suppliers, setSuppliers] = useState<Supplier[]>([]);
   const [loading, setLoading] = useState(true);
   const [showAddSupplier, setShowAddSupplier] = useState(false);
@@ -269,6 +282,8 @@ export default function SupplierLedgerPage() {
         </div>
       </div>
 
+      {/* Summary cards — always visible */}
+
       {/* Summary cards */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: '1rem', marginBottom: '1.25rem' }}>
         {[
@@ -285,6 +300,46 @@ export default function SupplierLedgerPage() {
           </div>
         ))}
       </div>
+
+      {/* Module Tab Bar */}
+      <div style={{
+        display: 'flex', gap: '0.25rem',
+        borderBottom: '2px solid var(--surface-border)',
+        overflowX: 'auto', scrollbarWidth: 'none',
+        marginBottom: '1.5rem',
+        paddingBottom: 0,
+      }}>
+        {SUPPLIER_MODULE_TABS.map(tab => {
+          const isActive = activeTab === tab.id;
+          return (
+            <button
+              key={tab.id}
+              onClick={() => setActiveTab(tab.id)}
+              style={{
+                display: 'flex', alignItems: 'center', gap: '0.5rem',
+                padding: '0.65rem 1.25rem',
+                background: 'transparent', border: 'none',
+                borderBottom: isActive ? '2px solid var(--primary-light)' : '2px solid transparent',
+                marginBottom: '-2px',
+                color: isActive ? 'var(--primary-light)' : 'var(--text-tertiary)',
+                fontWeight: isActive ? 700 : 400,
+                fontSize: '0.9rem', cursor: 'pointer', fontFamily: 'inherit',
+                whiteSpace: 'nowrap',
+                transition: 'color 0.15s ease, border-color 0.15s ease',
+                flexShrink: 0,
+              }}
+              onMouseEnter={e => { if (!isActive) (e.currentTarget as HTMLButtonElement).style.color = 'var(--text-primary)'; }}
+              onMouseLeave={e => { if (!isActive) (e.currentTarget as HTMLButtonElement).style.color = 'var(--text-tertiary)'; }}
+            >
+              <span style={{ opacity: isActive ? 1 : 0.6, display: 'flex' }}>{tab.icon}</span>
+              {tab.label}
+            </button>
+          );
+        })}
+      </div>
+
+      {/* ── Suppliers Tab ── */}
+      {activeTab === 'suppliers' && <>
 
       {/* Upcoming Payment Reminders dashboard card */}
       {upcomingReminders.length > 0 && (
@@ -584,6 +639,159 @@ export default function SupplierLedgerPage() {
                 })}
               </tbody>
             </table>
+          </div>
+        </div>
+      )}
+
+      </> /* end Suppliers tab */}
+
+      {/* ── Payments Tab (supplier invoices list) ── */}
+      {activeTab === 'payments' && (
+        <div>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem', flexWrap: 'wrap', gap: '0.75rem' }}>
+            <h2 style={{ fontSize: '1.1rem', fontWeight: 700, margin: 0 }}>Supplier Invoices</h2>
+            <button className="btn btn-primary" onClick={() => navigate('/supplier-invoice')} style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', fontSize: '0.85rem' }}>
+              <Plus size={15} /> Record Invoice
+            </button>
+          </div>
+          {allInvoices.length === 0 ? (
+            <div className="glass-panel" style={{ padding: '3rem', textAlign: 'center', color: 'var(--text-tertiary)', borderRadius: '12px' }}>
+              <FileText size={36} style={{ margin: '0 auto 0.75rem', opacity: 0.25 }} />
+              <div style={{ fontWeight: 600, marginBottom: '0.25rem' }}>No invoices recorded yet</div>
+              <div style={{ fontSize: '0.82rem' }}>Record a supplier invoice to get started.</div>
+            </div>
+          ) : (
+            <div className="glass-panel" style={{ borderRadius: '12px', overflow: 'hidden' }}>
+              <div style={{ overflowX: 'auto' }}>
+                <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.85rem' }}>
+                  <thead>
+                    <tr>
+                      {['Invoice #', 'Supplier', 'Date', 'Amount', ''].map(h => (
+                        <th key={h} style={{ padding: '0.6rem 0.75rem', fontWeight: 700, fontSize: '0.71rem', color: 'var(--text-tertiary)', textTransform: 'uppercase', letterSpacing: '0.05em', textAlign: h === 'Amount' ? 'right' : 'left', background: 'var(--surface-raised)', borderBottom: '2px solid var(--surface-border)', whiteSpace: 'nowrap' }}>
+                          {h}
+                        </th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {[...allInvoices].sort((a, b) => (b.invoiceDate || '').localeCompare(a.invoiceDate || '')).map((inv, i) => {
+                      const rowBg = i % 2 === 0 ? 'transparent' : 'var(--surface-raised)';
+                      const invNum = inv.supplierInvoiceNumber || inv.internalPurchaseId || inv.id.slice(0, 8).toUpperCase();
+                      const totalAmt = inv.lines?.reduce((s: number, l: any) => s + (Number(l.finalAmount) || Number(l.amount) || 0), 0) || inv.grandTotal || 0;
+                      return (
+                        <tr key={inv.id} style={{ borderTop: '1px solid var(--surface-border)', background: rowBg, cursor: 'pointer', transition: 'background 0.1s' }}
+                          onClick={() => navigate(inv.supplierId ? `/supplier-ledger/${inv.supplierId}?tab=invoices` : `/supplier-invoice?id=${inv.id}`)}
+                          onMouseEnter={e => (e.currentTarget.style.background = 'hsla(152,60%,40%,0.06)')}
+                          onMouseLeave={e => (e.currentTarget.style.background = rowBg)}>
+                          <td style={{ padding: '0.6rem 0.75rem', fontWeight: 600, color: 'var(--primary-light)' }}>{invNum}</td>
+                          <td style={{ padding: '0.6rem 0.75rem', color: 'var(--text-primary)' }}>{inv.supplierName || '—'}</td>
+                          <td style={{ padding: '0.6rem 0.75rem', color: 'var(--text-secondary)', whiteSpace: 'nowrap' }}>{inv.invoiceDate ? fmtDate(inv.invoiceDate) : '—'}</td>
+                          <td style={{ padding: '0.6rem 0.75rem', textAlign: 'right', fontWeight: 600 }}>{fmtInr(totalAmt)}</td>
+                          <td style={{ padding: '0.6rem 0.75rem' }}><ChevronRight size={14} style={{ color: 'var(--text-tertiary)' }} /></td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* ── Reminders Tab ── */}
+      {activeTab === 'reminders' && (
+        <div>
+          <h2 style={{ fontSize: '1.1rem', fontWeight: 700, margin: '0 0 1rem' }}>Payment Reminders</h2>
+          {upcomingReminders.length === 0 ? (
+            <div className="glass-panel" style={{ padding: '3rem', textAlign: 'center', color: 'var(--text-tertiary)', borderRadius: '12px' }}>
+              <Bell size={36} style={{ margin: '0 auto 0.75rem', opacity: 0.25 }} />
+              <div style={{ fontWeight: 600, marginBottom: '0.25rem' }}>No active reminders</div>
+              <div style={{ fontSize: '0.82rem' }}>Open a supplier's detail page to set a payment reminder.</div>
+            </div>
+          ) : (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+              {upcomingReminders.map(r => {
+                const isOverdue = r.reminderDate < todayStr;
+                const sc = isOverdue ? '#ef4444' : '#3b82f6';
+                return (
+                  <button
+                    key={r.id}
+                    onClick={() => navigate(`/supplier-ledger/${r.supplierId}?tab=reminders&reminderId=${r.id}`)}
+                    style={{
+                      display: 'flex', alignItems: 'center', gap: '1rem', padding: '0.75rem 1rem',
+                      borderRadius: '10px', background: 'var(--surface-raised)', border: '1px solid var(--surface-border)',
+                      cursor: 'pointer', textAlign: 'left', borderLeft: `4px solid ${sc}`,
+                      transition: 'background 0.15s',
+                    }}
+                    onMouseEnter={e => (e.currentTarget.style.background = 'var(--surface-border)')}
+                    onMouseLeave={e => (e.currentTarget.style.background = 'var(--surface-raised)')}
+                  >
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ fontWeight: 700, fontSize: '0.9rem', color: 'var(--text-primary)', display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+                        {r.supplierName}
+                        {isOverdue && <span style={{ fontSize: '0.65rem', padding: '0.1rem 0.4rem', borderRadius: '999px', background: '#ef444422', color: '#ef4444', fontWeight: 700 }}>OVERDUE</span>}
+                      </div>
+                      <div style={{ fontSize: '0.78rem', color: 'var(--text-tertiary)', marginTop: '0.15rem' }}>{r.title}</div>
+                    </div>
+                    <div style={{ textAlign: 'right', flexShrink: 0 }}>
+                      <div style={{ fontSize: '0.72rem', color: '#f59e0b', fontWeight: 600, marginBottom: '0.1rem' }}>Remind: {fmtDate(r.reminderDate)}</div>
+                      {r.commitmentDate && r.commitmentDate !== r.reminderDate && (
+                        <div style={{ fontSize: '0.72rem', color: '#10b981', fontWeight: 600, marginBottom: '0.1rem' }}>Pay by: {fmtDate(r.commitmentDate)}</div>
+                      )}
+                      {r.amount > 0 && <div style={{ fontWeight: 700, fontSize: '0.9rem', color: 'var(--text-primary)' }}>{fmtInr(r.amount)}</div>}
+                    </div>
+                    <ChevronRight size={14} style={{ color: 'var(--text-tertiary)', flexShrink: 0 }} />
+                  </button>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* ── Reports Tab ── */}
+      {activeTab === 'reports' && (
+        <div>
+          <h2 style={{ fontSize: '1.1rem', fontWeight: 700, margin: '0 0 1rem' }}>Supplier Reports</h2>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '1rem', marginBottom: '1.5rem' }}>
+            {[
+              { label: 'Total Suppliers', value: suppliers.filter(s => s.supplierType !== 'Transporter').length, color: 'var(--primary-light)', icon: <Building2 size={18} /> },
+              { label: 'Transporters', value: suppliers.filter(s => s.supplierType === 'Transporter').length, color: '#8b5cf6', icon: <Truck size={18} /> },
+              { label: 'Overdue Reminders', value: upcomingReminders.filter(r => r.reminderDate < todayStr).length, color: '#ef4444', icon: <Bell size={18} /> },
+              { label: 'Total Invoices', value: allInvoices.length, color: '#f59e0b', icon: <FileText size={18} /> },
+            ].map(c => (
+              <div key={c.label} className="glass-panel" style={{ padding: '1.2rem', borderRadius: '12px' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', color: c.color, marginBottom: '0.5rem' }}>
+                  {c.icon}
+                  <span style={{ fontSize: '0.78rem', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.05em' }}>{c.label}</span>
+                </div>
+                <div style={{ fontSize: '1.75rem', fontWeight: 700, color: c.color }}>{c.value}</div>
+              </div>
+            ))}
+          </div>
+          <div className="glass-panel" style={{ borderRadius: '12px', overflow: 'hidden' }}>
+            <div style={{ padding: '1rem 1.25rem', borderBottom: '1px solid var(--surface-border)', fontWeight: 700, fontSize: '0.9rem' }}>Top Suppliers by Outstanding</div>
+            <div style={{ overflowX: 'auto' }}>
+              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.85rem' }}>
+                <tbody>
+                  {[...suppliers].sort((a, b) => b.outstandingBalance - a.outstandingBalance).slice(0, 10).map((sup, i) => (
+                    <tr key={sup.id} style={{ borderTop: i > 0 ? '1px solid var(--surface-border)' : undefined, cursor: 'pointer' }}
+                      onClick={() => navigate(`/supplier-ledger/${sup.id}`)}
+                      onMouseEnter={e => (e.currentTarget.style.background = 'hsla(152,60%,40%,0.06)')}
+                      onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}>
+                      <td style={{ padding: '0.6rem 0.75rem' }}>
+                        <div style={{ fontWeight: 600, color: 'var(--text-primary)' }}>{sup.name}</div>
+                        {sup.supplierType === 'Transporter' && <div style={{ fontSize: '0.7rem', color: '#8b5cf6' }}>Transporter</div>}
+                      </td>
+                      <td style={{ padding: '0.6rem 0.75rem', textAlign: 'right', color: 'var(--text-secondary)' }}>Invoiced: {fmtInr(sup.totalInvoiced ?? 0)}</td>
+                      <td style={{ padding: '0.6rem 0.75rem', textAlign: 'right', color: '#10b981' }}>Paid: {fmtInr(sup.totalPaid ?? 0)}</td>
+                      <td style={{ padding: '0.6rem 0.75rem', textAlign: 'right', fontWeight: 700, color: sup.outstandingBalance > 0 ? '#ff4d4f' : '#10b981' }}>{fmtInr(sup.outstandingBalance)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
           </div>
         </div>
       )}

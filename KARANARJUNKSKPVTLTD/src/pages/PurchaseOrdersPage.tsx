@@ -3,6 +3,7 @@ import { addDoc, getDocs, query, orderBy, serverTimestamp, updateDoc } from 'fir
 import { db } from '../firebase';
 import { useAuth } from '../contexts/AuthContext';
 import { getTenantCollection, getTenantDoc } from '../utils/tenantPath';
+import { logAudit } from '../utils/auditLog';
 import { fmtINR } from '../utils/gstCalculator';
 import { ShoppingCart, Plus, CheckCircle2, Package, Loader2, Trash2, AlertCircle } from 'lucide-react';
 
@@ -27,7 +28,7 @@ const TODAY = () => new Date().toISOString().split('T')[0];
 const PLUS7 = () => { const d=new Date(); d.setDate(d.getDate()+7); return d.toISOString().split('T')[0]; };
 
 export default function PurchaseOrdersPage() {
-  const { tenantId } = useAuth();
+  const { tenantId, currentUser, userName, userRole } = useAuth();
   const [view, setView] = useState<'list'|'new'>('list');
   const [orders, setOrders] = useState<PurchaseOrder[]>([]);
   const [loading, setLoading] = useState(true);
@@ -58,8 +59,9 @@ export default function PurchaseOrdersPage() {
       const seq = snap.size + 1;
       const y = new Date().getFullYear();
       const cgst = taxable * 0.025; // simplified — use gstCalculator for per-line in full impl
+      const poNumber = `PO/${y.toString().slice(-2)}-${(y+1).toString().slice(-2)}/${String(seq).padStart(3,'0')}`;
       await addDoc(getTenantCollection(db, tenantId, 'purchaseOrders'), {
-        poNumber: `PO/${y.toString().slice(-2)}-${(y+1).toString().slice(-2)}/${String(seq).padStart(3,'0')}`,
+        poNumber,
         poDate: TODAY(), expectedDate: form.expectedDate,
         supplierName: form.supplierName, supplierContact: form.supplierContact,
         supplierGstin: form.supplierGstin, supplierAddress: form.supplierAddress,
@@ -67,6 +69,7 @@ export default function PurchaseOrdersPage() {
         taxableValue: taxable, cgst, sgst: cgst, totalTax: cgst*2,
         notes: form.notes, status, createdAt: serverTimestamp(),
       });
+      logAudit({ db, tenantId, userId: currentUser?.uid || '', userName: userName || currentUser?.email || 'Unknown', userRole: userRole || 'unknown', module: 'Purchase Orders', action: 'Create', entityName: poNumber, description: `PO created for ${form.supplierName} · Status: ${status} · ₹${totalAmt.toLocaleString('en-IN')}`, after: { supplierName: form.supplierName, totalAmount: totalAmt, status } });
       setView('list'); fetch();
       setForm({ supplierName:'', supplierContact:'', supplierGstin:'', supplierAddress:'', expectedDate:PLUS7(), notes:'' });
       setLines([EMPTY_LINE()]);
@@ -76,6 +79,7 @@ export default function PurchaseOrdersPage() {
   const markReceived = async (po: PurchaseOrder) => {
     if (!tenantId) return;
     await updateDoc(getTenantDoc(db, tenantId, 'purchaseOrders', po.id) as any, { status:'received' });
+    logAudit({ db, tenantId, userId: currentUser?.uid || '', userName: userName || currentUser?.email || 'Unknown', userRole: userRole || 'unknown', module: 'Purchase Orders', action: 'Status Change', entityName: po.poNumber, entityId: po.id, description: `PO marked as received · ${po.poNumber} · ${po.supplierName}`, before: { status: po.status }, after: { status: 'received' } });
     fetch();
   };
 

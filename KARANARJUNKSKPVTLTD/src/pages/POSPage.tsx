@@ -1,6 +1,10 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { createPortal } from 'react-dom';
 import { useSearchParams, Link } from 'react-router-dom';
+import { useHashTab } from '../hooks/useHashTab';
+import DigitalKhataPage from './DigitalKhataPage';
+import CustomersPage from './CustomersPage';
+import OrderHistoryPage from './OrderHistoryPage';
 // 'Link' was only used by the Returns quick-access link, now disabled below (2026-07-03).
 // import { Link } from 'react-router-dom';
 import {
@@ -150,7 +154,17 @@ function fromMonthYear(val: string): string {
     return s;
 }
 
+type PosModuleTab = 'billing' | 'khata' | 'customers' | 'order-history';
+const POS_MODULE_TABS: { id: PosModuleTab; label: string }[] = [
+    { id: 'billing',       label: 'POS Billing' },
+    { id: 'khata',         label: 'Khata (Udhari)' },
+    { id: 'customers',     label: 'Customers' },
+    { id: 'order-history', label: 'Order History' },
+];
+const VALID_POS_TABS: readonly PosModuleTab[] = ['billing', 'khata', 'customers', 'order-history'];
+
 export default function POSPage() {
+    const [posModuleTab, setPosModuleTab] = useHashTab<PosModuleTab>(VALID_POS_TABS, 'billing', 'fiinny-tab-pos');
     const { t, i18n } = useTranslation();
     const [searchParams] = useSearchParams();
     const { tenantId, hasModule, currentUser, userName, userRole } = useAuth();
@@ -1010,9 +1024,12 @@ export default function POSPage() {
                     userName: userName || currentUser.email || 'Unknown',
                     userRole: userRole || 'unknown',
                     module: 'POS Billing',
-                    action: 'Generate Invoice',
+                    action: editingOrder ? 'Update' : 'Generate Invoice',
                     entityName: customer.name || 'Walk-in Customer',
                     entityId: billNumber,
+                    description: editingOrder
+                        ? `POS bill corrected · old: ${editingOrder.orderNumber || editingOrder.id} → new: ${billNumber}`
+                        : `POS bill created · ${billNumber}${modeOfPayment === 'Khata' ? ' · Khata/Credit' : ''}`,
                     remarks: `₹${Math.round(grandTotal).toLocaleString('en-IN')} · ${modeOfPayment}`,
                 });
             }
@@ -1241,7 +1258,50 @@ export default function POSPage() {
     if (loading) return <div className="h-screen flex items-center justify-center"><Loader2 className="animate-spin text-emerald-600" size={48} /></div>;
 
     return (
-        <div style={{ background: 'var(--bg-color)', minHeight: '100vh', display: 'flex', flexDirection: 'column' }}>
+        <>
+        {/* ── Module Tab Bar ── */}
+        <div className="no-print" style={{
+            display: 'flex', gap: '0.25rem',
+            borderBottom: '2px solid var(--surface-border)',
+            background: 'var(--surface-base)',
+            overflowX: 'auto', scrollbarWidth: 'none',
+            paddingLeft: '1.5rem', paddingRight: '1.5rem',
+            paddingTop: '0.5rem',
+        }}>
+            {POS_MODULE_TABS.map(tab => {
+                const isActive = posModuleTab === tab.id;
+                return (
+                    <button
+                        key={tab.id}
+                        onClick={() => setPosModuleTab(tab.id)}
+                        style={{
+                            display: 'flex', alignItems: 'center', gap: '0.5rem',
+                            padding: '0.6rem 1.1rem',
+                            background: 'transparent', border: 'none',
+                            borderBottom: isActive ? '2px solid var(--primary-light)' : '2px solid transparent',
+                            marginBottom: '-2px',
+                            color: isActive ? 'var(--primary-light)' : 'var(--text-tertiary)',
+                            fontWeight: isActive ? 700 : 400,
+                            fontSize: '0.88rem', cursor: 'pointer', fontFamily: 'inherit',
+                            whiteSpace: 'nowrap',
+                            transition: 'color 0.15s ease, border-color 0.15s ease',
+                        }}
+                        onMouseEnter={e => { if (!isActive) (e.currentTarget as HTMLButtonElement).style.color = 'var(--text-primary)'; }}
+                        onMouseLeave={e => { if (!isActive) (e.currentTarget as HTMLButtonElement).style.color = 'var(--text-tertiary)'; }}
+                    >
+                        {tab.label}
+                    </button>
+                );
+            })}
+        </div>
+
+        {/* ── Non-billing sub-pages ── */}
+        {posModuleTab === 'khata'         && <DigitalKhataPage />}
+        {posModuleTab === 'customers'     && <CustomersPage />}
+        {posModuleTab === 'order-history' && <OrderHistoryPage />}
+
+        {/* ── POS Billing (existing content) ── */}
+        {posModuleTab === 'billing' && <div style={{ background: 'var(--bg-color)', minHeight: '100vh', display: 'flex', flexDirection: 'column' }}>
 
             {/* Header */}
             <header className="no-print" style={{ background: 'var(--surface-base)', backdropFilter: 'blur(12px)', WebkitBackdropFilter: 'blur(12px)', borderBottom: '1px solid var(--surface-border)', padding: '0.75rem 1.5rem', display: 'flex', alignItems: 'center', gap: '1.25rem', flexWrap: 'wrap' }}>
@@ -2734,7 +2794,8 @@ export default function POSPage() {
                 />
             )}
 
-        </div>
+        </div>} {/* end billing tab */}
+        </> /* end module fragment */
     );
 }
 

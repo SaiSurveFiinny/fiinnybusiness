@@ -1,11 +1,12 @@
 import { useState, useEffect, useMemo, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import {
-    query, onSnapshot, orderBy, addDoc, updateDoc, deleteDoc, setDoc, serverTimestamp, Timestamp, writeBatch,
+    query, onSnapshot, orderBy, addDoc, updateDoc, setDoc, serverTimestamp, Timestamp, writeBatch,
 } from 'firebase/firestore';
 import * as XLSX from 'xlsx';
 import { db } from '../firebase';
 import { useAuth } from '../contexts/AuthContext';
+import { softDelete } from '../utils/softDelete';
 import { getTenantCollection, getTenantDoc } from '../utils/tenantPath';
 import { useToast } from '../contexts/ToastContext';
 import {
@@ -105,7 +106,7 @@ function SuggestionItem({
 }
 
 export default function DigitalKhataPage() {
-    const { tenantId } = useAuth();
+    const { tenantId, currentUser, userName, userRole } = useAuth();
     const [entries, setEntries] = useState<KhataEntry[]>([]);
     const [loading, setLoading] = useState(true);
     const [search, setSearch] = useState('');
@@ -137,7 +138,7 @@ export default function DigitalKhataPage() {
         const unsub = onSnapshot(q, snap => {
             const b2cEntries = snap.docs
                 .map(d => ({ id: d.id, ...d.data() }) as KhataEntry)
-                .filter(e => e.invoiceType !== 'B2B_GST'); // keep POS + undefined (walk-in)
+                .filter(e => e.invoiceType !== 'B2B_GST' && !(e as any).deleted); // keep POS + undefined (walk-in), exclude soft-deleted
             setEntries(b2cEntries);
             setLoading(false);
         }, err => {
@@ -416,7 +417,16 @@ export default function DigitalKhataPage() {
         if (!tenantId || !deleteTarget) return;
         setDeleting(true);
         try {
-            await deleteDoc(getTenantDoc(db, tenantId, 'salesOrders', deleteTarget.id));
+            await softDelete({
+                db, tenantId,
+                collectionName: 'salesOrders',
+                docId: deleteTarget.id,
+                userId: currentUser?.uid || '',
+                userName: userName || currentUser?.email || 'Unknown',
+                userRole: userRole || 'unknown',
+                module: 'Digital Khata',
+                entityName: (deleteTarget as any).billNumber || deleteTarget.id,
+            });
             showToast('Udhari entry deleted.', 'success');
             setDeleteTarget(null);
         } catch (e) {

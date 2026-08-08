@@ -24,7 +24,8 @@ interface RawOrder {
     id: string;
     channel: 'B2B' | 'B2C' | 'Online';
     amount: number;
-    createdAt: Date;
+    businessDate: Date;  // local-midnight Date for range filtering
+    dateKey: string;     // YYYY-MM-DD for chart bucketing
 }
 
 const CH_COLORS = { B2B: '#0ea5e9', B2C: '#f59e0b', Online: '#8b5cf6' };
@@ -60,9 +61,11 @@ export function AnalyticsPage() {
         const fetchAll = async () => {
             setLoading(true);
             try {
+                // salesOrders: order by invoiceDate so the 500-doc window covers the most
+                // recently billed transactions, not the most recently created documents.
                 const salesSnap = await getDocs(query(
                     getTenantCollection(db, tenantId, 'salesOrders'),
-                    orderBy('createdAt', 'desc'), limit(500)
+                    orderBy('invoiceDate', 'desc'), limit(500)
                 ));
                 const b2bOrders: RawOrder[] = [];
                 const b2cOrders: RawOrder[] = [];
@@ -70,21 +73,30 @@ export function AnalyticsPage() {
                     const d = doc.data();
                     const isB2B = d.invoiceType === 'B2B_GST';
                     const amount = Number(d.grandTotal ?? d.netAmount ?? d.totalAmount ?? d.amount ?? 0);
-                    const createdAt = d.createdAt?.toDate ? d.createdAt.toDate() : new Date(d.createdAt || Date.now());
-                    const o: RawOrder = { id: doc.id, channel: isB2B ? 'B2B' : 'B2C', amount, createdAt };
+                    // Derive business date from invoiceDate (user-set); fall back to createdAt
+                    // for legacy documents that predate the invoiceDate field.
+                    const dateKey = (typeof d.invoiceDate === 'string' && d.invoiceDate)
+                        ? d.invoiceDate
+                        : (() => { const ts = d.createdAt?.toDate ? d.createdAt.toDate() : new Date(d.createdAt || Date.now()); return `${ts.getFullYear()}-${String(ts.getMonth() + 1).padStart(2, '0')}-${String(ts.getDate()).padStart(2, '0')}`; })();
+                    const [y, m, day] = dateKey.split('-').map(Number);
+                    const businessDate = new Date(y, m - 1, day);
+                    const o: RawOrder = { id: doc.id, channel: isB2B ? 'B2B' : 'B2C', amount, businessDate, dateKey };
                     if (isB2B) b2bOrders.push(o); else b2cOrders.push(o);
                 });
 
+                // onlineOrders: no invoiceDate field — createdAt is the correct business date.
                 const onlineSnap = await getDocs(query(
                     getTenantCollection(db, tenantId, 'onlineOrders'),
                     orderBy('createdAt', 'desc'), limit(300)
                 ));
                 const onlineOrders: RawOrder[] = onlineSnap.docs.map(doc => {
                     const d = doc.data();
+                    const businessDate = d.createdAt?.toDate ? d.createdAt.toDate() : new Date(d.createdAt || Date.now());
+                    const dateKey = `${businessDate.getFullYear()}-${String(businessDate.getMonth() + 1).padStart(2, '0')}-${String(businessDate.getDate()).padStart(2, '0')}`;
                     return {
                         id: doc.id, channel: 'Online' as const,
                         amount: Number(d.grandTotal ?? d.amount ?? 0),
-                        createdAt: d.createdAt?.toDate ? d.createdAt.toDate() : new Date(d.createdAt || Date.now())
+                        businessDate, dateKey
                     };
                 });
                 setOrders([...b2bOrders, ...b2cOrders, ...onlineOrders]);
@@ -165,7 +177,7 @@ export function AnalyticsPage() {
     }, [timeRange, customFrom, customTo]);
 
     const filteredOrders = useMemo(() => {
-        return orders.filter(o => o.createdAt >= rangeFrom && o.createdAt <= rangeTo);
+        return orders.filter(o => o.businessDate >= rangeFrom && o.businessDate <= rangeTo);
     }, [orders, rangeFrom, rangeTo]);
 
     // ── Compute metrics ──
@@ -195,8 +207,8 @@ export function AnalyticsPage() {
 
         const dailyMap = new Map<string, { date: string; isoDate: string; B2B: number; B2C: number; Online: number }>();
         filteredOrders.forEach(o => {
-            const isoDate = o.createdAt.toISOString().split('T')[0];
-            const label = o.createdAt.toLocaleDateString('en-IN', { day: '2-digit', month: 'short' });
+            const isoDate = o.dateKey;
+            const label = o.businessDate.toLocaleDateString('en-IN', { day: '2-digit', month: 'short' });
             if (!dailyMap.has(isoDate)) dailyMap.set(isoDate, { date: label, isoDate, B2B: 0, B2C: 0, Online: 0 });
             const day = dailyMap.get(isoDate)!;
             day[o.channel] += o.amount;

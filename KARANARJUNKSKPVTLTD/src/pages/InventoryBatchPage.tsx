@@ -3,6 +3,7 @@ import { getDocs, onSnapshot, query, orderBy, serverTimestamp, updateDoc, delete
 import { db } from '../firebase';
 import { useAuth } from '../contexts/AuthContext';
 import { getTenantCollection, getTenantDoc } from '../utils/tenantPath';
+import { logAudit } from '../utils/auditLog';
 import { Package, Plus, AlertTriangle, Loader2, Trash2, Search, X, ChevronDown, ChevronRight } from 'lucide-react';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -55,7 +56,7 @@ const fmtInr = (n: number) => `₹${(n || 0).toLocaleString('en-IN', { minimumFr
 // ── Component ─────────────────────────────────────────────────────────────────
 
 export default function InventoryBatchPage() {
-  const { tenantId } = useAuth();
+  const { tenantId, currentUser, userName, userRole } = useAuth();
   const [batches, setBatches] = useState<BatchItem[]>([]);
   const [products, setProducts] = useState<ProductMaster[]>([]);
   const [loading, setLoading] = useState(true);
@@ -154,6 +155,7 @@ export default function InventoryBatchPage() {
         },
         { merge: true },
       );
+      logAudit({ db, tenantId, userId: currentUser?.uid || '', userName: userName || currentUser?.email || 'Unknown', userRole: userRole || 'unknown', module: 'Inventory', action: 'Batch Create', entityName: `${product?.name || addForm.productId} · Batch ${batchNo}`, entityId: batchDocId, description: `Batch added manually · Qty: ${addForm.quantity} · Exp: ${addForm.expiryDate || 'N/A'}`, after: { productName: product?.name, batchNumber: batchNo, quantity: Number(addForm.quantity) || 0, expiryDate: addForm.expiryDate } });
       setAddForm({ productId: '', batchNumber: '', expiryDate: '', mfgDate: '', quantity: '', purchaseRate: '', mrp: '', supplier: '' });
       setShowAddForm(false);
     } catch (e) { console.error(e); }
@@ -162,12 +164,17 @@ export default function InventoryBatchPage() {
 
   const handleDelete = async (id: string) => {
     if (!tenantId || !window.confirm('Delete this batch record?')) return;
+    const batch = batches.find(b => b.id === id);
     await deleteDoc(getTenantDoc(db, tenantId, 'inventoryBatches', id) as any);
+    logAudit({ db, tenantId, userId: currentUser?.uid || '', userName: userName || currentUser?.email || 'Unknown', userRole: userRole || 'unknown', module: 'Inventory', action: 'Delete', entityName: batch ? `${batch.productName} · Batch ${batch.batchNumber}` : id, entityId: id, description: `Batch record deleted`, before: batch ? { productName: batch.productName, batchNumber: batch.batchNumber, quantity: batch.quantity } : undefined });
   };
 
   const updateQty = async (id: string, qty: number) => {
     if (!tenantId) return;
-    await updateDoc(getTenantDoc(db, tenantId, 'inventoryBatches', id) as any, { quantity: Math.max(0, qty), updatedAt: serverTimestamp() });
+    const batch = batches.find(b => b.id === id);
+    const newQty = Math.max(0, qty);
+    await updateDoc(getTenantDoc(db, tenantId, 'inventoryBatches', id) as any, { quantity: newQty, updatedAt: serverTimestamp() });
+    logAudit({ db, tenantId, userId: currentUser?.uid || '', userName: userName || currentUser?.email || 'Unknown', userRole: userRole || 'unknown', module: 'Inventory', action: 'Stock Adjustment', entityName: batch ? `${batch.productName} · Batch ${batch.batchNumber}` : id, entityId: id, description: `Manual stock adjustment`, before: { quantity: batch?.quantity ?? '?' }, after: { quantity: newQty } });
   };
 
   // ── Render ────────────────────────────────────────────────────────────────

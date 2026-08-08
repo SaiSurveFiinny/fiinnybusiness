@@ -1,10 +1,11 @@
-import { useState } from 'react';
 import { FileText, BarChart3, Package2 } from 'lucide-react';
+import { useHashTab } from '../hooks/useHashTab';
 import FinancialReportsPage from './FinancialReportsPage';
 import GSTReportsPage from './GSTReportsPage';
 import StockReportPage from './StockReportPage';
 
 type ReportTab = 'financial' | 'gst' | 'stock';
+const VALID_TABS: readonly ReportTab[] = ['financial', 'gst', 'stock'];
 
 const TABS: { id: ReportTab; label: string; icon: React.ReactNode }[] = [
     { id: 'financial', label: 'Financial Report', icon: <BarChart3 size={16} /> },
@@ -13,7 +14,7 @@ const TABS: { id: ReportTab; label: string; icon: React.ReactNode }[] = [
 ];
 
 export default function ReportsPage() {
-    const [active, setActive] = useState<ReportTab>('financial');
+    const [active, setActive] = useHashTab<ReportTab>(VALID_TABS, 'financial', 'fiinny-tab-reports');
 
     return (
         <div className="animate-fade-in" style={{ maxWidth: '1600px', margin: '0 auto' }}>

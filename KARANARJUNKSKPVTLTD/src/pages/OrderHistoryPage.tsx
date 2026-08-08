@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { ShoppingCart, FileText, Loader2, Search, Trash2, Pencil, X, Save } from 'lucide-react';
-import { query, onSnapshot, orderBy, deleteDoc, doc, updateDoc, serverTimestamp } from 'firebase/firestore';
+import { query, onSnapshot, orderBy, updateDoc, serverTimestamp } from 'firebase/firestore';
+import { softDelete } from '../utils/softDelete';
 import { db } from '../firebase';
 import { useAuth } from '../contexts/AuthContext';
 import { getTenantCollection, getTenantDoc } from '../utils/tenantPath';
@@ -44,7 +45,7 @@ function getAmount(order: SalesOrder): number {
 const PAYMENT_MODES = ['Cash', 'Credit', 'UPI', 'NEFT', 'RTGS', 'Cheque', 'Online'];
 
 export default function OrderHistoryPage() {
-    const { tenantId } = useAuth();
+    const { tenantId, currentUser, userName, userRole } = useAuth();
     const [orders, setOrders] = useState<SalesOrder[]>([]);
     const [loading, setLoading] = useState(true);
     const [searchTerm, setSearchTerm] = useState('');
@@ -62,7 +63,9 @@ export default function OrderHistoryPage() {
         if (!tenantId) return;
         const q = query(getTenantCollection(db, tenantId, 'salesOrders'), orderBy('createdAt', 'desc'));
         const unsubscribe = onSnapshot(q, (snapshot) => {
-            const ordersData = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })) as SalesOrder[];
+            const ordersData = snapshot.docs
+                .map(doc => ({ id: doc.id, ...doc.data() }))
+                .filter((o: any) => !o.deleted) as SalesOrder[];
             setOrders(ordersData);
             setLoading(false);
         });
@@ -106,7 +109,18 @@ export default function OrderHistoryPage() {
         if (!tenantId) return;
         setDeleting(true);
         try {
-            await deleteDoc(doc(getTenantCollection(db, tenantId, 'salesOrders'), id));
+            const order = orders.find(o => o.id === id);
+            const module = order?.invoiceType === 'B2B_GST' ? 'B2B Invoice' : 'POS Billing';
+            await softDelete({
+                db, tenantId,
+                collectionName: 'salesOrders',
+                docId: id,
+                userId: currentUser?.uid || '',
+                userName: userName || currentUser?.email || 'Unknown',
+                userRole: userRole || 'unknown',
+                module,
+                entityName: order?.orderNumber || order?.billNumber || id,
+            });
             setDeleteConfirmId(null);
         } catch {
             alert('Failed to delete order.');

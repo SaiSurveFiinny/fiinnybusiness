@@ -1,28 +1,53 @@
 import { useRef, useState, useEffect, useCallback } from 'react';
 import { Link, useLocation } from 'react-router-dom';
-import { Home, BarChart3, Layers, ReceiptText, Activity, FileText, ClipboardList, Package, ShieldAlert, Calculator, BookOpen, Target, Receipt, ChevronLeft, ChevronRight, HelpCircle, Users } from 'lucide-react';
+import {
+  Home, BarChart3, Layers, ReceiptText, Activity, FileText, ClipboardList,
+  Package, ShieldAlert, Calculator, BookOpen, Target, Receipt, ChevronLeft,
+  ChevronRight, HelpCircle, Users, UserCog, Shield, Lock, Store, Factory,
+  Palette, Database, Settings, TrendingUp,
+} from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 import type { AppScreen } from '../contexts/AuthContext';
 
-const PRIORITY_NAV = [
-  { path: '/dashboard',        label: 'B2B Dashboard',    icon: <Home size={15} />,           screenKey: 'dashboard' as AppScreen },
-  { path: '/b2c-dashboard',    label: 'B2C Dashboard',    icon: <BarChart3 size={15} />,      screenKey: 'b2c_dashboard' as AppScreen },
-  { path: '/analytics',        label: 'Analytics',        icon: <Layers size={15} />,         screenKey: 'analytics' as AppScreen },
-  { path: '/worklist',         label: 'Worklist',          icon: <ReceiptText size={15} />,    screenKey: 'worklist' as AppScreen },
-  { path: '/pos',              label: 'POS Billing',       icon: <Calculator size={15} />,     screenKey: 'pos' as AppScreen },
-  { path: '/customers',        label: 'Customers',         icon: <Users size={15} />,          screenKey: 'customers' as AppScreen },
-  { path: '/digital-khata',    label: 'Khata (Udhari)',   icon: <BookOpen size={15} />,       screenKey: 'khata' as AppScreen },
-  { path: '/supplier-ledger', label: 'Supplier Ledger',   icon: <ClipboardList size={15} />,  screenKey: 'worklist' as AppScreen },
-  { path: '/administration',   label: 'Administration',    icon: <ShieldAlert size={15} />,    screenKey: 'admin' as AppScreen },
-  { path: '/inventory',        label: 'Inventory',         icon: <Package size={15} />,        screenKey: 'inventory' as AppScreen },
-  { path: '/reports',           label: 'Reports',           icon: <FileText size={15} />,       screenKey: 'analytics' as AppScreen },
-  { path: '/b2b-invoice',      label: 'B2B GST Invoice',  icon: <ReceiptText size={15} />,   screenKey: 'worklist' as AppScreen },
-  { path: '/sales-targets',    label: 'Sales Targets',    icon: <Target size={15} />,         screenKey: 'worklist' as AppScreen },
-  { path: '/expenses',         label: 'Expenses',          icon: <Receipt size={15} />,        screenKey: 'expenses' as AppScreen },
-  { path: '/order-history',    label: 'Order History',    icon: <ClipboardList size={15} />,  screenKey: 'order_history' as AppScreen },
-  { path: '/barcode',          label: 'Barcode Labels',    icon: <Activity size={15} />,       screenKey: 'inventory' as AppScreen },
-  { path: '/help',             label: 'Help Center',       icon: <HelpCircle size={15} />,     screenKey: 'settings' as AppScreen },
-  // Sales-user-only items — filtered via SALES_NAV_PATHS below
+type NavItem = { path: string; label: string; icon: React.ReactNode; screenKey: AppScreen; exact?: boolean };
+
+// ── Main business nav ─────────────────────────────────────────────────────────
+const PRIORITY_NAV: NavItem[] = [
+  { path: '/dashboard',       label: 'B2B Dashboard',   icon: <Home size={15} />,          screenKey: 'dashboard' },
+  { path: '/b2c-dashboard',   label: 'B2C Dashboard',   icon: <BarChart3 size={15} />,     screenKey: 'b2c_dashboard' },
+  { path: '/analytics',       label: 'Analytics',        icon: <Layers size={15} />,        screenKey: 'analytics' },
+  { path: '/worklist',        label: 'Worklist',          icon: <ReceiptText size={15} />,   screenKey: 'worklist' },
+  { path: '/pos',             label: 'POS Billing',       icon: <Calculator size={15} />,    screenKey: 'pos' },
+  { path: '/customers',       label: 'Customers',         icon: <Users size={15} />,         screenKey: 'customers' },
+  { path: '/admin',           label: 'Admin',             icon: <Settings size={15} />,      screenKey: 'admin' },
+  { path: '/digital-khata',   label: 'Khata (Udhari)',   icon: <BookOpen size={15} />,      screenKey: 'khata' },
+  { path: '/supplier-ledger', label: 'Supplier Ledger',  icon: <ClipboardList size={15} />, screenKey: 'worklist' },
+  { path: '/inventory',       label: 'Inventory',         icon: <Package size={15} />,       screenKey: 'inventory' },
+  { path: '/reports',         label: 'Reports',           icon: <FileText size={15} />,      screenKey: 'analytics' },
+  { path: '/b2b-invoice',     label: 'B2B GST Invoice',  icon: <ReceiptText size={15} />,   screenKey: 'worklist' },
+  { path: '/sales-targets',   label: 'Sales Targets',    icon: <Target size={15} />,        screenKey: 'worklist' },
+  { path: '/expenses',        label: 'Expenses',          icon: <Receipt size={15} />,       screenKey: 'expenses' },
+  { path: '/order-history',   label: 'Order History',    icon: <ClipboardList size={15} />, screenKey: 'order_history' },
+  { path: '/barcode',         label: 'Barcode Labels',   icon: <Activity size={15} />,      screenKey: 'inventory' },
+  { path: '/help',            label: 'Help Center',       icon: <HelpCircle size={15} />,    screenKey: 'settings' },
+];
+
+// ── Admin sub-tabs — shown instead of the main nav when on any /admin path ───
+const ADMIN_NAV: NavItem[] = [
+  { path: '/admin',                   label: 'Manage Users',      icon: <UserCog size={15} />,       screenKey: 'admin',             exact: true },
+  { path: '/admin/audit-log',         label: 'Audit Log',         icon: <Shield size={15} />,        screenKey: 'audit_log' },
+  { path: '/admin/team-performance',  label: 'Team Performance',  icon: <TrendingUp size={15} />,    screenKey: 'admin' },
+  { path: '/admin/sales-targets',     label: 'Sales Target',      icon: <Target size={15} />,        screenKey: 'admin' },
+  { path: '/admin/data-security',     label: 'Data Security',     icon: <Lock size={15} />,          screenKey: 'admin' },
+  { path: '/admin/manage-roles',      label: 'Role Matrix',       icon: <ShieldAlert size={15} />,   screenKey: 'admin' },
+  { path: '/admin/manage-retailers',  label: 'Manage Retailers',  icon: <Users size={15} />,         screenKey: 'manage_retailers' },
+  { path: '/admin/invoice-settings',  label: 'Invoice Branding',  icon: <Palette size={15} />,       screenKey: 'invoice_settings' },
+  { path: '/admin/manage-store',      label: 'Manage Store',      icon: <Store size={15} />,         screenKey: 'manage_store' },
+  { path: '/admin/manufacturers',     label: 'Manufacturers',     icon: <Factory size={15} />,       screenKey: 'manufacturers' },
+  { path: '/admin/invoice-templates', label: 'Invoice Templates', icon: <Layers size={15} />,        screenKey: 'invoice_templates' },
+  { path: '/admin/schema-builder',    label: 'UI Layout Builder', icon: <Database size={15} />,      screenKey: 'schema_builder' },
+  { path: '/settings',                label: 'Settings',          icon: <Settings size={15} />,      screenKey: 'settings' },
+  { path: '/krishidukan',             label: 'KrishiDukan',       icon: <Package size={15} />,       screenKey: 'krishidukan' },
 ];
 
 const SALES_NAV_PATHS = ['/sales-targets', '/worklist', '/help'];
@@ -38,7 +63,11 @@ export default function HorizontalNavbar() {
   const isOwner = userRole === 'admin' || userRole === 'analyst';
   const isSalesUser = userRole === 'sales';
 
-  const visibleItems = (isOwner || isSalesUser) ? PRIORITY_NAV.filter(item => {
+  // Switch to admin sub-tabs when on any /admin path
+  const isAdminSection = location.pathname === '/admin' || location.pathname.startsWith('/admin/');
+  const sourceNav = isAdminSection ? ADMIN_NAV : PRIORITY_NAV;
+
+  const visibleItems = (isOwner || isSalesUser) ? sourceNav.filter(item => {
     if (!userRole || !permissions) return false;
     if (isSalesUser) return SALES_NAV_PATHS.includes(item.path);
     if (item.path === '/sales-targets') return false;
@@ -132,9 +161,10 @@ export default function HorizontalNavbar() {
         }}
       >
         {visibleItems.map(item => {
-          const active =
-            location.pathname === item.path ||
-            (item.path !== '/' && location.pathname.startsWith(item.path + '/'));
+          const active = item.exact
+            ? location.pathname === item.path
+            : location.pathname === item.path ||
+              (item.path !== '/' && location.pathname.startsWith(item.path + '/'));
           return (
             <Link
               key={item.path}
