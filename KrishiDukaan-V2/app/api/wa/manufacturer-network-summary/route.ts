@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { queueWaNotification } from "../../../lib/wa-notify";
-import { getAdminDb } from "../../../lib/firebase-admin";
+import { getAdminDb, getAdminAuth } from "../../../lib/firebase-admin";
 
 /** Resolves the best available display name for a manufacturer doc. */
 function extractName(d: Record<string, unknown>): { ownerName: string; businessName: string; shopName: string } {
@@ -13,6 +13,21 @@ function extractName(d: Record<string, unknown>): { ownerName: string; businessN
 
 export async function POST(request: Request) {
   try {
+    // This route queues real WhatsApp sends — it must not be callable
+    // anonymously (it used to be, letting anyone spam an arbitrary
+    // manufacturerPhone). The caller must be the manufacturer themselves
+    // (uid matches manufacturerId, or their phone matches) or an admin.
+    const authHeader = request.headers.get("authorization");
+    if (!authHeader?.startsWith("Bearer ")) {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    }
+    let callerUid = "";
+    try {
+      callerUid = (await getAdminAuth().verifyIdToken(authHeader.slice(7))).uid;
+    } catch {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    }
+
     const body = await request.json() as {
       manufacturerId?: string;
       manufacturerPhone?: string;
@@ -23,6 +38,29 @@ export async function POST(request: Request) {
     let { manufacturerPhone = "" } = body;
 
     const db = getAdminDb();
+
+    // Resolve the caller's own phone + role once for the authorization check.
+    let callerPhone = "";
+    let callerRole = "";
+    try {
+      const idx = await db.collection("uidIndex").doc(callerUid).get();
+      if (idx.exists) callerPhone = String(idx.data()?.phone ?? "").trim();
+    } catch { /* ignore */ }
+    try {
+      const bySelf = await db.collection("users").doc(callerUid).get();
+      if (bySelf.exists) callerRole = String(bySelf.data()?.role ?? "");
+      if (!callerRole && callerPhone) {
+        const byPhone = await db.collection("users").doc(callerPhone).get();
+        if (byPhone.exists) callerRole = String(byPhone.data()?.role ?? "");
+      }
+    } catch { /* ignore */ }
+
+    const isSelf =
+      (manufacturerId && manufacturerId === callerUid) ||
+      (manufacturerPhone && callerPhone && manufacturerPhone === callerPhone);
+    if (!isSelf && callerRole !== "admin") {
+      return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+    }
 
     // Resolve phone from uidIndex → users if not provided directly
     if (!manufacturerPhone && manufacturerId) {

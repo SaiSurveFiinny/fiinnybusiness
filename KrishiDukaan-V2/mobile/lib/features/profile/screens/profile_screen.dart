@@ -318,6 +318,18 @@ class _ProfileBody extends ConsumerWidget {
                 // guard on /dashboard, so they can purchase a subscription.
                 onTap: () => context.push('/dashboard'),
               ),
+            if (user.isSeller)
+              _LinkRow(
+                icon: Icons.star_outline,
+                label: isHindi ? 'सदस्यता' : 'Subscription',
+                onTap: () => context.push('/subscription'),
+              ),
+            if (user.isSeller)
+              _LinkRow(
+                icon: Icons.video_collection_outlined,
+                label: isHindi ? 'रील्स' : 'Reels',
+                onTap: () => context.push('/dashboard/reels'),
+              ),
             _LinkRow(
               icon: Icons.receipt_long_outlined,
               label: isHindi ? 'ऑर्डर' : 'Orders',
@@ -559,6 +571,12 @@ class _MiniDashboardCard extends ConsumerWidget {
     final reviewsAsync = ref.watch(storeReviewsProvider(phone));
     final analyticsAsync =
         isManufacturer ? ref.watch(manufacturerAnalyticsProvider(phone)) : null;
+    // networkStatsProvider's 'total' counts every non-revoked retailer
+    // (active AND still-invited/pending) — manufacturerAnalyticsProvider's
+    // 'activeRetailers' only counts active ones, which is why this tile
+    // read 0 for a manufacturer who had only invited retailers so far.
+    final networkStatsAsync =
+        isManufacturer ? ref.watch(networkStatsProvider(phone)) : null;
 
     final loading = listingsAsync.isLoading || reviewsAsync.isLoading;
 
@@ -588,9 +606,11 @@ class _MiniDashboardCard extends ConsumerWidget {
             )
           else
             _statsGrid(
+              context,
               listingsAsync.value ?? const [],
               reviewsAsync.value ?? const [],
               analyticsAsync?.value,
+              networkStatsAsync?.value,
               isManufacturer,
             ),
           Align(
@@ -606,9 +626,11 @@ class _MiniDashboardCard extends ConsumerWidget {
   }
 
   Widget _statsGrid(
+    BuildContext context,
     List<ListingModel> listings,
     List<dynamic> reviews,
     Map<String, int>? analytics,
+    Map<String, int>? networkStats,
     bool isManufacturer,
   ) {
     final products = isManufacturer
@@ -622,25 +644,35 @@ class _MiniDashboardCard extends ConsumerWidget {
         label: 'Products',
         value: '$products',
         color: AppColors.primary,
+        onTap: () => context.push(isManufacturer
+            ? '/dashboard/manufacturer/catalog'
+            : '/dashboard/inventory'),
       ),
       if (isManufacturer)
         _MiniStat(
           icon: Icons.store_outlined,
           label: 'Retailers',
-          value: '${analytics?['activeRetailers'] ?? 0}',
+          // Total (active + still-invited), not just active — a
+          // manufacturer who's only invited retailers so far should still
+          // see that count here, not 0. Tapping through to the Retailer
+          // Network screen shows which ones are pending vs active.
+          value: '${networkStats?['total'] ?? 0}',
           color: AppColors.success,
+          onTap: () => context.push('/dashboard/manufacturer/retailers'),
         ),
       _MiniStat(
         icon: Icons.star_outline,
         label: 'Reviews',
         value: '${reviews.length}',
         color: AppColors.secondary,
+        onTap: () => context.push('/dashboard/reviews'),
       ),
       _MiniStat(
         icon: Icons.visibility_outlined,
         label: 'Views',
         value: '$views',
         color: AppColors.info,
+        onTap: () => context.push('/dashboard/analytics'),
       ),
     ];
 
@@ -661,16 +693,18 @@ class _MiniStat extends StatelessWidget {
   final String label;
   final String value;
   final Color color;
+  final VoidCallback? onTap;
   const _MiniStat({
     required this.icon,
     required this.label,
     required this.value,
     required this.color,
+    this.onTap,
   });
 
   @override
   Widget build(BuildContext context) {
-    return Container(
+    final content = Container(
       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
       decoration: BoxDecoration(
         color: color.withValues(alpha: 0.08),
@@ -705,6 +739,13 @@ class _MiniStat extends StatelessWidget {
           ),
         ],
       ),
+    );
+
+    if (onTap == null) return content;
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(10),
+      child: content,
     );
   }
 }

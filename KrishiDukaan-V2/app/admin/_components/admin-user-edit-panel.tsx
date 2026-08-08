@@ -23,6 +23,7 @@ import {
   adminDeleteUser,
   type AdminSaveProfileInput,
 } from "../../firebase";
+import { useAdminAuth } from "../_context/admin-auth-context";
 import { isValidGstinFormat } from "../../dashboard/_lib/profile-persistence";
 import { compressImage } from "../../utils/compressImage";
 
@@ -84,6 +85,8 @@ export interface AdminUserEditPanelProps {
 }
 
 export function AdminUserEditPanel({ user, onClose, onSaved }: AdminUserEditPanelProps) {
+  const identity = useAdminAuth();
+  const isFullAdmin = identity.role === "admin";
   const phone    = String(user.phone || (/^\+?\d{10,13}$/.test(user.id) ? user.id : "")).trim();
   const role     = String(user.role || "customer").toLowerCase();
   const isSeller = role === "retailer" || role === "manufacturer";
@@ -989,7 +992,7 @@ export function AdminUserEditPanel({ user, onClose, onSaved }: AdminUserEditPane
             )}
 
             {/* ── Role Conversion ── */}
-            {(role === "retailer" || role === "manufacturer") && (
+            {isFullAdmin && (role === "retailer" || role === "manufacturer") && (
               <section className="rounded-2xl border-2 border-blue-200 bg-blue-50/40 p-4 space-y-3">
                 <div className="flex items-center gap-2">
                   <RefreshCw className="h-4 w-4 text-blue-600 shrink-0" />
@@ -1048,7 +1051,7 @@ export function AdminUserEditPanel({ user, onClose, onSaved }: AdminUserEditPane
             )}
 
             {/* ── Danger Zone: Delete User ── */}
-            {role !== "admin" && (
+            {isFullAdmin && role !== "admin" && (
               <section className="rounded-2xl border-2 border-red-200 bg-red-50/40 p-4 space-y-3">
                 <div className="flex items-center gap-2">
                   <Trash2 className="h-4 w-4 text-red-600 shrink-0" />

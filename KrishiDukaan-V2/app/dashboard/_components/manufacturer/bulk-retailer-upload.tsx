@@ -12,10 +12,30 @@ import {
   createNetworkRetailer,
   linkRetailerByPhone,
 } from "../../_lib/manufacturer-retailers-firestore";
-import { db } from "../../../firebase";
+import { db, auth } from "../../../firebase";
 import { parseGoogleMapsUrl } from "./add-retailer-form";
 import { useI18n } from "../../../i18n/I18nContext";
 import { HelperIcon } from "../../../../components/helpers";
+
+// Best-effort WhatsApp summary after a bulk add. The route now requires a
+// Firebase ID token (it queues real WhatsApp sends and used to be callable
+// anonymously), so the token is attached here; failures never block the flow.
+async function notifyNetworkSummary(manufacturerId: string, count: number) {
+  try {
+    const token = await auth.currentUser?.getIdToken();
+    if (!token) return;
+    await fetch("/api/wa/manufacturer-network-summary", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({ manufacturerId, count }),
+    });
+  } catch {
+    /* best-effort */
+  }
+}
 
 // ─── Phone normalization (mirrors server-side toE164India) ────────────────────
 
@@ -334,11 +354,7 @@ export function BulkRetailerUpload({
 
     const addedCount = workingRows.filter((r) => r.status === "done").length;
     if (addedCount > 0) {
-      fetch("/api/wa/manufacturer-network-summary", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ manufacturerId, count: addedCount }),
-      }).catch(() => {});
+      void notifyNetworkSummary(manufacturerId, addedCount);
     }
 
     await onDone();
@@ -383,11 +399,7 @@ export function BulkRetailerUpload({
 
     const addedCount = results.filter((r) => r.status === "done").length;
     if (addedCount > 0) {
-      fetch("/api/wa/manufacturer-network-summary", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ manufacturerId, count: addedCount }),
-      }).catch(() => {});
+      void notifyNetworkSummary(manufacturerId, addedCount);
     }
 
     await onDone();

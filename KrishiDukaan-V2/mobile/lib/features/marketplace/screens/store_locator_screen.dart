@@ -34,8 +34,10 @@ void _showFullStoreImage(BuildContext context, String imageUrl) {
             child: CachedNetworkImage(
               imageUrl: imageUrl,
               fit: BoxFit.contain,
-              placeholder: (context, url) => const Center(child: CircularProgressIndicator()),
-              errorWidget: (context, url, error) => const Icon(Icons.error, color: Colors.white),
+              placeholder: (context, url) =>
+                  const Center(child: CircularProgressIndicator()),
+              errorWidget: (context, url, error) =>
+                  const Icon(Icons.error, color: Colors.white),
             ),
           ),
           Positioned(
@@ -172,7 +174,11 @@ class _StoreLocatorScreenState extends ConsumerState<StoreLocatorScreen> {
   }
 
   Future<void> _animateTo(
-      GoogleMapController? controller, double lat, double lng, double zoom) async {
+    GoogleMapController? controller,
+    double lat,
+    double lng,
+    double zoom,
+  ) async {
     if (controller == null) return;
     await controller.animateCamera(
       CameraUpdate.newLatLngZoom(LatLng(lat, lng), zoom),
@@ -224,11 +230,14 @@ class _StoreLocatorScreenState extends ConsumerState<StoreLocatorScreen> {
 
     // Always use a usable center — don't block on location. A manually
     // picked browsing area (if set) always wins over live GPS.
-    final userLat = manualLoc?.lat ?? locationAsync.value?.lat ?? AppConfig.defaultLat;
-    final userLng = manualLoc?.lng ?? locationAsync.value?.lng ?? AppConfig.defaultLng;
+    final userLat =
+        manualLoc?.lat ?? locationAsync.value?.lat ?? AppConfig.defaultLat;
+    final userLng =
+        manualLoc?.lng ?? locationAsync.value?.lng ?? AppConfig.defaultLng;
     final locationLoading = manualLoc == null && locationAsync.isLoading;
     final locationNameAsync = ref.watch(loc.locationNameProvider);
-    final areaLabel = manualLoc?.label ??
+    final areaLabel =
+        manualLoc?.label ??
         locationNameAsync.value ??
         (locationLoading ? 'Locating…' : 'Current Location');
 
@@ -256,283 +265,286 @@ class _StoreLocatorScreenState extends ConsumerState<StoreLocatorScreen> {
           ],
         ),
       ),
-      body: storesAsync.when(
-        loading: () => const Center(child: CircularProgressIndicator()),
-        error: (_, _) => Center(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              const Icon(
-                Icons.store_outlined,
-                size: 48,
-                color: AppColors.onSurfaceVariant,
-              ),
-              const SizedBox(height: 12),
-              Text('Could not load stores', style: AppTextStyles.bodyMedium),
-            ],
-          ),
-        ),
-        data: (rawStores) {
-          // Merge in a store passed from outside (product/brand/dealer/search)
-          // that might not be part of the public directory, so its pin and
-          // info drawer always render correctly.
-          final focus = _externalFocusStore;
-          final allStores = focus != null && !rawStores.any((s) => s.id == focus.id)
-              ? [...rawStores, focus]
-              : rawStores;
-          // Radius declutters both the map and the list; the deep-link focus
-          // store (if any) always survives it. Text search only affects the
-          // list, matching the existing behavior where the map ignores it.
-          final radiusFiltered = _applyRadius(
-            allStores,
-            userLat,
-            userLng,
-            _radiusKm,
-            keepId: focus?.id,
-          );
-          final stores = _filteredStores(radiusFiltered);
-          _visibleStores = stores;
-          final selected = stores.firstWhere(
-            (s) => s.id == _selectedStoreId,
-            orElse: () =>
-                stores.isNotEmpty ? stores.first : StoreModel(id: '', name: ''),
-          );
-          final hasSelected =
-              _selectedStoreId != null &&
-              stores.any((s) => s.id == _selectedStoreId);
-
-          return Stack(
-            children: [
-              Column(
-                children: [
-                  // ── Map strip ────────────────────────────────────────
-                  SizedBox(
-                    height: 240,
-                    child: _buildMap(
-                      stores: radiusFiltered,
-                      userLat: userLat,
-                      userLng: userLng,
-                      locationLoading: locationLoading,
-                    ),
-                  ),
-
-                  // ── Search bar ───────────────────────────────────────
-                  Container(
-                    color: Colors.white,
-                    padding: const EdgeInsets.fromLTRB(12, 10, 12, 8),
+      // Read .value directly instead of storesAsync.when(...) — Riverpod
+      // keeps the previous value available (hasValue stays true) while a
+      // FutureProvider silently refreshes in the background (e.g. every time
+      // selectedLocationProvider/locationProvider resolve). Routing the whole
+      // screen — including the persistent GoogleMap — through .when()'s
+      // `loading` branch meant every background refresh replaced the entire
+      // body with a bare spinner and remounted a brand new GoogleMap,
+      // reading as "the screen goes white and the map reloads" on a loop.
+      // Only the very first load (no cached value yet) shows the spinner now.
+      body: !storesAsync.hasValue
+          ? (storesAsync.hasError
+                ? Center(
                     child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
+                      mainAxisSize: MainAxisSize.min,
                       children: [
-                        // ── Location chip ─ tap to pick a different area or
-                        // switch back to current location.
-                        InkWell(
-                          onTap: () =>
-                              showLocationPickerSheet(context: context, ref: ref),
-                          borderRadius: BorderRadius.circular(10),
-                          child: Padding(
-                            padding: const EdgeInsets.symmetric(vertical: 6),
-                            child: Row(
-                              children: [
-                                const Icon(
-                                  Icons.location_on_outlined,
-                                  size: 16,
-                                  color: AppColors.primary,
-                                ),
-                                const SizedBox(width: 6),
-                                Expanded(
-                                  child: Text(
-                                    areaLabel,
-                                    maxLines: 1,
-                                    overflow: TextOverflow.ellipsis,
-                                    style: AppTextStyles.bodySmall.copyWith(
-                                      color: AppColors.primary,
-                                      fontWeight: FontWeight.w700,
-                                    ),
-                                  ),
-                                ),
-                                const Icon(
-                                  Icons.expand_more,
-                                  size: 16,
-                                  color: AppColors.primary,
-                                ),
-                              ],
-                            ),
-                          ),
+                        const Icon(
+                          Icons.store_outlined,
+                          size: 48,
+                          color: AppColors.onSurfaceVariant,
                         ),
-                        TextField(
-                          controller: _searchCtrl,
-                          onChanged: (v) => setState(() => _searchQuery = v),
-                          decoration: InputDecoration(
-                            hintText: 'Search stores by name or area...',
-                            prefixIcon: const Icon(
-                              Icons.search,
-                              size: 20,
-                              color: AppColors.onSurfaceVariant,
-                            ),
-                            suffixIcon: _searchQuery.isNotEmpty
-                                ? IconButton(
-                                    icon: const Icon(Icons.clear, size: 18),
-                                    onPressed: () {
-                                      _searchCtrl.clear();
-                                      setState(() => _searchQuery = '');
-                                    },
-                                  )
-                                : null,
-                            isDense: true,
-                            contentPadding: const EdgeInsets.symmetric(
-                              vertical: 10,
-                              horizontal: 12,
-                            ),
-                            border: OutlineInputBorder(
-                              borderRadius: BorderRadius.circular(12),
-                              borderSide: const BorderSide(
-                                color: AppColors.divider,
-                              ),
-                            ),
-                            focusedBorder: OutlineInputBorder(
-                              borderRadius: BorderRadius.circular(12),
-                              borderSide: const BorderSide(
-                                color: AppColors.primary,
-                                width: 2,
-                              ),
-                            ),
-                            filled: true,
-                            fillColor: AppColors.surfaceVariant,
-                          ),
-                        ),
-                        const SizedBox(height: 8),
-                        // ── Radius chips ─ purely local/instant filter, no
-                        // network round-trip.
-                        Wrap(
-                          spacing: 8,
-                          children: [
-                            _RadiusChip(
-                              label: '25 km',
-                              selected: _radiusKm == 25,
-                              onTap: () => setState(() => _radiusKm = 25),
-                            ),
-                            _RadiusChip(
-                              label: '50 km',
-                              selected: _radiusKm == 50,
-                              onTap: () => setState(() => _radiusKm = 50),
-                            ),
-                            _RadiusChip(
-                              label: '100 km',
-                              selected: _radiusKm == 100,
-                              onTap: () => setState(() => _radiusKm = 100),
-                            ),
-                            _RadiusChip(
-                              label: 'All',
-                              selected: _radiusKm == null,
-                              onTap: () => setState(() => _radiusKm = null),
-                            ),
-                          ],
-                        ),
-                        const SizedBox(height: 6),
+                        const SizedBox(height: 12),
                         Text(
-                          _radiusKm == null
-                              ? '${stores.length} store${stores.length != 1 ? 's' : ''} found'
-                              : '${stores.length} store${stores.length != 1 ? 's' : ''} found within ${_radiusKm!.round()} km',
-                          style: AppTextStyles.caption.copyWith(
-                            color: AppColors.onSurfaceVariant,
-                            fontWeight: FontWeight.w700,
-                            letterSpacing: 0.5,
-                          ),
+                          'Could not load stores',
+                          style: AppTextStyles.bodyMedium,
                         ),
                       ],
                     ),
-                  ),
-                  const Divider(height: 1),
+                  )
+                : const Center(child: CircularProgressIndicator()))
+          : Builder(
+              builder: (context) {
+                final rawStores = storesAsync.value!;
+                // Merge in a store passed from outside (product/brand/dealer/search)
+                // that might not be part of the public directory, so its pin and
+                // info drawer always render correctly.
+                final focus = _externalFocusStore;
+                final allStores =
+                    focus != null && !rawStores.any((s) => s.id == focus.id)
+                    ? [...rawStores, focus]
+                    : rawStores;
+                // Radius declutters both the map and the list; the deep-link focus
+                // store (if any) always survives it. Text search only affects the
+                // list, matching the existing behavior where the map ignores it.
+                final radiusFiltered = _applyRadius(
+                  allStores,
+                  userLat,
+                  userLng,
+                  _radiusKm,
+                  keepId: focus?.id,
+                );
+                final stores = _filteredStores(radiusFiltered);
+                _visibleStores = stores;
+                final selected = stores.firstWhere(
+                  (s) => s.id == _selectedStoreId,
+                  orElse: () => stores.isNotEmpty
+                      ? stores.first
+                      : StoreModel(id: '', name: ''),
+                );
+                final hasSelected =
+                    _selectedStoreId != null &&
+                    stores.any((s) => s.id == _selectedStoreId);
 
-                  // ── Store list ───────────────────────────────────────
-                  Expanded(
-                    child: stores.isEmpty
-                        ? Center(
-                            child: Column(
-                              mainAxisSize: MainAxisSize.min,
-                              children: [
-                                const Icon(
-                                  Icons.store_outlined,
-                                  size: 40,
-                                  color: AppColors.onSurfaceVariant,
+                return Stack(
+                  children: [
+                    Column(
+                      children: [
+                        // ── Map strip ────────────────────────────────────────
+                        SizedBox(
+                          height: 240,
+                          child: _buildMap(
+                            stores: radiusFiltered,
+                            userLat: userLat,
+                            userLng: userLng,
+                            locationLoading: locationLoading,
+                          ),
+                        ),
+
+                        // ── Search bar ───────────────────────────────────────
+                        Container(
+                          color: Colors.white,
+                          padding: const EdgeInsets.fromLTRB(12, 10, 12, 8),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              // ── Location chip ─ tap to pick a different area or
+                              // switch back to current location.
+                              InkWell(
+                                onTap: () => showLocationPickerSheet(
+                                  context: context,
+                                  ref: ref,
                                 ),
-                                const SizedBox(height: 12),
-                                Text(
-                                  _searchQuery.isNotEmpty
-                                      ? 'No stores match "$_searchQuery"'
-                                      : (_radiusKm != null && allStores.isNotEmpty)
-                                          // The radius, not an empty DB, is
-                                          // why nothing shows — always give a
-                                          // one-tap way back to a non-empty
-                                          // view instead of a dead end.
-                                          ? 'No stores within ${_radiusKm!.round()} km of $areaLabel'
-                                          : 'No stores available',
-                                  textAlign: TextAlign.center,
-                                  style: AppTextStyles.bodyMedium.copyWith(
+                                borderRadius: BorderRadius.circular(10),
+                                child: Padding(
+                                  padding: const EdgeInsets.symmetric(
+                                    vertical: 6,
+                                  ),
+                                  child: Row(
+                                    children: [
+                                      const Icon(
+                                        Icons.location_on_outlined,
+                                        size: 16,
+                                        color: AppColors.primary,
+                                      ),
+                                      const SizedBox(width: 6),
+                                      Expanded(
+                                        child: Text(
+                                          areaLabel,
+                                          maxLines: 1,
+                                          overflow: TextOverflow.ellipsis,
+                                          style: AppTextStyles.bodySmall
+                                              .copyWith(
+                                                color: AppColors.primary,
+                                                fontWeight: FontWeight.w700,
+                                              ),
+                                        ),
+                                      ),
+                                      const Icon(
+                                        Icons.expand_more,
+                                        size: 16,
+                                        color: AppColors.primary,
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                              ),
+                              TextField(
+                                controller: _searchCtrl,
+                                onChanged: (v) =>
+                                    setState(() => _searchQuery = v),
+                                decoration: InputDecoration(
+                                  hintText: 'Search stores by name or area...',
+                                  prefixIcon: const Icon(
+                                    Icons.search,
+                                    size: 20,
                                     color: AppColors.onSurfaceVariant,
                                   ),
+                                  suffixIcon: _searchQuery.isNotEmpty
+                                      ? IconButton(
+                                          icon: const Icon(
+                                            Icons.clear,
+                                            size: 18,
+                                          ),
+                                          onPressed: () {
+                                            _searchCtrl.clear();
+                                            setState(() => _searchQuery = '');
+                                          },
+                                        )
+                                      : null,
+                                  isDense: true,
+                                  contentPadding: const EdgeInsets.symmetric(
+                                    vertical: 10,
+                                    horizontal: 12,
+                                  ),
+                                  border: OutlineInputBorder(
+                                    borderRadius: BorderRadius.circular(12),
+                                    borderSide: const BorderSide(
+                                      color: AppColors.divider,
+                                    ),
+                                  ),
+                                  focusedBorder: OutlineInputBorder(
+                                    borderRadius: BorderRadius.circular(12),
+                                    borderSide: const BorderSide(
+                                      color: AppColors.primary,
+                                      width: 2,
+                                    ),
+                                  ),
+                                  filled: true,
+                                  fillColor: AppColors.surfaceVariant,
                                 ),
-                                if (_searchQuery.isEmpty &&
-                                    _radiusKm != null &&
-                                    allStores.isNotEmpty) ...[
-                                  const SizedBox(height: 12),
-                                  OutlinedButton(
-                                    onPressed: () =>
+                              ),
+                              const SizedBox(height: 8),
+                              // ── Radius chips ─ purely local/instant filter, no
+                              // network round-trip.
+                              Wrap(
+                                spacing: 8,
+                                children: [
+                                  _RadiusChip(
+                                    label: '25 km',
+                                    selected: _radiusKm == 25,
+                                    onTap: () => setState(() => _radiusKm = 25),
+                                  ),
+                                  _RadiusChip(
+                                    label: '50 km',
+                                    selected: _radiusKm == 50,
+                                    onTap: () => setState(() => _radiusKm = 50),
+                                  ),
+                                  _RadiusChip(
+                                    label: '100 km',
+                                    selected: _radiusKm == 100,
+                                    onTap: () =>
+                                        setState(() => _radiusKm = 100),
+                                  ),
+                                  _RadiusChip(
+                                    label: 'All',
+                                    selected: _radiusKm == null,
+                                    onTap: () =>
                                         setState(() => _radiusKm = null),
-                                    child: const Text('Show all stores'),
                                   ),
                                 ],
-                              ],
-                            ),
-                          )
-                        : ScrollablePositionedList.builder(
-                            itemScrollController: _itemScrollCtrl,
-                            padding: const EdgeInsets.all(12),
-                            itemCount: stores.length,
-                            itemBuilder: (_, i) {
-                              final store = stores[i];
-                              final isSelected =
-                                  store.id == _selectedStoreId ||
-                                  (!hasSelected && i == 0);
-                              return _StoreCard(
-                                store: store,
-                                isSelected: isSelected,
-                                onTap: () => _selectStore(store),
-                                onMapTap: () => _openMapExpanded(store),
-                                onCall:
-                                    store.phone != null &&
-                                        store.phone!.isNotEmpty
-                                    ? () => _callStore(store.phone!)
-                                    : null,
-                                onNavigate: store.hasLocation
-                                    ? () => _navigate(
-                                          store,
-                                          allStores: allStores,
-                                          userLat: userLat,
-                                          userLng: userLng,
-                                          hasUserLocation:
-                                              locationAsync.value != null,
-                                        )
-                                    : null,
-                                onReviewsTap: () {
-                                  showStoreReviewsBottomSheet(
-                                    context: context,
-                                    ref: ref,
-                                    store: store,
-                                  );
-                                },
-                                onDetails: () {
-                                  showStoreDetailSheet(
-                                    context: context,
-                                    ref: ref,
-                                    store: store,
-                                    onCall:
-                                        store.phone != null &&
-                                            store.phone!.isNotEmpty
-                                        ? () => _callStore(store.phone!)
-                                        : null,
-                                    onNavigate: store.hasLocation
-                                        ? () => _navigate(
+                              ),
+                              const SizedBox(height: 6),
+                              Text(
+                                _radiusKm == null
+                                    ? '${stores.length} store${stores.length != 1 ? 's' : ''} found'
+                                    : '${stores.length} store${stores.length != 1 ? 's' : ''} found within ${_radiusKm!.round()} km',
+                                style: AppTextStyles.caption.copyWith(
+                                  color: AppColors.onSurfaceVariant,
+                                  fontWeight: FontWeight.w700,
+                                  letterSpacing: 0.5,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                        const Divider(height: 1),
+
+                        // ── Store list ───────────────────────────────────────
+                        Expanded(
+                          child: stores.isEmpty
+                              ? Center(
+                                  child: Column(
+                                    mainAxisSize: MainAxisSize.min,
+                                    children: [
+                                      const Icon(
+                                        Icons.store_outlined,
+                                        size: 40,
+                                        color: AppColors.onSurfaceVariant,
+                                      ),
+                                      const SizedBox(height: 12),
+                                      Text(
+                                        _searchQuery.isNotEmpty
+                                            ? 'No stores match "$_searchQuery"'
+                                            : (_radiusKm != null &&
+                                                  allStores.isNotEmpty)
+                                            // The radius, not an empty DB, is
+                                            // why nothing shows — always give a
+                                            // one-tap way back to a non-empty
+                                            // view instead of a dead end.
+                                            ? 'No stores within ${_radiusKm!.round()} km of $areaLabel'
+                                            : 'No stores available',
+                                        textAlign: TextAlign.center,
+                                        style: AppTextStyles.bodyMedium
+                                            .copyWith(
+                                              color: AppColors.onSurfaceVariant,
+                                            ),
+                                      ),
+                                      if (_searchQuery.isEmpty &&
+                                          _radiusKm != null &&
+                                          allStores.isNotEmpty) ...[
+                                        const SizedBox(height: 12),
+                                        OutlinedButton(
+                                          onPressed: () =>
+                                              setState(() => _radiusKm = null),
+                                          child: const Text('Show all stores'),
+                                        ),
+                                      ],
+                                    ],
+                                  ),
+                                )
+                              : ScrollablePositionedList.builder(
+                                  itemScrollController: _itemScrollCtrl,
+                                  padding: const EdgeInsets.all(12),
+                                  itemCount: stores.length,
+                                  itemBuilder: (_, i) {
+                                    final store = stores[i];
+                                    final isSelected =
+                                        store.id == _selectedStoreId ||
+                                        (!hasSelected && i == 0);
+                                    return _StoreCard(
+                                      store: store,
+                                      isSelected: isSelected,
+                                      onTap: () => _selectStore(store),
+                                      onMapTap: () => _openMapExpanded(store),
+                                      onCall:
+                                          store.phone != null &&
+                                              store.phone!.isNotEmpty
+                                          ? () => _callStore(store.phone!)
+                                          : null,
+                                      onNavigate: store.hasLocation
+                                          ? () => _navigate(
                                               store,
                                               allStores: allStores,
                                               userLat: userLat,
@@ -540,50 +552,78 @@ class _StoreLocatorScreenState extends ConsumerState<StoreLocatorScreen> {
                                               hasUserLocation:
                                                   locationAsync.value != null,
                                             )
-                                        : null,
-                                  );
-                                },
-                              );
-                            },
-                          ),
-                  ),
-                ],
-              ),
+                                          : null,
+                                      onReviewsTap: () {
+                                        showStoreReviewsBottomSheet(
+                                          context: context,
+                                          ref: ref,
+                                          store: store,
+                                        );
+                                      },
+                                      onDetails: () {
+                                        showStoreDetailSheet(
+                                          context: context,
+                                          ref: ref,
+                                          store: store,
+                                          onCall:
+                                              store.phone != null &&
+                                                  store.phone!.isNotEmpty
+                                              ? () => _callStore(store.phone!)
+                                              : null,
+                                          onNavigate: store.hasLocation
+                                              ? () => _navigate(
+                                                  store,
+                                                  allStores: allStores,
+                                                  userLat: userLat,
+                                                  userLng: userLng,
+                                                  hasUserLocation:
+                                                      locationAsync.value !=
+                                                      null,
+                                                )
+                                              : null,
+                                        );
+                                      },
+                                    );
+                                  },
+                                ),
+                        ),
+                      ],
+                    ),
 
-              // ── Expanded map overlay ─────────────────────────────────
-              if (_mapExpanded)
-                _MapOverlay(
-                  onMapCreated: (c) {
-                    _overlayMapController = c;
-                    final focused = hasSelected ? selected : null;
-                    if (focused != null && focused.hasLocation) {
-                      _animateTo(c, focused.lat!, focused.lng!, 15);
-                    }
-                  },
-                  stores: radiusFiltered,
-                  userLat: userLat,
-                  userLng: userLng,
-                  selectedStoreId: _selectedStoreId,
-                  focusedStore: hasSelected ? selected : null,
-                  onMarkerTap: (s) => _selectStore(s, panMap: false),
-                  onClose: () {
-                    setState(() => _mapExpanded = false);
-                    final pending = _pendingScrollStoreId;
-                    _pendingScrollStoreId = null;
-                    if (pending != null) _scrollListToStore(pending);
-                  },
-                  onNavigate: (s) => _navigate(
-                    s,
-                    allStores: allStores,
-                    userLat: userLat,
-                    userLng: userLng,
-                    hasUserLocation: locationAsync.value != null,
-                  ),
-                ),
-            ],
-          );
-        },
-      ),
+                    // ── Expanded map overlay ─────────────────────────────────
+                    if (_mapExpanded)
+                      _MapOverlay(
+                        onMapCreated: (c) {
+                          _overlayMapController = c;
+                          final focused = hasSelected ? selected : null;
+                          if (focused != null && focused.hasLocation) {
+                            _animateTo(c, focused.lat!, focused.lng!, 15);
+                          }
+                        },
+                        stores: radiusFiltered,
+                        userLat: userLat,
+                        userLng: userLng,
+                        selectedStoreId: _selectedStoreId,
+                        focusedStore: hasSelected ? selected : null,
+                        onMarkerTap: (s) => _selectStore(s, panMap: false),
+                        onClose: () {
+                          setState(() => _mapExpanded = false);
+                          final pending = _pendingScrollStoreId;
+                          _pendingScrollStoreId = null;
+                          if (pending != null) _scrollListToStore(pending);
+                        },
+                        onNavigate: (s) => _navigate(
+                          s,
+                          allStores: allStores,
+                          userLat: userLat,
+                          userLng: userLng,
+                          hasUserLocation: locationAsync.value != null,
+                        ),
+                      ),
+                  ],
+                );
+              },
+            ),
     );
   }
 
@@ -628,7 +668,8 @@ class _StoreLocatorScreenState extends ConsumerState<StoreLocatorScreen> {
             heroTag: 'recenter_map',
             backgroundColor: Colors.white,
             foregroundColor: AppColors.primary,
-            onPressed: () => _animateTo(_stripMapController, userLat, userLng, 14),
+            onPressed: () =>
+                _animateTo(_stripMapController, userLat, userLng, 14),
             child: const Icon(Icons.my_location),
           ),
         ),
@@ -748,7 +789,10 @@ class _MapOverlay extends StatelessWidget {
                                 focusedStore!.logo != null &&
                                     focusedStore!.logo!.isNotEmpty
                                 ? GestureDetector(
-                                    onTap: () => _showFullStoreImage(context, focusedStore!.logo!),
+                                    onTap: () => _showFullStoreImage(
+                                      context,
+                                      focusedStore!.logo!,
+                                    ),
                                     child: CachedNetworkImage(
                                       memCacheWidth: 1000,
                                       imageUrl: focusedStore!.logo!,
@@ -943,7 +987,8 @@ class _StoreCard extends StatelessWidget {
                       clipBehavior: Clip.antiAlias,
                       child: store.logo != null && store.logo!.isNotEmpty
                           ? GestureDetector(
-                              onTap: () => _showFullStoreImage(context, store.logo!),
+                              onTap: () =>
+                                  _showFullStoreImage(context, store.logo!),
                               child: CachedNetworkImage(
                                 memCacheWidth: 1000,
                                 imageUrl: store.logo!,

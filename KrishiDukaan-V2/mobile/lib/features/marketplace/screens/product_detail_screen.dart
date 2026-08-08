@@ -32,6 +32,23 @@ import '../../reels/providers/reels_provider.dart';
 import '../../reels/screens/shop_profile_screen.dart';
 import '../../../core/providers/user_provider.dart';
 
+/// Best-effort, silent bump of one or more `products/{catalogId}` analytics
+/// counters — same doc, same field shapes, same "authenticated shopper" gate
+/// as web's trackProductClick/trackStoreCall/trackDirectionRequest in
+/// app/firebase.ts. A tracking failure must never affect the page itself.
+/// Shared by `_ProductDetailScreenState` (view) and `_SellerTileState`
+/// (call/directions).
+void _trackProductEvent(String catalogId, String totalField, String byDayField) {
+  if (FirebaseAuth.instance.currentUser == null) return;
+  final now = DateTime.now();
+  final dayKey =
+      '${now.year}-${now.month.toString().padLeft(2, '0')}-${now.day.toString().padLeft(2, '0')}';
+  FirebaseFirestore.instance.collection('products').doc(catalogId).update({
+    totalField: FieldValue.increment(1),
+    '$byDayField.$dayKey': FieldValue.increment(1),
+  }).catchError((_) {});
+}
+
 class ProductDetailScreen extends ConsumerStatefulWidget {
   final String catalogId;
   const ProductDetailScreen({super.key, required this.catalogId});
@@ -53,25 +70,8 @@ class _ProductDetailScreenState extends ConsumerState<ProductDetailScreen> {
   @override
   void initState() {
     super.initState();
-    _trackView();
-  }
-
-  /// Mirrors web's `trackProductClick` (app/firebase.ts) exactly — same
-  /// fields, same doc, same "authenticated shopper" gate — so mobile product
-  /// views finally feed the seller-analytics counters web already reads.
-  /// Best-effort and silent: a tracking failure must never affect the page.
-  void _trackView() {
-    if (FirebaseAuth.instance.currentUser == null) return;
-    final now = DateTime.now();
-    final dayKey =
-        '${now.year}-${now.month.toString().padLeft(2, '0')}-${now.day.toString().padLeft(2, '0')}';
-    FirebaseFirestore.instance
-        .collection('products')
-        .doc(widget.catalogId)
-        .update({
-      'clicks': FieldValue.increment(1),
-      'clicksByDay.$dayKey': FieldValue.increment(1),
-    }).catchError((_) {});
+    // Mirrors web's `trackProductClick` — a product detail page open.
+    _trackProductEvent(widget.catalogId, 'clicks', 'clicksByDay');
   }
 
   @override
@@ -2644,6 +2644,8 @@ class _SellerTileState extends ConsumerState<_SellerTile> {
     final url = Uri.parse('tel:$phone');
     if (await canLaunchUrl(url)) {
       await launchUrl(url);
+      // Mirrors web's trackStoreCall — feeds the web Analytics "Calls" chart.
+      _trackProductEvent(widget.catalogId, 'calls', 'callsByDay');
     }
   }
 
@@ -2652,6 +2654,10 @@ class _SellerTileState extends ConsumerState<_SellerTile> {
   /// them inside KrishiDukan and reuses the single in-app map + directions
   /// flow shared by product, brand, and search-suggestion "Directions" taps.
   void _openMap(ListingModel listing) {
+    // Mirrors web's trackDirectionRequest — feeds the web Analytics
+    // "Direction Requests" chart.
+    _trackProductEvent(
+        widget.catalogId, 'directionRequests', 'directionRequestsByDay');
     context.go(
       storeFocusRoute(
         name: listing.sellerName,

@@ -1901,6 +1901,11 @@ export async function promoteToAdmin(uid: string): Promise<void> {
   await setDoc(doc(db, 'users', uid), { role: 'admin', isPaid: true, updatedAt: serverTimestamp() }, { merge: true });
 }
 
+/** Updates which admin-portal tabs a "team" (limited-access) account can see. */
+export async function adminUpdateTeamSections(uid: string, adminSections: string[]): Promise<void> {
+  await setDoc(doc(db, 'users', uid), { adminSections, updatedAt: serverTimestamp() }, { merge: true });
+}
+
 export async function adminUpdateUser(uid: string, updates: {
   name?: string;
   email?: string;
