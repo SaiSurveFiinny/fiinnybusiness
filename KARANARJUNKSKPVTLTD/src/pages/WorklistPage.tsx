@@ -4,7 +4,7 @@ import { useNavigate } from 'react-router-dom';
 import {
     Download, FileSpreadsheet, Store, Search, Filter, ArrowUpDown,
     Users, Building2, UserPlus, TrendingUp, AlertCircle,
-    CheckCircle2, Bell, ShoppingCart, Truck, Mail, MessageSquare,
+    CheckCircle2, Bell, ShoppingCart, Truck, Mail, MessageSquare, Wallet,
     X, Copy, CheckSquare, FileText, ChevronDown, ChevronRight, Phone, Clock,
 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
@@ -20,6 +20,7 @@ import { type FinancialPeriod, getFinancialDateRange } from '../utils/financialP
 
 // Import sub-pages directly (WorklistPage itself is lazy-loaded by App.tsx)
 import PaymentRemindersPage from './PaymentRemindersPage';
+import AllPaymentsPage from './AllPaymentsPage';
 import OnlineOrdersPage from './OnlineOrdersPage';
 import DispatchBoardPage from './DispatchBoardPage';
 // TEMPORARILY DISABLED (2026-07-03): Worklist → Purchase Orders is incomplete/broken.
@@ -65,15 +66,17 @@ interface ReminderEntry {
 }
 
 // 'purchase-orders' removed from the union — TEMPORARILY DISABLED (2026-07-03), see note above.
-// Tab IDs are URL-hash-safe slugs. Renames: payment-reminders→payments, tracking-info→tracking.
-type ModuleTab = 'partners' | 'invoices' | 'payments' | 'tracking' | 'online-orders' /* | 'purchase-orders' */;
-const VALID_TABS: readonly ModuleTab[] = ['partners', 'invoices', 'payments', 'tracking', 'online-orders'];
+// Tab IDs are URL-hash-safe slugs. Renames: tracking-info→tracking. The 'payments' hash now
+// drives the global All Payments view; Payment Reminders moved to the 'reminders' hash.
+type ModuleTab = 'partners' | 'invoices' | 'payments' | 'reminders' | 'tracking' | 'online-orders' /* | 'purchase-orders' */;
+const VALID_TABS: readonly ModuleTab[] = ['partners', 'invoices', 'payments', 'reminders', 'tracking', 'online-orders'];
 type WLSortCol = 'name' | 'district' | 'salesperson' | 'contact' | 'outstanding' | 'totalSales' | 'date';
 
 const MODULE_TABS: { id: ModuleTab; label: string; icon: React.ReactNode }[] = [
     { id: 'partners',      label: 'Partners',          icon: <Building2 size={16} /> },
     { id: 'invoices',      label: 'Invoices',          icon: <FileText size={16} /> },
-    { id: 'payments',      label: 'Payment Reminders', icon: <Bell size={16} /> },
+    { id: 'payments',      label: 'Payments',          icon: <Wallet size={16} /> },
+    { id: 'reminders',     label: 'Payment Reminders', icon: <Bell size={16} /> },
     { id: 'tracking',      label: 'Tracking Info',     icon: <Truck size={16} /> },
     { id: 'online-orders', label: 'Online Orders',     icon: <ShoppingCart size={16} /> },
     // TEMPORARILY DISABLED (2026-07-03): Purchase Orders tab hidden until rebuilt — do not delete.
@@ -146,7 +149,8 @@ export default function WorklistPage() {
             {/* ── Tab Content ── */}
             {moduleTab === 'partners'      && <PartnersTab />}
             {moduleTab === 'invoices'      && <B2BInvoiceWorklistPage />}
-            {moduleTab === 'payments'      && <PaymentRemindersPage />}
+            {moduleTab === 'payments'      && <AllPaymentsPage />}
+            {moduleTab === 'reminders'     && <PaymentRemindersPage />}
             {moduleTab === 'tracking'      && <DispatchBoardPage />}
             {moduleTab === 'online-orders' && <OnlineOrdersPage />}
             {/* TEMPORARILY DISABLED (2026-07-03): Purchase Orders tab content hidden until rebuilt — do not delete. */}

@@ -2,9 +2,8 @@ import { useRef, useState, useEffect, useCallback } from 'react';
 import { Link, useLocation } from 'react-router-dom';
 import {
   Home, BarChart3, Layers, ReceiptText, Activity, FileText, ClipboardList,
-  Package, ShieldAlert, Calculator, BookOpen, Target, Receipt, ChevronLeft,
-  ChevronRight, HelpCircle, Users, UserCog, Shield, Lock, Store, Factory,
-  Palette, Database, Settings, TrendingUp,
+  Package, Calculator, BookOpen, Target, Receipt, ChevronLeft,
+  ChevronRight, HelpCircle, Users, Settings,
 } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 import type { AppScreen } from '../contexts/AuthContext';
@@ -32,23 +31,8 @@ const PRIORITY_NAV: NavItem[] = [
   { path: '/help',            label: 'Help Center',       icon: <HelpCircle size={15} />,    screenKey: 'settings' },
 ];
 
-// ── Admin sub-tabs — shown instead of the main nav when on any /admin path ───
-const ADMIN_NAV: NavItem[] = [
-  { path: '/admin',                   label: 'Manage Users',      icon: <UserCog size={15} />,       screenKey: 'admin',             exact: true },
-  { path: '/admin/audit-log',         label: 'Audit Log',         icon: <Shield size={15} />,        screenKey: 'audit_log' },
-  { path: '/admin/team-performance',  label: 'Team Performance',  icon: <TrendingUp size={15} />,    screenKey: 'admin' },
-  { path: '/admin/sales-targets',     label: 'Sales Target',      icon: <Target size={15} />,        screenKey: 'admin' },
-  { path: '/admin/data-security',     label: 'Data Security',     icon: <Lock size={15} />,          screenKey: 'admin' },
-  { path: '/admin/manage-roles',      label: 'Role Matrix',       icon: <ShieldAlert size={15} />,   screenKey: 'admin' },
-  { path: '/admin/manage-retailers',  label: 'Manage Retailers',  icon: <Users size={15} />,         screenKey: 'manage_retailers' },
-  { path: '/admin/invoice-settings',  label: 'Invoice Branding',  icon: <Palette size={15} />,       screenKey: 'invoice_settings' },
-  { path: '/admin/manage-store',      label: 'Manage Store',      icon: <Store size={15} />,         screenKey: 'manage_store' },
-  { path: '/admin/manufacturers',     label: 'Manufacturers',     icon: <Factory size={15} />,       screenKey: 'manufacturers' },
-  { path: '/admin/invoice-templates', label: 'Invoice Templates', icon: <Layers size={15} />,        screenKey: 'invoice_templates' },
-  { path: '/admin/schema-builder',    label: 'UI Layout Builder', icon: <Database size={15} />,      screenKey: 'schema_builder' },
-  { path: '/settings',                label: 'Settings',          icon: <Settings size={15} />,      screenKey: 'settings' },
-  { path: '/krishidukan',             label: 'KrishiDukan',       icon: <Package size={15} />,       screenKey: 'krishidukan' },
-];
+// Admin sub-tabs are no longer separate routes — they render in-page at
+// /admin#<tab> (see AdminHubPage). The navbar keeps a single "Admin" entry.
 
 const SALES_NAV_PATHS = ['/sales-targets', '/worklist', '/help'];
 const SCROLL_STEP = 220;
@@ -63,11 +47,7 @@ export default function HorizontalNavbar() {
   const isOwner = userRole === 'admin' || userRole === 'analyst';
   const isSalesUser = userRole === 'sales';
 
-  // Switch to admin sub-tabs when on any /admin path
-  const isAdminSection = location.pathname === '/admin' || location.pathname.startsWith('/admin/');
-  const sourceNav = isAdminSection ? ADMIN_NAV : PRIORITY_NAV;
-
-  const visibleItems = (isOwner || isSalesUser) ? sourceNav.filter(item => {
+  const visibleItems = (isOwner || isSalesUser) ? PRIORITY_NAV.filter(item => {
     if (!userRole || !permissions) return false;
     if (isSalesUser) return SALES_NAV_PATHS.includes(item.path);
     if (item.path === '/sales-targets') return false;

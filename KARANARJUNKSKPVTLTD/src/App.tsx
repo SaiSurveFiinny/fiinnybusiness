@@ -1,6 +1,6 @@
 import { useState, useEffect, lazy, Suspense } from 'react';
 import { BrowserRouter, Routes, Route, Link, useLocation, Navigate, useNavigate } from 'react-router-dom';
-import { Home, Users, UserPlus, LogOut, ReceiptText, ShieldAlert, Shield, Calculator, Settings, Package, ChevronDown, Layers, Palette, Database, Factory, Truck, Store, ShoppingCart, BarChart3, Activity, FileText, Bell, ClipboardList, Star, Link2, Bot, Loader2, Menu, X, Lock, Target, Sun, Moon, Receipt, HelpCircle } from 'lucide-react';
+import { Home, Users, UserPlus, LogOut, ReceiptText, ShieldAlert, Calculator, Settings, Package, ChevronDown, Layers, Truck, ShoppingCart, BarChart3, Activity, Bell, ClipboardList, Star, Link2, Bot, Loader2, Menu, X, Target, Sun, Moon, Receipt, HelpCircle } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import LanguageSwitcher from './components/LanguageSwitcher';
 import OfflineBanner from './components/OfflineBanner';
@@ -21,17 +21,11 @@ const WorklistDetailsPage    = lazy(() => import('./pages/WorklistDetailsPage'))
 const DashboardPage          = lazy(() => import('./pages/DashboardPage'));
 const B2CDashboardPage       = lazy(() => import('./pages/B2CDashboardPage'));
 const LoginPage              = lazy(() => import('./pages/LoginPage'));
-const AdminPage              = lazy(() => import('./pages/AdminPage'));
+const AdminHubPage           = lazy(() => import('./pages/AdminHubPage'));
 const StorefrontPage         = lazy(() => import('./pages/StorefrontPage'));
-const AdminStoreProductsPage = lazy(() => import('./pages/AdminStoreProductsPage'));
 const RateSheetPage          = lazy(() => import('./pages/RateSheetPage'));
-const InvoiceSettingsPage    = lazy(() => import('./pages/InvoiceSettingsPage'));
-const ManageRetailersPage    = lazy(() => import('./pages/ManageRetailersPage'));
 const POSPage                = lazy(() => import('./pages/POSPage'));
 const SettingsPage           = lazy(() => import('./pages/SettingsPage'));
-const SchemaBuilderPage      = lazy(() => import('./pages/SchemaBuilderPage'));
-const InvoiceTemplateBuilderPage = lazy(() => import('./pages/InvoiceTemplateBuilderPage'));
-const ManufacturersPage      = lazy(() => import('./pages/ManufacturersPage'));
 const SalesOrderPage         = lazy(() => import('./pages/SalesOrderPage'));
 const DispatchBoardPage      = lazy(() => import('./pages/DispatchBoardPage'));
 const RetailerPortalPage     = lazy(() => import('./pages/RetailerPortalPage'));
@@ -48,7 +42,6 @@ const OnlineOrdersPage       = lazy(() => import('./pages/OnlineOrdersPage'));
 const OnlineDashboardPage    = lazy(() => import('./pages/OnlineDashboardPage').then(m => ({ default: m.OnlineDashboardPage })));
 const AnalyticsPage          = lazy(() => import('./pages/AnalyticsPage').then(m => ({ default: m.AnalyticsPage })));
 const OrderHistoryPage       = lazy(() => import('./pages/OrderHistoryPage'));
-const ManageRolesPage        = lazy(() => import('./pages/ManageRolesPage'));
 const B2BInvoicePage         = lazy(() => import('./pages/B2BInvoicePage'));
 const GSTReportsPage         = lazy(() => import('./pages/GSTReportsPage'));
 const QuotationsPage         = lazy(() => import('./pages/QuotationsPage'));
@@ -65,7 +58,6 @@ const InventoryPage          = lazy(() => import('./pages/InventoryPage'));
 const ReportsPage            = lazy(() => import('./pages/ReportsPage'));
 const ManageTransportPage    = lazy(() => import('./pages/ManageTransportPage'));
 const AdministrationPage     = lazy(() => import('./pages/AdministrationPage'));
-const AuditLogPage           = lazy(() => import('./pages/AuditLogPage'));
 const CustomersPage          = lazy(() => import('./pages/CustomersPage'));
 const CustomerProfilePage    = lazy(() => import('./pages/CustomerProfilePage'));
 const PricingPage            = lazy(() => import('./pages/PricingPage'));
@@ -91,10 +83,7 @@ const SupplierLedgerPage     = lazy(() => import('./pages/SupplierLedgerPage'));
 const SupplierLedgerDetailPage = lazy(() => import('./pages/SupplierLedgerDetailPage'));
 const CareOffReconcilePage    = lazy(() => import('./pages/CareOffReconcilePage'));
 const SupplierInvoicePage     = lazy(() => import('./pages/SupplierInvoicePage'));
-const DataSecurityPage        = lazy(() => import('./pages/DataSecurityPage'));
 const SalesTargetsPage        = lazy(() => import('./pages/SalesTargetsPage'));
-const SalesTargetsAdminPage   = lazy(() => import('./pages/SalesTargetsAdminPage'));
-const TeamPerformancePage     = lazy(() => import('./pages/TeamPerformancePage'));
 const ExpensePage             = lazy(() => import('./pages/ExpensePage'));
 const NotFoundPage            = lazy(() => import('./pages/NotFoundPage'));
 const HelpCenterPage          = lazy(() => import('./pages/HelpCenterPage'));
@@ -210,19 +199,10 @@ function Layout({ children, currentTheme, toggleTheme }: { children: React.React
     return true;
   });
 
+  // Admin sub-tabs now live in-page at /admin#<tab> (AdminHubPage), so the
+  // drawer keeps a single Admin entry alongside Settings and KrishiDukan.
   const adminItems = [
-    { path: '/admin',                      icon: <ShieldAlert size={17} />, label: t('common.manage_users'),          screenKey: 'admin' },
-    { path: '/admin/audit-log',            icon: <Shield size={17} />,      label: 'Audit Log',                       screenKey: 'audit_log' },
-    { path: '/admin/team-performance',     icon: <Target size={17} />,      label: 'Team Performance',                screenKey: 'admin' },
-    { path: '/admin/sales-targets',        icon: <Target size={17} />,      label: 'Sales Target',                    screenKey: 'admin' },
-    { path: '/admin/data-security',        icon: <Lock size={17} />,        label: 'Data Security',                   screenKey: 'admin' },
-    { path: '/admin/manage-roles',         icon: <ShieldAlert size={17} />, label: 'Role Matrix',                     screenKey: 'admin' },
-    { path: '/admin/manage-retailers',     icon: <Users size={17} />,       label: t('common.manage_retailers'),      screenKey: 'manage_retailers' },
-    { path: '/admin/manage-store',         icon: <Store size={17} />,       label: 'Manage Store',                    screenKey: 'manage_store' },
-    { path: '/admin/manufacturers',        icon: <Factory size={17} />,     label: 'Manufacturers',                   screenKey: 'manufacturers' },
-    { path: '/admin/invoice-templates',    icon: <Layers size={17} />,      label: 'Invoice Templates',               screenKey: 'invoice_templates' },
-    { path: '/admin/invoice-settings',     icon: <Palette size={17} />,     label: 'Invoice Branding',                screenKey: 'invoice_settings' },
-    { path: '/admin/schema-builder',       icon: <Database size={17} />,    label: 'UI Layout Builder',               screenKey: 'schema_builder' },
+    { path: '/admin',                      icon: <ShieldAlert size={17} />, label: 'Admin',                           screenKey: 'admin' },
     { path: '/settings',                   icon: <Settings size={17} />,    label: t('common.settings'),              screenKey: 'settings' },
     { path: '/krishidukan',                icon: <Package size={17} />,     label: '🌾 KrishiDukan',                  screenKey: 'krishidukan' },
   ].filter(item => {
@@ -507,7 +487,7 @@ function AppRoutes() {
       <Route path="/b2c-dashboard" element={<ProtectedRoute requireRole={['admin', 'analyst']} appScreen="b2c_dashboard"><B2CDashboardPage /></ProtectedRoute>} />
       <Route path="/online-dashboard" element={<ProtectedRoute requireRole={['admin', 'analyst']} appScreen="online_dashboard"><OnlineDashboardPage /></ProtectedRoute>} />
       <Route path="/analytics" element={<ProtectedRoute requireRole={['admin', 'analyst']} appScreen="analytics"><AnalyticsPage /></ProtectedRoute>} />
-      <Route path="/admin/manage-store" element={<ProtectedRoute requireRole={['admin', 'analyst']} appScreen="manage_store"><AdminStoreProductsPage /></ProtectedRoute>} />
+      <Route path="/admin/manage-store" element={<Navigate to="/admin#manage-store" replace />} />
       <Route path="/onboarding" element={<ProtectedRoute requireRole={['admin', 'analyst']} appScreen="retailers"><OnboardingPage /></ProtectedRoute>} />
       <Route path="/sales-targets" element={<ProtectedRoute requireRole={['admin', 'sales']} appScreen="worklist"><SalesTargetsPage /></ProtectedRoute>} />
       <Route path="/worklist" element={<ProtectedRoute requireRole={['admin', 'analyst', 'sales', 'retailer']} appScreen="worklist"><WorklistPage /></ProtectedRoute>} />
@@ -570,20 +550,22 @@ function AppRoutes() {
       {/* KrishiDukan marketplace module */}
       <Route path="/krishidukan" element={<ProtectedRoute requireRole={['admin']} appScreen="krishidukan"><KrishiDukanPage /></ProtectedRoute>} />
 
-      {/* Admin Routes */}
-      <Route path="/admin" element={<ProtectedRoute requireRole={['admin']} appScreen="admin"><AdminPage /></ProtectedRoute>} />
-      <Route path="/admin/manage-roles" element={<ProtectedRoute requireRole={['admin']} appScreen="admin"><ManageRolesPage /></ProtectedRoute>} />
-      <Route path="/admin/data-security" element={<ProtectedRoute requireRole={['admin']} appScreen="admin"><DataSecurityPage /></ProtectedRoute>} />
-      <Route path="/admin/audit-log" element={<ProtectedRoute requireRole={['admin']} appScreen="audit_log"><AuditLogPage /></ProtectedRoute>} />
+      {/* Admin — single hash-based hub. Sub-tabs live at /admin#<tab>; each
+          tab's own role/permission gate is enforced inside AdminHubPage. */}
+      <Route path="/admin" element={<ProtectedRoute requireRole={['admin', 'analyst']}><AdminHubPage /></ProtectedRoute>} />
       <Route path="/customers" element={<ProtectedRoute requireRole={['admin', 'analyst']} appScreen="customers"><CustomersPage /></ProtectedRoute>} />
       <Route path="/customers/:id" element={<ProtectedRoute requireRole={['admin', 'analyst']} appScreen="customers"><CustomerProfilePage /></ProtectedRoute>} />
-      <Route path="/admin/manage-retailers" element={<ProtectedRoute requireRole={['admin', 'analyst']} appScreen="manage_retailers"><ManageRetailersPage /></ProtectedRoute>} />
-      <Route path="/admin/manufacturers" element={<ProtectedRoute requireRole={['admin', 'analyst']} appScreen="manufacturers"><ManufacturersPage /></ProtectedRoute>} />
-      <Route path="/admin/invoice-settings" element={<ProtectedRoute requireRole={['admin', 'analyst']} appScreen="invoice_settings"><InvoiceSettingsPage /></ProtectedRoute>} />
-      <Route path="/admin/schema-builder" element={<ProtectedRoute requireRole={['admin', 'analyst']} appScreen="schema_builder"><SchemaBuilderPage /></ProtectedRoute>} />
-      <Route path="/admin/invoice-templates" element={<ProtectedRoute requireRole={['admin', 'analyst']} appScreen="invoice_templates"><InvoiceTemplateBuilderPage /></ProtectedRoute>} />
-      <Route path="/admin/team-performance" element={<ProtectedRoute requireRole={['admin']} appScreen="admin"><TeamPerformancePage /></ProtectedRoute>} />
-      <Route path="/admin/sales-targets" element={<ProtectedRoute requireRole={['admin']} appScreen="admin"><SalesTargetsAdminPage /></ProtectedRoute>} />
+      {/* Legacy /admin/* deep links → hash equivalents (bookmarks stay working) */}
+      <Route path="/admin/manage-roles" element={<Navigate to="/admin#role-matrix" replace />} />
+      <Route path="/admin/data-security" element={<Navigate to="/admin#data-security" replace />} />
+      <Route path="/admin/audit-log" element={<Navigate to="/admin#audit-log" replace />} />
+      <Route path="/admin/manage-retailers" element={<Navigate to="/admin#manage-retailers" replace />} />
+      <Route path="/admin/manufacturers" element={<Navigate to="/admin#manufacturers" replace />} />
+      <Route path="/admin/invoice-settings" element={<Navigate to="/admin#invoice-branding" replace />} />
+      <Route path="/admin/schema-builder" element={<Navigate to="/admin#schema-builder" replace />} />
+      <Route path="/admin/invoice-templates" element={<Navigate to="/admin#invoice-templates" replace />} />
+      <Route path="/admin/team-performance" element={<Navigate to="/admin#team-performance" replace />} />
+      <Route path="/admin/sales-targets" element={<Navigate to="/admin#sales-target" replace />} />
 
       {/* Help Center */}
       <Route path="/help" element={<ProtectedRoute><HelpCenterPage /></ProtectedRoute>} />

@@ -126,7 +126,7 @@ export default function SettingsPage() {
                             <p style={{ color: 'var(--text-secondary)', marginBottom: '2rem' }}>
                                 Customize exactly which fields appear in tables, exports, and forms across the whole app.
                             </p>
-                            <a href="/admin/schema-builder" className="btn btn-primary" style={{ display: 'inline-flex', padding: '1rem 2rem', textDecoration: 'none' }}>
+                            <a href="/admin#schema-builder" className="btn btn-primary" style={{ display: 'inline-flex', padding: '1rem 2rem', textDecoration: 'none' }}>
                                 Open UI Builder Workspace
                             </a>
                         </div>
