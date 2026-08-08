@@ -45,18 +45,16 @@ class CartScreen extends ConsumerWidget {
               actionLabel: 'Browse Products',
               onAction: () => context.go('/marketplace'),
             )
-          : Column(
-              children: [
-                Expanded(
-                  child: ListView.builder(
-                    padding: const EdgeInsets.all(16),
-                    itemCount: items.length,
-                    itemBuilder: (_, i) => _CartItemTile(item: items[i]),
-                  ),
-                ),
-                const _CheckoutBar(),
-              ],
+          : ListView.builder(
+              padding: const EdgeInsets.all(16),
+              itemCount: items.length,
+              itemBuilder: (_, i) => _CartItemTile(item: items[i]),
             ),
+      // In the Scaffold's bottomNavigationBar slot (not the body's Column) so
+      // the floating "Added to cart" SnackBar — which dodges bottomNavigationBar
+      // but not in-body widgets — no longer renders on top of the Checkout
+      // button and blocks it from being tapped for the snackbar's duration.
+      bottomNavigationBar: items.isEmpty ? null : const _CheckoutBar(),
     );
   }
 

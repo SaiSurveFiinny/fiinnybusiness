@@ -88,11 +88,14 @@ export default function ReelComments({ reelId, onClose }: { reelId: string; onCl
   };
 
   const pickTag = (c: TagCandidate) => {
-    // Replace the in-progress "@partial" with "@FullName " in the text.
+    // Strip the in-progress "@partial" trigger text back out — the tag
+    // itself is shown separately (the bold "@name" prefix rendered from
+    // taggedUserName below), so leaving "@Name " in the free-text comment
+    // too made every tagged comment show the name twice.
     const caret = inputRef.current?.selectionStart ?? text.length;
     const uptoCaret = text.slice(0, caret);
-    const replaced = uptoCaret.replace(/@([^\s@]*)$/, `@${c.name} `);
-    setText(replaced + text.slice(caret));
+    const stripped = uptoCaret.replace(/@([^\s@]*)$/, "");
+    setText(stripped + text.slice(caret));
     setTaggedUser({ id: c.id, name: c.name });
     setShowTagMenu(false);
     setTagQuery("");

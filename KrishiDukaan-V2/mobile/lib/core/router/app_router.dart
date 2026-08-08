@@ -35,6 +35,7 @@ import '../../features/manufacturer/screens/assign_product_screen.dart';
 import '../../features/manufacturer/screens/brand_editor_screen.dart';
 import '../../features/profile/screens/profile_screen.dart';
 import '../../features/profile/screens/profile_edit_screen.dart';
+import '../../features/profile/screens/settings_screen.dart';
 import '../../features/notifications/notifications.dart';
 import '../../features/support/screens/support_screen.dart';
 import '../../features/welcome/screens/splash_screen.dart';
@@ -356,6 +357,11 @@ final routerProvider = Provider<GoRouter>((ref) {
             reason: state.uri.queryParameters['reason'],
           ),
         ),
+      ),
+      GoRoute(
+        path: '/profile/settings',
+        parentNavigatorKey: _rootKey,
+        builder: (_, _) => const _RootBackFallback(child: SettingsScreen()),
       ),
       // ── Reels upload + shop profile (outside shell) ───────────────────
       GoRoute(

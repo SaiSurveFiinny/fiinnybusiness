@@ -8,6 +8,7 @@ import '../../../core/constants/app_text_styles.dart';
 import '../../../core/models/catalog_model.dart';
 import '../../../core/models/store_model.dart';
 import '../../../core/providers/location_provider.dart';
+import '../../../core/providers/recent_searches_provider.dart';
 import '../../../core/utils/store_focus_route.dart';
 import '../../../core/widgets/app_top_bar.dart';
 import '../../../core/widgets/empty_state.dart';
@@ -106,6 +107,23 @@ class _MarketplaceScreenState extends ConsumerState<MarketplaceScreen> {
     });
     if (_routeSeller != null) _applyRouteSeller();
     _maybeFocusSearch();
+    // Rebuilds when focus changes so the recent-searches dropdown can
+    // appear/disappear as the field is focused/blurred, not just on typing.
+    _searchFocus.addListener(_onFocusChange);
+  }
+
+  void _onFocusChange() {
+    if (mounted) setState(() {});
+  }
+
+  void _selectRecentSearch(String query) {
+    _searchController
+      ..text = query
+      ..selection = TextSelection.collapsed(offset: query.length);
+    ref.read(marketplaceProvider.notifier).search(query);
+    _fetchSuggestions(query);
+    ref.read(recentSearchesProvider.notifier).addSearch(query);
+    _searchFocus.unfocus();
   }
 
   @override
@@ -143,6 +161,7 @@ class _MarketplaceScreenState extends ConsumerState<MarketplaceScreen> {
   @override
   void dispose() {
     _debounce?.cancel();
+    _searchFocus.removeListener(_onFocusChange);
     _searchController.dispose();
     _searchFocus.dispose();
     _scrollController.dispose();
@@ -302,6 +321,13 @@ class _MarketplaceScreenState extends ConsumerState<MarketplaceScreen> {
                               },
                             );
                           },
+                          // Only committed/explicit searches (keyboard search
+                          // action) are saved to recent history — not every
+                          // debounced keystroke, which would pollute it with
+                          // partial queries like "a", "ap", "app".
+                          onSubmitted: (q) => ref
+                              .read(recentSearchesProvider.notifier)
+                              .addSearch(q),
                           style: AppTextStyles.body,
                           decoration: InputDecoration(
                             hintText: 'Search products...',
@@ -358,6 +384,66 @@ class _MarketplaceScreenState extends ConsumerState<MarketplaceScreen> {
                           ),
                         ),
                       ),
+
+                      // Recent searches — shown when the field is focused but
+                      // still empty, in the same dropdown shell as the
+                      // product/store suggestions below.
+                      if (_searchFocus.hasFocus &&
+                          _searchController.text.isEmpty &&
+                          ref.watch(recentSearchesProvider).isNotEmpty)
+                        Container(
+                          margin: const EdgeInsets.only(top: 8),
+                          constraints: const BoxConstraints(maxHeight: 280),
+                          decoration: BoxDecoration(
+                            color: Colors.white,
+                            borderRadius: BorderRadius.circular(16),
+                            border: Border.all(color: AppColors.topBarBorder),
+                            boxShadow: const [
+                              BoxShadow(color: Colors.black12, blurRadius: 8),
+                            ],
+                          ),
+                          child: ListView(
+                            shrinkWrap: true,
+                            children: [
+                              Padding(
+                                padding: const EdgeInsets.fromLTRB(
+                                    16, 10, 8, 4),
+                                child: Row(
+                                  children: [
+                                    Expanded(
+                                      child: Text(
+                                        'Recent Searches',
+                                        style: AppTextStyles.caption.copyWith(
+                                          color: AppColors.onSurfaceVariant,
+                                          fontWeight: FontWeight.w700,
+                                        ),
+                                      ),
+                                    ),
+                                    TextButton(
+                                      onPressed: () => ref
+                                          .read(recentSearchesProvider.notifier)
+                                          .clearAll(),
+                                      style: TextButton.styleFrom(
+                                        padding: EdgeInsets.zero,
+                                        minimumSize: const Size(0, 0),
+                                        tapTargetSize:
+                                            MaterialTapTargetSize.shrinkWrap,
+                                      ),
+                                      child: const Text('Clear'),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                              for (final q in ref.watch(recentSearchesProvider))
+                                ListTile(
+                                  leading: const Icon(Icons.history,
+                                      color: AppColors.onSurfaceVariant),
+                                  title: Text(q),
+                                  onTap: () => _selectRecentSearch(q),
+                                ),
+                            ],
+                          ),
+                        ),
 
                       // Suggestions dropdown
                       if ((_suggestionShops.isNotEmpty ||

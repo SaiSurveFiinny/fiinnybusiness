@@ -1,14 +1,19 @@
+import 'package:cached_network_image/cached_network_image.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import '../../../core/constants/app_colors.dart';
 import '../../../core/constants/app_text_styles.dart';
+import '../../../core/models/listing_model.dart';
 import '../../../core/providers/app_info_provider.dart';
 import '../../../core/providers/locale_provider.dart';
 import '../../../core/providers/user_provider.dart';
 import '../../../core/widgets/app_brand_icon.dart';
 import '../../../core/widgets/app_top_bar.dart';
+import '../../dashboard/providers/dashboard_provider.dart';
+import '../../manufacturer/providers/manufacturer_provider.dart';
+import '../../marketplace/providers/marketplace_provider.dart';
 
 class ProfileScreen extends ConsumerWidget {
   const ProfileScreen({super.key});
@@ -18,7 +23,6 @@ class ProfileScreen extends ConsumerWidget {
     final userAsync = ref.watch(currentUserProvider);
     final locale = ref.watch(localeProvider);
     final isHindi = locale.languageCode == 'hi';
-    final user = userAsync.value;
 
     return Scaffold(
       backgroundColor: AppColors.background,
@@ -52,14 +56,6 @@ class ProfileScreen extends ConsumerWidget {
           icon: const Icon(Icons.arrow_back),
           onPressed: () => context.go('/'),
         ),
-        actions: user != null
-            ? [
-                Padding(
-                  padding: const EdgeInsets.only(right: 12),
-                  child: _AddProductButton(user: user),
-                ),
-              ]
-            : null,
       ),
       body: userAsync.when(
         loading: () => const Center(child: CircularProgressIndicator()),
@@ -75,36 +71,27 @@ class ProfileScreen extends ConsumerWidget {
   }
 }
 
-/// "Add Product" shortcut in the Profile AppBar — one of the most frequent
-/// actions for manufacturers, so it's surfaced here rather than requiring a
-/// detour through the dashboard first. Paid sellers go straight to their
-/// add-product form (auto-opened via ?autoAdd=1 — see app_router.dart);
-/// farmers/consumers and unpaid sellers are nudged to subscribe, landing on
-/// the same /subscription?reason=paywall destination the rest of the app's
-/// paywall already uses (the router-level dashboard guard, and the "Seller
-/// Dashboard" quick link below), so this doesn't introduce a second paywall
-/// flow with different copy/behavior.
+/// "Add Product" quick action, shown next to "Add Reel" right under the
+/// avatar — one of the most frequent actions for manufacturers, so it's
+/// surfaced on Profile itself rather than requiring a detour through the
+/// dashboard first. Paid sellers go straight to their add-product form
+/// (auto-opened via ?autoAdd=1 — see app_router.dart); farmers/consumers and
+/// unpaid sellers are nudged to subscribe, landing on the same
+/// /subscription?reason=paywall destination the rest of the app's paywall
+/// already uses (the router-level dashboard guard, and the "Dashboard" quick
+/// link below), so this doesn't introduce a second paywall flow with
+/// different copy/behavior.
 class _AddProductButton extends StatelessWidget {
   final dynamic user;
   const _AddProductButton({required this.user});
 
   @override
   Widget build(BuildContext context) {
-    return TextButton.icon(
-      onPressed: () => _onTap(context),
-      style: TextButton.styleFrom(
-        backgroundColor: AppColors.primary,
-        foregroundColor: Colors.white,
-        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
-        shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(20),
-        ),
-      ),
-      icon: const Icon(Icons.add, size: 18),
-      label: const Text(
-        'Add Product',
-        style: TextStyle(fontWeight: FontWeight.w700, fontSize: 13),
-      ),
+    return _ProfileActionButton(
+      icon: Icons.add_box_outlined,
+      label: 'Add Product',
+      filled: true,
+      onTap: () => _onTap(context),
     );
   }
 
@@ -123,6 +110,62 @@ class _AddProductButton extends StatelessWidget {
       const SnackBar(content: Text('Upgrade to add products')),
     );
     context.push('/subscription?reason=paywall');
+  }
+}
+
+/// "Add Reel" quick action — same placement/style as Add Product. No paywall
+/// gate: matches the existing /reels/upload route today, which has no
+/// subscription/role guard anywhere. Icon matches the one every other
+/// "post a reel" entry point in the app already uses (shop_profile_screen.dart,
+/// reels_feed_screen.dart) — `video_call_outlined` isn't in the bundled icon
+/// font subset and rendered blank, which is why the button looked missing.
+class _AddReelButton extends StatelessWidget {
+  const _AddReelButton();
+
+  @override
+  Widget build(BuildContext context) {
+    return _ProfileActionButton(
+      icon: Icons.video_call_rounded,
+      label: 'Add Reel',
+      filled: false,
+      onTap: () => context.push('/reels/upload'),
+    );
+  }
+}
+
+class _ProfileActionButton extends StatelessWidget {
+  final IconData icon;
+  final String label;
+  final bool filled;
+  final VoidCallback onTap;
+  const _ProfileActionButton({
+    required this.icon,
+    required this.label,
+    required this.filled,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Expanded(
+      child: TextButton.icon(
+        onPressed: onTap,
+        style: TextButton.styleFrom(
+          backgroundColor: filled ? AppColors.primary : Colors.white,
+          foregroundColor: filled ? Colors.white : AppColors.primary,
+          padding: const EdgeInsets.symmetric(vertical: 12),
+          side: filled ? null : const BorderSide(color: AppColors.primary),
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(14),
+          ),
+        ),
+        icon: Icon(icon, size: 18),
+        label: Text(
+          label,
+          style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 13),
+        ),
+      ),
+    );
   }
 }
 
@@ -157,17 +200,7 @@ class _ProfileBody extends ConsumerWidget {
           child: Column(
             children: [
               const SizedBox(height: 8),
-              CircleAvatar(
-                radius: 40,
-                backgroundColor: AppColors.primaryContainer,
-                child: Text(
-                  user.name.isNotEmpty ? user.name[0].toUpperCase() : '?',
-                  style: AppTextStyles.heading1.copyWith(
-                    color: AppColors.primary,
-                    fontSize: 32,
-                  ),
-                ),
-              ),
+              _ProfileAvatar(user: user),
               const SizedBox(height: 12),
               Text(
                 user.name,
@@ -194,7 +227,22 @@ class _ProfileBody extends ConsumerWidget {
             ],
           ),
         ),
-        const SizedBox(height: 24),
+        const SizedBox(height: 16),
+
+        // Add Product / Add Reel — right under the avatar rather than the
+        // AppBar, where two labeled buttons plus the brand icon and title
+        // had no room to breathe.
+        if (user.isSeller) ...[
+          Row(
+            children: [
+              _AddProductButton(user: user),
+              const SizedBox(width: 10),
+              const _AddReelButton(),
+            ],
+          ),
+          const SizedBox(height: 24),
+        ] else
+          const SizedBox(height: 8),
 
         // Prompt to finish profile when key fields are missing.
         if (!user.isProfileComplete) ...[
@@ -231,6 +279,13 @@ class _ProfileBody extends ConsumerWidget {
           const SizedBox(height: 12),
         ],
 
+        // Real, live mini-dashboard — sellers can glance at their basic
+        // numbers without leaving Profile for the full Dashboard.
+        if (user.isSeller) ...[
+          _MiniDashboardCard(user: user),
+          const SizedBox(height: 12),
+        ],
+
         // Account info card
         _Card(
           title: isHindi ? 'खाता जानकारी' : 'Account Info',
@@ -249,29 +304,9 @@ class _ProfileBody extends ConsumerWidget {
         ),
         const SizedBox(height: 12),
 
-        // Account menu — mirrors web's Account dropdown (Language / Dashboard
-        // / My Orders / Logout) instead of mixing in the business-management
-        // links, which now live under the Dashboard's Profile section.
-        _Card(
-          title: isHindi ? 'भाषा' : 'Language',
-          children: [
-            _LanguageTile(
-              label: 'English',
-              selected: !isHindi,
-              onTap: () => ref
-                  .read(localeProvider.notifier)
-                  .setLocale(const Locale('en')),
-            ),
-            _LanguageTile(
-              label: 'हिंदी (Hindi)',
-              selected: isHindi,
-              onTap: () => ref
-                  .read(localeProvider.notifier)
-                  .setLocale(const Locale('hi')),
-            ),
-          ],
-        ),
-        const SizedBox(height: 12),
+        // Account menu — mirrors web's Account dropdown (Dashboard / My
+        // Orders / Settings / Logout). Language now lives in Settings along
+        // with any future non-essential options, keeping this list lean.
         _Card(
           title: isHindi ? 'त्वरित लिंक' : 'Quick Links',
           children: [
@@ -287,6 +322,11 @@ class _ProfileBody extends ConsumerWidget {
               icon: Icons.receipt_long_outlined,
               label: isHindi ? 'ऑर्डर' : 'Orders',
               onTap: () => context.push('/orders'),
+            ),
+            _LinkRow(
+              icon: Icons.settings_outlined,
+              label: isHindi ? 'सेटिंग्स' : 'Settings',
+              onTap: () => context.push('/profile/settings'),
             ),
           ],
         ),
@@ -324,6 +364,42 @@ class _ProfileBody extends ConsumerWidget {
         ),
         const SizedBox(height: 80),
       ],
+    );
+  }
+}
+
+/// Shows the seller's real profile photo when they've set one — on web or
+/// mobile — falling back to the initial-letter avatar otherwise. Sellers set
+/// this photo via the web dashboard's Profile page today (`profiles/{phone}
+/// .logo`, mirrored to `retailers/{phone}.logo`); no separate mobile upload
+/// flow exists yet. Reuses `retailerProfileProvider`, the same provider
+/// `ShopProfileScreen` already reads this field from — no new Firestore
+/// query. Consumers have no `profiles/{phone}` doc, so this only queries for
+/// sellers.
+class _ProfileAvatar extends ConsumerWidget {
+  final dynamic user;
+  const _ProfileAvatar({required this.user});
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final String? logo = user.isSeller
+        ? ref.watch(retailerProfileProvider(user.phone as String)).value?.logo
+        : null;
+    final hasLogo = logo != null && logo.isNotEmpty;
+
+    return CircleAvatar(
+      radius: 40,
+      backgroundColor: AppColors.primaryContainer,
+      backgroundImage: hasLogo ? CachedNetworkImageProvider(logo) : null,
+      child: hasLogo
+          ? null
+          : Text(
+              user.name.isNotEmpty ? user.name[0].toUpperCase() : '?',
+              style: AppTextStyles.heading1.copyWith(
+                color: AppColors.primary,
+                fontSize: 32,
+              ),
+            ),
     );
   }
 }
@@ -466,34 +542,168 @@ class _LinkRow extends StatelessWidget {
   }
 }
 
-class _LanguageTile extends StatelessWidget {
+/// Real, live stats summary for sellers — reuses the exact same providers
+/// `DashboardHomeScreen`'s `_OverviewGrid` and `storeReviewsProvider`
+/// (`marketplace_provider.dart`, already used by `brand_screen.dart`) rely
+/// on, just rendered compactly, so numbers here always match elsewhere in
+/// the app. Shown for paid and unpaid sellers alike since it's read-only.
+class _MiniDashboardCard extends ConsumerWidget {
+  final dynamic user;
+  const _MiniDashboardCard({required this.user});
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final String phone = user.phone as String;
+    final isManufacturer = ref.watch(isManufacturerProvider);
+    final listingsAsync = ref.watch(myListingsProvider(phone));
+    final reviewsAsync = ref.watch(storeReviewsProvider(phone));
+    final analyticsAsync =
+        isManufacturer ? ref.watch(manufacturerAnalyticsProvider(phone)) : null;
+
+    final loading = listingsAsync.isLoading || reviewsAsync.isLoading;
+
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(12),
+        boxShadow: [
+          BoxShadow(
+            color: AppColors.cardShadow,
+            blurRadius: 4,
+            offset: const Offset(0, 2),
+          ),
+        ],
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text('My Business', style: AppTextStyles.heading3),
+          const SizedBox(height: 12),
+          if (loading)
+            const SizedBox(
+              height: 60,
+              child: Center(
+                  child: CircularProgressIndicator(strokeWidth: 2)),
+            )
+          else
+            _statsGrid(
+              listingsAsync.value ?? const [],
+              reviewsAsync.value ?? const [],
+              analyticsAsync?.value,
+              isManufacturer,
+            ),
+          Align(
+            alignment: Alignment.centerRight,
+            child: TextButton(
+              onPressed: () => context.push('/dashboard'),
+              child: const Text('View Full Dashboard'),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _statsGrid(
+    List<ListingModel> listings,
+    List<dynamic> reviews,
+    Map<String, int>? analytics,
+    bool isManufacturer,
+  ) {
+    final products = isManufacturer
+        ? (analytics?['catalogProducts'] ?? listings.length)
+        : listings.length;
+    final views = listings.fold<int>(0, (sum, l) => sum + l.clicks);
+
+    final tiles = <Widget>[
+      _MiniStat(
+        icon: Icons.inventory_2_outlined,
+        label: 'Products',
+        value: '$products',
+        color: AppColors.primary,
+      ),
+      if (isManufacturer)
+        _MiniStat(
+          icon: Icons.store_outlined,
+          label: 'Retailers',
+          value: '${analytics?['activeRetailers'] ?? 0}',
+          color: AppColors.success,
+        ),
+      _MiniStat(
+        icon: Icons.star_outline,
+        label: 'Reviews',
+        value: '${reviews.length}',
+        color: AppColors.secondary,
+      ),
+      _MiniStat(
+        icon: Icons.visibility_outlined,
+        label: 'Views',
+        value: '$views',
+        color: AppColors.info,
+      ),
+    ];
+
+    return GridView.count(
+      crossAxisCount: 2,
+      shrinkWrap: true,
+      physics: const NeverScrollableScrollPhysics(),
+      crossAxisSpacing: 10,
+      mainAxisSpacing: 10,
+      childAspectRatio: 2.4,
+      children: tiles,
+    );
+  }
+}
+
+class _MiniStat extends StatelessWidget {
+  final IconData icon;
   final String label;
-  final bool selected;
-  final VoidCallback onTap;
-  const _LanguageTile({
+  final String value;
+  final Color color;
+  const _MiniStat({
+    required this.icon,
     required this.label,
-    required this.selected,
-    required this.onTap,
+    required this.value,
+    required this.color,
   });
 
   @override
   Widget build(BuildContext context) {
-    return InkWell(
-      onTap: onTap,
-      borderRadius: BorderRadius.circular(8),
-      child: Padding(
-        padding: const EdgeInsets.symmetric(vertical: 10),
-        child: Row(
-          children: [
-            Icon(
-              selected ? Icons.radio_button_checked : Icons.radio_button_off,
-              color: selected ? AppColors.primary : AppColors.onSurfaceVariant,
-              size: 20,
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.08),
+        borderRadius: BorderRadius.circular(10),
+      ),
+      child: Row(
+        children: [
+          Icon(icon, color: color, size: 18),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                FittedBox(
+                  fit: BoxFit.scaleDown,
+                  alignment: Alignment.centerLeft,
+                  child: Text(
+                    value,
+                    style: AppTextStyles.bodyMedium
+                        .copyWith(fontWeight: FontWeight.w800, color: color),
+                  ),
+                ),
+                Text(
+                  label,
+                  style: AppTextStyles.caption,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ],
             ),
-            const SizedBox(width: 10),
-            Text(label, style: AppTextStyles.bodyMedium),
-          ],
-        ),
+          ),
+        ],
       ),
     );
   }

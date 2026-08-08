@@ -1,4 +1,6 @@
 import 'package:cached_network_image/cached_network_image.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
@@ -47,6 +49,30 @@ class _ProductDetailScreenState extends ConsumerState<ProductDetailScreen> {
   // shopper taps "Show all". Keeps long seller lists from dominating the page.
   static const _kStorePreviewLimit = 5;
   bool _showAllStores = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _trackView();
+  }
+
+  /// Mirrors web's `trackProductClick` (app/firebase.ts) exactly — same
+  /// fields, same doc, same "authenticated shopper" gate — so mobile product
+  /// views finally feed the seller-analytics counters web already reads.
+  /// Best-effort and silent: a tracking failure must never affect the page.
+  void _trackView() {
+    if (FirebaseAuth.instance.currentUser == null) return;
+    final now = DateTime.now();
+    final dayKey =
+        '${now.year}-${now.month.toString().padLeft(2, '0')}-${now.day.toString().padLeft(2, '0')}';
+    FirebaseFirestore.instance
+        .collection('products')
+        .doc(widget.catalogId)
+        .update({
+      'clicks': FieldValue.increment(1),
+      'clicksByDay.$dayKey': FieldValue.increment(1),
+    }).catchError((_) {});
+  }
 
   @override
   Widget build(BuildContext context) {
