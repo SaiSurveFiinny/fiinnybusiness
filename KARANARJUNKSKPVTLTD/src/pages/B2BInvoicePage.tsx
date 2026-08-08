@@ -489,6 +489,9 @@ ${styles}
             r.productId || productIdByName.get(r.itemDescription.trim().toLowerCase()) || '';
 
         // ── Stock validation (new sales only, not edits) ──────────────────
+        // Negative stock is allowed: selling beyond recorded inventory is a
+        // warning, not a blocker. Only genuinely fatal issues (e.g. product
+        // not found) stop the save.
         if (!isEditing) {
             const saleLines = activeRows
                 .filter(r => resolveProductId(r) && parseFloat(r.quantity) > 0)
@@ -499,10 +502,13 @@ ${styles}
                     batchNo: r.batchNo || undefined,
                 }));
             if (saleLines.length > 0) {
-                const check = await prepareStockDeduction(tenantId, saleLines);
+                const check = await prepareStockDeduction(tenantId, saleLines, true);
                 if (!check.valid) {
                     alert('Stock validation failed:\n\n' + check.errors.join('\n'));
                     return;
+                }
+                if (check.warnings.length > 0) {
+                    alert('⚠ Low stock (sold beyond available inventory — stock will go negative):\n\n' + check.warnings.join('\n'));
                 }
             }
         }
@@ -585,7 +591,9 @@ ${styles}
                     .map(li => ({ productId: li.productId, productName: li.itemDescription, qty: li.quantity, batchNo: li.batchNo || undefined }));
                 if (saleLines.length > 0) {
                     try {
-                        const deduction = await prepareStockDeduction(tenantId, saleLines);
+                        // allowNegative=true — deduction still produces updates
+                        // when stock is insufficient, letting quantities go negative.
+                        const deduction = await prepareStockDeduction(tenantId, saleLines, true);
                         if (deduction.valid && (deduction.batchUpdates.length > 0 || deduction.productUpdates.length > 0)) {
                             const wb = writeBatch(db);
                             for (const upd of deduction.batchUpdates) {
