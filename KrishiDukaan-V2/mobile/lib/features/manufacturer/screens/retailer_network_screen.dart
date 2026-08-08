@@ -41,16 +41,37 @@ class RetailerNetworkScreen extends ConsumerWidget {
   }
 }
 
-class _NetworkBody extends ConsumerWidget {
+class _NetworkBody extends ConsumerStatefulWidget {
   final String manufacturerPhone;
   final String manufacturerName;
   const _NetworkBody(
       {required this.manufacturerPhone, required this.manufacturerName});
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
+  ConsumerState<_NetworkBody> createState() => _NetworkBodyState();
+}
+
+class _NetworkBodyState extends ConsumerState<_NetworkBody> {
+  final _searchCtrl = TextEditingController();
+  String _query = '';
+
+  // Reveal-more pagination — a manufacturer with a large network (e.g. 280+
+  // retailers) only pays the render cost for what's actually shown instead
+  // of the whole list mounting at once. Resets whenever the search query
+  // changes so "Show more" always starts fresh against the new filter.
+  static const _kPageSize = 20;
+  int _revealCount = _kPageSize;
+
+  @override
+  void dispose() {
+    _searchCtrl.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
     final networkAsync =
-        ref.watch(retailerNetworkProvider(manufacturerPhone));
+        ref.watch(retailerNetworkProvider(widget.manufacturerPhone));
 
     return Scaffold(
       backgroundColor: AppColors.background,
@@ -81,13 +102,101 @@ class _NetworkBody extends ConsumerWidget {
               onAction: () => _showAddSheet(context, ref),
             );
           }
-          return ListView.builder(
-            padding: const EdgeInsets.all(16),
-            itemCount: retailers.length,
-            itemBuilder: (_, i) => _RetailerTile(
-              retailer: retailers[i],
-              manufacturerPhone: manufacturerPhone,
-            ),
+          final q = _query.trim().toLowerCase();
+          final filtered = q.isEmpty
+              ? retailers
+              : retailers
+                  .where((r) =>
+                      r.shopName.toLowerCase().contains(q) ||
+                      r.ownerName.toLowerCase().contains(q) ||
+                      r.phone.toLowerCase().contains(q))
+                  .toList();
+          final visible = filtered.take(_revealCount).toList();
+          final hasMore = _revealCount < filtered.length;
+
+          return Column(
+            children: [
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 12, 16, 4),
+                child: TextField(
+                  controller: _searchCtrl,
+                  onChanged: (v) => setState(() {
+                    _query = v;
+                    _revealCount = _kPageSize;
+                  }),
+                  decoration: InputDecoration(
+                    hintText: 'Search retailers by name or phone...',
+                    prefixIcon: const Icon(Icons.search, size: 20),
+                    suffixIcon: _searchCtrl.text.isNotEmpty
+                        ? IconButton(
+                            icon: const Icon(Icons.clear, size: 18),
+                            onPressed: () {
+                              _searchCtrl.clear();
+                              setState(() {
+                                _query = '';
+                                _revealCount = _kPageSize;
+                              });
+                            },
+                          )
+                        : null,
+                    isDense: true,
+                    filled: true,
+                    fillColor: AppColors.surfaceVariant,
+                    contentPadding: const EdgeInsets.symmetric(
+                        vertical: 10, horizontal: 12),
+                    border: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(12),
+                      borderSide: BorderSide.none,
+                    ),
+                  ),
+                ),
+              ),
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 4, 16, 0),
+                child: Align(
+                  alignment: Alignment.centerLeft,
+                  child: Text(
+                    '${filtered.length} retailer${filtered.length != 1 ? 's' : ''}'
+                    '${q.isNotEmpty ? ' match "$_query"' : ''}',
+                    style: AppTextStyles.caption
+                        .copyWith(color: AppColors.onSurfaceVariant),
+                  ),
+                ),
+              ),
+              Expanded(
+                child: visible.isEmpty
+                    ? Center(
+                        child: Text(
+                          'No retailers match "$_query"',
+                          style: AppTextStyles.bodyMedium
+                              .copyWith(color: AppColors.onSurfaceVariant),
+                        ),
+                      )
+                    : ListView.builder(
+                        padding: const EdgeInsets.all(16),
+                        itemCount: visible.length + (hasMore ? 1 : 0),
+                        itemBuilder: (_, i) {
+                          if (i == visible.length) {
+                            return Padding(
+                              padding: const EdgeInsets.only(top: 4, bottom: 12),
+                              child: OutlinedButton(
+                                onPressed: () => setState(() {
+                                  _revealCount += _kPageSize;
+                                }),
+                                child: Text(
+                                  'Show ${(filtered.length - _revealCount).clamp(0, _kPageSize)} more',
+                                ),
+                              ),
+                            );
+                          }
+                          return _RetailerTile(
+                            retailer: visible[i],
+                            manufacturerPhone: widget.manufacturerPhone,
+                          );
+                        },
+                      ),
+              ),
+            ],
           );
         },
       ),
@@ -105,9 +214,10 @@ class _NetworkBody extends ConsumerWidget {
       isScrollControlled: true,
       backgroundColor: Colors.transparent,
       builder: (_) => _AddRetailerSheet(
-        manufacturerPhone: manufacturerPhone,
-        manufacturerName: manufacturerName,
-        onAdded: () => ref.invalidate(retailerNetworkProvider(manufacturerPhone)),
+        manufacturerPhone: widget.manufacturerPhone,
+        manufacturerName: widget.manufacturerName,
+        onAdded: () =>
+            ref.invalidate(retailerNetworkProvider(widget.manufacturerPhone)),
       ),
     );
   }

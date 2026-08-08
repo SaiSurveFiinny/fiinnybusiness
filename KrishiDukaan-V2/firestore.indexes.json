@@ -1,6 +1,14 @@
 {
   "indexes": [
     {
+      "collectionGroup": "waNotifications",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "status",    "order": "ASCENDING" },
+        { "fieldPath": "claimedAt", "order": "ASCENDING" }
+      ]
+    },
+    {
       "collectionGroup": "catalog",
       "queryScope": "COLLECTION",
       "fields": [

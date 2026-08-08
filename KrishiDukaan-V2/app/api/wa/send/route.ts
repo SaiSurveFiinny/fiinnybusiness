@@ -8,15 +8,25 @@ function toE164(phone: string): string {
   return digits.startsWith("91") ? digits : `91${digits}`;
 }
 
+/** Returns true for a role='team' doc granted the "whatsapp" admin section. */
+function isTeamWithWhatsappAccess(data: Record<string, unknown> | undefined): boolean {
+  if (!data || data.role !== "team") return false;
+  const sections = data.adminSections;
+  return Array.isArray(sections) && sections.includes("whatsapp");
+}
+
 async function verifyAdminUser(idToken: string): Promise<string | null> {
   try {
     const decoded = await getAdminAuth().verifyIdToken(idToken);
     const uid = decoded.uid;
     const db = getAdminDb();
 
-    // Primary: users/{uid} — this is where promoteToAdmin writes
+    // Primary: users/{uid} — this is where promoteToAdmin writes.
+    // Also accepts "team" accounts with the whatsapp section granted, so a
+    // limited-access team member can reply from the WA inbox.
     const userSnap = await db.collection("users").doc(uid).get();
-    if (userSnap.exists && (userSnap.data() as Record<string, unknown>)?.role === "admin") {
+    const userData = userSnap.data() as Record<string, unknown> | undefined;
+    if (userSnap.exists && (userData?.role === "admin" || isTeamWithWhatsappAccess(userData))) {
       return uid;
     }
 
@@ -26,7 +36,8 @@ async function verifyAdminUser(idToken: string): Promise<string | null> {
       const phone = String(idxSnap.data()?.phone ?? "").trim();
       if (phone) {
         const phoneSnap = await db.collection("users").doc(phone).get();
-        if (phoneSnap.exists && (phoneSnap.data() as Record<string, unknown>)?.role === "admin") {
+        const phoneData = phoneSnap.data() as Record<string, unknown> | undefined;
+        if (phoneSnap.exists && (phoneData?.role === "admin" || isTeamWithWhatsappAccess(phoneData))) {
           return uid;
         }
       }

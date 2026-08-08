@@ -5,6 +5,7 @@ import {
   Pencil, Search, ShieldCheck, Users, AlertTriangle, X, Check,
   Package, ChevronRight, ChevronUp, ChevronDown, ExternalLink, UserPlus, Loader2, Link2, Trash2,
   SlidersHorizontal, Calendar, RotateCcw, MapPin, Truck, WifiOff, Tag, Receipt, LayoutDashboard,
+  Bell,
 } from "lucide-react";
 import {
   fetchAllUsers, promoteToAdmin,
@@ -17,6 +18,8 @@ import {
 } from "../../firebase";
 import { AdminUserEditPanel } from "../_components/admin-user-edit-panel";
 import { SearchableDropdown } from "../_components/searchable-dropdown";
+import { PendingSignupPanel } from "../_components/pending-signup-panel";
+import { useAdminAuth } from "../_context/admin-auth-context";
 import { AddProductInventoryForm } from "../../dashboard/_components/add-product-inventory-form";
 import { DiscountPanel } from "../../dashboard/_components/discount-panel";
 import {
@@ -99,6 +102,8 @@ function AdminSellModeToggle({
 }
 
 export default function AdminUsersPage() {
+  const identity = useAdminAuth();
+  const isFullAdmin = identity.role === "admin";
   const [users, setUsers] = useState<any[]>([]);
   const [allProducts, setAllProducts] = useState<any[]>([]);
   const [allSubs, setAllSubs] = useState<any[]>([]);
@@ -108,6 +113,7 @@ export default function AdminUsersPage() {
 
   // Advanced filters
   const [showAdvanced, setShowAdvanced] = useState(false);
+  const [showPendingSignups, setShowPendingSignups] = useState(false);
   const [filterActive, setFilterActive] = useState<"all" | "active" | "inactive">("all");
   const [filterDateFrom, setFilterDateFrom] = useState("");
   const [filterDateTo, setFilterDateTo] = useState("");
@@ -695,17 +701,38 @@ export default function AdminUsersPage() {
           </div>
           <p className="text-xs sm:text-sm text-on-surface-variant ml-7 sm:ml-9">View and edit all platform users.</p>
         </div>
-        <button
-          type="button"
-          onClick={() => {
-            setShowCreate(true); setCreateError(null); setCreateSuccess(null);
-            setPhoneError(null); setSeatsInput("1"); setCreateForm(BLANK_FORM);
-          }}
-          className="flex items-center gap-2 rounded-xl bg-primary px-4 py-2.5 text-sm font-bold text-white hover:opacity-90 transition-opacity shrink-0"
-        >
-          <UserPlus className="h-4 w-4" /> Create User
-        </button>
+        <div className="flex items-center gap-2 shrink-0">
+          <button
+            type="button"
+            onClick={() => setShowPendingSignups(v => !v)}
+            className={`flex items-center gap-2 rounded-xl px-4 py-2.5 text-sm font-bold transition-all ${
+              showPendingSignups
+                ? "bg-amber-600 text-white"
+                : "bg-amber-50 text-amber-700 border border-amber-200 hover:bg-amber-100"
+            }`}
+          >
+            <Bell className="h-4 w-4" /> Pending Signups
+          </button>
+          {isFullAdmin && (
+            <button
+              type="button"
+              onClick={() => {
+                setShowCreate(true); setCreateError(null); setCreateSuccess(null);
+                setPhoneError(null); setSeatsInput("1"); setCreateForm(BLANK_FORM);
+              }}
+              className="flex items-center gap-2 rounded-xl bg-primary px-4 py-2.5 text-sm font-bold text-white hover:opacity-90 transition-opacity"
+            >
+              <UserPlus className="h-4 w-4" /> Create User
+            </button>
+          )}
+        </div>
       </div>
+
+      {showPendingSignups && (
+        <div className="rounded-2xl border border-amber-200 bg-amber-50/40 p-4">
+          <PendingSignupPanel />
+        </div>
+      )}
 
       <div className="flex gap-2 overflow-x-auto pb-1 scrollbar-hide">
         {(["all", "retailer", "manufacturer", "customer", "admin"] as const).map(role => (
@@ -1276,7 +1303,8 @@ export default function AdminUsersPage() {
         </div>
       )}
 
-      {/* ─── Guarded Admin Promotion Section ─────────────────────────────── */}
+      {/* ─── Guarded Admin Promotion Section (full admins only) ──────────── */}
+      {isFullAdmin && (
       <div className="rounded-2xl border-2 border-dashed border-red-200 bg-red-50/40 overflow-hidden">
         <button type="button" onClick={() => setShowPromotePanel(v => !v)}
           className="w-full flex items-center gap-3 px-5 py-4 text-left hover:bg-red-50 transition-colors">
@@ -1342,9 +1370,10 @@ export default function AdminUsersPage() {
           </div>
         )}
       </div>
+      )}
 
       {/* ─── Create User Modal ──────────────────────────────────────────────── */}
-      {showCreate && (
+      {isFullAdmin && showCreate && (
         <div className="fixed inset-0 z-[80] flex items-end sm:items-center justify-center bg-black/40 backdrop-blur-sm sm:p-4">
           <div className="w-full sm:max-w-lg rounded-t-2xl sm:rounded-2xl bg-white shadow-2xl overflow-hidden flex flex-col max-h-[92vh]">
             {/* Header */}

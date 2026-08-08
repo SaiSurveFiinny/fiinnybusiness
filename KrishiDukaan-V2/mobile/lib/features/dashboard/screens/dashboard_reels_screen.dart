@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import '../../../core/constants/app_colors.dart';
 import '../../../core/constants/app_text_styles.dart';
+import '../../../core/models/listing_model.dart';
 import '../../../core/models/reel_model.dart';
 import '../../../core/providers/user_provider.dart';
 import '../../reels/data/reels_repository.dart';
@@ -212,18 +213,24 @@ class _ReelTile extends StatelessWidget {
   }
 }
 
-class _EditReelSheet extends StatefulWidget {
+class _EditReelSheet extends ConsumerStatefulWidget {
   final ReelModel reel;
   final VoidCallback onSaved;
   const _EditReelSheet({required this.reel, required this.onSaved});
 
   @override
-  State<_EditReelSheet> createState() => _EditReelSheetState();
+  ConsumerState<_EditReelSheet> createState() => _EditReelSheetState();
 }
 
-class _EditReelSheetState extends State<_EditReelSheet> {
+class _EditReelSheetState extends ConsumerState<_EditReelSheet> {
   late final _titleCtrl = TextEditingController(text: widget.reel.title);
   late final _captionCtrl = TextEditingController(text: widget.reel.caption);
+  ListingModel? _selectedProduct;
+  // Distinguishes "user never touched the dropdown" (keep the existing link
+  // unchanged) from "user explicitly picked None" (clear it) — without this,
+  // selecting None and falling back to the old value via `??` made it
+  // impossible to ever actually remove a linked product.
+  bool _productTouched = false;
   bool _saving = false;
 
   @override
@@ -236,13 +243,17 @@ class _EditReelSheetState extends State<_EditReelSheet> {
   Future<void> _save() async {
     setState(() => _saving = true);
     try {
-      await ReelsRepository().updateReel(
+      await ref.read(reelsRepoProvider).updateReel(
         widget.reel.id,
         title: _titleCtrl.text.trim(),
         caption: _captionCtrl.text.trim(),
-        linkedProductId: widget.reel.linkedProductId,
-        linkedProductName: widget.reel.linkedProductName,
-        linkedProductImageUrl: widget.reel.linkedProductImageUrl,
+        linkedProductId:
+            _productTouched ? _selectedProduct?.catalogId : widget.reel.linkedProductId,
+        linkedProductName:
+            _productTouched ? _selectedProduct?.productName : widget.reel.linkedProductName,
+        linkedProductImageUrl: _productTouched
+            ? _selectedProduct?.imageUrl
+            : widget.reel.linkedProductImageUrl,
       );
       widget.onSaved();
       if (mounted) Navigator.pop(context);
@@ -259,6 +270,11 @@ class _EditReelSheetState extends State<_EditReelSheet> {
   @override
   Widget build(BuildContext context) {
     final bottomPad = MediaQuery.of(context).viewInsets.bottom;
+    final user = ref.watch(currentUserProvider).value;
+    final listingsAsync = user != null
+        ? ref.watch(shopListingsProvider(user.phone))
+        : const AsyncValue<List<ListingModel>>.data([]);
+
     return Container(
       decoration: const BoxDecoration(
         color: Colors.white,
@@ -286,6 +302,57 @@ class _EditReelSheetState extends State<_EditReelSheet> {
               labelText: 'Caption',
               border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
             ),
+          ),
+          const SizedBox(height: 12),
+          Text('Linked Product', style: AppTextStyles.bodyMedium),
+          const SizedBox(height: 6),
+          listingsAsync.when(
+            loading: () => const Center(child: CircularProgressIndicator()),
+            error: (_, _) => const SizedBox.shrink(),
+            data: (listings) {
+              final active = listings.where((l) => l.isActive).toList();
+              return Container(
+                decoration: BoxDecoration(
+                  border: Border.all(color: AppColors.divider),
+                  borderRadius: BorderRadius.circular(12),
+                  color: Colors.white,
+                ),
+                child: DropdownButtonHideUnderline(
+                  child: DropdownButton<ListingModel?>(
+                    value: _selectedProduct,
+                    isExpanded: true,
+                    borderRadius: BorderRadius.circular(12),
+                    padding: const EdgeInsets.symmetric(horizontal: 12),
+                    hint: Text(
+                      widget.reel.linkedProductName ?? 'None',
+                      style: AppTextStyles.body,
+                    ),
+                    items: [
+                      DropdownMenuItem<ListingModel?>(
+                        value: null,
+                        child: Text(
+                          'None',
+                          style: AppTextStyles.body.copyWith(color: Colors.black45),
+                        ),
+                      ),
+                      ...active.map(
+                        (l) => DropdownMenuItem<ListingModel?>(
+                          value: l,
+                          child: Text(
+                            l.productName ?? l.id,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ),
+                      ),
+                    ],
+                    onChanged: (v) => setState(() {
+                      _selectedProduct = v;
+                      _productTouched = true;
+                    }),
+                  ),
+                ),
+              );
+            },
           ),
           const SizedBox(height: 20),
           SizedBox(

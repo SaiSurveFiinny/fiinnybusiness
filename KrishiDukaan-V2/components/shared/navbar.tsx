@@ -243,7 +243,12 @@ export function Navbar({
     { id: 'map', label: t('stores') }
   ];
   const canAccessDashboard = (userRole === 'retailer' || userRole === 'manufacturer') && !!user && !isDashboard;
-  const isAdmin = userRole === 'admin';
+  // "team" accounts (limited-access admin-portal staff, created from the
+  // admin Team tab) log into /admin same as full admins — without this they
+  // matched none of the branches below (not retailer/manufacturer, not
+  // customer, not admin) and saw only a bare Logout button with no way back
+  // into the portal they'd just logged into.
+  const isAdmin = userRole === 'admin' || userRole === 'team';
   const cycleLanguage = () => {
     const langs = ['en', 'mr', 'hi'] as const;
     const idx = langs.indexOf(language as any);
