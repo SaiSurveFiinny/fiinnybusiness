@@ -65,13 +65,31 @@ export interface StockMovementInput {
   date: string;
 }
 
+/** Structured low-stock event — one per product sold beyond available stock. */
+export interface LowStockWarning {
+  productName: string;
+  available: number;   // stock on hand before the sale
+  quantitySold: number;
+  remaining: number;   // available - quantitySold (negative when oversold)
+}
+
 export interface DeductionResult {
   valid: boolean;
   errors: string[];
   warnings: string[];   // non-fatal: negative stock allowed when caller opts in
+  stockWarnings: LowStockWarning[];   // structured form of `warnings` for UI display
   batchUpdates: BatchUpdate[];
   productUpdates: ProductStockUpdate[];
   movements: Omit<StockMovementInput, 'type' | 'sourceType' | 'sourceId' | 'sourceNumber' | 'date'>[];
+}
+
+/**
+ * Build a clear, user-friendly low-stock alert shown after a sale saves.
+ * Shared by B2B Invoice and POS so the wording is identical.
+ */
+export function formatLowStockAlert(warnings: LowStockWarning[]): string {
+  const lines = warnings.map(w => `• ${w.productName} — Stock: ${w.remaining}`);
+  return `Bill successfully saved.\n\nLow Stock - Please check the following product(s):\n${lines.join('\n')}`;
 }
 
 // ── FEFO sort ─────────────────────────────────────────────────────────────────
@@ -100,6 +118,7 @@ export async function prepareStockDeduction(
 ): Promise<DeductionResult> {
   const errors: string[] = [];
   const warnings: string[] = [];
+  const stockWarnings: LowStockWarning[] = [];
   const batchUpdates: BatchUpdate[] = [];
   const productUpdates: ProductStockUpdate[] = [];
   const movements: DeductionResult['movements'] = [];
@@ -135,6 +154,7 @@ export async function prepareStockDeduction(
         const msg = `Low stock for "${line.productName}": available ${totalPieces}, requested ${line.qty}.`;
         if (!allowNegative) { errors.push(msg); continue; }
         warnings.push(msg);
+        stockWarnings.push({ productName: line.productName, available: totalPieces, quantitySold: line.qty, remaining: totalPieces - line.qty });
       }
       // Compute new box / loose split (keep old model for these products)
       let newLoose = (pData.loosePieces ?? 0) - line.qty;
@@ -150,6 +170,7 @@ export async function prepareStockDeduction(
       const msg = `Low stock for "${line.productName}": available ${batchTotal}, requested ${line.qty}.`;
       if (!allowNegative) { errors.push(msg); continue; }
       warnings.push(msg);
+      stockWarnings.push({ productName: line.productName, available: batchTotal, quantitySold: line.qty, remaining: batchTotal - line.qty });
     }
 
     // Preferred batch first (user specified batchNo on the invoice line)
@@ -175,7 +196,7 @@ export async function prepareStockDeduction(
     productUpdates.push({ productId: line.productId, newLoosePieces: batchTotal - line.qty });
   }
 
-  return { valid: errors.length === 0, errors, warnings, batchUpdates, productUpdates, movements };
+  return { valid: errors.length === 0, errors, warnings, stockWarnings, batchUpdates, productUpdates, movements };
 }
 
 // ── Record movements (best-effort, called after the sale batch commits) ───────

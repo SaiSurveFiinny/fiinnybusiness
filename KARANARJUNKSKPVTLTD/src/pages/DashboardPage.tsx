@@ -40,7 +40,7 @@ const ALL_QUICK_ACTIONS = [
     { id: 'online-dashboard', label: 'Online Dashboard',   path: '/online-dashboard',    color: '#22d3ee',              icon: 'Activity',      roles: ['admin', 'analyst'] },
     { id: 'ai',               label: 'AI Advisor',         path: '/ai-advisor',          color: '#a78bfa',              icon: 'Bot',           roles: ['admin'] },
     { id: 'onboarding',       label: 'New Retailer',       path: '/onboarding',          color: 'var(--primary)',       icon: 'UserPlus',      roles: ['admin'] },
-    { id: 'manufacturers',    label: 'Manufacturers',      path: '/admin/manufacturers', color: '#fb923c',              icon: 'Factory',       roles: ['admin'] },
+    { id: 'manufacturers',    label: 'Manufacturers',      path: '/admin#manufacturers', color: '#fb923c',              icon: 'Factory',       roles: ['admin'] },
     { id: 'payment-links',    label: 'Payment Links',      path: '/payment-links',       color: '#38bdf8',              icon: 'Link2',         roles: ['admin'] },
 ];
 

@@ -6,7 +6,7 @@ import {
     addDoc, collection, getDoc, getDocs, runTransaction, serverTimestamp, updateDoc, writeBatch, doc,
     query, where, limit, onSnapshot
 } from 'firebase/firestore';
-import { prepareStockDeduction, recordStockMovements } from '../utils/stockDeduction';
+import { prepareStockDeduction, recordStockMovements, formatLowStockAlert } from '../utils/stockDeduction';
 import { db } from '../firebase';
 import { useAuth } from '../contexts/AuthContext';
 import { getTenantCollection, getTenantDoc } from '../utils/tenantPath';
@@ -163,6 +163,12 @@ export default function B2BInvoicePage() {
 
     const [previousBalance, setPreviousBalance] = useState('');
     const [discount, setDiscount] = useState('0');
+    // Print paper size. A5 landscape is the default finalized design; A4 prints
+    // the same card scaled to portrait. Screen editing is unaffected by this.
+    const [billFormat, setBillFormat] = useState<'A5' | 'A4'>('A5');
+    // Free-text remarks shown in the invoice's Remark row (UI only, matches the
+    // old layout; not persisted so save/backend logic is untouched).
+    const [remarks, setRemarks] = useState('');
 
     // ─── Load branding, products, next invoice number ───
     useEffect(() => {
@@ -354,6 +360,9 @@ export default function B2BInvoicePage() {
                 newRows[idx].rate = (p.retailerPrice || p.maxRetailPrice || 0).toString();
                 newRows[idx].gstPct = (p.gstPct || 5).toString();
                 newRows[idx].per = p.baseUnit || 'Nos';
+                // Default quantity to 1 on selection (was blank/0). Stays fully
+                // editable afterwards via the Qty input.
+                if (!newRows[idx].quantity || parseFloat(newRows[idx].quantity) === 0) newRows[idx].quantity = '1';
                 // Fill batch/expiry from product document as fallback (inventoryBatches useEffect refines this)
                 if (!newRows[idx].batchNo) newRows[idx].batchNo = p.batchNumber || '';
                 if (!newRows[idx].expDate) newRows[idx].expDate = p.expiryDate || '';
@@ -437,6 +446,14 @@ export default function B2BInvoicePage() {
         const html = container ? container.outerHTML : document.body.innerHTML;
         const styles = Array.from(document.querySelectorAll('style, link[rel="stylesheet"]'))
             .map(el => el.outerHTML).join('\n');
+        // A5 landscape (default) or A4 portrait. The card uses %-based column
+        // widths, so it reflows to fill whichever page width is chosen.
+        const pageRule = billFormat === 'A4' ? 'size: A4 portrait; margin: 8mm;' : 'size: A5 landscape; margin: 4mm;';
+        // A4 = old sectioned portrait (Times New Roman, old table). A5 = compact
+        // landscape whose cells are fully inline-styled, so no table override.
+        const printCardCss = billFormat === 'A4'
+            ? ".b2b-card { box-shadow: none !important; border: none !important; border-radius: 0 !important; margin: 0 !important; padding: 6px !important; background: #fff !important; color: #000 !important; width: 100% !important; max-width: 100% !important; min-height: 0 !important; font-family: 'Times New Roman', serif; }\n  .b2b-table th, .b2b-table td { border: 1px solid #222 !important; padding: 3px 4px !important; font-size: 0.76rem !important; }"
+            : ".b2b-card { box-shadow: none !important; border-radius: 0 !important; margin: 0 !important; padding: 0 !important; background: #fff !important; color: #000 !important; width: 100% !important; max-width: 100% !important; min-height: 0 !important; font-family: 'Arial, Helvetica, sans-serif'; }";
         const win = window.open('', '_blank');
         if (!win) {
             window.print();
@@ -448,16 +465,15 @@ export default function B2BInvoicePage() {
 <title>B2B Invoice ${invNoLabel}</title>
 ${styles}
 <style>
-  @page { size: A5 landscape; margin: 4mm; }
+  @page { ${pageRule} }
   * { -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important; color-scheme: light !important; }
   html, body { background: #fff !important; color: #000 !important; margin: 0; padding: 0; }
   .b2b-wrapper { background: #fff !important; padding: 0 !important; }
   .no-print { display: none !important; }
-  .b2b-card { box-shadow: none !important; border-radius: 0 !important; margin: 0 !important; padding: 0 !important; background: #fff !important; color: #000 !important; max-width: 100% !important; }
+  ${printCardCss}
   input, select, textarea { display: none !important; }
   .print-val { display: inline !important; color: #000; }
   .b2b-table { border-collapse: collapse; width: 100%; }
-  .b2b-table th, .b2b-table td { border: 1px solid #ccc !important; padding: 1.5px 2px !important; font-size: 0.62rem !important; }
   @media print { .no-print { display: none !important; } }
 </style>
 </head><body>${html}</body></html>`);
@@ -489,6 +505,9 @@ ${styles}
             r.productId || productIdByName.get(r.itemDescription.trim().toLowerCase()) || '';
 
         // ── Stock validation (new sales only, not edits) ──────────────────
+        // Negative stock is allowed: selling beyond recorded inventory is a
+        // warning, not a blocker. Only genuinely fatal issues (e.g. product
+        // not found) stop the save.
         if (!isEditing) {
             const saleLines = activeRows
                 .filter(r => resolveProductId(r) && parseFloat(r.quantity) > 0)
@@ -499,11 +518,13 @@ ${styles}
                     batchNo: r.batchNo || undefined,
                 }));
             if (saleLines.length > 0) {
-                const check = await prepareStockDeduction(tenantId, saleLines);
+                const check = await prepareStockDeduction(tenantId, saleLines, true);
                 if (!check.valid) {
                     alert('Stock validation failed:\n\n' + check.errors.join('\n'));
                     return;
                 }
+                // Low-stock (negative) is not blocked here — it's confirmed after
+                // the invoice saves via a clear Low Stock alert (see below).
             }
         }
 
@@ -585,7 +606,9 @@ ${styles}
                     .map(li => ({ productId: li.productId, productName: li.itemDescription, qty: li.quantity, batchNo: li.batchNo || undefined }));
                 if (saleLines.length > 0) {
                     try {
-                        const deduction = await prepareStockDeduction(tenantId, saleLines);
+                        // allowNegative=true — deduction still produces updates
+                        // when stock is insufficient, letting quantities go negative.
+                        const deduction = await prepareStockDeduction(tenantId, saleLines, true);
                         if (deduction.valid && (deduction.batchUpdates.length > 0 || deduction.productUpdates.length > 0)) {
                             const wb = writeBatch(db);
                             for (const upd of deduction.batchUpdates) {
@@ -601,6 +624,11 @@ ${styles}
                                 type: 'sale_b2b', sourceType: 'B2B Invoice', sourceId: savedOrderId, sourceNumber: invNo,
                                 date: header.invoiceDate || new Date().toISOString().slice(0, 10),
                             }).catch(console.error);
+                        }
+                        // Invoice is saved. If any product went below zero, confirm
+                        // clearly that it saved while inventory is now negative.
+                        if (deduction.stockWarnings.length > 0) {
+                            alert(formatLowStockAlert(deduction.stockWarnings));
                         }
                     } catch (e) {
                         console.error('B2B stock deduction failed (invoice already saved):', e);
@@ -712,6 +740,15 @@ ${styles}
     const sellerName = branding?.businessName || tenantData?.businessName || 'Your Business Name';
     const allLicenses = getAllConfiguredLicenses(branding);
 
+    // On-screen paper geometry — the preview mirrors the selected print format
+    // exactly. Both A5-landscape (210×148mm) and A4-portrait (210×297mm) share a
+    // 210mm width, so columns/fonts are identical; only orientation (page
+    // height) and print margins differ. PX_PER_MM keeps A5 at the prior ~1050px.
+    const PX_PER_MM = 5;
+    const paper = billFormat === 'A4' ? { wMm: 210, hMm: 297 } : { wMm: 210, hMm: 148 };
+    const cardWidthPx = paper.wMm * PX_PER_MM;               // 1050px for both
+    const cardMinHeightPx = paper.hMm * PX_PER_MM;           // taller for A4
+
     // MM/YY display for expiry dates stored as YYYY-MM
     const toMonthYear = (val: string) => {
         const m = /^(\d{4})-(\d{2})/.exec((val || '').trim());
@@ -728,9 +765,9 @@ ${styles}
             )}
             <style>{`
                 @media print {
-                    @page { size: A5 landscape; margin: 4mm; }
+                    @page { ${billFormat === 'A4' ? 'size: A4 portrait; margin: 8mm;' : 'size: A5 landscape; margin: 4mm;'} }
                     .b2b-wrapper { padding: 0 !important; background: transparent !important; }
-                    .b2b-card { box-shadow: none !important; border-radius: 0 !important; margin: 0 !important; padding: 0 !important; max-width: 100% !important; }
+                    .b2b-card { box-shadow: none !important; border-radius: 0 !important; margin: 0 !important; padding: 0 !important; width: 100% !important; max-width: 100% !important; min-height: 0 !important; }
                     .no-print { display: none !important; }
                     input, select, textarea { display: none !important; }
                     .print-val { display: inline !important; color: #000; }
@@ -738,8 +775,9 @@ ${styles}
                 }
                 .print-val { display: none; }
                 .b2b-table { border-collapse: collapse; width: 100%; }
-                .b2b-table th, .b2b-table td { border: 1px solid #ccc; padding: 1.5px 2px; font-size: 0.62rem; }
-                .b2b-table th { background: #f5f5f5; font-weight: 700; text-align: center; }
+                .b2b-table th, .b2b-table td { border: 1px solid #222; padding: 4px 5px; font-size: 0.82rem; }
+                .b2b-table th { background: #f2f2f2; font-weight: 700; text-align: center; }
+                .b2b-cell { border: 1px solid #222; padding: 4px 6px; font-size: 0.82rem; }
                 .b2b-input { width: 100%; border: none; background: transparent; outline: none; font-family: inherit; color: inherit; font-size: inherit; }
                 .b2b-label { font-weight: 700; font-size: 0.82rem; }
                 .b2b-dropdown { position: absolute; top: 100%; left: 0; min-width: 220px; max-height: 200px; overflow-y: auto; background: #fff; border: 1px solid #ccc; box-shadow: 0 4px 12px rgba(0,0,0,0.15); z-index: 1000; }
@@ -747,8 +785,20 @@ ${styles}
                 .b2b-dropdown-item:hover { background: #e8f5e9; }
             `}</style>
 
-            {/* ── Onboard Retailer shortcut (no-print) ── */}
-            <div className="no-print" style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: '0.75rem', maxWidth: '1050px', marginLeft: 'auto', marginRight: 'auto' }}>
+            {/* ── Toolbar: paper-size selector + Onboard Retailer (no-print) ── */}
+            <div className="no-print" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '0.75rem', flexWrap: 'wrap', marginBottom: '0.75rem', maxWidth: '1050px', marginLeft: 'auto', marginRight: 'auto' }}>
+                {/* Paper-size selector — accountant can print A5 or A4 */}
+                <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                    <span style={{ fontSize: '0.82rem', fontWeight: 700, color: 'var(--text-secondary)' }}>Print size:</span>
+                    <div style={{ display: 'inline-flex', border: '1.5px solid #1565C0', borderRadius: '8px', overflow: 'hidden' }}>
+                        {(['A5', 'A4'] as const).map(f => (
+                            <button key={f} type="button" onClick={() => setBillFormat(f)}
+                                style={{ padding: '0.35rem 0.9rem', fontSize: '0.82rem', fontWeight: 700, border: 'none', cursor: 'pointer', background: billFormat === f ? '#1565C0' : 'transparent', color: billFormat === f ? '#fff' : '#1565C0', fontFamily: 'inherit' }}>
+                                {f}
+                            </button>
+                        ))}
+                    </div>
+                </div>
                 <Link
                     to="/onboarding"
                     style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', padding: '0.5rem 1.1rem', background: 'var(--primary-light)', color: '#fff', borderRadius: '10px', textDecoration: 'none', fontWeight: 700, fontSize: '0.88rem', fontFamily: 'inherit' }}
@@ -757,8 +807,8 @@ ${styles}
                 </Link>
             </div>
 
-            {/* ── A5 LANDSCAPE INVOICE CARD ── */}
-            <div style={{ maxWidth: '1050px', margin: '0 auto', background: '#fff', color: '#000', fontFamily: 'Arial, Helvetica, sans-serif', boxShadow: '0 10px 40px rgba(0,0,0,0.1)', borderRadius: '8px', border: '1.5px solid #333', overflow: 'hidden' }} className="b2b-card">
+            {billFormat === 'A5' ? (
+            <div style={{ width: cardWidthPx, minHeight: cardMinHeightPx, maxWidth: '100%', margin: '0 auto', background: '#fff', color: '#000', fontFamily: 'Arial, Helvetica, sans-serif', boxShadow: '0 10px 40px rgba(0,0,0,0.1)', borderRadius: '8px', border: '1.5px solid #333', overflow: 'hidden' }} className="b2b-card b2b-a5">
 
                 {/* ══ HEADER ══════════════════════════════════════════════ */}
                 <div style={{ display: 'grid', gridTemplateColumns: `${allLicenses.length > 0 ? 'auto ' : ''}1fr 145px`, borderBottom: '1.5px solid #333' }}>
@@ -1188,6 +1238,369 @@ ${styles}
                     </div>
                 </div>
             </div>
+            ) : (
+            <div style={{ width: cardWidthPx, minHeight: cardMinHeightPx, maxWidth: '100%', margin: '0 auto', background: '#fff', color: '#000', fontFamily: "'Times New Roman', serif", boxShadow: '0 10px 40px rgba(0,0,0,0.1)', borderRadius: '10px', border: '1px solid #ddd', padding: '18px 22px' }} className="b2b-card b2b-a4">
+
+                {/* ── TITLE + BUSINESS HEADER ── */}
+                <div style={{ textAlign: 'center', fontWeight: 700, fontSize: '1rem', letterSpacing: '0.15em', marginBottom: '2px' }}>GST INVOICE</div>
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', borderBottom: '2px solid #111', paddingBottom: '8px', marginBottom: '10px', flexWrap: 'wrap', gap: '0.5rem' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                        {branding?.logoUrl && <img src={branding.logoUrl} alt="Logo" style={{ height: '44px', objectFit: 'contain' }} />}
+                        <div>
+                            <h1 style={{ margin: 0, fontSize: '1.6rem', fontWeight: 900, letterSpacing: '-0.01em' }}>{sellerName}</h1>
+                            <div style={{ fontSize: '0.78rem', color: '#444', marginTop: '2px' }}>
+                                {branding?.address || tenantData?.location || 'Address'}<br />
+                                {branding?.gstin && <><strong>GSTIN:</strong> {branding.gstin} &nbsp;</>}
+                                {branding?.contact && <>Contact No.: {branding.contact}</>}
+                                {branding?.email && <>&nbsp; Email: {branding.email}</>}
+                            </div>
+                            {allLicenses.length > 0 && (
+                                <div style={{ fontSize: '0.7rem', color: '#555', marginTop: '2px', display: 'flex', gap: '10px', flexWrap: 'wrap' }}>
+                                    {allLicenses.map(lic => <span key={lic.label}><strong>{lic.label}:</strong> {lic.number}</span>)}
+                                </div>
+                            )}
+                        </div>
+                    </div>
+                    <div style={{ textAlign: 'right', fontWeight: 700, fontSize: '1rem', color: '#111', border: '2px solid #111', padding: '4px 12px', borderRadius: '6px' }}>
+                        {header.modeOfPayment === 'Cash' ? 'CASH BILL' : 'CREDIT BILL'}
+                    </div>
+                </div>
+
+                {/* ── GSTIN BANNER ── */}
+                {branding?.gstin && (
+                    <div style={{ textAlign: 'center', fontWeight: 700, fontSize: '0.9rem', marginBottom: '10px', letterSpacing: '0.05em' }}>
+                        GSTIN NO: {branding.gstin}
+                    </div>
+                )}
+
+                {/* ── BUYER + INVOICE META ── */}
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', marginBottom: '10px', border: '1px solid #222' }}>
+                    {/* Buyer box */}
+                    <div style={{ borderRight: '1px solid #222', padding: '8px' }}>
+                        <div className="b2b-label" style={{ marginBottom: '4px' }}>Details for Buyer (Billed &amp; Shipped To)</div>
+                        {/* Buyer name — retailer autocomplete (current handler) */}
+                        <div style={{ position: 'relative' }}>
+                            <input className="b2b-input no-print" style={{ fontWeight: 700, fontSize: '0.88rem' }} placeholder="Buyer / Retailer Name"
+                                value={header.buyerName}
+                                onChange={e => { setHeader(h => ({ ...h, buyerName: e.target.value, retailerId: '' })); setShowRetailerDropdown(e.target.value.length > 0); }}
+                                onFocus={() => header.buyerName.length > 0 && setShowRetailerDropdown(true)}
+                                onBlur={() => setTimeout(() => setShowRetailerDropdown(false), 200)} />
+                            <span className="print-val" style={{ fontWeight: 700, fontSize: '0.88rem' }}>{header.buyerName}</span>
+                            {showRetailerDropdown && (
+                                <div className="b2b-dropdown no-print" style={{ width: '100%' }}>
+                                    {retailers.filter(r => (r.name || '').toLowerCase().includes(header.buyerName.toLowerCase())).slice(0, 10).map(r => (
+                                        <div key={r.id} className="b2b-dropdown-item"
+                                            onMouseDown={() => {
+                                                setHeader(prev => ({ ...prev, retailerId: r.id, buyerName: r.name || '', buyerContact: r.number || prev.buyerContact, buyerAddress: `${r.atPost || ''}, Tal. ${r.taluka || ''}, Dist. ${r.district || ''}`.trim(), buyerGstin: r.gstin || prev.buyerGstin }));
+                                                applyRetailerBalance(r);
+                                                setShowRetailerDropdown(false);
+                                            }}>
+                                            <div style={{ fontWeight: 600 }}>{r.name}</div>
+                                            <div style={{ fontSize: '0.75rem', color: '#666' }}>{r.number} {r.atPost ? `• ${r.atPost}` : ''}</div>
+                                        </div>
+                                    ))}
+                                </div>
+                            )}
+                        </div>
+                        {/* Address */}
+                        <div style={{ position: 'relative' }}>
+                            <textarea className="b2b-input no-print" style={{ display: 'block', marginTop: '3px', resize: 'none', minHeight: '40px' }} placeholder="Address" value={header.buyerAddress} onChange={e => setHeader(h => ({ ...h, buyerAddress: e.target.value }))} />
+                            <span className="print-val" style={{ whiteSpace: 'pre-wrap', marginTop: '3px', fontSize: '0.82rem' }}>{header.buyerAddress}</span>
+                        </div>
+                        {/* GSTIN + validation (current) */}
+                        <div style={{ display: 'flex', gap: '8px', marginTop: '3px', flexWrap: 'wrap' }}>
+                            <span className="b2b-label">GST No.:</span>
+                            <div style={{ flexGrow: 1, minWidth: '120px' }}>
+                                <input className="b2b-input no-print" style={{ width: '100%', textTransform: 'uppercase' }} placeholder="Buyer GSTIN" value={header.buyerGstin} onChange={e => setHeader(h => ({ ...h, buyerGstin: e.target.value.toUpperCase() }))} maxLength={15} />
+                                <span className="print-val" style={{ textTransform: 'uppercase' }}>{header.buyerGstin}</span>
+                                {header.buyerGstin && (() => {
+                                    const result = validateGSTIN(header.buyerGstin);
+                                    return result.valid
+                                        ? <div className="no-print" style={{ fontSize: '0.72rem', color: '#10b981', marginTop: '2px' }}>✓ {result.state}</div>
+                                        : <div className="no-print" style={{ fontSize: '0.72rem', color: '#ef4444', marginTop: '2px' }}>⚠ {result.error}</div>;
+                                })()}
+                            </div>
+                        </div>
+                        {/* Contact — phone blur lookup (current) */}
+                        <div style={{ display: 'flex', gap: '8px', marginTop: '3px' }}>
+                            <span className="b2b-label">Contact No.:</span>
+                            <input className="b2b-input no-print" style={{ flexGrow: 1 }} placeholder="Phone No" value={header.buyerContact} onChange={e => setHeader(h => ({ ...h, buyerContact: e.target.value }))} onBlur={handleBuyerPhoneBlur} />
+                            <span className="print-val">{header.buyerContact}</span>
+                        </div>
+                        {/* State */}
+                        <div style={{ display: 'flex', gap: '8px', marginTop: '3px' }}>
+                            <span className="b2b-label">State :</span>
+                            <input className="b2b-input no-print" style={{ flexGrow: 1 }} value={header.buyerState} onChange={e => setHeader(h => ({ ...h, buyerState: e.target.value }))} />
+                            <span className="print-val">{header.buyerState}</span>
+                        </div>
+                    </div>
+
+                    {/* Invoice meta */}
+                    <div style={{ padding: '8px', display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                        <div style={{ display: 'grid', gridTemplateColumns: '130px 1fr', gap: '4px', alignItems: 'center' }}>
+                            <span className="b2b-label">Invoice No :</span>
+                            <span style={{ fontWeight: 700 }}>{displayInvoiceNo}</span>
+                        </div>
+                        <div style={{ display: 'grid', gridTemplateColumns: '130px 1fr', gap: '4px', alignItems: 'center' }}>
+                            <span className="b2b-label">Invoice Date :</span>
+                            <input type="date" className="b2b-input no-print" value={header.invoiceDate} onChange={e => setHeader(h => ({ ...h, invoiceDate: e.target.value }))} />
+                            <span className="print-val" style={{ gridColumn: 2 }}>{header.invoiceDate}</span>
+                        </div>
+                        <div style={{ display: 'grid', gridTemplateColumns: '130px 1fr', gap: '4px', alignItems: 'center' }}>
+                            <span className="b2b-label">Terms of Delivery :</span>
+                            <input className="b2b-input no-print" placeholder="e.g. By Vehicle" value={header.termsOfDelivery} onChange={e => setHeader(h => ({ ...h, termsOfDelivery: e.target.value }))} />
+                            <span className="print-val" style={{ gridColumn: 2 }}>{header.termsOfDelivery}</span>
+                        </div>
+                        <div style={{ display: 'grid', gridTemplateColumns: '130px 1fr', gap: '4px', alignItems: 'center' }}>
+                            <span className="b2b-label" style={{ display: 'flex', alignItems: 'center', gap: '3px' }}><Truck size={11} /> Transporter :</span>
+                            <select className="b2b-input no-print" value={header.transporterId}
+                                onChange={e => { const t = transporters.find(x => x.id === e.target.value); setHeader(h => ({ ...h, transporterId: e.target.value, transporterName: t?.name || '', transporterContact: t?.mobile || '' })); }}>
+                                <option value="">— Select Transporter —</option>
+                                {transporters.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
+                            </select>
+                            <span className="print-val" style={{ gridColumn: 2 }}>{header.transporterName || '—'}</span>
+                        </div>
+                        {header.transporterId && (
+                            <div style={{ display: 'grid', gridTemplateColumns: '130px 1fr', gap: '4px', alignItems: 'center' }}>
+                                <span className="b2b-label">Transporter Ph :</span>
+                                <input className="b2b-input no-print" placeholder="Transporter mobile" value={header.transporterContact} onChange={e => setHeader(h => ({ ...h, transporterContact: e.target.value }))} />
+                                <span className="print-val" style={{ gridColumn: 2 }}>{header.transporterContact}</span>
+                            </div>
+                        )}
+                        <div style={{ display: 'grid', gridTemplateColumns: '130px 1fr', gap: '4px', alignItems: 'center' }}>
+                            <span className="b2b-label">Mode of Payment :</span>
+                            <select className="b2b-input no-print" value={header.modeOfPayment} onChange={e => setHeader(h => ({ ...h, modeOfPayment: e.target.value }))}>
+                                {PAYMENT_MODES.map(m => <option key={m} value={m}>{m}</option>)}
+                            </select>
+                            <span className="print-val" style={{ gridColumn: 2 }}>{header.modeOfPayment}</span>
+                        </div>
+                        {/* Salesperson — CURRENT searchable dropdown + mandatory validation */}
+                        <div style={{ display: 'grid', gridTemplateColumns: '130px 1fr', gap: '4px', alignItems: 'center' }}>
+                            <span className="b2b-label" style={{ color: header.salesmanName ? undefined : '#c62828' }}>Salesman Name* :</span>
+                            <div style={{ position: 'relative' }}>
+                                <input className="b2b-input no-print" style={{ fontWeight: header.salesmanName ? 600 : 400 }} placeholder="Search salesperson…"
+                                    value={header.salesmanName ? header.salesmanName : salesmanSearch}
+                                    onChange={e => { setSalesmanSearch(e.target.value); setHeader(h => ({ ...h, salesmanName: '', salesmanId: '' })); setShowSalesmanDropdown(true); }}
+                                    onFocus={() => setShowSalesmanDropdown(true)}
+                                    onBlur={() => setTimeout(() => setShowSalesmanDropdown(false), 200)} />
+                                <span className="print-val">{header.salesmanName}</span>
+                                {showSalesmanDropdown && (
+                                    <div className="b2b-dropdown no-print" style={{ minWidth: '180px' }}>
+                                        {salesUsers.filter(u => (u.name || '').toLowerCase().includes(salesmanSearch.toLowerCase())).map(u => (
+                                            <div key={u.id} className="b2b-dropdown-item"
+                                                onMouseDown={() => { setHeader(h => ({ ...h, salesmanName: u.name, salesmanId: u.id })); setSalesmanSearch(''); setShowSalesmanDropdown(false); }}>
+                                                <div style={{ fontWeight: 600 }}>{u.name}</div>
+                                                {u.email && <div style={{ fontSize: '0.72rem', color: '#666' }}>{u.email}</div>}
+                                            </div>
+                                        ))}
+                                        {salesUsers.filter(u => (u.name || '').toLowerCase().includes(salesmanSearch.toLowerCase())).length === 0 && (
+                                            <div style={{ padding: '6px 10px', fontSize: '0.82rem', color: '#999' }}>No sales users found</div>
+                                        )}
+                                    </div>
+                                )}
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                {/* ── ITEMS TABLE — CURRENT columns + logic, old visual styling ── */}
+                <div style={{ marginBottom: '10px', overflowX: 'auto' }}>
+                    <table className="b2b-table">
+                        <thead>
+                            <tr>
+                                <th style={{ width: '30px' }}>S.No</th>
+                                <th style={{ minWidth: '150px' }}>Item Descriptions</th>
+                                <th style={{ width: '90px' }}>Company</th>
+                                <th style={{ width: '80px' }}>Batch No.</th>
+                                <th style={{ width: '72px' }}>Exp. Date</th>
+                                <th style={{ width: '48px' }}>Per</th>
+                                <th style={{ width: '48px' }}>GST %</th>
+                                <th style={{ width: '56px' }}>Qty</th>
+                                <th style={{ width: '70px' }}>Rate</th>
+                                <th style={{ width: '88px' }}>Gross Amount</th>
+                                <th className="no-print" style={{ width: '32px' }}></th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {rows.map((row, idx) => (
+                                <tr key={idx}>
+                                    <td style={{ textAlign: 'center', verticalAlign: 'middle' }}>{idx + 1}</td>
+                                    {/* Item Description — CURRENT product search with keyboard nav */}
+                                    <td style={{ position: 'relative' }}>
+                                        {(() => {
+                                            const searchText = activeRowIndex === idx ? (rowSearch[idx] ?? row.itemDescription) : row.itemDescription;
+                                            const filtered = products.filter(p => p.name.toLowerCase().includes((rowSearch[idx] || '').toLowerCase()) || (p.barcode && p.barcode === rowSearch[idx])).slice(0, 50);
+                                            return (<>
+                                                <input className="b2b-input no-print" style={{ fontWeight: row.productId ? 600 : 400 }} placeholder="Search product…" value={searchText}
+                                                    onChange={e => { setRowSearch(s => ({ ...s, [idx]: e.target.value })); setActiveRowIndex(e.target.value.length > 0 ? idx : null); setHighlightedProductIdx(-1); if (!e.target.value) handleRowChange(idx, 'itemDescription', ''); }}
+                                                    onFocus={() => { setActiveRowIndex(idx); setHighlightedProductIdx(-1); }}
+                                                    onBlur={() => setTimeout(() => setActiveRowIndex(null), 200)}
+                                                    onKeyDown={e => {
+                                                        if (activeRowIndex !== idx) return;
+                                                        if (e.key === 'ArrowDown') { e.preventDefault(); setHighlightedProductIdx(i => Math.min(i + 1, filtered.length - 1)); }
+                                                        else if (e.key === 'ArrowUp') { e.preventDefault(); setHighlightedProductIdx(i => Math.max(i - 1, -1)); }
+                                                        else if (e.key === 'Enter') { e.preventDefault(); const pick = highlightedProductIdx >= 0 ? filtered[highlightedProductIdx] : filtered.length === 1 ? filtered[0] : null; if (pick) { handleRowChange(idx, 'productId', pick.id); setActiveRowIndex(null); } }
+                                                    }} />
+                                                <span className="print-val">{row.itemDescription}</span>
+                                                {activeRowIndex === idx && filtered.length > 0 && (
+                                                    <div className="b2b-dropdown no-print">
+                                                        {filtered.map((p, pi) => (
+                                                            <div key={p.id} className="b2b-dropdown-item" style={{ background: pi === highlightedProductIdx ? '#e8f5e9' : undefined }}
+                                                                onMouseDown={() => { handleRowChange(idx, 'productId', p.id); setActiveRowIndex(null); }}>
+                                                                {p.name} <span style={{ color: '#888' }}>· ₹{p.retailerPrice || p.maxRetailPrice || 0}</span>
+                                                            </div>
+                                                        ))}
+                                                    </div>
+                                                )}
+                                            </>);
+                                        })()}
+                                    </td>
+                                    {/* Company — auto-filled, display only */}
+                                    <td style={{ textAlign: 'center' }}>{row.mfgCompany}</td>
+                                    {/* Batch No. */}
+                                    <td><input className="b2b-input no-print" style={{ textAlign: 'center' }} value={row.batchNo} onChange={e => handleRowChange(idx, 'batchNo', e.target.value)} /><span className="print-val">{row.batchNo}</span></td>
+                                    {/* Exp — MM/YY text input (current) */}
+                                    <td><input type="text" className="b2b-input no-print" style={{ textAlign: 'center' }} placeholder="MM/YY" value={toMonthYear(row.expDate)} onChange={e => handleRowChange(idx, 'expDate', fromMonthYear(e.target.value))} /><span className="print-val">{toMonthYear(row.expDate)}</span></td>
+                                    {/* Per */}
+                                    <td style={{ textAlign: 'center' }}><input className="b2b-input no-print" style={{ textAlign: 'center' }} value={row.per} onChange={e => handleRowChange(idx, 'per', e.target.value)} /><span className="print-val">{row.per}</span></td>
+                                    {/* GST% */}
+                                    <td style={{ textAlign: 'center' }}><input type="number" className="b2b-input no-print" style={{ textAlign: 'center' }} value={row.gstPct} onChange={e => handleRowChange(idx, 'gstPct', e.target.value)} onWheel={e => e.currentTarget.blur()} /><span className="print-val">{row.gstPct}</span></td>
+                                    {/* Qty */}
+                                    <td style={{ textAlign: 'center', fontWeight: 600 }}><input type="number" min="0" className="b2b-input no-print" style={{ textAlign: 'center', fontWeight: 600 }} placeholder="0" value={row.quantity} onChange={e => handleRowChange(idx, 'quantity', e.target.value)} onWheel={e => e.currentTarget.blur()} /><span className="print-val">{row.quantity}</span></td>
+                                    {/* Rate */}
+                                    <td style={{ textAlign: 'center' }}><input type="number" min="0" className="b2b-input no-print" style={{ textAlign: 'center' }} value={row.rate} onChange={e => handleRowChange(idx, 'rate', e.target.value)} onWheel={e => e.currentTarget.blur()} /><span className="print-val">{row.rate}</span></td>
+                                    {/* Gross Amount */}
+                                    <td style={{ textAlign: 'center', fontWeight: row.grossAmount ? 600 : 400 }}>{row.grossAmount ? fmt(row.grossAmount) : ''}</td>
+                                    {/* Delete */}
+                                    <td className="no-print" style={{ textAlign: 'center', padding: '2px' }}>
+                                        <button onClick={() => removeRow(idx)} style={{ border: 'none', background: 'transparent', cursor: 'pointer', color: '#e53935', padding: '2px' }}><Trash2 size={14} /></button>
+                                    </td>
+                                </tr>
+                            ))}
+                            {/* TOTAL row */}
+                            <tr style={{ fontWeight: 700, background: '#f9f9f9' }}>
+                                <td colSpan={9} style={{ textAlign: 'right', paddingRight: '8px' }}>TOTAL</td>
+                                <td style={{ textAlign: 'center' }}>{fmt(totalGross)}</td>
+                                <td className="no-print"></td>
+                            </tr>
+                        </tbody>
+                    </table>
+                    <button className="no-print" onClick={addRow} style={{ marginTop: '6px', display: 'flex', alignItems: 'center', gap: '4px', background: 'transparent', border: '1px dashed #999', borderRadius: '6px', padding: '4px 12px', cursor: 'pointer', fontSize: '0.82rem', color: '#555' }}>
+                        <Plus size={14} /> Add Row
+                    </button>
+                </div>
+
+                {/* ── GST SUMMARY + NET AMOUNT ── */}
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', marginBottom: '10px', border: '1px solid #222' }}>
+                    {/* GST breakdown */}
+                    <div style={{ borderRight: '1px solid #222', padding: '8px' }}>
+                        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.8rem' }}>
+                            <thead>
+                                <tr>
+                                    {['Taxable Value', 'Central Tax Rate', 'Amount', 'State Tax Rate', 'Amount', 'Total Tax Amount'].map(h => (
+                                        <th key={h} style={{ border: '1px solid #ccc', padding: '3px 5px', background: '#f2f2f2' }}>{h}</th>
+                                    ))}
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <tr>
+                                    <td style={{ border: '1px solid #ccc', padding: '3px 5px', textAlign: 'center' }}>{fmt(computedTaxable)}</td>
+                                    <td style={{ border: '1px solid #ccc', padding: '3px 5px', textAlign: 'center' }}>{cgstPct}%</td>
+                                    <td style={{ border: '1px solid #ccc', padding: '3px 5px', textAlign: 'center' }}>{fmt(totalCgst)}</td>
+                                    <td style={{ border: '1px solid #ccc', padding: '3px 5px', textAlign: 'center' }}>{sgstPct}%</td>
+                                    <td style={{ border: '1px solid #ccc', padding: '3px 5px', textAlign: 'center' }}>{fmt(totalSgst)}</td>
+                                    <td style={{ border: '1px solid #ccc', padding: '3px 5px', textAlign: 'center' }}>{fmt(totalTax)}</td>
+                                </tr>
+                                <tr>
+                                    <td style={{ border: '1px solid #ccc', padding: '3px 5px', fontWeight: 700 }}>Total: {fmt(taxableValue)}</td>
+                                    <td colSpan={4}></td>
+                                    <td style={{ border: '1px solid #ccc', padding: '3px 5px', fontWeight: 700, textAlign: 'center' }}>{fmt(totalTax)}</td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                    {/* Net amount */}
+                    <div style={{ padding: '8px', display: 'flex', flexDirection: 'column', gap: '3px', fontSize: '0.82rem' }}>
+                        <div style={{ display: 'flex', justifyContent: 'space-between' }}><span>Output CGST@{cgstPct}%</span><span>{fmt(totalCgst)}</span></div>
+                        <div style={{ display: 'flex', justifyContent: 'space-between' }}><span>Output SGST@{sgstPct}%</span><span>{fmt(totalSgst)}</span></div>
+                        <div style={{ display: 'flex', justifyContent: 'space-between' }}><span>Round Off</span><span>{fmt(roundOff)}</span></div>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                            <span>Discount (-)</span>
+                            <span style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+                                <input type="number" className="b2b-input no-print" style={{ width: '70px', textAlign: 'right', border: '1px solid #ccc', borderRadius: '3px', padding: '1px 4px' }} value={discount} onChange={e => setDiscount(e.target.value)} />
+                                <span className="print-val">{discountAmt > 0 ? fmt(discountAmt) : '0.00'}</span>
+                            </span>
+                        </div>
+                        <div style={{ borderTop: '2px solid #111', marginTop: '4px', paddingTop: '4px', display: 'flex', justifyContent: 'space-between', fontWeight: 900, fontSize: '1rem' }}>
+                            <span>NET AMOUNT</span><span>₹{netAmount.toLocaleString('en-IN')}</span>
+                        </div>
+                    </div>
+                </div>
+
+                {/* ── AMOUNT IN WORDS ── */}
+                <div style={{ border: '1px solid #222', marginBottom: '10px', display: 'grid', gridTemplateColumns: '100px 1fr', alignItems: 'stretch' }}>
+                    <div style={{ borderRight: '1px solid #222', padding: '6px', fontWeight: 700, display: 'flex', alignItems: 'center', fontSize: '0.82rem' }}>Amount in Words</div>
+                    <div style={{ padding: '6px', fontWeight: 600, fontSize: '0.85rem', fontStyle: 'italic' }}>INR {numberToWords(netAmount)}</div>
+                </div>
+
+                {/* ── ACCOUNT STATEMENT + BANK DETAILS ── */}
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', marginBottom: '10px', border: '1px solid #222' }}>
+                    {/* Account statement / balance */}
+                    <div style={{ borderRight: '1px solid #222', padding: '8px', fontSize: '0.82rem' }}>
+                        <div className="b2b-label" style={{ marginBottom: '6px' }}>Account Statement</div>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '3px' }}>
+                            <span title="Pulled from the partner's outstanding dues; edit if needed">Previous Balance</span>
+                            <span style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+                                <input type="number" className="b2b-input no-print" style={{ width: '80px', textAlign: 'right', border: '1px solid #ccc', borderRadius: '3px', padding: '1px 4px' }} value={previousBalance} placeholder="0.00" onChange={e => setPreviousBalance(e.target.value)} />
+                                <span className="print-val">{previousBalance || '0.00'}</span>
+                                <span style={{ fontSize: '0.75rem', color: '#666' }}>Dr</span>
+                            </span>
+                        </div>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '3px' }}>
+                            <span>Current Invoice</span><span style={{ fontWeight: 600 }}>₹{netAmount.toLocaleString('en-IN')} Dr</span>
+                        </div>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', borderTop: '1px solid #ccc', paddingTop: '3px', fontWeight: 700 }}>
+                            <span>Net Balance</span><span>₹{netBalance.toLocaleString('en-IN')} Dr</span>
+                        </div>
+                    </div>
+                    {/* Bank details + UPI QR */}
+                    <div style={{ padding: '8px', fontSize: '0.8rem' }}>
+                        <div className="b2b-label" style={{ marginBottom: '4px' }}>Company's Bank Details for NEFT / RTGS :</div>
+                        <div style={{ whiteSpace: 'pre-line', color: '#333', marginBottom: '8px', lineHeight: 1.6 }}>{branding?.bankDetails || DEFAULT_BANK_DETAILS || '—'}</div>
+                        {branding?.upiId && (
+                            <div style={{ marginTop: '8px', borderTop: '1px solid #ccc', paddingTop: '6px' }}>
+                                <UpiQrCode upiId={branding.upiId} payeeName={sellerName} amount={netAmount} transactionNote={displayInvoiceNo} size={80} />
+                                <div style={{ fontSize: '0.7rem', color: '#666' }}>Scan to Pay</div>
+                            </div>
+                        )}
+                    </div>
+                </div>
+
+                {/* ── REMARK ── */}
+                <div style={{ border: '1px solid #222', padding: '5px 8px', fontSize: '0.82rem', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                    <strong>REMARK :</strong>
+                    <input className="b2b-input no-print" style={{ flexGrow: 1 }} placeholder="Any remarks here..." value={remarks} onChange={e => setRemarks(e.target.value)} />
+                    <span className="print-val" style={{ flexGrow: 1 }}>{remarks}</span>
+                </div>
+
+                {/* ── DECLARATION + AUTHORISED SIGNATURE ── */}
+                <div style={{ border: '1px solid #222', borderTop: 'none', marginBottom: '10px', display: 'grid', gridTemplateColumns: '1fr 1fr' }}>
+                    <div style={{ borderRight: '1px solid #222', padding: '8px', fontSize: '0.75rem' }}>
+                        <div className="b2b-label" style={{ marginBottom: '3px' }}>Declaration :</div>
+                        <div style={{ color: '#444', lineHeight: 1.5 }}>We declare that this invoice shows the actual price of the goods described and that all particulars are true and correct.</div>
+                        <div style={{ marginTop: '18px', borderTop: '1px solid #555', paddingTop: '3px', width: '150px', textAlign: 'center', fontSize: '0.72rem' }}>Customer Signature</div>
+                    </div>
+                    <div style={{ padding: '8px', display: 'flex', flexDirection: 'column', alignItems: 'flex-end', justifyContent: 'space-between', fontSize: '0.8rem' }}>
+                        <div style={{ fontWeight: 700 }}>For {sellerName}</div>
+                        {branding?.signatureUrl && <img src={branding.signatureUrl} alt="" style={{ height: '46px', maxWidth: '160px', objectFit: 'contain', marginTop: '4px' }} />}
+                        <div style={{ borderTop: '1px solid #555', paddingTop: '4px', minWidth: '140px', textAlign: 'center', marginTop: branding?.signatureUrl ? '4px' : '28px' }}>{branding?.signatureName || 'Authorised Signatory'}</div>
+                    </div>
+                </div>
+
+                {/* ── JURISDICTION ── */}
+                <div style={{ textAlign: 'center', fontWeight: 700, fontSize: '0.82rem', letterSpacing: '0.06em', marginBottom: '4px' }}>SUBJECT TO PUNE JURISDICTION</div>
+            </div>
+            )}
 
             {/* ── ACTION BUTTONS ── */}
             {(() => {
