@@ -275,6 +275,14 @@ export interface Translations {
   wwd_sustainability_title: string;
   wwd_sustainability_body: string;
 
+  wwd_technology_label: string;
+  wwd_technology_title: string;
+  wwd_technology_body: string;
+  wwd_technology_point1: string;
+  wwd_technology_point2: string;
+  wwd_technology_point3: string;
+  wwd_technology_point4: string;
+
   wwd_cta_title: string;
   wwd_cta_subtitle: string;
   wwd_cta_products: string;
@@ -544,6 +552,14 @@ const en: Translations = {
   wwd_sustainability_label: 'Sustainable Farming',
   wwd_sustainability_title: 'Supporting Land Health for the Long Term',
   wwd_sustainability_body: 'We approach agriculture with a long-term view — encouraging efficient input use, supporting soil health, and working in ways that aim to keep farmland productive for seasons to come, not just the current one.',
+
+  wwd_technology_label: 'Technology & Digital Agriculture',
+  wwd_technology_title: 'Building Digital Infrastructure for Indian Agriculture',
+  wwd_technology_body: 'Our work extends beyond formulation. Through KrishiDukan, our digital agriculture platform, we connect farmers with verified retailers and manufacturers — making it easier to find genuine products and the guidance that goes with them, alongside the physical products we manufacture.',
+  wwd_technology_point1: 'A verified marketplace connecting farmers directly with retailers and manufacturers',
+  wwd_technology_point2: 'Per-crop guidance on seed selection, nutrition, and growth stages',
+  wwd_technology_point3: 'Store locators that show farmers where products are actually in stock',
+  wwd_technology_point4: 'Verified manufacturer profiles that make sourcing genuine products easier',
 
   wwd_cta_title: 'Interested in Learning More About Our Agricultural Solutions?',
   wwd_cta_subtitle: 'Explore our products or get in touch with our team directly.',
@@ -815,6 +831,14 @@ const mr: Translations = {
   wwd_sustainability_title: 'दीर्घकाळासाठी जमिनीच्या आरोग्यास समर्थन',
   wwd_sustainability_body: 'आम्ही शेतीकडे दीर्घकालीन दृष्टिकोनातून पाहतो — कार्यक्षम इनपुट वापरास प्रोत्साहन देणे, मातीच्या आरोग्यास समर्थन देणे, आणि केवळ सध्याच्या हंगामासाठीच नव्हे तर पुढील हंगामांसाठीही शेतजमीन उत्पादक ठेवण्याच्या दृष्टीने कार्य करणे.',
 
+  wwd_technology_label: 'तंत्रज्ञान आणि डिजिटल शेती',
+  wwd_technology_title: 'भारतीय शेतीसाठी डिजिटल पायाभूत सुविधा उभारणे',
+  wwd_technology_body: 'आमचे काम फॉर्म्युलेशनच्या पलीकडे विस्तारते. आमच्या KrishiDukan या डिजिटल शेती प्लॅटफॉर्मद्वारे, आम्ही शेतकऱ्यांना पडताळणी केलेल्या विक्रेत्यांशी आणि उत्पादकांशी जोडतो — आम्ही उत्पादित करत असलेल्या भौतिक उत्पादनांसोबतच, अस्सल उत्पादने आणि त्यासोबतचे मार्गदर्शन शोधणे सोपे करतो.',
+  wwd_technology_point1: 'शेतकऱ्यांना थेट विक्रेते आणि उत्पादकांशी जोडणारे पडताळणी केलेले मार्केटप्लेस',
+  wwd_technology_point2: 'बियाणे निवड, पोषण आणि वाढीच्या टप्प्यांबाबत प्रति-पीक मार्गदर्शन',
+  wwd_technology_point3: 'उत्पादने प्रत्यक्षात कुठे उपलब्ध आहेत हे दाखवणारे स्टोअर लोकेटर',
+  wwd_technology_point4: 'अस्सल उत्पादने शोधणे सोपे करणारे पडताळणी केलेले उत्पादक प्रोफाइल',
+
   wwd_cta_title: 'आमच्या कृषी उपायांबद्दल अधिक जाणून घेण्यास स्वारस्य आहे?',
   wwd_cta_subtitle: 'आमची उत्पादने पहा किंवा थेट आमच्या टीमशी संपर्क साधा.',
   wwd_cta_products: 'उत्पादने पहा',
@@ -1084,6 +1108,14 @@ const kn: Translations = {
   wwd_sustainability_label: 'ಸುಸ್ಥಿರ ಕೃಷಿ',
   wwd_sustainability_title: 'ದೀರ್ಘಾವಧಿಗೆ ಭೂಮಿಯ ಆರೋಗ್ಯವನ್ನು ಬೆಂಬಲಿಸುವುದು',
   wwd_sustainability_body: 'ನಾವು ಕೃಷಿಯನ್ನು ದೀರ್ಘಾವಧಿಯ ದೃಷ್ಟಿಕೋನದಿಂದ ಸಮೀಪಿಸುತ್ತೇವೆ — ಸಮರ್ಥ ಇನ್‌ಪುಟ್ ಬಳಕೆಯನ್ನು ಪ್ರೋತ್ಸಾಹಿಸುವುದು, ಮಣ್ಣಿನ ಆರೋಗ್ಯವನ್ನು ಬೆಂಬಲಿಸುವುದು, ಮತ್ತು ಪ್ರಸ್ತುತ ಋತುವಿಗೆ ಮಾತ್ರವಲ್ಲದೆ ಮುಂಬರುವ ಋತುಗಳಿಗೂ ಕೃಷಿಭೂಮಿಯನ್ನು ಉತ್ಪಾದಕವಾಗಿಡುವ ರೀತಿಯಲ್ಲಿ ಕೆಲಸ ಮಾಡುವುದು.',
+
+  wwd_technology_label: 'ತಂತ್ರಜ್ಞಾನ ಮತ್ತು ಡಿಜಿಟಲ್ ಕೃಷಿ',
+  wwd_technology_title: 'ಭಾರತೀಯ ಕೃಷಿಗಾಗಿ ಡಿಜಿಟಲ್ ಮೂಲಸೌಕರ್ಯ ನಿರ್ಮಾಣ',
+  wwd_technology_body: 'ನಮ್ಮ ಕೆಲಸ ಸಂಯೋಜನೆಯನ್ನು ಮೀರಿ ವಿಸ್ತರಿಸುತ್ತದೆ. ನಮ್ಮ ಡಿಜಿಟಲ್ ಕೃಷಿ ವೇದಿಕೆಯಾದ KrishiDukan ಮೂಲಕ, ನಾವು ರೈತರನ್ನು ಪರಿಶೀಲಿಸಿದ ಮಾರಾಟಗಾರರು ಮತ್ತು ತಯಾರಕರೊಂದಿಗೆ ಸಂಪರ್ಕಿಸುತ್ತೇವೆ — ನಾವು ತಯಾರಿಸುವ ಭೌತಿಕ ಉತ್ಪನ್ನಗಳ ಜೊತೆಗೆ, ನೈಜ ಉತ್ಪನ್ನಗಳು ಮತ್ತು ಅದರೊಂದಿಗೆ ಬರುವ ಮಾರ್ಗದರ್ಶನವನ್ನು ಕಂಡುಹಿಡಿಯುವುದನ್ನು ಸುಲಭಗೊಳಿಸುತ್ತೇವೆ.',
+  wwd_technology_point1: 'ರೈತರನ್ನು ನೇರವಾಗಿ ಮಾರಾಟಗಾರರು ಮತ್ತು ತಯಾರಕರೊಂದಿಗೆ ಸಂಪರ್ಕಿಸುವ ಪರಿಶೀಲಿಸಿದ ಮಾರುಕಟ್ಟೆ',
+  wwd_technology_point2: 'ಬೀಜ ಆಯ್ಕೆ, ಪೋಷಣೆ ಮತ್ತು ಬೆಳವಣಿಗೆಯ ಹಂತಗಳ ಬಗ್ಗೆ ಪ್ರತಿ-ಬೆಳೆ ಮಾರ್ಗದರ್ಶನ',
+  wwd_technology_point3: 'ಉತ್ಪನ್ನಗಳು ನಿಜವಾಗಿ ಎಲ್ಲಿ ಲಭ್ಯವಿವೆ ಎಂಬುದನ್ನು ತೋರಿಸುವ ಸ್ಟೋರ್ ಲೊಕೇಟರ್‌ಗಳು',
+  wwd_technology_point4: 'ನೈಜ ಉತ್ಪನ್ನಗಳನ್ನು ಪಡೆಯುವುದನ್ನು ಸುಲಭಗೊಳಿಸುವ ಪರಿಶೀಲಿಸಿದ ತಯಾರಕರ ಪ್ರೊಫೈಲ್‌ಗಳು',
 
   wwd_cta_title: 'ನಮ್ಮ ಕೃಷಿ ಪರಿಹಾರಗಳ ಬಗ್ಗೆ ಇನ್ನಷ್ಟು ತಿಳಿಯಲು ಆಸಕ್ತಿ ಇದೆಯೇ?',
   wwd_cta_subtitle: 'ನಮ್ಮ ಉತ್ಪನ್ನಗಳನ್ನು ಅನ್ವೇಷಿಸಿ ಅಥವಾ ನೇರವಾಗಿ ನಮ್ಮ ತಂಡವನ್ನು ಸಂಪರ್ಕಿಸಿ.',
@@ -1355,6 +1387,14 @@ const gu: Translations = {
   wwd_sustainability_title: 'લાંબા ગાળા માટે જમીનના આરોગ્યને ટેકો',
   wwd_sustainability_body: 'અમે ખેતીનો લાંબા ગાળાના દૃષ્ટિકોણથી સંપર્ક કરીએ છીએ — કાર્યક્ષમ ઇનપુટ ઉપયોગને પ્રોત્સાહન આપવું, જમીનના આરોગ્યને ટેકો આપવો, અને માત્ર વર્તમાન સિઝન માટે જ નહીં પરંતુ આવનારી સિઝન માટે પણ ખેતીની જમીનને ઉત્પાદક રાખવાની રીતે કામ કરવું.',
 
+  wwd_technology_label: 'ટેકનોલોજી અને ડિજિટલ ખેતી',
+  wwd_technology_title: 'ભારતીય ખેતી માટે ડિજિટલ ઇન્ફ્રાસ્ટ્રક્ચર બનાવવું',
+  wwd_technology_body: 'અમારું કાર્ય ફોર્મ્યુલેશનથી આગળ વિસ્તરે છે. અમારા ડિજિટલ કૃષિ પ્લેટફોર્મ KrishiDukan દ્વારા, અમે ખેડૂતોને ચકાસાયેલ રિટેલર્સ અને ઉત્પાદકો સાથે જોડીએ છીએ — અમે ઉત્પાદિત કરીએ છીએ તે ભૌતિક ઉત્પાદનોની સાથે, અસલી ઉત્પાદનો અને તેની સાથેના માર્ગદર્શનને શોધવાનું સરળ બનાવીએ છીએ.',
+  wwd_technology_point1: 'ખેડૂતોને સીધા રિટેલર્સ અને ઉત્પાદકો સાથે જોડતું ચકાસાયેલ માર્કેટપ્લેસ',
+  wwd_technology_point2: 'બીજની પસંદગી, પોષણ અને વૃદ્ધિના તબક્કાઓ પર પ્રતિ-પાક માર્ગદર્શન',
+  wwd_technology_point3: 'ઉત્પાદનો ખરેખર ક્યાં સ્ટોકમાં છે તે બતાવતા સ્ટોર લોકેટર્સ',
+  wwd_technology_point4: 'અસલી ઉત્પાદનો સોર્સ કરવાનું સરળ બનાવતી ચકાસાયેલ ઉત્પાદક પ્રોફાઇલ',
+
   wwd_cta_title: 'અમારા કૃષિ ઉકેલો વિશે વધુ જાણવામાં રસ છે?',
   wwd_cta_subtitle: 'અમારા ઉત્પાદનો શોધો અથવા સીધા અમારી ટીમનો સંપર્ક કરો.',
   wwd_cta_products: 'ઉત્પાદનો શોધો',
@@ -1624,6 +1664,14 @@ const hi: Translations = {
   wwd_sustainability_label: 'सतत खेती',
   wwd_sustainability_title: 'दीर्घकाल के लिए भूमि स्वास्थ्य का समर्थन',
   wwd_sustainability_body: 'हम खेती को एक दीर्घकालिक दृष्टिकोण से देखते हैं — कुशल इनपुट उपयोग को प्रोत्साहित करना, मिट्टी के स्वास्थ्य का समर्थन करना, और न केवल वर्तमान सीजन बल्कि आने वाले सीजन के लिए भी खेत को उत्पादक बनाए रखने के तरीके से काम करना।',
+
+  wwd_technology_label: 'प्रौद्योगिकी और डिजिटल कृषि',
+  wwd_technology_title: 'भारतीय कृषि के लिए डिजिटल इंफ्रास्ट्रक्चर का निर्माण',
+  wwd_technology_body: 'हमारा काम फॉर्मूलेशन से आगे भी फैला हुआ है। अपने डिजिटल कृषि प्लेटफ़ॉर्म KrishiDukan के माध्यम से, हम किसानों को सत्यापित रिटेलर्स और निर्माताओं से जोड़ते हैं — हमारे द्वारा निर्मित भौतिक उत्पादों के साथ-साथ, असली उत्पादों और उनके साथ आने वाले मार्गदर्शन को खोजना आसान बनाते हैं।',
+  wwd_technology_point1: 'किसानों को सीधे रिटेलर्स और निर्माताओं से जोड़ने वाला सत्यापित मार्केटप्लेस',
+  wwd_technology_point2: 'बीज चयन, पोषण और विकास के चरणों पर प्रति-फसल मार्गदर्शन',
+  wwd_technology_point3: 'उत्पाद वास्तव में कहाँ उपलब्ध हैं, यह दिखाने वाले स्टोर लोकेटर',
+  wwd_technology_point4: 'असली उत्पाद खोजना आसान बनाने वाले सत्यापित निर्माता प्रोफ़ाइल',
 
   wwd_cta_title: 'हमारे कृषि समाधानों के बारे में और जानने में रुचि है?',
   wwd_cta_subtitle: 'हमारे उत्पाद देखें या सीधे हमारी टीम से संपर्क करें।',

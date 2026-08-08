@@ -12,7 +12,7 @@ export function WhatWeDo() {
   const { t } = useLanguage();
 
   const pillars = [
-    { icon: Icons.Box, title: t.whatwedo_products_title, desc: t.whatwedo_products_desc, href: '/shop' },
+    { icon: Icons.Box, title: t.whatwedo_products_title, desc: t.whatwedo_products_desc, href: '/products' },
     { icon: Icons.Leaf, title: t.whatwedo_solutions_title, desc: t.whatwedo_solutions_desc, href: '/crop-solutions' },
     { icon: Icons.Sprout, title: t.whatwedo_research_title, desc: t.whatwedo_research_desc, href: '/research-innovation' },
     { icon: Icons.Users, title: t.whatwedo_support_title, desc: t.whatwedo_support_desc, href: '/support' },

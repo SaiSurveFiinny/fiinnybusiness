@@ -23,7 +23,7 @@ export function WhatWeDoCTA() {
         <p className="font-serif text-lg text-white/70 mb-10">{t.wwd_cta_subtitle}</p>
         <div className="flex flex-col sm:flex-row items-center justify-center gap-4">
           <Link
-            to="/shop"
+            to="/products"
             className="w-full sm:w-auto inline-flex items-center justify-center gap-2 bg-secondary-container text-on-secondary-container px-8 py-4 rounded-full font-sans font-bold hover:bg-white transition-colors shadow-xl uppercase tracking-widest text-sm"
           >
             {t.wwd_cta_products} <Icons.ArrowRight className="w-4 h-4" />

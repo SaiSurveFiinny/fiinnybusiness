@@ -3,6 +3,7 @@ import { BrowserRouter as Router, Routes, Route, useLocation, Navigate } from 'r
 import Navbar, { Footer } from './components/Layout';
 import Home from './pages/Home';
 import Shop from './pages/Shop';
+import ProductDetailPage from './pages/ProductDetailPage';
 import Profile from './pages/Profile';
 import Auth from './pages/Auth';
 import Technical from './pages/Technical';
@@ -104,7 +105,10 @@ export default function App() {
             <LayoutWrapper>
               <Routes>
                 <Route path="/" element={<Home />} />
-                <Route path="/shop" element={<Shop />} />
+                <Route path="/products" element={<Shop />} />
+                <Route path="/products/:productSlug" element={<ProductDetailPage />} />
+                {/* /shop renamed to /products for a clean Products > Product Detail URL hierarchy; redirect preserves old bookmarked/indexed links and search rankings. */}
+                <Route path="/shop" element={<Navigate to="/products" replace />} />
                 {/* /blog moved to /resources/blogs as part of the Resources Center migration; redirect preserves old bookmarked/indexed links. */}
                 <Route path="/blog" element={<Navigate to="/resources/blogs" replace />} />
                 <Route

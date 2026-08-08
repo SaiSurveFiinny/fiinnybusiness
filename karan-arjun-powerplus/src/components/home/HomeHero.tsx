@@ -51,7 +51,7 @@ export function HomeHero() {
           className="flex flex-col sm:flex-row items-start sm:items-center gap-4"
         >
           <Link
-            to="/shop"
+            to="/products"
             className="bg-secondary-container text-on-secondary-container px-9 py-4 rounded-full font-sans font-bold hover:bg-white transition-all shadow-xl uppercase tracking-widest text-sm inline-flex items-center justify-center gap-2"
           >
             {t.home_hero_cta_primary} <Icons.ArrowRight className="w-4 h-4" />

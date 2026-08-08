@@ -18,7 +18,7 @@ export const NAV_ITEMS: NavItem[] = [
   { labelKey: 'nav_home', href: '/' },
   { labelKey: 'nav_who_we_are', href: '/who-we-are' },
   { labelKey: 'nav_what_we_do', href: '/what-we-do' },
-  { labelKey: 'nav_products', href: '/shop' },
+  { labelKey: 'nav_products', href: '/products' },
   { labelKey: 'nav_crop_solutions', href: '/crop-solutions' },
   {
     labelKey: 'nav_research_innovation',

@@ -104,28 +104,6 @@ export function WhyChooseUs({ titleLine1, titleLine2, subtitle }: WhyChooseUsPro
             <h3 className="font-sans text-xl md:text-2xl font-extrabold text-primary mb-3 relative z-10">{t.freshness_title}</h3>
             <p className="text-on-surface-variant text-base relative z-10">{t.freshness_desc}</p>
           </div>
-
-          <div className="md:col-span-12 glass-panel-dark rounded-[2.5rem] p-10 md:p-12 text-white flex items-center justify-between overflow-hidden relative group transition-all duration-500 hover:-translate-y-2 hover:shadow-[0_20px_40px_rgba(10,25,19,0.3)] hover:border-secondary/30 mt-4">
-            <div className="z-10 max-w-2xl">
-              <div className="inline-flex items-center gap-2 px-4 py-2 bg-white/10 backdrop-blur-md rounded-full text-secondary-container border border-white/10 mb-6">
-                <Icons.Star className="w-4 h-4" />
-                <span className="font-sans font-bold text-xs uppercase tracking-widest">{t.cta_badge}</span>
-              </div>
-              <h3 className="font-sans text-3xl md:text-4xl font-extrabold text-white mb-4 leading-tight">{t.cta_title}</h3>
-              <p className="text-white/80 mb-8 font-serif text-lg">{t.cta_desc}</p>
-              <a
-                href="https://wa.me/919307199040"
-                target="_blank"
-                rel="noopener noreferrer"
-                className="bg-secondary-container text-on-secondary-container px-8 py-4 rounded-xl font-sans font-bold hover:bg-white transition-colors inline-flex items-center space-x-2 shadow-xl"
-              >
-                <span>{t.cta_button}</span>
-                <Icons.ArrowRight className="w-5 h-5 group-hover:translate-x-1 transition-transform" />
-              </a>
-            </div>
-            <div className="absolute right-0 top-1/2 -translate-y-1/2 translate-x-1/4 w-96 h-96 bg-secondary/20 rounded-full blur-3xl mix-blend-overlay"></div>
-            <Icons.Sprout className="absolute right-0 top-1/2 -translate-y-1/2 translate-x-1/4 w-80 h-80 text-white/5 group-hover:rotate-12 transition-transform duration-700" />
-          </div>
         </div>
       </div>
     </section>

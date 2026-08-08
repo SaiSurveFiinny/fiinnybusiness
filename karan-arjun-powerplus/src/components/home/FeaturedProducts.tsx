@@ -14,7 +14,7 @@ export function FeaturedProducts() {
 
   return (
     <section className="relative z-10 bg-surface overflow-hidden">
-      <div className="max-w-7xl mx-auto px-8 py-20 md:py-28 grid grid-cols-1 lg:grid-cols-12 gap-10 lg:gap-4 items-center">
+      <div className="max-w-7xl mx-auto px-8 py-16 md:py-24 grid grid-cols-1 lg:grid-cols-12 gap-10 lg:gap-4 items-center">
         <div className="lg:col-span-5 order-2 lg:order-1">
           <span className="font-sans text-xs font-bold uppercase tracking-[0.25em] text-secondary mb-4 block">
             {t.featured_products_title}
@@ -30,7 +30,7 @@ export function FeaturedProducts() {
             agriculture.
           </p>
           <Link
-            to="/shop"
+            to="/products"
             className="inline-flex items-center gap-2 bg-primary text-secondary-container px-8 py-4 rounded-full font-sans font-bold hover:bg-primary-container transition-colors shadow-xl"
           >
             {t.featured_products_cta} <Icons.ArrowRight className="w-4 h-4" />

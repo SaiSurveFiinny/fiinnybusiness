@@ -383,7 +383,7 @@ export function Footer() {
       links: [
         { label: t.nav_who_we_are, href: '/who-we-are' },
         { label: t.nav_what_we_do, href: '/what-we-do' },
-        { label: t.nav_products, href: '/shop' },
+        { label: t.nav_products, href: '/products' },
         { label: t.nav_career, href: '/career' },
       ],
     },

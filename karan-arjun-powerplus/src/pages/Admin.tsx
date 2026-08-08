@@ -1,6 +1,5 @@
 import React, { useEffect, useState } from 'react';
 import {
-  addDoc,
   arrayUnion,
   collection,
   deleteDoc,
@@ -20,6 +19,7 @@ import { CropSolutionsManager } from '../components/admin/CropSolutionsManager';
 import { CareerManager } from '../components/admin/CareerManager';
 import { FarmerSuccessManager } from '../components/admin/FarmerSuccessManager';
 import { ResourcesManager } from '../components/admin/ResourcesManager';
+import { ProductManager } from '../components/admin/ProductManager';
 import {
   initialAbout,
   initialBlogs,
@@ -28,7 +28,6 @@ import {
   type AboutInfo,
   type Grievance,
   type Order,
-  type Product,
   type User,
 } from '../data/mockData';
 import type { Blog } from '../data/resources';
@@ -55,15 +54,6 @@ interface UserEditFormState {
   role: 'admin' | 'customer';
 }
 
-interface ProductFormState {
-  name: string;
-  desc: string;
-  numericPrice: string;
-  image: string;
-  badge: string;
-  featured: boolean;
-}
-
 function formatPrice(price: number) {
   return `₹${price.toLocaleString('en-IN')}`;
 }
@@ -77,18 +67,8 @@ function toStringArray(value: unknown): string[] {
     .filter(Boolean);
 }
 
-const defaultProductForm: ProductFormState = {
-  name: '',
-  desc: '',
-  numericPrice: '',
-  image: '/bottle-1l-Photoroom.png',
-  badge: '',
-  featured: false,
-};
-
 export default function Admin() {
   const [activeTab, setActiveTab] = useState<AdminTab>('Dashboard');
-  const [products, setProducts] = useState<Product[]>([]);
   const [blogs, setBlogs] = useState<Blog[]>([]);
   const [users, setUsers] = useState<AdminUser[]>([]);
   const [orders, setOrders] = useState<Order[]>([]);
@@ -100,12 +80,6 @@ export default function Admin() {
   const [status, setStatus] = useState('');
   const [isSavingCompany, setIsSavingCompany] = useState(false);
   const [isSavingHomeVideos, setIsSavingHomeVideos] = useState(false);
-
-  const [productForm, setProductForm] = useState<ProductFormState>(defaultProductForm);
-  const [editingProductId, setEditingProductId] = useState<string | null>(null);
-  const [isSavingProduct, setIsSavingProduct] = useState(false);
-  const [isProductFormOpen, setIsProductFormOpen] = useState(false);
-  const [pendingProductDeleteId, setPendingProductDeleteId] = useState<string | null>(null);
 
   const [replyDrafts, setReplyDrafts] = useState<Record<string, string>>({});
   const [replyingTicketId, setReplyingTicketId] = useState<string | null>(null);
@@ -124,24 +98,6 @@ export default function Admin() {
   });
 
   useEffect(() => {
-    const unsubscribeProducts = onSnapshot(collection(db, 'products'), (snapshot) => {
-      const value: Product[] = snapshot.docs.map((docItem) => {
-        const data = docItem.data();
-        const numericPrice = Number(data.numericPrice ?? data.price ?? 0);
-        return {
-          id: docItem.id,
-          name: String(data.name ?? ''),
-          desc: String(data.desc ?? ''),
-          price: typeof data.price === 'string' ? data.price : formatPrice(numericPrice),
-          numericPrice,
-          image: String(data.image ?? '/bottle-1l-Photoroom.png'),
-          badge: data.badge ? String(data.badge) : undefined,
-          featured: Boolean(data.featured),
-        };
-      });
-      setProducts(value);
-    });
-
     const unsubscribeBlogs = onSnapshot(collection(db, 'blogs'), (snapshot) => {
       const value: Blog[] = snapshot.docs.map((docItem) => {
         const data = docItem.data();
@@ -270,7 +226,6 @@ export default function Admin() {
     });
 
     return () => {
-      unsubscribeProducts();
       unsubscribeBlogs();
       unsubscribeUsers();
       unsubscribeOrders();
@@ -279,81 +234,6 @@ export default function Admin() {
       unsubscribeHomepage();
     };
   }, []);
-
-  const resetProductForm = () => {
-    setProductForm(defaultProductForm);
-    setEditingProductId(null);
-    setIsProductFormOpen(false);
-  };
-
-  const handleSaveProduct = async (e: React.FormEvent) => {
-    e.preventDefault();
-    const numericPrice = Number(productForm.numericPrice);
-    if (!productForm.name.trim()) {
-      setStatus('Product name is required.');
-      return;
-    }
-    if (!Number.isFinite(numericPrice) || numericPrice < 0) {
-      setStatus('Product price must be a valid number.');
-      return;
-    }
-
-    setIsSavingProduct(true);
-    const payload = {
-      name: productForm.name.trim(),
-      desc: productForm.desc.trim(),
-      numericPrice,
-      price: formatPrice(numericPrice),
-      image: productForm.image.trim() || '/bottle-1l-Photoroom.png',
-      badge: productForm.badge.trim(),
-      featured: productForm.featured,
-      updatedAt: serverTimestamp(),
-    };
-
-    if (editingProductId) {
-      await updateDoc(doc(db, 'products', editingProductId), payload);
-      setStatus('Product updated.');
-    } else {
-      await addDoc(collection(db, 'products'), {
-        ...payload,
-        createdAt: serverTimestamp(),
-      });
-      setStatus('Product created.');
-    }
-    setIsSavingProduct(false);
-    resetProductForm();
-  };
-
-  const handleEditProduct = (product: Product) => {
-    setIsProductFormOpen(true);
-    setPendingProductDeleteId(null);
-    setEditingProductId(product.id);
-    setProductForm({
-      name: product.name,
-      desc: product.desc,
-      numericPrice: String(product.numericPrice),
-      image: product.image,
-      badge: product.badge ?? '',
-      featured: Boolean(product.featured),
-    });
-  };
-
-  const requestDeleteProduct = (productId: string) => {
-    setPendingProductDeleteId(productId);
-  };
-
-  const cancelDeleteProduct = () => {
-    setPendingProductDeleteId(null);
-  };
-
-  const confirmDeleteProduct = async (product: Product) => {
-    await deleteDoc(doc(db, 'products', product.id));
-    if (editingProductId === product.id) {
-      resetProductForm();
-    }
-    setPendingProductDeleteId(null);
-    setStatus('Product deleted.');
-  };
 
   const handleResolveTicket = async (ticket: Grievance) => {
     await updateDoc(doc(db, 'grievances', ticket.id), {
@@ -882,167 +762,7 @@ export default function Admin() {
           </div>
         )}
 
-        {activeTab === 'Products' && (
-          <div className="space-y-6">
-            <div className="bg-white rounded-[2rem] p-8 border border-slate-100 shadow-sm">
-              <div className="flex items-center justify-between gap-4 mb-6">
-                <h2 className="font-sans text-xl font-bold text-primary">Products Catalog</h2>
-                <button
-                  onClick={() => {
-                    setIsProductFormOpen(true);
-                    setEditingProductId(null);
-                    setProductForm(defaultProductForm);
-                    setPendingProductDeleteId(null);
-                  }}
-                  className="bg-primary text-secondary-container px-4 py-2 rounded-xl font-sans font-bold text-sm hover:bg-primary-container transition-colors shrink-0"
-                >
-                  Add Product
-                </button>
-              </div>
-
-              {isProductFormOpen && (
-                <form onSubmit={handleSaveProduct} className="space-y-4 mb-8 p-5 rounded-2xl border border-slate-200 bg-slate-50/70">
-                  <div className="flex justify-between items-center">
-                    <h3 className="font-sans text-lg font-bold text-primary">
-                      {editingProductId ? 'Edit Product' : 'Add Product'}
-                    </h3>
-                    <button
-                      type="button"
-                      onClick={resetProductForm}
-                      className="px-3 py-2 text-xs rounded-lg border border-slate-300 font-sans font-semibold hover:bg-white"
-                    >
-                      Close
-                    </button>
-                  </div>
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                    <div>
-                      <label className="block font-sans text-sm font-semibold text-primary mb-2">Name</label>
-                      <input
-                        type="text"
-                        value={productForm.name}
-                        onChange={(e) => setProductForm((prev) => ({ ...prev, name: e.target.value }))}
-                        className="w-full px-4 py-3 rounded-xl border border-slate-200 bg-white text-sm"
-                        required
-                      />
-                    </div>
-                    <div>
-                      <label className="block font-sans text-sm font-semibold text-primary mb-2">Price (number)</label>
-                      <input
-                        type="number"
-                        min="0"
-                        step="0.01"
-                        value={productForm.numericPrice}
-                        onChange={(e) => setProductForm((prev) => ({ ...prev, numericPrice: e.target.value }))}
-                        className="w-full px-4 py-3 rounded-xl border border-slate-200 bg-white text-sm"
-                        required
-                      />
-                    </div>
-                  </div>
-                  <div>
-                    <label className="block font-sans text-sm font-semibold text-primary mb-2">Description</label>
-                    <textarea
-                      rows={3}
-                      value={productForm.desc}
-                      onChange={(e) => setProductForm((prev) => ({ ...prev, desc: e.target.value }))}
-                      className="w-full px-4 py-3 rounded-xl border border-slate-200 bg-white text-sm"
-                    />
-                  </div>
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                    <div>
-                      <label className="block font-sans text-sm font-semibold text-primary mb-2">Image URL / Path</label>
-                      <input
-                        type="text"
-                        value={productForm.image}
-                        onChange={(e) => setProductForm((prev) => ({ ...prev, image: e.target.value }))}
-                        className="w-full px-4 py-3 rounded-xl border border-slate-200 bg-white text-sm"
-                      />
-                    </div>
-                    <div>
-                      <label className="block font-sans text-sm font-semibold text-primary mb-2">Badge</label>
-                      <input
-                        type="text"
-                        value={productForm.badge}
-                        onChange={(e) => setProductForm((prev) => ({ ...prev, badge: e.target.value }))}
-                        className="w-full px-4 py-3 rounded-xl border border-slate-200 bg-white text-sm"
-                      />
-                    </div>
-                  </div>
-                  <div className="space-y-3">
-                    <label className="inline-flex items-center gap-2 font-sans text-sm text-primary font-semibold">
-                      <input
-                        type="checkbox"
-                        checked={productForm.featured}
-                        onChange={(e) => setProductForm((prev) => ({ ...prev, featured: e.target.checked }))}
-                        className="h-4 w-4 rounded border-slate-300"
-                      />
-                      Featured product
-                    </label>
-                    <div className="pt-1">
-                      <button
-                        type="submit"
-                        disabled={isSavingProduct}
-                        className="bg-primary text-secondary-container px-6 py-3 rounded-xl font-sans font-bold text-sm hover:bg-primary-container transition-colors disabled:opacity-60"
-                      >
-                        {isSavingProduct ? 'Saving...' : editingProductId ? 'Update Product' : 'Create Product'}
-                      </button>
-                    </div>
-                  </div>
-                </form>
-              )}
-
-              <div className="overflow-x-auto">
-                <table className="w-full text-left font-sans text-sm">
-                  <thead>
-                    <tr className="border-b border-primary/10">
-                      <th className="py-4 text-primary/60 font-semibold uppercase tracking-wider text-xs">Name</th>
-                      <th className="py-4 text-primary/60 font-semibold uppercase tracking-wider text-xs">Price</th>
-                      <th className="py-4 text-primary/60 font-semibold uppercase tracking-wider text-xs">Badge</th>
-                      <th className="py-4 text-primary/60 font-semibold uppercase tracking-wider text-xs">Featured</th>
-                      <th className="py-4 text-right text-primary/60 font-semibold uppercase tracking-wider text-xs">Actions</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {products.map((product) => (
-                      <tr key={product.id} className="border-b border-primary/5 hover:bg-slate-50 transition-colors">
-                        <td className="py-4 font-bold text-primary">{product.name}</td>
-                        <td className="py-4 text-primary/80">{product.price}</td>
-                        <td className="py-4 text-primary/80">{product.badge || '-'}</td>
-                        <td className="py-4 text-primary/80">{product.featured ? 'Yes' : 'No'}</td>
-                        <td className="py-4 text-right">
-                          <div className="flex justify-end gap-2">
-                            <button onClick={() => handleEditProduct(product)} className="p-2 text-blue-600 hover:bg-blue-50 rounded-lg transition-colors">
-                              <Icons.Edit className="w-4 h-4" />
-                            </button>
-                            {pendingProductDeleteId === product.id ? (
-                              <>
-                                <button
-                                  onClick={() => void confirmDeleteProduct(product)}
-                                  className="px-2 py-1 text-xs rounded-lg bg-red-100 text-red-700 font-bold"
-                                >
-                                  Confirm
-                                </button>
-                                <button
-                                  onClick={cancelDeleteProduct}
-                                  className="px-2 py-1 text-xs rounded-lg bg-slate-100 text-slate-700 font-bold"
-                                >
-                                  Cancel
-                                </button>
-                              </>
-                            ) : (
-                              <button onClick={() => requestDeleteProduct(product.id)} className="p-2 text-red-600 hover:bg-red-50 rounded-lg transition-colors">
-                                <Icons.Trash className="w-4 h-4" />
-                              </button>
-                            )}
-                          </div>
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-          </div>
-        )}
+        {activeTab === 'Products' && <ProductManager />}
 
         {activeTab === 'Crop Solutions' && <CropSolutionsManager />}
 

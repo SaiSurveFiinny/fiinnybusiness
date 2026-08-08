@@ -46,7 +46,7 @@ function ProductChips({ ids, products }: { ids: string[]; products: Record<strin
       {items.map((p) => (
         <Link
           key={p.id}
-          to="/shop"
+          to="/products"
           className="inline-flex items-center gap-2 px-3 py-1.5 bg-primary/5 text-primary rounded-full text-xs font-sans font-semibold hover:bg-primary/10 transition-colors"
         >
           <Icons.Box className="w-3.5 h-3.5" /> {p.name}

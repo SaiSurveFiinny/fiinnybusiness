@@ -38,10 +38,10 @@ export function WhyTrustUs() {
   ];
 
   return (
-    <section className="relative z-10 bg-surface py-20 md:py-32">
+    <section className="relative z-10 bg-surface py-16 md:py-24">
       <div className="max-w-6xl mx-auto px-6 md:px-8">
         {/* Header */}
-        <div className="max-w-2xl mb-16 md:mb-24">
+        <div className="max-w-2xl mb-10 md:mb-14">
           <span className="font-sans text-xs font-bold uppercase tracking-[0.2em] text-secondary mb-4 block">
             Proven Results
           </span>
@@ -60,7 +60,7 @@ export function WhyTrustUs() {
             return (
               <div key={row.title} className={index > 0 ? 'border-t border-primary/10' : ''}>
                 <div
-                  className={`flex flex-col ${isEven ? 'md:flex-row' : 'md:flex-row-reverse'} items-center gap-10 md:gap-16 py-14 md:py-20`}
+                  className={`flex flex-col ${isEven ? 'md:flex-row' : 'md:flex-row-reverse'} items-center gap-10 md:gap-16 py-10 md:py-14`}
                 >
                   <div className="w-full md:w-1/2">
                     <div className="relative rounded-lg overflow-hidden aspect-[4/3]">
