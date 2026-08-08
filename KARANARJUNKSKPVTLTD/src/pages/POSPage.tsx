@@ -25,7 +25,7 @@ import { db } from '../firebase';
 import { useAuth } from '../contexts/AuthContext';
 import { useToast } from '../contexts/ToastContext';
 import { getTenantCollection, getTenantDoc } from '../utils/tenantPath';
-import { prepareStockDeduction, recordStockMovements } from '../utils/stockDeduction';
+import { prepareStockDeduction, recordStockMovements, formatLowStockAlert } from '../utils/stockDeduction';
 import { getInvoiceProductCategories, getAllConfiguredLicenses } from '../utils/invoiceCategories';
 import { logAudit } from '../utils/auditLog';
 import { PosInvoicePreview, numberToWords, toMonthYear } from '../components/PosInvoicePreview';
@@ -831,17 +831,13 @@ export default function POSPage() {
 
             const deductionResult = !editingOrder
                 ? await prepareStockDeduction(tenantId, saleLines, true)
-                : { valid: true, errors: [], warnings: [], batchUpdates: [], productUpdates: [], movements: [] };
+                : { valid: true, errors: [], warnings: [], stockWarnings: [], batchUpdates: [], productUpdates: [], movements: [] };
 
             if (!deductionResult.valid) {
                 // Fatal errors (e.g. product not found) — block the sale
                 showToast(deductionResult.errors.join('\n'), 'error');
                 setIsProcessing(false);
                 return;
-            }
-            if (deductionResult.warnings.length > 0) {
-                // Non-fatal: stock goes negative — warn but allow the sale
-                showToast('⚠ Low stock: ' + deductionResult.warnings.join(' | '), 'error');
             }
 
             // Persist the bill and deduct stock atomically in one batch — a
@@ -906,6 +902,12 @@ export default function POSPage() {
             }
 
             await batch.commit();
+
+            // Bill is saved. If any product went below zero, confirm clearly that
+            // the sale went through while inventory is now negative (informational).
+            if (deductionResult.stockWarnings.length > 0) {
+                alert(formatLowStockAlert(deductionResult.stockWarnings));
+            }
 
             // Record stock movements (best-effort — never blocks the sale)
             if (!editingOrder && deductionResult.movements.length > 0) {

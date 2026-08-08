@@ -6,7 +6,7 @@ import {
     addDoc, collection, getDoc, getDocs, runTransaction, serverTimestamp, updateDoc, writeBatch, doc,
     query, where, limit, onSnapshot
 } from 'firebase/firestore';
-import { prepareStockDeduction, recordStockMovements } from '../utils/stockDeduction';
+import { prepareStockDeduction, recordStockMovements, formatLowStockAlert } from '../utils/stockDeduction';
 import { db } from '../firebase';
 import { useAuth } from '../contexts/AuthContext';
 import { getTenantCollection, getTenantDoc } from '../utils/tenantPath';
@@ -523,9 +523,8 @@ ${styles}
                     alert('Stock validation failed:\n\n' + check.errors.join('\n'));
                     return;
                 }
-                if (check.warnings.length > 0) {
-                    alert('⚠ Low stock (sold beyond available inventory — stock will go negative):\n\n' + check.warnings.join('\n'));
-                }
+                // Low-stock (negative) is not blocked here — it's confirmed after
+                // the invoice saves via a clear Low Stock alert (see below).
             }
         }
 
@@ -625,6 +624,11 @@ ${styles}
                                 type: 'sale_b2b', sourceType: 'B2B Invoice', sourceId: savedOrderId, sourceNumber: invNo,
                                 date: header.invoiceDate || new Date().toISOString().slice(0, 10),
                             }).catch(console.error);
+                        }
+                        // Invoice is saved. If any product went below zero, confirm
+                        // clearly that it saved while inventory is now negative.
+                        if (deduction.stockWarnings.length > 0) {
+                            alert(formatLowStockAlert(deduction.stockWarnings));
                         }
                     } catch (e) {
                         console.error('B2B stock deduction failed (invoice already saved):', e);
