@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { createPortal } from 'react-dom';
-import { useSearchParams, Link } from 'react-router-dom';
+import { useSearchParams, useLocation, Link } from 'react-router-dom';
 import { useHashTab } from '../hooks/useHashTab';
 import DigitalKhataPage from './DigitalKhataPage';
 import CustomersPage from './CustomersPage';
@@ -167,6 +167,7 @@ export default function POSPage() {
     const [posModuleTab, setPosModuleTab] = useHashTab<PosModuleTab>(VALID_POS_TABS, 'billing', 'fiinny-tab-pos');
     const { t, i18n } = useTranslation();
     const [searchParams] = useSearchParams();
+    const location = useLocation();
     const { tenantId, hasModule, currentUser, userName, userRole } = useAuth();
     const { showToast } = useToast();
     const [products, setProducts] = useState<Product[]>([]);
@@ -405,9 +406,15 @@ export default function POSPage() {
     // ?reprintOrderId=<id>     → reprint an existing bill
     // ?orderId=<id>            → load a bill for correction
     // Runs once products have loaded so line items can resolve to real products.
-    const handledParamsRef = useRef(false);
+    //
+    // Keyed on the history entry, NOT a one-shot boolean. The Khata tab renders
+    // inside this page, so its Print/Edit buttons only push a new query string —
+    // POSPage never remounts. A boolean latched true after the first hand-off and
+    // silently swallowed every print after it. location.key is fresh for every
+    // navigation, including re-printing the same bill twice.
+    const handledParamsRef = useRef<string | null>(null);
     useEffect(() => {
-        if (!tenantId || handledParamsRef.current) return;
+        if (!tenantId || handledParamsRef.current === location.key) return;
 
         const name = searchParams.get('name');
         const phone = searchParams.get('phone');
@@ -416,7 +423,7 @@ export default function POSPage() {
 
         // Buyer prefill needs nothing else loaded.
         if (!reprintId && !editId && (name || phone)) {
-            handledParamsRef.current = true;
+            handledParamsRef.current = location.key;
             setCustomer({
                 name: name || '',
                 phone: phone || '',
@@ -432,7 +439,7 @@ export default function POSPage() {
         if (!reprintId && !editId) return;
         // Editing needs the catalog so saved line items map back onto products.
         if (editId && products.length === 0) return;
-        handledParamsRef.current = true;
+        handledParamsRef.current = location.key;
 
         (async () => {
             try {
@@ -472,7 +479,7 @@ export default function POSPage() {
             }
         })();
         // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [tenantId, products, searchParams]);
+    }, [tenantId, products, searchParams, location.key]);
 
     // Keyboard shortcuts
     useEffect(() => {
@@ -1340,6 +1347,60 @@ export default function POSPage() {
         {posModuleTab === 'khata'         && <DigitalKhataPage />}
         {posModuleTab === 'customers'     && <CustomersPage />}
         {posModuleTab === 'order-history' && <OrderHistoryPage />}
+
+        {/* Bill print portal — rendered directly on <body> so body.pos-printing CSS
+            can hide everything else (sidebar, nav, app wrapper) without any className
+            gymnastics on the surrounding layout. Both Print and Reprint share this portal;
+            reprintOrder controls which content is active at print time.
+
+            Deliberately OUTSIDE the posModuleTab === 'billing' branch. Printing a bill
+            from the Khata tab (its Print button routes to /pos?reprintOrderId=…) left
+            posModuleTab on 'khata', so this portal was never mounted — and
+            body.pos-printing hid every child of <body> with no print root to reveal,
+            producing a blank page. It costs nothing to always render: #pos-print-root
+            is display:none under @media screen. */}
+        {createPortal(
+            <div id="pos-print-root">
+                {reprintOrder ? (
+                    <PosInvoicePreview
+                        cart={(reprintOrder.lineItems || []).map((li: any) => ({
+                            name: li.productName, cartQuantity: li.quantity, baseUnit: li.unit,
+                            sellingPrice: li.mrp, maxRetailPrice: li.mrp, cartTotal: li.amount, gstPct: li.gstPct,
+                            mfgCompany: li.mfgCompany, batchNo: li.batchNo, expDate: li.expDate,
+                        }))}
+                        customer={{ name: reprintOrder.retailerName, phone: reprintOrder.phoneNumber, address: reprintOrder.address, pin: reprintOrder.pin, taluka: reprintOrder.taluka, district: reprintOrder.district }}
+                        branding={branding}
+                        billNumber={reprintOrder.orderNumber}
+                        discount={reprintOrder.discount || 0}
+                        grandTotal={reprintOrder.grandTotal || 0}
+                        billFormat={billFormat}
+                        invoiceDate={reprintOrder.invoiceDate || ''}
+                        modeOfPayment={reprintOrder.paymentMethod || 'Cash'}
+                        L={L}
+                    />
+                ) : (
+                    <PosInvoicePreview
+                        cart={cart.map(c => ({ ...c, batchNo: rowMeta[c.id]?.batchNo ?? c.batchNumber, expDate: rowMeta[c.id]?.expDate ?? c.expiryDate }))}
+                        customer={customer}
+                        branding={branding}
+                        billNumber={nextBillNumber}
+                        transportCharges={transportCharges}
+                        laborCharges={laborCharges}
+                        discount={loyaltyDiscount}
+                        grandTotal={grandTotal}
+                        creditPaidNow={effectiveCreditPaidNow}
+                        creditAmount={effectiveCreditAmount}
+                        billFormat={billFormat}
+                        invoiceDate={invoiceDate}
+                        modeOfPayment={modeOfPayment}
+                        previousOutstanding={customerOutstanding}
+                        activeCats={invoiceCategories ?? getInvoiceProductCategories(cart)}
+                        L={L}
+                    />
+                )}
+            </div>,
+            document.body
+        )}
 
         {/* ── POS Billing (existing content) ── */}
         {posModuleTab === 'billing' && <div style={{ background: 'var(--bg-color)', minHeight: '100vh', display: 'flex', flexDirection: 'column' }}>
@@ -2566,53 +2627,6 @@ export default function POSPage() {
                         )}
                     </div>
                 </div>
-            )}
-
-            {/* Bill print portal — rendered directly on <body> so body.pos-printing CSS
-                can hide everything else (sidebar, nav, app wrapper) without any className
-                gymnastics on the surrounding layout. Both Print and Reprint share this portal;
-                reprintOrder controls which content is active at print time. */}
-            {createPortal(
-                <div id="pos-print-root">
-                    {reprintOrder ? (
-                        <PosInvoicePreview
-                            cart={(reprintOrder.lineItems || []).map((li: any) => ({
-                                name: li.productName, cartQuantity: li.quantity, baseUnit: li.unit,
-                                sellingPrice: li.mrp, maxRetailPrice: li.mrp, cartTotal: li.amount, gstPct: li.gstPct,
-                                mfgCompany: li.mfgCompany, batchNo: li.batchNo, expDate: li.expDate,
-                            }))}
-                            customer={{ name: reprintOrder.retailerName, phone: reprintOrder.phoneNumber, address: reprintOrder.address, pin: reprintOrder.pin, taluka: reprintOrder.taluka, district: reprintOrder.district }}
-                            branding={branding}
-                            billNumber={reprintOrder.orderNumber}
-                            discount={reprintOrder.discount || 0}
-                            grandTotal={reprintOrder.grandTotal || 0}
-                            billFormat={billFormat}
-                            invoiceDate={reprintOrder.invoiceDate || ''}
-                            modeOfPayment={reprintOrder.paymentMethod || 'Cash'}
-                            L={L}
-                        />
-                    ) : (
-                        <PosInvoicePreview
-                            cart={cart.map(c => ({ ...c, batchNo: rowMeta[c.id]?.batchNo ?? c.batchNumber, expDate: rowMeta[c.id]?.expDate ?? c.expiryDate }))}
-                            customer={customer}
-                            branding={branding}
-                            billNumber={nextBillNumber}
-                            transportCharges={transportCharges}
-                            laborCharges={laborCharges}
-                            discount={loyaltyDiscount}
-                            grandTotal={grandTotal}
-                            creditPaidNow={effectiveCreditPaidNow}
-                            creditAmount={effectiveCreditAmount}
-                            billFormat={billFormat}
-                            invoiceDate={invoiceDate}
-                            modeOfPayment={modeOfPayment}
-                            previousOutstanding={customerOutstanding}
-                            activeCats={invoiceCategories ?? getInvoiceProductCategories(cart)}
-                            L={L}
-                        />
-                    )}
-                </div>,
-                document.body
             )}
 
             {/* ── V-Pay Dialog ──────────────────────────────────────────────────────── */}
