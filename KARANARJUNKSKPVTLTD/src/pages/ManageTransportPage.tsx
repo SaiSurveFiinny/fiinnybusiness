@@ -62,7 +62,12 @@ export default function ManageTransportPage() {
         if (!tenantId) return;
         const q = query(getTenantCollection(db, tenantId, 'transporters'), orderBy('createdAt', 'desc'));
         const unsub = onSnapshot(q, snap => {
-            setTransporters(snap.docs.map(d => ({ id: d.id, ...d.data() }) as Transporter));
+            // `name` coerced at the boundary — the search filter calls
+            // .toLowerCase() on it, and a doc missing it crashes the page.
+            setTransporters(snap.docs.map(d => {
+                const raw = d.data();
+                return { id: d.id, ...raw, name: String(raw.name ?? '') } as Transporter;
+            }));
             setLoading(false);
         }, err => { console.error('Transporter fetch error:', err); setLoading(false); });
         return () => unsub();

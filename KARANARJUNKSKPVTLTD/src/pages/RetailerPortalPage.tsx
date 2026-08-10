@@ -38,7 +38,12 @@ export default function RetailerPortalPage() {
         ]);
         if (rSnap.exists()) setRetailer({ id: rSnap.id, ...rSnap.data() });
         setOrders(oSnap.docs.map(d => ({ id: d.id, ...d.data() })));
-        setProducts(pSnap.docs.map(d => ({ id: d.id, ...d.data() } as Product)));
+        // `name` coerced at the boundary — the product search calls
+        // .toLowerCase() on it, and a doc missing it crashes the portal.
+        setProducts(pSnap.docs.map(d => {
+            const raw = d.data();
+            return { id: d.id, ...raw, name: String(raw.name ?? '') } as Product;
+        }));
         setLoading(false);
     };
 
