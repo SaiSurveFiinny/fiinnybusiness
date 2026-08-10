@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef, useMemo } from 'react';
+import { createPortal } from 'react-dom';
 import {
   Package, Plus, Trash2, X, AlertCircle, Loader2, CheckCircle2, Tag,
 } from 'lucide-react';
@@ -6,6 +7,7 @@ import { addDoc, updateDoc, getDocs, query, where, runTransaction, serverTimesta
 import { db } from '../firebase';
 import { useAuth } from '../contexts/AuthContext';
 import { getTenantCollection, getTenantDoc } from '../utils/tenantPath';
+import { logAudit } from '../utils/auditLog';
 
 /** A stored PO line item. */
 export interface POLine {
@@ -99,7 +101,7 @@ const labelStyle: React.CSSProperties = {
 };
 
 export default function PurchaseOrderModal({ supplierId, supplierName, editing, onClose, onSaved }: PurchaseOrderModalProps) {
-  const { tenantId, currentUser } = useAuth();
+  const { tenantId, currentUser, userName, userRole } = useAuth();
   const isEdit = !!editing;
 
   const [form, setForm] = useState<{ poNumber: string; internalPurchaseId: string; poDate: string; status: string; notes: string; lines: FormLine[] }>(
@@ -114,6 +116,8 @@ export default function PurchaseOrderModal({ supplierId, supplierName, editing, 
         }
       : { poNumber: '', internalPurchaseId: '', poDate: today(), status: 'pending', notes: '', lines: [emptyLine()] }
   );
+
+  const autoGenPoRef = useRef<string>('');
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [poNumberTouched, setPoNumberTouched] = useState(false);
@@ -160,27 +164,50 @@ export default function PurchaseOrderModal({ supplierId, supplierName, editing, 
     }));
   }, [priceList]);
 
-  // Auto-generate Internal Purchase ID on create
+  // Auto-generate PO Number and Internal Purchase ID on create
   useEffect(() => {
     if (isEdit || !tenantId) return;
     let cancelled = false;
     (async () => {
       try {
         const year = new Date().getFullYear();
-        const counterRef = getTenantDoc(db, tenantId, 'counters', 'internalPurchaseId');
-        let seq = 1;
-        await runTransaction(db, async tx => {
-          const snap = await tx.get(counterRef);
-          const data = snap.exists() ? snap.data() as { year?: number; seq?: number } : null;
-          seq = (data && data.year === year) ? (data.seq || 0) + 1 : 1;
-          tx.set(counterRef, { year, seq }, { merge: true });
-        });
-        const generated = `PUR-${year}-${String(seq).padStart(6, '0')}`;
+        // Run both counter increments in parallel
+        const [poSeq, intSeq] = await Promise.all([
+          (async () => {
+            let seq = 1;
+            await runTransaction(db, async tx => {
+              const ref = getTenantDoc(db, tenantId, 'counters', 'poNumber');
+              const snap = await tx.get(ref);
+              const data = snap.exists() ? snap.data() as { year?: number; seq?: number } : null;
+              seq = (data && data.year === year) ? (data.seq || 0) + 1 : 1;
+              tx.set(ref, { year, seq }, { merge: true });
+            });
+            return seq;
+          })(),
+          (async () => {
+            let seq = 1;
+            await runTransaction(db, async tx => {
+              const ref = getTenantDoc(db, tenantId, 'counters', 'internalPurchaseId');
+              const snap = await tx.get(ref);
+              const data = snap.exists() ? snap.data() as { year?: number; seq?: number } : null;
+              seq = (data && data.year === year) ? (data.seq || 0) + 1 : 1;
+              tx.set(ref, { year, seq }, { merge: true });
+            });
+            return seq;
+          })(),
+        ]);
         if (!cancelled) {
-          autoGenIdRef.current = generated;
-          setForm(f => f.internalPurchaseId ? f : { ...f, internalPurchaseId: generated });
+          const generatedPo = `PO-${year}-${String(poSeq).padStart(5, '0')}`;
+          const generatedInt = `PUR-${year}-${String(intSeq).padStart(6, '0')}`;
+          autoGenPoRef.current = generatedPo;
+          autoGenIdRef.current = generatedInt;
+          setForm(f => ({
+            ...f,
+            poNumber: f.poNumber || generatedPo,
+            internalPurchaseId: f.internalPurchaseId || generatedInt,
+          }));
         }
-      } catch { /* non-fatal */ }
+      } catch { /* non-fatal — user can still type manually */ }
     })();
     return () => { cancelled = true; };
   }, [isEdit, tenantId]);
@@ -222,7 +249,8 @@ export default function PurchaseOrderModal({ supplierId, supplierName, editing, 
 
   const handleSave = async () => {
     if (!tenantId) return;
-    if (!form.poNumber.trim()) { setPoNumberTouched(true); setError('Enter a PO / bill number to save.'); return; }
+    // poNumber is auto-generated; if counter failed the field will be empty — fill a fallback
+    const poNum = form.poNumber.trim() || `PO-${new Date().getFullYear()}-${Date.now().toString().slice(-5)}`;
     const lines: POLine[] = form.lines
       .filter(l => l.description.trim())
       .map(l => {
@@ -256,15 +284,17 @@ export default function PurchaseOrderModal({ supplierId, supplierName, editing, 
       }
       if (editing) {
         await updateDoc(getTenantDoc(db, tenantId, 'purchaseOrders', editing.id), {
-          supplierId, poNumber: form.poNumber.trim(), internalPurchaseId: internalId, poDate: form.poDate, status: form.status,
+          supplierId, poNumber: poNum, internalPurchaseId: internalId, poDate: form.poDate, status: form.status,
           notes: form.notes.trim(), lines, totalAmount: total, taxableValue: total, updatedAt: serverTimestamp(),
         });
+        logAudit({ db, tenantId: tenantId!, userId: currentUser?.uid || '', userName: userName || currentUser?.email || 'Unknown', userRole: userRole || 'unknown', module: 'Purchase Orders', action: 'Update', entityName: poNum, entityId: editing.id, description: `PO updated · ${poNum} · ${supplierName} · ₹${total.toLocaleString('en-IN')}`, after: { poNumber: poNum, totalAmount: total, status: form.status } });
       } else {
         await addDoc(getTenantCollection(db, tenantId, 'purchaseOrders'), {
-          supplierId, supplierName, poNumber: form.poNumber.trim(), internalPurchaseId: internalId, poDate: form.poDate, status: form.status,
+          supplierId, supplierName, poNumber: poNum, internalPurchaseId: internalId, poDate: form.poDate, status: form.status,
           notes: form.notes.trim(), lines, totalAmount: total, taxableValue: total,
           createdAt: serverTimestamp(), createdBy: currentUser?.email ?? '',
         });
+        logAudit({ db, tenantId: tenantId!, userId: currentUser?.uid || '', userName: userName || currentUser?.email || 'Unknown', userRole: userRole || 'unknown', module: 'Purchase Orders', action: 'Create', entityName: poNum, description: `PO created · ${poNum} · ${supplierName} · ₹${total.toLocaleString('en-IN')}`, after: { poNumber: poNum, supplierName, totalAmount: total, status: form.status } });
       }
       onSaved();
     } catch (e) {
@@ -275,7 +305,13 @@ export default function PurchaseOrderModal({ supplierId, supplierName, editing, 
 
   const hasPriceList = priceList.length > 0;
 
-  return (
+  useEffect(() => {
+    const prev = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    return () => { document.body.style.overflow = prev; };
+  }, []);
+
+  return createPortal(
     <div
       ref={overlayRef}
       onMouseDown={e => { if (e.target === overlayRef.current && !saving) onClose(); }}
@@ -315,19 +351,21 @@ export default function PurchaseOrderModal({ supplierId, supplierName, editing, 
         {/* Header fields */}
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem', marginBottom: '1rem' }}>
           <div>
-            <label style={labelStyle}>PO / Bill No. *</label>
+            <label style={labelStyle}>
+              PO Number
+              {!isEdit && <span style={{ marginLeft: '0.35rem', fontSize: '0.7rem', fontWeight: 500, color: 'var(--primary-light)' }}>(auto-generated)</span>}
+            </label>
             <input
               ref={firstFieldRef}
               className="input-field"
-              placeholder="e.g. UAB/1620/25-26"
+              placeholder="Auto-generating…"
               value={form.poNumber}
               onChange={e => setForm(f => ({ ...f, poNumber: e.target.value }))}
-              onBlur={() => setPoNumberTouched(true)}
-              style={{ width: '100%', margin: 0, borderColor: poNumberTouched && !form.poNumber.trim() ? '#ff4d4f' : undefined }}
+              style={{ width: '100%', margin: 0 }}
             />
-            {poNumberTouched && !form.poNumber.trim() && (
-              <div style={{ fontSize: '0.72rem', color: '#ff4d4f', marginTop: '0.3rem', display: 'flex', alignItems: 'center', gap: '0.3rem' }}>
-                <AlertCircle size={11} /> Enter the supplier's bill or invoice number to save.
+            {!isEdit && (
+              <div style={{ fontSize: '0.7rem', color: 'var(--text-tertiary)', marginTop: '0.25rem' }}>
+                You can override this with the supplier's bill / invoice number.
               </div>
             )}
           </div>
@@ -491,6 +529,7 @@ export default function PurchaseOrderModal({ supplierId, supplierName, editing, 
           </button>
         </div>
       </div>
-    </div>
+    </div>,
+    document.body
   );
 }

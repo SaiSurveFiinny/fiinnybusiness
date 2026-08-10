@@ -1,10 +1,13 @@
 import { useState, useEffect } from 'react';
 import { Users, Edit2, Trash2, Search, MapPin, Phone, Mail, X, Save, Loader2 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
-import { query, onSnapshot, updateDoc, deleteDoc } from 'firebase/firestore';
+import { query, onSnapshot, updateDoc } from 'firebase/firestore';
+import { softDelete } from '../utils/softDelete';
 import { db } from '../firebase';
 import { useAuth } from '../contexts/AuthContext';
 import { getTenantCollection, getTenantDoc } from '../utils/tenantPath';
+import { logAudit } from '../utils/auditLog';
+import { LOCATION_DATA, STATES } from '../utils/locationData';
 
 interface Retailer {
     id: string;
@@ -16,6 +19,7 @@ interface Retailer {
     district?: string;
     state?: string;
     country?: string;
+    fullAddress?: string;
     gstin?: string;
     licenseNumber?: string;
     portfolioSize: string;
@@ -23,7 +27,7 @@ interface Retailer {
 }
 
 export default function ManageRetailersPage() {
-    const { userRole, tenantId } = useAuth();
+    const { userRole, tenantId, currentUser, userName } = useAuth();
     const { t } = useTranslation();
     const [retailers, setRetailers] = useState<Retailer[]>([]);
     const [loading, setLoading] = useState(true);
@@ -37,11 +41,12 @@ export default function ManageRetailersPage() {
         name: '',
         number: '',
         email: '',
-        atPost: '',
-        taluka: '',
+        country: 'India',
+        state: 'Maharashtra',
         district: '',
-        state: '',
-        country: '',
+        taluka: '',
+        atPost: '',
+        fullAddress: '',
         gstin: '',
         licenseNumber: '',
         portfolioSize: ''
@@ -51,10 +56,9 @@ export default function ManageRetailersPage() {
         if (!tenantId) return;
         const q = query(getTenantCollection(db, tenantId, 'retailers'));
         const unsubscribe = onSnapshot(q, (snapshot) => {
-            const data = snapshot.docs.map(doc => ({
-                id: doc.id,
-                ...doc.data()
-            })) as Retailer[];
+            const data = snapshot.docs
+                .map(doc => ({ id: doc.id, ...doc.data() }))
+                .filter((r: any) => !r.deleted) as Retailer[];
             setRetailers(data);
             setLoading(false);
         });
@@ -68,11 +72,12 @@ export default function ManageRetailersPage() {
             name: retailer.name || '',
             number: retailer.number || '',
             email: retailer.email || '',
-            atPost: retailer.atPost || '',
-            taluka: retailer.taluka || '',
-            district: retailer.district || '',
-            state: retailer.state || 'Maharashtra',
             country: retailer.country || 'India',
+            state: retailer.state || 'Maharashtra',
+            district: retailer.district || '',
+            taluka: retailer.taluka || '',
+            atPost: retailer.atPost || '',
+            fullAddress: retailer.fullAddress || '',
             gstin: retailer.gstin || '',
             licenseNumber: retailer.licenseNumber || '',
             portfolioSize: retailer.portfolioSize || 'Small'
@@ -87,10 +92,13 @@ export default function ManageRetailersPage() {
 
         try {
             const docRef = getTenantDoc(db, tenantId!, 'retailers', editingRetailer.id);
+            const before = { name: editingRetailer.name, number: editingRetailer.number, district: editingRetailer.district, portfolioSize: editingRetailer.portfolioSize };
+            const after  = { name: formData.name, number: formData.number, district: formData.district, portfolioSize: formData.portfolioSize };
             await updateDoc(docRef, {
                 ...formData,
                 location: `${formData.atPost}, ${formData.taluka}, ${formData.district}`
             });
+            logAudit({ db, tenantId: tenantId!, userId: currentUser?.uid || '', userName: userName || currentUser?.email || 'Unknown', userRole: userRole || 'unknown', module: 'Manage Retailers', action: 'Update', entityName: formData.name, entityId: editingRetailer.id, description: `Retailer profile updated`, before, after });
             setIsModalOpen(false);
             setEditingRetailer(null);
             alert(t('manage_retailers.update_success'));
@@ -104,18 +112,30 @@ export default function ManageRetailersPage() {
 
     const handleDelete = async (id: string) => {
         if (!tenantId || !window.confirm(t('manage_retailers.delete_confirm'))) return;
+        const retailer = retailers.find(r => r.id === id);
         try {
-            await deleteDoc(getTenantDoc(db, tenantId, 'retailers', id));
+            await softDelete({
+                db, tenantId,
+                collectionName: 'retailers',
+                docId: id,
+                userId: currentUser?.uid || '',
+                userName: userName || currentUser?.email || 'Unknown',
+                userRole: userRole || 'unknown',
+                module: 'Manage Retailers',
+                entityName: retailer?.name || id,
+            });
         } catch (error) {
             console.error("Error deleting retailer:", error);
             alert(t('manage_retailers.delete_error'));
         }
     };
 
+    const q = searchTerm.toLowerCase();
     const filteredRetailers = retailers.filter(r =>
-        r.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
-        r.district?.toLowerCase().includes(searchTerm.toLowerCase()) ||
-        r.number.includes(searchTerm)
+        (r.name ?? '').toLowerCase().includes(q) ||
+        (r.district ?? '').toLowerCase().includes(q) ||
+        (r.number ?? '').toLowerCase().includes(q) ||
+        (r.email ?? '').toLowerCase().includes(q)
     );
 
     if (userRole !== 'admin') {
@@ -135,7 +155,7 @@ export default function ManageRetailersPage() {
                     </h1>
                     <p style={{ color: 'var(--text-secondary)' }}>{t('manage_retailers.manage_retailers_desc')}</p>
                 </div>
-                <div style={{ position: 'relative', minWidth: '300px' }}>
+                <div style={{ position: 'relative', minWidth: '380px' }}>
                     <Search size={18} style={{ position: 'absolute', left: '1rem', top: '50%', transform: 'translateY(-50%)', color: 'var(--text-tertiary)' }} />
                     <input
                         type="text"
@@ -228,8 +248,33 @@ export default function ManageRetailersPage() {
                             </div>
 
                             <div>
-                                <label className="input-label">{t('onboarding.village')}</label>
-                                <input className="input-field" value={formData.atPost} onChange={e => setFormData({ ...formData, atPost: e.target.value })} />
+                                <label className="input-label">{t('onboarding.country')}</label>
+                                <input readOnly className="input-field" value={formData.country} style={{ opacity: 0.6, cursor: 'not-allowed' }} />
+                            </div>
+                            <div>
+                                <label className="input-label">{t('onboarding.state')}</label>
+                                <select
+                                    className="input-field"
+                                    value={formData.state}
+                                    onChange={e => setFormData({ ...formData, state: e.target.value, district: '' })}
+                                    style={{ cursor: 'pointer', appearance: 'auto' }}
+                                >
+                                    <option value="">{t('onboarding.select_state')}</option>
+                                    {STATES.map(s => <option key={s} value={s}>{s}</option>)}
+                                </select>
+                            </div>
+
+                            <div>
+                                <label className="input-label">{t('onboarding.district')}</label>
+                                <select
+                                    className="input-field"
+                                    value={formData.district}
+                                    onChange={e => setFormData({ ...formData, district: e.target.value })}
+                                    style={{ cursor: 'pointer', appearance: 'auto' }}
+                                >
+                                    <option value="">{t('onboarding.select_district')}</option>
+                                    {(LOCATION_DATA[formData.state] ?? []).map(d => <option key={d} value={d}>{d}</option>)}
+                                </select>
                             </div>
                             <div>
                                 <label className="input-label">{t('onboarding.taluka')}</label>
@@ -237,12 +282,20 @@ export default function ManageRetailersPage() {
                             </div>
 
                             <div>
-                                <label className="input-label">{t('onboarding.district')}</label>
-                                <input className="input-field" value={formData.district} onChange={e => setFormData({ ...formData, district: e.target.value })} />
+                                <label className="input-label">{t('onboarding.village')}</label>
+                                <input className="input-field" value={formData.atPost} onChange={e => setFormData({ ...formData, atPost: e.target.value })} />
                             </div>
-                            <div>
-                                <label className="input-label">{t('onboarding.state')}</label>
-                                <input className="input-field" value={formData.state} onChange={e => setFormData({ ...formData, state: e.target.value })} />
+
+                            <div style={{ gridColumn: 'span 2' }}>
+                                <label className="input-label">{t('onboarding.full_address')}</label>
+                                <textarea
+                                    className="input-field"
+                                    placeholder={t('onboarding.placeholder_full_address')}
+                                    value={formData.fullAddress}
+                                    onChange={e => setFormData({ ...formData, fullAddress: e.target.value })}
+                                    rows={2}
+                                    style={{ resize: 'vertical' }}
+                                />
                             </div>
 
                             <div>

@@ -101,6 +101,14 @@ service cloud.firestore {
         allow write: if false;
       }
 
+      // Audit Log — append-only by any authenticated tenant member; read by admin only.
+      // Documents must never be updated or deleted (immutable audit trail).
+      match /auditLogs/{logId} {
+        allow create: if request.auth != null && getUserData() != null && getUserData().tenantId == tenantId;
+        allow read:   if request.auth != null && getUserData() != null && getUserData().tenantId == tenantId && isAdminOrAnalyst();
+        allow update, delete: if false;
+      }
+
       // Returns — admin/analyst full access
       match /returns/{returnId} {
         allow read, write: if request.auth != null && getUserData() != null && getUserData().tenantId == tenantId && isAdminOrAnalyst();
@@ -147,6 +155,14 @@ service cloud.firestore {
       match /retailers/{rId} {
         allow read: if request.auth != null && (isAdminOrAnalyst() || isSales() || (hasRole('retailer') && getLinkedId() == rId));
         allow write: if request.auth != null && isAdminOrAnalyst();
+
+        // payments and notes subcollections used by both B2B partners and POS customer profiles
+        match /payments/{payId} {
+          allow read, write: if request.auth != null && getUserData() != null && getUserData().tenantId == tenantId && isAdminOrAnalyst();
+        }
+        match /notes/{noteId} {
+          allow read, write: if request.auth != null && getUserData() != null && getUserData().tenantId == tenantId && isAdminOrAnalyst();
+        }
 
         match /{subcollection=**} {
           allow read, write: if request.auth != null && (isAdminOrAnalyst() || (hasRole('retailer') && getLinkedId() == rId));
@@ -235,6 +251,11 @@ service cloud.firestore {
       match /settings/rolePermissions {
         allow read: if request.auth != null;
         allow write: if request.auth != null && request.auth.uid != null && isAdminOrAnalyst();
+      }
+
+      // Expense Tracker — admin/analyst full CRUD; no employee link required
+      match /expenses/{expenseId} {
+        allow read, write: if request.auth != null && getUserData() != null && getUserData().tenantId == tenantId && isAdminOrAnalyst();
       }
     }
     

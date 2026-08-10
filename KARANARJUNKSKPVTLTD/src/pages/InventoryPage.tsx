@@ -1,25 +1,32 @@
-import { useState } from 'react';
-import { Package, Warehouse, Layers } from 'lucide-react';
+import { Package, Warehouse, Layers, Truck, History, Factory } from 'lucide-react';
+import { useHashTab } from '../hooks/useHashTab';
 
 // Import sub-pages directly (InventoryPage itself is lazy-loaded by App.tsx)
 import RateSheetPage from './RateSheetPage';
 import WarehousePage from './WarehousePage';
 import InventoryBatchPage from './InventoryBatchPage';
+import ManageTransportPage from './ManageTransportPage';
+import StockMovementPage from './StockMovementPage';
+import ManufacturersPage from './ManufacturersPage';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
-type InventoryTab = 'products' | 'warehouses' | 'batches';
+type InventoryTab = 'products' | 'batches' | 'stock-movement' | 'warehouses' | 'transport' | 'manufacturers';
+const VALID_TABS: readonly InventoryTab[] = ['products', 'batches', 'stock-movement', 'warehouses', 'transport', 'manufacturers'];
 
 const INVENTORY_TABS: { id: InventoryTab; label: string; icon: React.ReactNode }[] = [
-    { id: 'products',   label: 'Products',          icon: <Package size={16} /> },
-    { id: 'warehouses', label: 'Warehouses',         icon: <Warehouse size={16} /> },
-    { id: 'batches',    label: 'Inventory Batches',  icon: <Layers size={16} /> },
+    { id: 'products',       label: 'Product Master',    icon: <Package size={16} /> },
+    { id: 'batches',        label: 'Inventory Batches', icon: <Layers size={16} /> },
+    { id: 'stock-movement', label: 'Stock Movement',    icon: <History size={16} /> },
+    { id: 'warehouses',     label: 'Warehouses',        icon: <Warehouse size={16} /> },
+    { id: 'transport',      label: 'Transport',         icon: <Truck size={16} /> },
+    { id: 'manufacturers',  label: 'Manufacturers',     icon: <Factory size={16} /> },
 ];
 
 // ─── Main Component ───────────────────────────────────────────────────────────
 
 export default function InventoryPage() {
-    const [activeTab, setActiveTab] = useState<InventoryTab>('products');
+    const [activeTab, setActiveTab] = useHashTab<InventoryTab>(VALID_TABS, 'products', 'fiinny-tab-inventory');
 
     return (
         <div className="animate-fade-in" style={{ maxWidth: '1400px', margin: '0 auto' }}>
@@ -38,8 +45,6 @@ export default function InventoryPage() {
                     borderBottom: '2px solid var(--surface-border)',
                     overflowX: 'auto',
                     scrollbarWidth: 'none',
-                    // Negative margin trick so the sticky bar bleeds to page edges even
-                    // when the parent has padding, matching the WorklistPage pattern.
                     marginLeft: '-2rem',
                     marginRight: '-2rem',
                     paddingLeft: '2rem',
@@ -90,9 +95,12 @@ export default function InventoryPage() {
             </div>
 
             {/* ── Tab Content ── */}
-            {activeTab === 'products'   && <RateSheetPage />}
-            {activeTab === 'warehouses' && <WarehousePage />}
-            {activeTab === 'batches'    && <InventoryBatchPage />}
+            {activeTab === 'products'       && <RateSheetPage />}
+            {activeTab === 'batches'        && <InventoryBatchPage />}
+            {activeTab === 'stock-movement' && <StockMovementPage />}
+            {activeTab === 'warehouses'     && <WarehousePage />}
+            {activeTab === 'transport'      && <ManageTransportPage />}
+            {activeTab === 'manufacturers'  && <ManufacturersPage />}
         </div>
     );
 }

@@ -95,6 +95,24 @@ body {
     background-image: none !important;
     color: black !important;
   }
+
+  /* POS bill isolation: when body has this class, hide EVERYTHING except
+     the bill portal rendered directly on <body>, so the app sidebar,
+     nav wrapper, and all other chrome never appear in the print output. */
+  body.pos-printing > *:not(#pos-print-root) {
+    display: none !important;
+  }
+  body.pos-printing #pos-print-root {
+    display: block !important;
+    width: 100%;
+  }
+}
+
+/* Always hidden on screen — only shown when pos-printing body class is set */
+@media screen {
+  #pos-print-root {
+    display: none !important;
+  }
 }
 
 @media screen {
@@ -177,6 +195,20 @@ h3 {
   border-color: var(--primary);
   box-shadow: var(--neon-glow);
   background: var(--input-bg);
+}
+
+/* Select dropdowns — must also follow the theme for both the control and option list */
+select.input-field,
+select.input-field option {
+  background: var(--input-bg);
+  color: var(--text-primary);
+}
+
+/* Inline-styled filter selects (transparent background wrappers) need explicit
+   option colours in dark mode so they don't render as black-on-black. */
+.dark-theme select option {
+  background: hsl(220, 20%, 14%);
+  color: hsl(220, 20%, 90%);
 }
 
 /* Buttons */

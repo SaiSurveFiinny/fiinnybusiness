@@ -36,7 +36,16 @@ export async function fetchBrandPageCustomization(
   }
 }
 
-/** Fetch active products for a manufacturer (by uid / manufacturerId). */
+/**
+ * Fetch active products for a manufacturer (by uid / manufacturerId).
+ *
+ * Scoped to ownerType=='manufacturer' — every retailer-assignment copy of
+ * this manufacturer's products also stamps manufacturerId with the original
+ * manufacturer's uid for traceability, even though the copy is owned by the
+ * retailer (ownerType: 'retailer'). Without this scope, the dashboard's
+ * brand-page editor/preview showed every retailer's copy as if it were the
+ * manufacturer's own product, and paid for the read on every one of them.
+ */
 export async function fetchBrandProducts(
   manufacturerUid: string,
 ): Promise<{ id: string; name: string; category: string; price: number; image: string }[]> {
@@ -44,6 +53,7 @@ export async function fetchBrandProducts(
     query(
       collection(db, "products"),
       where("manufacturerId", "==", manufacturerUid),
+      where("ownerType", "==", "manufacturer"),
       where("isActive", "==", true),
     ),
   );

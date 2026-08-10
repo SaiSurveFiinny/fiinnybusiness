@@ -4,12 +4,14 @@ import { useState, useEffect, useRef, useMemo } from 'react';
 export interface ProductLite {
   id: string;
   name: string;
+  mfgCompany?: string;  // Manufacturer — auto-fills the Manufacturer field on the purchase line
   baseUnit?: string;
   unit?: string;
-  // Purchase invoice fields
   purchasePrice?: number;
   gstPct?: number;
   retailerPrice?: number;
+  maxRetailPrice?: number;
+  sellingPrice?: number;
   boxCapacity?: number;
   unitSize?: number;
   unitMeasure?: string;
@@ -133,9 +135,14 @@ export default function ProductAutocomplete({
                   display: 'flex', justifyContent: 'space-between', gap: '0.5rem',
                 }}
               >
-                <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{p.name}</span>
+                <div style={{ overflow: 'hidden', minWidth: 0 }}>
+                  <div style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{p.name}</div>
+                  {p.mfgCompany && (
+                    <div style={{ fontSize: '0.7rem', color: 'var(--text-tertiary)', marginTop: '1px' }}>{p.mfgCompany}</div>
+                  )}
+                </div>
                 {(p.baseUnit || p.unit) && (
-                  <span style={{ color: 'var(--text-tertiary)', fontSize: '0.72rem', flexShrink: 0 }}>
+                  <span style={{ color: 'var(--text-tertiary)', fontSize: '0.72rem', flexShrink: 0, alignSelf: 'center' }}>
                     {p.baseUnit || p.unit}
                   </span>
                 )}

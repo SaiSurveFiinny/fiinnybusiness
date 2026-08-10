@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
+import { createPortal } from 'react-dom';
 import {
   Plus, Pencil, X, CheckCircle2, Loader2, AlertCircle, ChevronDown, ChevronRight,
   Building2, Landmark, IndianRupee, FileText, Settings2, ExternalLink,
@@ -7,6 +8,7 @@ import { addDoc, updateDoc, getDocs, serverTimestamp } from 'firebase/firestore'
 import { db } from '../firebase';
 import { useAuth } from '../contexts/AuthContext';
 import { getTenantCollection, getTenantDoc } from '../utils/tenantPath';
+import { logAudit } from '../utils/auditLog';
 import {
   checkMobile, checkGstin, checkPan, checkIfsc, checkEmail,
   checkNonNegativeNumber, checkWebsite, findDuplicateName,
@@ -113,7 +115,7 @@ const groupTitle: React.CSSProperties = {
 export default function SupplierFormModal(props: SupplierFormModalProps) {
   const { mode, onClose } = props;
   const isEdit = mode === 'edit';
-  const { tenantId, currentUser } = useAuth();
+  const { tenantId, currentUser, userName, userRole } = useAuth();
 
   const [form, setForm] = useState<Form>(() => (isEdit ? toFormState(props.initial) : emptyForm));
   const [errors, setErrors] = useState<Errors>({});
@@ -139,6 +141,13 @@ export default function SupplierFormModal(props: SupplierFormModalProps) {
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
   }, [saving, onClose]);
+
+  // Lock background scroll while modal is open
+  useEffect(() => {
+    const prev = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    return () => { document.body.style.overflow = prev; };
+  }, []);
 
   const set = <K extends keyof Form>(key: K, val: Form[K]) => {
     setForm(f => ({ ...f, [key]: val }));
@@ -214,6 +223,7 @@ export default function SupplierFormModal(props: SupplierFormModalProps) {
           updatedAt: serverTimestamp(),
           updatedBy: currentUser?.email ?? '',
         });
+        logAudit({ db, tenantId: tenantId!, userId: currentUser?.uid || '', userName: userName || currentUser?.email || 'Unknown', userRole: userRole || 'unknown', module: 'Supplier Ledger', action: 'Update', entityName: form.name.trim(), entityId: props.supplierId, description: `Supplier profile updated` });
         props.onSaved();
       } else {
         const ref = await addDoc(getTenantCollection(db, tenantId, 'suppliers'), {
@@ -224,6 +234,7 @@ export default function SupplierFormModal(props: SupplierFormModalProps) {
           createdAt: serverTimestamp(),
           createdBy: currentUser?.email ?? '',
         });
+        logAudit({ db, tenantId: tenantId!, userId: currentUser?.uid || '', userName: userName || currentUser?.email || 'Unknown', userRole: userRole || 'unknown', module: 'Supplier Ledger', action: 'Create', entityName: form.name.trim(), entityId: ref.id, description: `New supplier added` });
         props.onCreated(openAfter ? ref.id : undefined);
       }
     } catch (err) {
@@ -255,12 +266,12 @@ export default function SupplierFormModal(props: SupplierFormModalProps) {
     </div>
   );
 
-  return (
+  return createPortal(
     <div
       ref={overlayRef}
       onMouseDown={e => { if (e.target === overlayRef.current && !saving) onClose(); }}
       style={{
-        position: 'fixed', inset: 0, zIndex: 1000,
+        position: 'fixed', inset: 0, zIndex: 1100,
         display: 'flex', alignItems: 'center', justifyContent: 'center',
         padding: '1rem', background: 'hsla(220, 30%, 4%, 0.72)',
         backdropFilter: 'blur(4px)', WebkitBackdropFilter: 'blur(4px)',
@@ -435,6 +446,7 @@ export default function SupplierFormModal(props: SupplierFormModalProps) {
           )}
         </div>
       </div>
-    </div>
+    </div>,
+    document.body
   );
 }

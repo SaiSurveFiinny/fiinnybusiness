@@ -9,10 +9,32 @@ import { query, onSnapshot, orderBy, updateDoc, writeBatch, serverTimestamp, get
 import { db } from '../firebase';
 import { useAuth } from '../contexts/AuthContext';
 import { getTenantCollection, getTenantDoc } from '../utils/tenantPath';
+import { logAudit } from '../utils/auditLog';
 import { useSalesFilter, fetchSalesOrdersByRetailerIds } from '../hooks/useSalesFilter';
 import { printB2BInvoice } from '../utils/printB2BInvoice';
 
 // ─── Types ──────────────────────────────────────────────────────────────────
+
+const TRACKING_STATUSES = ['confirmed', 'dispatched', 'delivered', 'cancelled'] as const;
+type TrackingStatus = typeof TRACKING_STATUSES[number];
+
+const TRACKING_BADGE: Record<TrackingStatus, { label: string; bg: string; color: string }> = {
+    confirmed:  { label: 'Order Placed', bg: 'rgba(245,158,11,0.12)',  color: '#f59e0b' },
+    dispatched: { label: 'Dispatched',   bg: 'rgba(56,189,248,0.12)',  color: '#38bdf8' },
+    delivered:  { label: 'Delivered',    bg: 'rgba(16,185,129,0.12)',  color: '#10b981' },
+    cancelled:  { label: 'Cancelled',    bg: 'rgba(239,68,68,0.10)',   color: '#ef4444' },
+};
+
+function TrackingBadge({ status }: { status?: string }) {
+    const s = status as TrackingStatus;
+    const cfg = TRACKING_STATUSES.includes(s) ? TRACKING_BADGE[s] : null;
+    if (!cfg) return <span style={{ color: 'var(--text-tertiary)', fontSize: '0.75rem' }}>—</span>;
+    return (
+        <span style={{ fontSize: '0.72rem', fontWeight: 700, padding: '0.2rem 0.6rem', borderRadius: '99px', background: cfg.bg, color: cfg.color, whiteSpace: 'nowrap' }}>
+            {cfg.label}
+        </span>
+    );
+}
 
 interface B2BInvoice {
     id: string;
@@ -45,7 +67,7 @@ const PAYMENT_MODES = ['Cash', 'UPI', 'Cheque', 'NEFT', 'RTGS', 'Credit', 'Onlin
 
 export default function B2BInvoiceWorklistPage() {
     const navigate = useNavigate();
-    const { tenantId, userRole } = useAuth();
+    const { tenantId, userRole, currentUser, userName } = useAuth();
     const isSales = userRole === 'sales';
     const isViewOnly = isSales || userRole === 'retailer';
     const { allowedRetailerIds, filterLoading } = useSalesFilter();
@@ -123,6 +145,7 @@ export default function B2BInvoiceWorklistPage() {
             status: status === 'Paid' ? 'paid' : (o.status === 'paid' ? 'pending' : (o.status || 'pending')),
             updatedAt: serverTimestamp(),
         });
+        logAudit({ db, tenantId, userId: currentUser?.uid || '', userName: userName || currentUser?.email || 'Unknown', userRole: userRole || 'unknown', module: 'B2B Invoice', action: 'Record Payment', entityName: o.retailerName || o.orderNumber || o.id, entityId: o.id, description: `Payment marked as ${status} · ${o.orderNumber || o.id} · ₹${total.toLocaleString('en-IN')}`, before: { paymentStatus: o.paymentStatus || 'Pending' }, after: { paymentStatus: status } });
     };
 
     const selectAllFiltered = () => setSelectedIds(new Set(filtered.map(o => o.id)));
@@ -150,7 +173,12 @@ export default function B2BInvoiceWorklistPage() {
         ? { paymentStatus: 'Paid', amountPaid: amountOf(o), status: 'paid' }
         : { paymentStatus: 'Pending', amountPaid: 0, status: o.status === 'paid' ? 'pending' : (o.status || 'pending') });
 
-    const bulkOrderStatus = (value: string) => { if (value) applyToSelected(() => ({ status: value })); };
+    const bulkOrderStatus = async (value: string) => {
+        if (!value) return;
+        const affected = invoices.filter(o => selectedIds.has(o.id));
+        await applyToSelected(() => ({ status: value }));
+        logAudit({ db, tenantId: tenantId!, userId: currentUser?.uid || '', userName: userName || currentUser?.email || 'Unknown', userRole: userRole || 'unknown', module: 'B2B Invoice', action: 'Status Change', entityName: `${affected.length} invoice(s)`, description: `Bulk status → ${value} on: ${affected.map(o => o.orderNumber || o.id).join(', ')}`, after: { status: value } });
+    };
     const bulkPaymentMode = (value: string) => { if (value) applyToSelected(() => ({ modeOfPayment: value })); };
     const bulkInvoiceDate = (value: string) => { if (value) applyToSelected(() => ({ invoiceDate: value })); };
     const bulkDueDate = (value: string) => { if (value) applyToSelected(() => ({ dueDate: value })); };
@@ -158,10 +186,12 @@ export default function B2BInvoiceWorklistPage() {
     const bulkDelete = async () => {
         if (!tenantId || selectedIds.size === 0) return;
         setWorking(true);
+        const deletedInvoices = invoices.filter(o => selectedIds.has(o.id));
         try {
             const batch = writeBatch(db);
             [...selectedIds].forEach(id => batch.delete(getTenantDoc(db, tenantId, 'salesOrders', id)));
             await batch.commit();
+            logAudit({ db, tenantId, userId: currentUser?.uid || '', userName: userName || currentUser?.email || 'Unknown', userRole: userRole || 'unknown', module: 'B2B Invoice', action: 'Delete', entityName: `${selectedIds.size} B2B invoice(s)`, description: `Bulk deleted ${selectedIds.size} invoice(s): ${deletedInvoices.map(o => o.orderNumber || o.id).join(', ')}` });
             clearSelection();
             setShowBulkDelete(false);
         } catch (e) {
@@ -319,6 +349,7 @@ export default function B2BInvoiceWorklistPage() {
                                 <th style={{ padding: '0.85rem 1rem', fontWeight: 600, textAlign: 'right' }}>Paid</th>
                                 <th style={{ padding: '0.85rem 1rem', fontWeight: 600, textAlign: 'right' }}>Outstanding</th>
                                 <th style={{ padding: '0.85rem 1rem', fontWeight: 600 }}>Payment</th>
+                                <th style={{ padding: '0.85rem 1rem', fontWeight: 600 }}>Tracking</th>
                                 <th style={{ padding: '0.85rem 1rem', fontWeight: 600, textAlign: 'center' }}>Actions</th>
                             </tr>
                         </thead>
@@ -375,6 +406,9 @@ export default function B2BInvoiceWorklistPage() {
                                                     <option value="Paid">Paid</option>
                                                 </select>
                                             )}
+                                        </td>
+                                        <td style={{ padding: '0.85rem 1rem' }}>
+                                            <TrackingBadge status={o.status} />
                                         </td>
                                         <td style={{ padding: '0.85rem 1rem', textAlign: 'center' }}>
                                             {isSales ? (

@@ -1,5 +1,6 @@
 {
     "common": {
+        "help_center": "मदत केंद्र",
         "dashboard": "डॅशबोर्ड",
         "retailers": "किरकोळ विक्रेते",
         "inventory": "इन्व्हेंटरी",
@@ -118,7 +119,11 @@
         "placeholder_taluka": "उदा. राहुरी",
         "placeholder_district": "उदा. अहमदनगर",
         "placeholder_gstin": "२७XXXXXXX...",
-        "placeholder_license": "Lic/2024/..."
+        "placeholder_license": "Lic/2024/...",
+        "full_address": "पूर्ण पत्ता (ऐच्छिक)",
+        "placeholder_full_address": "रस्ता, खूण, इ.",
+        "select_state": "राज्य निवडा…",
+        "select_district": "जिल्हा निवडा…"
     },
     "manage_retailers": {
         "title": "किरकोळ विक्रेते व्यवस्थापित करा",
@@ -657,7 +662,7 @@
         "net_amount": "निव्वळ रक्कम",
         "amount_in_words": "अक्षरी रक्कम",
         "declaration": "घोषणा",
-        "declaration_text": "आम्ही घोषित करतो की या बिलात वस्तूंची प्रत्यक्ष किंमत दर्शविली आहे आणि सर्व तपशील खरे व बरोबर आहेत.",
+        "declaration_text": "आम्ही प्रमाणित करतो की या बिलातील तपशील खरे व बरोबर आहेत. एकदा विकलेल्या वस्तू पूर्ण परताव्यासाठी पात्र नाहीत.",
         "for_business": "साठी",
         "authorised_signatory": "अधिकृत सही",
         "previous_outstanding": "मागील बाकी",
@@ -665,6 +670,10 @@
         "search_product": "वस्तू शोधा...",
         "bill_format": "बिल स्वरूप",
         "bill_language": "बिल भाषा",
-        "scan_to_pay": "पेमेंटसाठी स्कॅन करा"
+        "scan_to_pay": "पेमेंटसाठी स्कॅन करा",
+        "transport_charges": "वाहतूक शुल्क",
+        "labor_charges": "मजुरी शुल्क",
+        "amount_paid": "भरलेली रक्कम",
+        "credit_amount": "उधारी रक्कम"
     }
 }

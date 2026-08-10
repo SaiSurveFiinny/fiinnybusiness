@@ -1,11 +1,16 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
-import { useSearchParams } from 'react-router-dom';
+import { createPortal } from 'react-dom';
+import { useSearchParams, Link } from 'react-router-dom';
+import { useHashTab } from '../hooks/useHashTab';
+import DigitalKhataPage from './DigitalKhataPage';
+import CustomersPage from './CustomersPage';
+import OrderHistoryPage from './OrderHistoryPage';
 // 'Link' was only used by the Returns quick-access link, now disabled below (2026-07-03).
 // import { Link } from 'react-router-dom';
 import {
     Save, Loader2, Printer, Search, ShoppingCart, Plus, Minus, Trash2,
     CreditCard, Banknote, History, ExternalLink, Target, Pencil,
-    Zap, CheckCircle2, ChevronRight, X, Phone, User, QrCode, Package,
+    Zap, CheckCircle2, ChevronRight, X, Phone, User, QrCode, Package, BookOpen, AlertTriangle,
     // RotateCcw removed — was only used by the Returns quick-access link, now disabled below (2026-07-03).
     Star, Smartphone, Columns, PlusCircle, FileText,
 } from 'lucide-react';
@@ -20,6 +25,10 @@ import { db } from '../firebase';
 import { useAuth } from '../contexts/AuthContext';
 import { useToast } from '../contexts/ToastContext';
 import { getTenantCollection, getTenantDoc } from '../utils/tenantPath';
+import { prepareStockDeduction, recordStockMovements, formatLowStockAlert } from '../utils/stockDeduction';
+import { getInvoiceProductCategories, getAllConfiguredLicenses } from '../utils/invoiceCategories';
+import { logAudit } from '../utils/auditLog';
+import { PosInvoicePreview, numberToWords, toMonthYear } from '../components/PosInvoicePreview';
 import { resolveDateRange, DATE_RANGE_PERIODS, type DateRangePeriod } from '../utils/dateRanges';
 import { AGRI_CATEGORIES } from '../utils/constants';
 import { fetchInvoiceTemplate, fetchInvoiceBranding } from '../services/invoiceTemplateService';
@@ -57,8 +66,11 @@ interface CartItem extends Product {
 interface CustomerState {
     name: string;
     phone: string;
-    address: string;
+    address: string; // village / atPost
     pin: string;
+    taluka?: string;
+    district?: string;
+    retailerId?: string; // Firestore doc ID in `retailers` — set when a known customer is resolved
 }
 
 interface BillTab {
@@ -132,34 +144,30 @@ const posSellingRate = (p: { sellingPrice?: number; maxRetailPrice?: number } | 
 // missed most farmers, so compare digits-only.
 const phoneKey = (v: unknown): string => String(v ?? '').replace(/\D/g, '');
 
-// Number to Words (Indian system) — ported from B2BInvoicePage so the POS
-// GST invoice can print "Amount in Words" identically to the B2B invoice.
-function numberToWords(num: number): string {
-    if (!num || num < 0) return 'Zero only';
-    if (num === 0) return 'Zero only';
-    const ones = ['', 'One', 'Two', 'Three', 'Four', 'Five', 'Six', 'Seven', 'Eight', 'Nine',
-        'Ten', 'Eleven', 'Twelve', 'Thirteen', 'Fourteen', 'Fifteen', 'Sixteen',
-        'Seventeen', 'Eighteen', 'Nineteen'];
-    const tens = ['', '', 'Twenty', 'Thirty', 'Forty', 'Fifty', 'Sixty', 'Seventy', 'Eighty', 'Ninety'];
-    const convert = (n: number): string => {
-        if (n < 20) return ones[n];
-        if (n < 100) return tens[Math.floor(n / 10)] + (n % 10 ? ' ' + ones[n % 10] : '');
-        if (n < 1000) return ones[Math.floor(n / 100)] + ' Hundred' + (n % 100 ? ' ' + convert(n % 100) : '');
-        if (n < 100000) return convert(Math.floor(n / 1000)) + ' Thousand' + (n % 1000 ? ' ' + convert(n % 1000) : '');
-        if (n < 10000000) return convert(Math.floor(n / 100000)) + ' Lakh' + (n % 100000 ? ' ' + convert(n % 100000) : '');
-        return convert(Math.floor(n / 10000000)) + ' Crore' + (n % 10000000 ? ' ' + convert(n % 10000000) : '');
-    };
-    const intPart = Math.floor(num);
-    const decPart = Math.round((num - intPart) * 100);
-    let result = convert(intPart);
-    if (decPart > 0) result += ' and ' + convert(decPart) + ' Paise';
-    return result + ' only';
+// "03/26" or "03/2026" → "2026-03" for Firestore storage; passes through if already YYYY-MM
+function fromMonthYear(val: string): string {
+    const s = (val || '').trim();
+    const short = /^(\d{2})\/(\d{2})$/.exec(s);
+    if (short) return `20${short[2]}-${short[1]}`;
+    const long = /^(\d{2})\/(\d{4})$/.exec(s);
+    if (long) return `${long[2]}-${long[1]}`;
+    return s;
 }
 
+type PosModuleTab = 'billing' | 'khata' | 'customers' | 'order-history';
+const POS_MODULE_TABS: { id: PosModuleTab; label: string }[] = [
+    { id: 'billing',       label: 'POS Billing' },
+    { id: 'khata',         label: 'Khata (Udhari)' },
+    { id: 'customers',     label: 'Customers' },
+    { id: 'order-history', label: 'Order History' },
+];
+const VALID_POS_TABS: readonly PosModuleTab[] = ['billing', 'khata', 'customers', 'order-history'];
+
 export default function POSPage() {
+    const [posModuleTab, setPosModuleTab] = useHashTab<PosModuleTab>(VALID_POS_TABS, 'billing', 'fiinny-tab-pos');
     const { t, i18n } = useTranslation();
     const [searchParams] = useSearchParams();
-    const { tenantId, hasModule } = useAuth();
+    const { tenantId, hasModule, currentUser, userName, userRole } = useAuth();
     const { showToast } = useToast();
     const [products, setProducts] = useState<Product[]>([]);
     const [loading, setLoading] = useState(true);
@@ -169,6 +177,17 @@ export default function POSPage() {
     const [searchQuery, setSearchQuery] = useState('');
     const [selectedCategory, setSelectedCategory] = useState('All');
     const searchRef = useRef<HTMLInputElement>(null);
+
+    // ── Keyboard nav & draft refs ────────────────────────────────────────────
+    const draftLoadedRef = useRef(false);
+    const [highlightedProductIdx, setHighlightedProductIdx] = useState(-1);
+    const qtyRefs = useRef<Record<string, HTMLInputElement | null>>({});
+    const customerPhoneRef = useRef<HTMLInputElement>(null);
+    const customerAddressRef = useRef<HTMLInputElement>(null);
+    const customerTalukaRef = useRef<HTMLInputElement>(null);
+    const customerDistrictRef = useRef<HTMLInputElement>(null);
+    const customerPinRef = useRef<HTMLInputElement>(null);
+    const rowSearchRef = useRef<HTMLInputElement>(null);
 
     // Quick add/edit product — manage inventory inline without leaving the POS
     const [showProductModal, setShowProductModal] = useState(false);
@@ -227,7 +246,7 @@ export default function POSPage() {
     // The POS billing screen now renders as the same GST-invoice form as
     // B2BInvoicePage, but the buyer is a *farmer* (counter customer) instead of a
     // retailer. All checkout/inventory/loyalty logic below is reused unchanged.
-    const [billFormat, setBillFormat] = useState<BillFormat>('A4');
+    const [billFormat, setBillFormat] = useState<BillFormat>('A5');
     // Language the *printed bill* is rendered in — independent of the app UI
     // language, so the counter can hand a Marathi bill to a farmer while the
     // operator keeps the app in English. All three locales are bundled at init
@@ -236,6 +255,8 @@ export default function POSPage() {
     const L = (key: string): string => t(`pos_bill.${key}`, { lng: billLang }) as string;
     const today = new Date().toISOString().split('T')[0];
     const [invoiceDate, setInvoiceDate] = useState<string>(today);
+    // null = auto-detect from cart products; string[] = user's manual selection
+    const [invoiceCategories, setInvoiceCategories] = useState<string[] | null>(null);
     // Mode shown on the invoice; also decides which checkout path "Save & Print" takes.
     const [modeOfPayment, setModeOfPayment] = useState<string>('Cash');
     // Farmers (counter customers) — POS saves walk-ins into `retailers` tagged
@@ -266,6 +287,10 @@ export default function POSPage() {
     const [splits, setSplits] = useState<PaymentSplit[]>([{ method: 'Cash', amount: 0 }]);
 
     const [showVPayDialog, setShowVPayDialog] = useState(false);
+    const [transportCharges, setTransportCharges] = useState(0);
+    const [laborCharges, setLaborCharges] = useState(0);
+    const [creditPaidNow, setCreditPaidNow] = useState(0);
+    const [khataNote, setKhataNote] = useState('');
 
     // ── V-Checkout pending sessions ──────────────────────────────────────────
     const [vcheckoutSessions, setVcheckoutSessions] = useState<any[]>([]);
@@ -394,6 +419,9 @@ export default function POSPage() {
                 phone: phone || '',
                 address: searchParams.get('address') || '',
                 pin: searchParams.get('pin') || '',
+                taluka: searchParams.get('taluka') || '',
+                district: searchParams.get('district') || '',
+                retailerId: searchParams.get('retailerId') || undefined,
             });
             return;
         }
@@ -513,6 +541,51 @@ export default function POSPage() {
         return () => { cancelled = true; };
     }, [tenantId, showInsightsPanel, customer.phone]);
 
+    // ── Draft persistence (localStorage) ────────────────────────────────────
+    // Load saved draft when tenantId first becomes available.
+    useEffect(() => {
+        if (!tenantId || draftLoadedRef.current) return;
+        draftLoadedRef.current = true;
+        try {
+            const raw = localStorage.getItem(`pos_draft_${tenantId}`);
+            if (!raw) return;
+            const draft = JSON.parse(raw);
+            if (Array.isArray(draft.billTabs) && draft.billTabs.length > 0) setBillTabs(draft.billTabs);
+            if (draft.activeTabId) setActiveTabId(draft.activeTabId);
+            if (draft.modeOfPayment) setModeOfPayment(draft.modeOfPayment);
+            // invoiceDate intentionally NOT restored — always defaults to today for new sessions
+            if (draft.billFormat === 'A4' || draft.billFormat === 'A5') setBillFormat(draft.billFormat);
+            if (draft.billLang) setBillLang(draft.billLang);
+            if (typeof draft.transportCharges === 'number') setTransportCharges(draft.transportCharges);
+            if (typeof draft.laborCharges === 'number') setLaborCharges(draft.laborCharges);
+            if (typeof draft.creditPaidNow === 'number') setCreditPaidNow(draft.creditPaidNow);
+            if (typeof draft.khataNote === 'string') setKhataNote(draft.khataNote);
+            if (typeof draft.redeemPoints === 'number') setRedeemPoints(draft.redeemPoints);
+            if (draft.rowMeta && typeof draft.rowMeta === 'object') setRowMeta(draft.rowMeta);
+            if (Array.isArray(draft.invoiceCategories)) setInvoiceCategories(draft.invoiceCategories);
+        } catch { /* ignore parse errors */ }
+    }, [tenantId]);
+
+    // Auto-save draft on every meaningful state change (500 ms debounce).
+    useEffect(() => {
+        if (!tenantId || !draftLoadedRef.current) return;
+        const timer = setTimeout(() => {
+            try {
+                localStorage.setItem(`pos_draft_${tenantId}`, JSON.stringify({
+                    billTabs, activeTabId, modeOfPayment, billFormat, billLang,
+                    transportCharges, laborCharges, creditPaidNow, khataNote, redeemPoints, rowMeta,
+                    invoiceCategories,
+                }));
+            } catch { /* storage quota exceeded — ignore */ }
+        }, 500);
+        return () => clearTimeout(timer);
+    }, [tenantId, billTabs, activeTabId, modeOfPayment, billFormat, billLang,
+        transportCharges, laborCharges, creditPaidNow, khataNote, redeemPoints, rowMeta,
+        invoiceCategories]);
+
+    // Reset dropdown highlight when the active search row changes.
+    useEffect(() => { setHighlightedProductIdx(-1); }, [activeRowIndex]);
+
     // ── Cart operations ─────────────────────────────────────────────────────
     const addToCart = (product: Product) => {
         setCart(prev => {
@@ -564,7 +637,12 @@ export default function POSPage() {
     // the discount must not apply — no partial/stale redemption should reach checkout.
     const effectiveRedeemPoints = loyaltyIsActive ? redeemPoints : 0;
     const loyaltyDiscount = effectiveRedeemPoints * ((loyaltyConfig?.pointsValue) || 0.1);
-    const grandTotal = Math.max(0, cartSubtotal - loyaltyDiscount);
+    const grandTotal = Math.max(0, cartSubtotal + transportCharges + laborCharges - loyaltyDiscount);
+
+    // Partial credit: how much of this credit bill the customer pays now vs. owes.
+    const isCreditBill = modeOfPayment === 'Credit' || modeOfPayment === 'Khata';
+    const effectiveCreditPaidNow = isCreditBill ? Math.min(creditPaidNow, grandTotal) : grandTotal;
+    const effectiveCreditAmount = isCreditBill ? Math.max(0, grandTotal - effectiveCreditPaidNow) : 0;
 
     // ── GST summary for the invoice (display + print) ────────────────────────
     // cartTotal is GST-inclusive (same convention as the analytics tax calc and
@@ -577,13 +655,14 @@ export default function POSPage() {
     }, 0);
     const totalSgst = totalCgst;
     const totalTax = totalCgst + totalSgst;
-    const invNetAmount = Math.round(computedTaxable + totalTax - loyaltyDiscount);
+    const invNetAmount = Math.round(computedTaxable + totalTax + transportCharges + laborCharges - loyaltyDiscount);
     const invFmt = (n: number) => (Number.isFinite(n) ? n : 0).toFixed(2);
 
     // Tracks which phone number (if any) the currently-displayed name/address/pin
     // were auto-populated from, so a lookup miss only clears fields *we* set —
     // never text the cashier typed in manually for a genuine new walk-in.
     const lastMatchedPhoneRef = useRef<string | null>(null);
+    const autoFilledBatchesRef = useRef<Set<string>>(new Set());
 
     const handlePhoneLookup = async () => {
         if (!tenantId) return;
@@ -604,13 +683,16 @@ export default function POSPage() {
                 name: match.name ?? customer.name,
                 address: match.atPost ?? customer.address ?? '',
                 pin: match.pin ?? customer.pin ?? '',
+                taluka: match.taluka ?? customer.taluka ?? '',
+                district: match.district ?? customer.district ?? '',
+                retailerId: match.id,
             });
             setCustomerOutstanding(Number(match.outstandingAmount) || 0);
         } else if (lastMatchedPhoneRef.current !== null && lastMatchedPhoneRef.current !== customer.phone) {
             // The number that produced this auto-fill no longer matches (edited/changed) —
             // revert to a clean walk-in state instead of leaving the stale match displayed.
             lastMatchedPhoneRef.current = null;
-            setCustomer({ ...customer, name: '', address: '', pin: '' });
+            setCustomer({ ...customer, name: '', address: '', pin: '', taluka: '', district: '', retailerId: undefined });
             setCustomerOutstanding(0);
         }
     };
@@ -625,6 +707,45 @@ export default function POSPage() {
         return () => clearTimeout(timer);
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [customer.phone, tenantId, farmers]);
+
+    // Auto-fill batch number + expiry date from the FEFO inventory batch when a
+    // product is added to the cart. Uses the same FEFO sort as prepareStockDeduction
+    // so the pre-filled values match what will actually be deducted.
+    useEffect(() => {
+        if (!tenantId || cart.length === 0) return;
+        for (const item of cart) {
+            if (autoFilledBatchesRef.current.has(item.id)) continue;
+            autoFilledBatchesRef.current.add(item.id);
+            getDocs(
+                query(getTenantCollection(db, tenantId, 'inventoryBatches'),
+                    where('productId', '==', item.id)),
+            ).then(snap => {
+                const batches = snap.docs
+                    .map(d => ({ id: d.id, ...(d.data() as any) }))
+                    .filter((b: any) => (b.quantity ?? 0) > 0)
+                    .sort((a: any, b: any) => {
+                        if (!a.expiryDate && !b.expiryDate) return 0;
+                        if (!a.expiryDate) return 1;
+                        if (!b.expiryDate) return -1;
+                        return (a.expiryDate as string).localeCompare(b.expiryDate as string);
+                    });
+                const top = batches[0];
+                if (!top) return;
+                setRowMeta(prev => {
+                    const existing = prev[item.id];
+                    if (existing?.batchNo !== undefined || existing?.expDate !== undefined) return prev;
+                    return {
+                        ...prev,
+                        [item.id]: {
+                            batchNo: top.batchNumber ?? '',
+                            expDate: top.expiryDate ?? '',
+                        },
+                    };
+                });
+            }).catch(console.error);
+        }
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [cart, tenantId]);
 
     const generateBillNumber = async (): Promise<string> => {
         if (!tenantId) return `POS-${Date.now().toString().slice(-6)}`;
@@ -657,6 +778,9 @@ export default function POSPage() {
                 phoneNumber: customer.phone,
                 address: customer.address,
                 pin: customer.pin,
+                taluka: customer.taluka || '',
+                district: customer.district || '',
+                ...(customer.retailerId ? { retailerId: customer.retailerId } : {}),
                 lineItems: cart.map(item => ({
                     productId: item.id || '',
                     productName: item.name || 'Unknown Product',
@@ -670,15 +794,21 @@ export default function POSPage() {
                     gstPct: Number(item.gstPct) || 0,
                 })),
                 subtotal: cartSubtotal,
+                transportCharges,
+                laborCharges,
                 discount: loyaltyDiscount,
                 grandTotal,
-                paymentStatus: paymentMethod === 'Khata' ? 'Pending' : 'Paid',
+                paymentStatus: paymentMethod === 'Khata' && effectiveCreditAmount > 0
+                    ? (effectiveCreditPaidNow > 0 ? 'Partial' : 'Pending')
+                    : 'Paid',
                 paymentMethod,
                 paymentSplits: options?.splits ?? [],
                 cashReceived: options?.cashReceived ?? null,
                 changeGiven: options?.cashReceived ? Math.max(0, options.cashReceived - grandTotal) : 0,
                 loyaltyPointsRedeemed: options?.loyaltyPointsRedeemed ?? effectiveRedeemPoints,
-                amountPaid: paymentMethod === 'Khata' ? 0 : grandTotal,
+                amountPaid: paymentMethod === 'Khata' ? effectiveCreditPaidNow : grandTotal,
+                creditAmount: paymentMethod === 'Khata' ? effectiveCreditAmount : 0,
+                note: (paymentMethod === 'Khata' && khataNote.trim()) ? khataNote.trim() : null,
                 // Balance the customer carried into this bill, and the running total
                 // including it — mirrors the B2B invoice's previousBalance/netBalance.
                 previousBalance: customerOutstanding,
@@ -688,64 +818,78 @@ export default function POSPage() {
                 invoiceDate: new Date().toISOString().split('T')[0],
             };
 
+            // ── Stock validation + FIFO batch deduction ────────────────────
+            // For new bills: validate stock and prepare FIFO batch deductions.
+            // For bill corrections (editingOrder): keep the existing net-delta
+            // logic so the return path remains simple.
+            const saleLines = cart.map(item => ({
+                productId: item.id,
+                productName: item.name,
+                qty: item.cartQuantity,
+                batchNo: rowMeta?.[item.id]?.batchNo ?? item.batchNumber ?? '',
+            }));
+
+            const deductionResult = !editingOrder
+                ? await prepareStockDeduction(tenantId, saleLines, true)
+                : { valid: true, errors: [], warnings: [], stockWarnings: [], batchUpdates: [], productUpdates: [], movements: [] };
+
+            if (!deductionResult.valid) {
+                // Fatal errors (e.g. product not found) — block the sale
+                showToast(deductionResult.errors.join('\n'), 'error');
+                setIsProcessing(false);
+                return;
+            }
+
             // Persist the bill and deduct stock atomically in one batch — a
             // half-saved sale can never leave inventory inconsistent.
             const batch = writeBatch(db);
             const soRef = doc(getTenantCollection(db, tenantId, 'salesOrders'));
             batch.set(soRef, orderData);
 
-            // Correcting a bill returns the original's stock in this same batch, so
-            // the net movement is (new bill − old bill) rather than a second full
-            // decrement. Netted per product first: two updates to the same doc in
-            // one batch would silently drop the earlier one.
-            const returned = new Map<string, number>();
-            if (editingOrder) {
+            if (!editingOrder) {
+                // Apply FIFO batch deductions
+                for (const upd of deductionResult.batchUpdates) {
+                    batch.update(getTenantDoc(db, tenantId, 'inventoryBatches', upd.batchDocId), {
+                        quantity: upd.newQty,
+                        updatedAt: serverTimestamp(),
+                    });
+                }
+                // Update product.loosePieces (new model) or box/loose (fallback)
+                for (const upd of deductionResult.productUpdates) {
+                    const fields: Record<string, unknown> = { loosePieces: upd.newLoosePieces, updatedAt: serverTimestamp() };
+                    if (upd.newQuantity !== undefined) fields.quantity = upd.newQuantity;
+                    batch.update(getTenantDoc(db, tenantId, 'products', upd.productId), fields);
+                }
+            } else {
+                // Bill correction — net stock delta (original approach)
+                const returned = new Map<string, number>();
                 for (const li of (editingOrder.lineItems || [])) {
                     if (!li.productId) continue;
                     returned.set(li.productId, (returned.get(li.productId) || 0) + (Number(li.quantity) || 0));
                 }
-            }
-
-            for (const item of cart) {
-                const giveBack = returned.get(item.id) || 0;
-                returned.delete(item.id);
-                const cap = item.boxCapacity || 1;
-                let newLoose = (item.loosePieces || 0) - item.cartQuantity + giveBack;
-                let newBoxes = item.quantity || 0;
-                while (newLoose < 0 && newBoxes > 0) {
-                    newBoxes -= 1;
-                    newLoose += cap;
+                for (const item of cart) {
+                    const giveBack = returned.get(item.id) || 0;
+                    returned.delete(item.id);
+                    const cap = item.boxCapacity || 1;
+                    let newLoose = (item.loosePieces || 0) - item.cartQuantity + giveBack;
+                    let newBoxes = item.quantity || 0;
+                    while (newLoose < 0 && newBoxes > 0) { newBoxes--; newLoose += cap; }
+                    if (cap > 1 && newLoose >= cap) { newBoxes += Math.floor(newLoose / cap); newLoose = newLoose % cap; }
+                    batch.update(getTenantDoc(db, tenantId, 'products', item.id), {
+                        quantity: Math.max(0, newBoxes), loosePieces: Math.max(0, newLoose), updatedAt: serverTimestamp(),
+                    });
                 }
-                // Roll any surplus loose pieces back up into whole boxes.
-                if (cap > 1 && newLoose >= cap) {
-                    newBoxes += Math.floor(newLoose / cap);
-                    newLoose = newLoose % cap;
+                for (const [pid, qty] of returned.entries()) {
+                    const prod = products.find(p => p.id === pid);
+                    if (!prod || qty <= 0) continue;
+                    const cap = prod.boxCapacity || 1;
+                    let loose = (prod.loosePieces || 0) + qty;
+                    let boxes = prod.quantity || 0;
+                    if (cap > 1 && loose >= cap) { boxes += Math.floor(loose / cap); loose = loose % cap; }
+                    batch.update(getTenantDoc(db, tenantId, 'products', pid), {
+                        quantity: Math.max(0, boxes), loosePieces: Math.max(0, loose), updatedAt: serverTimestamp(),
+                    });
                 }
-                // Never write negative stock — you can't sell what isn't there.
-                batch.update(getTenantDoc(db, tenantId, 'products', item.id), {
-                    quantity: Math.max(0, newBoxes),
-                    loosePieces: Math.max(0, newLoose),
-                    updatedAt: serverTimestamp(),
-                });
-            }
-
-            // Anything on the original bill that isn't on the corrected one goes
-            // straight back to stock.
-            for (const [pid, qty] of returned.entries()) {
-                const prod = products.find(p => p.id === pid);
-                if (!prod || qty <= 0) continue;
-                const cap = prod.boxCapacity || 1;
-                let loose = (prod.loosePieces || 0) + qty;
-                let boxes = prod.quantity || 0;
-                if (cap > 1 && loose >= cap) {
-                    boxes += Math.floor(loose / cap);
-                    loose = loose % cap;
-                }
-                batch.update(getTenantDoc(db, tenantId, 'products', pid), {
-                    quantity: Math.max(0, boxes),
-                    loosePieces: Math.max(0, loose),
-                    updatedAt: serverTimestamp(),
-                });
             }
 
             // Retire the bill being corrected, pointing at its replacement.
@@ -759,6 +903,23 @@ export default function POSPage() {
 
             await batch.commit();
 
+            // Bill is saved. If any product went below zero, confirm clearly that
+            // the sale went through while inventory is now negative (informational).
+            if (deductionResult.stockWarnings.length > 0) {
+                alert(formatLowStockAlert(deductionResult.stockWarnings));
+            }
+
+            // Record stock movements (best-effort — never blocks the sale)
+            if (!editingOrder && deductionResult.movements.length > 0) {
+                recordStockMovements(tenantId, deductionResult.movements, {
+                    type: 'sale_pos',
+                    sourceType: 'POS Billing',
+                    sourceId: soRef.id,
+                    sourceNumber: billNumber,
+                    date: new Date().toISOString().slice(0, 10),
+                }).catch(console.error);
+            }
+
             // Remember the walk-in customer for future lookup. Tagged channel:'pos'
             // so B2C counter customers don't pollute the B2B Partner Worklist.
             // A Khata (credit) sale also accrues to their outstanding balance, so the
@@ -770,10 +931,11 @@ export default function POSPage() {
                 if (snap.empty) {
                     await addDoc(getTenantCollection(db, tenantId, 'retailers'), {
                         name: customer.name, number: customer.phone, atPost: customer.address,
-                        pin: customer.pin, status: 'active', channel: 'pos',
+                        pin: customer.pin, taluka: customer.taluka || '', district: customer.district || '',
+                        status: 'active', channel: 'pos',
                         totalSales: grandTotal,
-                        outstandingAmount: isCredit ? grandTotal : 0,
-                        totalPaid: isCredit ? 0 : grandTotal,
+                        outstandingAmount: isCredit ? effectiveCreditAmount : 0,
+                        totalPaid: isCredit ? effectiveCreditPaidNow : grandTotal,
                         createdAt: serverTimestamp(),
                         lastOrderedAt: serverTimestamp(),
                     });
@@ -784,12 +946,20 @@ export default function POSPage() {
                     // first so the balance reflects the delta, not a double count.
                     const prevTotal = editingOrder ? Number(editingOrder.grandTotal || 0) : 0;
                     const prevWasCredit = editingOrder ? editingOrder.paymentMethod === 'Khata' : false;
+                    const prevCreditAmt = editingOrder ? Number(editingOrder.creditAmount || (prevWasCredit ? prevTotal : 0)) : 0;
+                    const prevPaidAmt = editingOrder ? Number(editingOrder.amountPaid ?? (prevWasCredit ? 0 : prevTotal)) : 0;
                     await updateDoc(rDoc.ref, {
+                        // Sync any edits the cashier made to the customer's master record.
+                        ...(customer.name ? { name: customer.name } : {}),
+                        ...(customer.address ? { atPost: customer.address } : {}),
+                        ...(customer.pin ? { pin: customer.pin } : {}),
+                        ...(customer.taluka !== undefined ? { taluka: customer.taluka } : {}),
+                        ...(customer.district !== undefined ? { district: customer.district } : {}),
                         totalSales: Math.max(0, Number(rData.totalSales || 0) - prevTotal + grandTotal),
                         outstandingAmount: Math.max(0, Number(rData.outstandingAmount || 0)
-                            - (prevWasCredit ? prevTotal : 0) + (isCredit ? grandTotal : 0)),
+                            - (prevWasCredit ? prevCreditAmt : 0) + (isCredit ? effectiveCreditAmount : 0)),
                         totalPaid: Math.max(0, Number(rData.totalPaid || 0)
-                            - (prevWasCredit ? 0 : prevTotal) + (isCredit ? 0 : grandTotal)),
+                            - prevPaidAmt + (isCredit ? effectiveCreditPaidNow : grandTotal)),
                         lastOrderedAt: serverTimestamp(),
                     });
                 }
@@ -849,10 +1019,27 @@ export default function POSPage() {
             }
 
             showToast(`Sale saved · ${billNumber} · ₹${Math.round(grandTotal).toLocaleString('en-IN')}`, 'success');
+            if (tenantId && currentUser) {
+                logAudit({
+                    db, tenantId,
+                    userId: currentUser.uid,
+                    userName: userName || currentUser.email || 'Unknown',
+                    userRole: userRole || 'unknown',
+                    module: 'POS Billing',
+                    action: editingOrder ? 'Update' : 'Generate Invoice',
+                    entityName: customer.name || 'Walk-in Customer',
+                    entityId: billNumber,
+                    description: editingOrder
+                        ? `POS bill corrected · old: ${editingOrder.orderNumber || editingOrder.id} → new: ${billNumber}`
+                        : `POS bill created · ${billNumber}${modeOfPayment === 'Khata' ? ' · Khata/Credit' : ''}`,
+                    remarks: `₹${Math.round(grandTotal).toLocaleString('en-IN')} · ${modeOfPayment}`,
+                });
+            }
 
-            // Print and reset
+            // Reset after save
             setTimeout(() => {
-                window.print();
+                // Clear the draft immediately so a navigation-then-return doesn't restore it.
+                try { localStorage.removeItem(`pos_draft_${tenantId}`); } catch {}
                 // Reset the active tab
                 setBillTabs(prev => prev.map(t =>
                     t.id === activeTabId
@@ -860,10 +1047,16 @@ export default function POSPage() {
                         : t,
                 ));
                 setRedeemPoints(0);
+                setInvoiceCategories(null);
                 // Clear the carried balance with the bill — re-entering the phone
                 // re-fetches the (now updated) outstanding for the next sale.
                 setCustomerOutstanding(0);
                 setRowMeta({});
+                autoFilledBatchesRef.current.clear();
+                setTransportCharges(0);
+                setLaborCharges(0);
+                setCreditPaidNow(0);
+                setKhataNote('');
                 // Correction complete — drop edit mode so the next bill is a fresh one.
                 setEditingOrder(null);
                 // Advance the displayed bill number. generateBillNumber() already
@@ -871,7 +1064,7 @@ export default function POSPage() {
                 // kept showing the number just used until the page was reloaded.
                 setNextBillNumber(`KA-${(Number(billNumber.replace(/\D/g, '')) + 1).toString().padStart(4, '0')}`);
                 setIsProcessing(false);
-            }, 500);
+            }, 300);
 
         } catch (e) {
             console.error(e);
@@ -1032,9 +1225,16 @@ export default function POSPage() {
         };
     })();
 
+    // Isolate print to the bill portal so the app sidebar/nav never appears.
+    const triggerPrint = () => {
+        document.body.classList.add('pos-printing');
+        window.print();
+        document.body.classList.remove('pos-printing');
+    };
+
     const openReprint = (order: any) => {
         setReprintOrder(order);
-        setTimeout(() => { window.print(); setReprintOrder(null); }, 100);
+        setTimeout(() => { triggerPrint(); setReprintOrder(null); }, 100);
     };
 
     const duplicateBill = (order: any) => {
@@ -1060,7 +1260,50 @@ export default function POSPage() {
     if (loading) return <div className="h-screen flex items-center justify-center"><Loader2 className="animate-spin text-emerald-600" size={48} /></div>;
 
     return (
-        <div style={{ background: 'var(--bg-color)', minHeight: '100vh', display: 'flex', flexDirection: 'column' }}>
+        <>
+        {/* ── Module Tab Bar ── */}
+        <div className="no-print" style={{
+            display: 'flex', gap: '0.25rem',
+            borderBottom: '2px solid var(--surface-border)',
+            background: 'var(--surface-base)',
+            overflowX: 'auto', scrollbarWidth: 'none',
+            paddingLeft: '1.5rem', paddingRight: '1.5rem',
+            paddingTop: '0.5rem',
+        }}>
+            {POS_MODULE_TABS.map(tab => {
+                const isActive = posModuleTab === tab.id;
+                return (
+                    <button
+                        key={tab.id}
+                        onClick={() => setPosModuleTab(tab.id)}
+                        style={{
+                            display: 'flex', alignItems: 'center', gap: '0.5rem',
+                            padding: '0.6rem 1.1rem',
+                            background: 'transparent', border: 'none',
+                            borderBottom: isActive ? '2px solid var(--primary-light)' : '2px solid transparent',
+                            marginBottom: '-2px',
+                            color: isActive ? 'var(--primary-light)' : 'var(--text-tertiary)',
+                            fontWeight: isActive ? 700 : 400,
+                            fontSize: '0.88rem', cursor: 'pointer', fontFamily: 'inherit',
+                            whiteSpace: 'nowrap',
+                            transition: 'color 0.15s ease, border-color 0.15s ease',
+                        }}
+                        onMouseEnter={e => { if (!isActive) (e.currentTarget as HTMLButtonElement).style.color = 'var(--text-primary)'; }}
+                        onMouseLeave={e => { if (!isActive) (e.currentTarget as HTMLButtonElement).style.color = 'var(--text-tertiary)'; }}
+                    >
+                        {tab.label}
+                    </button>
+                );
+            })}
+        </div>
+
+        {/* ── Non-billing sub-pages ── */}
+        {posModuleTab === 'khata'         && <DigitalKhataPage />}
+        {posModuleTab === 'customers'     && <CustomersPage />}
+        {posModuleTab === 'order-history' && <OrderHistoryPage />}
+
+        {/* ── POS Billing (existing content) ── */}
+        {posModuleTab === 'billing' && <div style={{ background: 'var(--bg-color)', minHeight: '100vh', display: 'flex', flexDirection: 'column' }}>
 
             {/* Header */}
             <header className="no-print" style={{ background: 'var(--surface-base)', backdropFilter: 'blur(12px)', WebkitBackdropFilter: 'blur(12px)', borderBottom: '1px solid var(--surface-border)', padding: '0.75rem 1.5rem', display: 'flex', alignItems: 'center', gap: '1.25rem', flexWrap: 'wrap' }}>
@@ -1088,8 +1331,11 @@ export default function POSPage() {
                             const match = products.find(p => p.barcode === q)
                                 || products.find(p => p.name.toLowerCase() === q.toLowerCase())
                                 || products.find(p => p.name.toLowerCase().includes(q.toLowerCase()));
-                            if (match) { addToCart(match); setSearchQuery(''); }
-                            else showToast(`No product matches "${q}"`, 'error');
+                            if (match) {
+                                addToCart(match);
+                                setSearchQuery('');
+                                setTimeout(() => qtyRefs.current[match.id]?.focus(), 50);
+                            } else showToast(`No product matches "${q}"`, 'error');
                         }}
                     />
                 </div>
@@ -1186,7 +1432,7 @@ export default function POSPage() {
 
                     {/* Correction banner — this bill replaces an existing one */}
                     {editingOrder && (
-                        <div style={{ maxWidth: billFormat === 'A5' ? '640px' : '1040px', margin: '0 auto 0.9rem', padding: '0.7rem 1rem', borderRadius: '10px', background: 'hsla(220,70%,55%,0.1)', border: '1px solid hsla(220,70%,55%,0.3)', display: 'flex', alignItems: 'center', gap: '0.6rem', flexWrap: 'wrap' }}>
+                        <div style={{ maxWidth: billFormat === 'A5' ? '960px' : '1040px', margin: '0 auto 0.9rem', padding: '0.7rem 1rem', borderRadius: '10px', background: 'hsla(220,70%,55%,0.1)', border: '1px solid hsla(220,70%,55%,0.3)', display: 'flex', alignItems: 'center', gap: '0.6rem', flexWrap: 'wrap' }}>
                             <Pencil size={15} color="#3b82f6" />
                             <span style={{ fontSize: '0.85rem', fontWeight: 600, color: 'var(--text-primary)' }}>
                                 Correcting bill {editingOrder.orderNumber || editingOrder.id?.slice(-6)?.toUpperCase()}
@@ -1198,295 +1444,702 @@ export default function POSPage() {
                     )}
 
                     {/* Bill-format selector — accountant can print A4 or A5 */}
-                    <div style={{ maxWidth: billFormat === 'A5' ? '640px' : '1040px', margin: '0 auto 0.9rem', display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '0.75rem', flexWrap: 'wrap' }}>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap' }}>
-                            <FileText size={16} color="var(--text-secondary)" />
-                            <span style={{ fontWeight: 700, fontSize: '0.85rem', color: 'var(--text-secondary)' }}>{L('bill_format')}:</span>
-                            {(['A4', 'A5'] as BillFormat[]).map(f => (
-                                <button key={f} onClick={() => setBillFormat(f)} className={`pinv-fmt-btn${billFormat === f ? ' active' : ''}`}>
-                                    {f}
-                                </button>
-                            ))}
-                            <span style={{ width: '1px', height: '20px', background: 'var(--surface-border)', margin: '0 0.35rem' }} />
-                            <span style={{ fontWeight: 700, fontSize: '0.85rem', color: 'var(--text-secondary)' }}>{L('bill_language')}:</span>
-                            {([['en', 'EN'], ['mr', 'मराठी'], ['hi', 'हिंदी']] as const).map(([code, label]) => (
-                                <button key={code} onClick={() => setBillLang(code)} className={`pinv-fmt-btn${billLang === code ? ' active' : ''}`}>
-                                    {label}
-                                </button>
-                            ))}
-                        </div>
-                        <span style={{ fontSize: '0.8rem', color: 'var(--text-tertiary)', fontWeight: 600 }}>{L('bill_no')} #{nextBillNumber}</span>
-                    </div>
+                    {(() => {
+                        const ALL_INVOICE_CATS = ['Fertilizers', 'Pesticides', 'Seeds', 'Others'];
+                        const selectedCategories = invoiceCategories ?? getInvoiceProductCategories(cart);
+                        const isManualCat = invoiceCategories !== null;
+                        const toggleCategory = (cat: string) => {
+                            const current = invoiceCategories ?? getInvoiceProductCategories(cart);
+                            const next = current.includes(cat) ? current.filter(c => c !== cat) : [...current, cat];
+                            setInvoiceCategories(next.length > 0 ? next : current);
+                        };
+                        return (
+                            <div style={{ maxWidth: billFormat === 'A5' ? '960px' : '1040px', margin: '0 auto 0.9rem', display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '0.75rem', flexWrap: 'wrap' }}>
+                                <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap' }}>
+                                    <FileText size={16} color="var(--text-secondary)" />
+                                    <span style={{ fontWeight: 700, fontSize: '0.85rem', color: 'var(--text-secondary)' }}>{L('bill_format')}:</span>
+                                    {(['A4', 'A5'] as BillFormat[]).map(f => (
+                                        <button key={f} onClick={() => setBillFormat(f)} className={`pinv-fmt-btn${billFormat === f ? ' active' : ''}`}>
+                                            {f}
+                                        </button>
+                                    ))}
+                                    <span style={{ width: '1px', height: '20px', background: 'var(--surface-border)', margin: '0 0.35rem' }} />
+                                    <span style={{ fontWeight: 700, fontSize: '0.85rem', color: 'var(--text-secondary)' }}>{L('bill_language')}:</span>
+                                    {([['en', 'EN'], ['mr', 'मराठी'], ['hi', 'हिंदी']] as const).map(([code, label]) => (
+                                        <button key={code} onClick={() => setBillLang(code)} className={`pinv-fmt-btn${billLang === code ? ' active' : ''}`}>
+                                            {label}
+                                        </button>
+                                    ))}
+                                    <span style={{ width: '1px', height: '20px', background: 'var(--surface-border)', margin: '0 0.35rem' }} />
+                                    <span style={{ fontWeight: 700, fontSize: '0.85rem', color: 'var(--text-secondary)' }}>Category:</span>
+                                    <select
+                                        value={isManualCat ? (selectedCategories[0] || '') : ''}
+                                        onChange={e => setInvoiceCategories(e.target.value ? [e.target.value] : null)}
+                                        style={{ padding: '0.3rem 0.55rem', borderRadius: '8px', border: '1px solid var(--surface-border)', background: 'var(--surface-base)', color: 'var(--text-secondary)', fontSize: '0.82rem', fontWeight: 600, cursor: 'pointer', outline: 'none', fontFamily: 'inherit' }}
+                                    >
+                                        <option value="">Auto</option>
+                                        {ALL_INVOICE_CATS.map(cat => <option key={cat} value={cat}>{cat}</option>)}
+                                    </select>
+                                </div>
+                                <span style={{ fontSize: '0.8rem', color: 'var(--text-tertiary)', fontWeight: 600 }}>{L('bill_no')} #{nextBillNumber}</span>
+                            </div>
+                        );
+                    })()}
 
                     {/* Invoice card (editable on screen; printed copy is rendered separately) */}
-                    <div style={{ maxWidth: billFormat === 'A5' ? '640px' : '1040px', margin: '0 auto', background: '#fff', color: '#000', fontFamily: "'Times New Roman', serif", boxShadow: '0 8px 30px rgba(0,0,0,0.08)', borderRadius: '10px', border: '1px solid #ddd', padding: '18px 20px' }}>
+                    <div style={{ maxWidth: billFormat === 'A5' ? '970px' : '1040px', margin: '0 auto', background: '#fff', color: '#000', fontFamily: billFormat === 'A5' ? 'Arial, Helvetica, sans-serif' : "'Times New Roman', serif", boxShadow: '0 4px 24px rgba(0,0,0,0.10)', borderRadius: billFormat === 'A5' ? '3px' : '10px', border: 'none', padding: billFormat === 'A5' ? '0' : '16px 18px' }}>
 
-                        {/* TITLE */}
-                        <div style={{ textAlign: 'center', fontWeight: 700, fontSize: '1rem', letterSpacing: '0.15em', marginBottom: '2px' }}>{L('gst_invoice')}</div>
-                        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', borderBottom: '2px solid #111', paddingBottom: '8px', marginBottom: '10px', flexWrap: 'wrap', gap: '0.5rem' }}>
-                            <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-                                {branding?.logoUrl && <img src={branding.logoUrl} alt="Logo" style={{ height: '44px', objectFit: 'contain' }} />}
-                                <div>
-                                    <h1 style={{ margin: 0, fontSize: '1.5rem', fontWeight: 900, letterSpacing: '-0.01em' }}>{branding?.businessName || 'Your Business Name'}</h1>
-                                    <div style={{ fontSize: '0.78rem', color: '#444', marginTop: '2px' }}>
-                                        {branding?.address || 'Address'}<br />
-                                        {branding?.gstin && <><strong>GSTIN:</strong> {branding.gstin} &nbsp;</>}
-                                        {branding?.contact && <>Contact No.: {branding.contact}</>}
+                        {billFormat === 'A5' ? (
+                            // ── A5 LANDSCAPE — Reference Invoice Redesign ────────────────────
+                            <div style={{ border: '1.5px solid #333', fontFamily: 'Arial, Helvetica, sans-serif' }}>
+
+                                {/* ══ HEADER ═══════════════════════════════════════════════════ */}
+                                {/* License box is its own auto-width column so it never stretches */}
+                                {(() => {
+                                    const lics = getAllConfiguredLicenses(branding);
+                                    return (
+                                        <div style={{ display: 'grid', gridTemplateColumns: `${lics.length > 0 ? 'auto ' : ''}1fr 162px`, borderBottom: '1.5px solid #333' }}>
+
+                                            {/* License box — compact, left-most, sized to content */}
+                                            {lics.length > 0 && (
+                                                <div style={{ borderRight: '1px solid #aaa', padding: '5px 10px', display: 'flex', flexDirection: 'column', justifyContent: 'center', gap: '3px' }}>
+                                                    {lics.map(lic => (
+                                                        <div key={lic.label} style={{ fontSize: '0.60rem', color: '#333', whiteSpace: 'nowrap' }}>
+                                                            <strong>{lic.label}:</strong> {lic.number}
+                                                        </div>
+                                                    ))}
+                                                </div>
+                                            )}
+
+                                            {/* Center: GST INVOICE (primary) + Business info */}
+                                            <div style={{ borderRight: '1px solid #aaa', padding: '5px 12px 6px', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: '2px' }}>
+                                                <div style={{ fontWeight: 900, fontSize: '1.0rem', letterSpacing: '0.10em', textTransform: 'uppercase', color: '#111', textAlign: 'center', lineHeight: 1.1 }}>GST INVOICE</div>
+                                                <div style={{ display: 'flex', alignItems: 'center', gap: '7px', justifyContent: 'center' }}>
+                                                    {branding?.logoUrl && <img src={branding.logoUrl} alt="Logo" style={{ height: '22px', objectFit: 'contain' }} />}
+                                                    <div style={{ fontWeight: 800, fontSize: '0.88rem', lineHeight: 1.15 }}>{branding?.businessName || 'Your Business Name'}</div>
+                                                </div>
+                                                {branding?.address && <div style={{ fontSize: '0.68rem', color: '#333', lineHeight: 1.4, textAlign: 'center' }}>{branding.address}</div>}
+                                                <div style={{ fontSize: '0.66rem', color: '#333', display: 'flex', gap: '8px', flexWrap: 'wrap', justifyContent: 'center' }}>
+                                                    {branding?.gstin && <span><strong>GSTIN:</strong> {branding.gstin}</span>}
+                                                    {branding?.contact && <span>| <strong>Ph:</strong> {branding.contact}</span>}
+                                                </div>
+                                            </div>
+
+                                            {/* Right col: Bill meta */}
+                                            <div style={{ padding: '6px 10px', display: 'flex', flexDirection: 'column', justifyContent: 'center', fontSize: '0.70rem', gap: '4px' }}>
+                                                <div><strong>Bill No:</strong> <span style={{ fontWeight: 900 }}>{nextBillNumber}</span></div>
+                                                <div style={{ display: 'flex', gap: '4px', alignItems: 'center' }}>
+                                                    <strong style={{ whiteSpace: 'nowrap' }}>Date:</strong>
+                                                    <input type="date" className="pinv-input" style={{ fontSize: '0.68rem', flex: 1 }} value={invoiceDate} onChange={e => setInvoiceDate(e.target.value)} />
+                                                </div>
+                                                <div style={{ display: 'flex', gap: '4px', alignItems: 'center' }}>
+                                                    <strong style={{ whiteSpace: 'nowrap' }}>Mode:</strong>
+                                                    <select className="pinv-input" style={{ fontSize: '0.68rem', flex: 1, fontWeight: 700 }} value={modeOfPayment} onChange={e => setModeOfPayment(e.target.value)}>
+                                                        {['Cash', 'Credit'].map(m => <option key={m} value={m}>{m}</option>)}
+                                                    </select>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    );
+                                })()}
+
+                                {/* ══ CUSTOMER ROW ═════════════════════════════════════════════ */}
+                                <div style={{ display: 'grid', gridTemplateColumns: '1.4fr 0.75fr 0.85fr 0.85fr 1.0fr 0.45fr', borderBottom: '1px solid #aaa', fontSize: '0.78rem' }}>
+                                    {/* Buyer Name */}
+                                    <div style={{ borderRight: '1px solid #ccc', padding: '4px 8px', display: 'flex', gap: '5px', alignItems: 'center', position: 'relative' }}>
+                                        <span style={{ fontWeight: 700, color: '#555', whiteSpace: 'nowrap', flexShrink: 0, fontSize: '0.72rem' }}>Buyer:</span>
+                                        <input className="pinv-input" style={{ fontWeight: 700, fontSize: '0.82rem', flex: 1, minWidth: 0 }} placeholder={L('buyer_name_ph')} value={customer.name}
+                                            onChange={e => { setCustomer({ ...customer, name: e.target.value }); setShowFarmerDropdown(e.target.value.length > 0); }}
+                                            onFocus={() => customer.name.length > 0 && setShowFarmerDropdown(true)}
+                                            onBlur={() => setTimeout(() => setShowFarmerDropdown(false), 200)}
+                                            onKeyDown={e => { if (e.key === 'Enter' && !showFarmerDropdown) { e.preventDefault(); customerPhoneRef.current?.focus(); } }} />
+                                        {showFarmerDropdown && (
+                                            <div className="pinv-dropdown" style={{ width: '100%' }}>
+                                                {farmers.filter(r => (r.name || '').toLowerCase().includes(customer.name.toLowerCase()) && customer.name.toLowerCase() !== (r.name || '').toLowerCase())
+                                                    .sort((a, b) => (a.channel === 'pos' ? -1 : 1) - (b.channel === 'pos' ? -1 : 1)).slice(0, 10)
+                                                    .map(r => (
+                                                        <div key={r.id} className="pinv-dropdown-item" onMouseDown={() => {
+                                                            lastMatchedPhoneRef.current = r.number || null;
+                                                            setCustomer({ name: r.name || '', phone: r.number || '', address: r.atPost || '', pin: r.pin || '', taluka: r.taluka || '', district: r.district || '', retailerId: r.id });
+                                                            setCustomerOutstanding(Number(r.outstandingAmount) || 0); setShowFarmerDropdown(false);
+                                                        }}>
+                                                            <div style={{ fontWeight: 600 }}>{r.name}</div>
+                                                            <div style={{ fontSize: '0.75rem', color: '#666' }}>{r.number} {r.atPost ? `• ${r.atPost}` : ''}</div>
+                                                        </div>
+                                                    ))}
+                                            </div>
+                                        )}
+                                    </div>
+                                    {/* Phone */}
+                                    <div style={{ borderRight: '1px solid #ccc', padding: '4px 8px', display: 'flex', gap: '5px', alignItems: 'center' }}>
+                                        <span style={{ fontWeight: 700, color: '#555', whiteSpace: 'nowrap', flexShrink: 0, fontSize: '0.72rem' }}>Ph:</span>
+                                        <input ref={customerPhoneRef} className="pinv-input" style={{ flex: 1, fontSize: '0.8rem', minWidth: 0 }} placeholder="Phone" value={customer.phone}
+                                            onChange={e => setCustomer({ ...customer, phone: e.target.value })} onBlur={handlePhoneLookup}
+                                            onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); customerAddressRef.current?.focus(); } }} />
+                                    </div>
+                                    {/* Village */}
+                                    <div style={{ borderRight: '1px solid #ccc', padding: '4px 8px', display: 'flex', gap: '5px', alignItems: 'center' }}>
+                                        <span style={{ fontWeight: 700, color: '#555', whiteSpace: 'nowrap', flexShrink: 0, fontSize: '0.72rem' }}>Village:</span>
+                                        <input ref={customerAddressRef} className="pinv-input" style={{ flex: 1, fontSize: '0.8rem', minWidth: 0 }} placeholder={L('village_ph')} value={customer.address}
+                                            onChange={e => setCustomer({ ...customer, address: e.target.value })}
+                                            onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); customerTalukaRef.current?.focus(); } }} />
+                                    </div>
+                                    {/* Taluka */}
+                                    <div style={{ borderRight: '1px solid #ccc', padding: '4px 8px', display: 'flex', gap: '5px', alignItems: 'center' }}>
+                                        <span style={{ fontWeight: 700, color: '#555', whiteSpace: 'nowrap', flexShrink: 0, fontSize: '0.72rem' }}>Taluka:</span>
+                                        <input ref={customerTalukaRef} className="pinv-input" style={{ flex: 1, fontSize: '0.8rem', minWidth: 0 }} placeholder="Taluka" value={customer.taluka || ''}
+                                            onChange={e => setCustomer({ ...customer, taluka: e.target.value })}
+                                            onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); customerDistrictRef.current?.focus(); } }} />
+                                    </div>
+                                    {/* District */}
+                                    <div style={{ borderRight: '1px solid #ccc', padding: '4px 8px', display: 'flex', gap: '5px', alignItems: 'center' }}>
+                                        <span style={{ fontWeight: 700, color: '#555', whiteSpace: 'nowrap', flexShrink: 0, fontSize: '0.72rem' }}>District:</span>
+                                        <input ref={customerDistrictRef} className="pinv-input" style={{ flex: 1, fontSize: '0.8rem', minWidth: 0 }} placeholder="District" value={customer.district || ''}
+                                            onChange={e => setCustomer({ ...customer, district: e.target.value })}
+                                            onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); customerPinRef.current?.focus(); } }} />
+                                    </div>
+                                    {/* PIN */}
+                                    <div style={{ padding: '4px 8px', display: 'flex', gap: '5px', alignItems: 'center' }}>
+                                        <span style={{ fontWeight: 700, color: '#555', whiteSpace: 'nowrap', flexShrink: 0, fontSize: '0.72rem' }}>PIN:</span>
+                                        <input ref={customerPinRef} className="pinv-input" style={{ flex: 1, fontSize: '0.8rem', minWidth: 0 }} placeholder={L('pin')} value={customer.pin}
+                                            onChange={e => setCustomer({ ...customer, pin: e.target.value })}
+                                            onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); rowSearchRef.current?.focus(); } }} />
+                                    </div>
+                                </div>
+
+                                {/* ══ ITEMS TABLE ══════════════════════════════════════════════ */}
+                                <div style={{ overflowX: 'auto' }}>
+                                    {/* Column widths in % — mirror the print template exactly so WYSIWYG. */}
+                                    <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.78rem', tableLayout: 'fixed' }}>
+                                        <colgroup>
+                                            {/* # */}      <col style={{ width: '2.5%' }} />
+                                            {/* Product */} <col />
+                                            {/* Company */} <col style={{ width: '9%' }} />
+                                            {/* Batch */}   <col style={{ width: '9.5%' }} />
+                                            {/* Exp */}     <col style={{ width: '8%' }} />
+                                            {/* Per */}     <col style={{ width: '4.5%' }} />
+                                            {/* Qty */}     <col style={{ width: '5%' }} />
+                                            {/* Rate */}    <col style={{ width: '10%' }} />
+                                            {/* GST% */}    <col style={{ width: '5%' }} />
+                                            {/* Amount */}  <col style={{ width: '12%' }} />
+                                            {/* Del */}     <col style={{ width: '2.5%' }} />
+                                        </colgroup>
+                                        <thead>
+                                            <tr style={{ background: '#f5f5f5', borderBottom: '1.5px solid #333' }}>
+                                                {([
+                                                    ['#', 'center', '3px 1px'],
+                                                    ['Product', 'left', '3px 5px'],
+                                                    ['Company', 'center', '3px 2px'],
+                                                    ['Batch No.', 'center', '3px 2px'],
+                                                    ['Exp', 'center', '3px 1px'],
+                                                    ['Per', 'center', '3px 1px'],
+                                                    ['Qty', 'center', '3px 1px'],
+                                                    ['Rate', 'right', '3px 3px'],
+                                                    ['GST%', 'center', '3px 1px'],
+                                                    ['Amount', 'right', '3px 3px'],
+                                                ] as const).map(([label, align, pad]) => (
+                                                    <th key={label} style={{ border: '1px solid #ccc', padding: pad, textAlign: align as const, fontWeight: 700, fontSize: '0.74rem', overflow: 'hidden', whiteSpace: 'nowrap' }}>
+                                                        {label}
+                                                    </th>
+                                                ))}
+                                                <th style={{ border: '1px solid #ccc' }}></th>
+                                            </tr>
+                                        </thead>
+                                        <tbody>
+                                            {cart.map((item, idx) => (
+                                                <tr key={item.id} style={{ borderBottom: '1px solid #eee' }}>
+                                                    <td style={{ border: '1px solid #e8e8e8', padding: '3px 2px', textAlign: 'center', fontSize: '0.72rem' }}>{idx + 1}</td>
+                                                    <td style={{ border: '1px solid #e8e8e8', padding: '3px 5px', fontWeight: 600, fontSize: '0.78rem', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{item.name}</td>
+                                                    <td style={{ border: '1px solid #e8e8e8', padding: '3px 2px', fontSize: '0.72rem', textAlign: 'center', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{item.mfgCompany || ''}</td>
+                                                    <td style={{ border: '1px solid #e8e8e8', padding: '1px 2px' }}>
+                                                        <input className="pinv-input" style={{ textAlign: 'center', fontSize: '0.72rem' }} value={rowMeta[item.id]?.batchNo ?? (item.batchNumber || '')}
+                                                            onChange={e => setRowMeta(m => ({ ...m, [item.id]: { ...m[item.id], batchNo: e.target.value } }))} />
+                                                    </td>
+                                                    <td style={{ border: '1px solid #e8e8e8', padding: '1px 2px' }}>
+                                                        <input type="text" className="pinv-input" style={{ textAlign: 'center', fontSize: '0.70rem', width: '100%' }} placeholder="MM/YY"
+                                                            value={toMonthYear(rowMeta[item.id]?.expDate ?? (item.expiryDate || ''))}
+                                                            onChange={e => setRowMeta(m => ({ ...m, [item.id]: { ...m[item.id], expDate: fromMonthYear(e.target.value) } }))} />
+                                                    </td>
+                                                    <td style={{ border: '1px solid #e8e8e8', padding: '3px 2px', textAlign: 'center', fontSize: '0.72rem', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{item.unit || item.baseUnit}</td>
+                                                    <td style={{ border: '1px solid #e8e8e8', padding: '1px 2px' }}>
+                                                        <input type="number" min="0" className="pinv-input" style={{ textAlign: 'center', fontWeight: 700, fontSize: '0.78rem' }} value={item.cartQuantity}
+                                                            ref={el => { qtyRefs.current[item.id] = el; }}
+                                                            onChange={e => setQty(item.id, Number(e.target.value))} onWheel={e => e.currentTarget.blur()}
+                                                            onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); rowSearchRef.current?.focus(); } }} />
+                                                    </td>
+                                                    <td style={{ border: '1px solid #e8e8e8', padding: '1px 2px' }}>
+                                                        <input type="number" min="0" className="pinv-input" style={{ textAlign: 'right', paddingRight: '3px', fontSize: '0.78rem' }} value={posSellingRate(item)}
+                                                            onChange={e => setRate(item.id, Number(e.target.value))} onWheel={e => e.currentTarget.blur()} />
+                                                    </td>
+                                                    <td style={{ border: '1px solid #e8e8e8', padding: '1px 2px' }}>
+                                                        <input type="number" className="pinv-input" style={{ textAlign: 'center', fontSize: '0.72rem' }} value={item.gstPct ?? 5}
+                                                            onChange={e => setCart(prev => prev.map(c => c.id === item.id ? { ...c, gstPct: Number(e.target.value) } : c))}
+                                                            onWheel={e => e.currentTarget.blur()} />
+                                                    </td>
+                                                    <td style={{ border: '1px solid #e8e8e8', padding: '3px 4px', textAlign: 'right', fontWeight: 700, fontSize: '0.78rem' }}>{item.cartTotal ? invFmt(item.cartTotal) : ''}</td>
+                                                    <td style={{ border: '1px solid #e8e8e8', padding: '1px', textAlign: 'center' }}>
+                                                        <button onClick={() => removeCartItem(item.id)} style={{ border: 'none', background: 'transparent', cursor: 'pointer', color: '#e53935', padding: '2px' }}>
+                                                            <Trash2 size={12} />
+                                                        </button>
+                                                    </td>
+                                                </tr>
+                                            ))}
+                                            {/* Add-product search row */}
+                                            <tr>
+                                                <td style={{ border: '1px solid #e8e8e8', padding: '2px', textAlign: 'center', color: '#bbb', fontSize: '0.74rem' }}>{cart.length + 1}</td>
+                                                <td colSpan={3} style={{ border: '1px solid #e8e8e8', padding: '1px 3px', position: 'relative' }}>
+                                                    {(() => {
+                                                        const a5Filtered = products.filter(p => p.name.toLowerCase().includes((rowSearch[cart.length] || '').toLowerCase()) || p.barcode === (rowSearch[cart.length] || '')).slice(0, 50);
+                                                        return (<>
+                                                            <input ref={rowSearchRef} className="pinv-input" placeholder={L('search_product')} value={rowSearch[cart.length] || ''}
+                                                                onChange={e => { setRowSearch(s => ({ ...s, [cart.length]: e.target.value })); setActiveRowIndex(e.target.value.length > 0 ? cart.length : null); setHighlightedProductIdx(-1); }}
+                                                                onFocus={() => (rowSearch[cart.length] || '').length > 0 && setActiveRowIndex(cart.length)}
+                                                                onBlur={() => setTimeout(() => setActiveRowIndex(null), 200)}
+                                                                onKeyDown={e => {
+                                                                    if (e.key === 'ArrowDown') { e.preventDefault(); setHighlightedProductIdx(i => Math.min(i + 1, a5Filtered.length - 1)); }
+                                                                    else if (e.key === 'ArrowUp') { e.preventDefault(); setHighlightedProductIdx(i => Math.max(i - 1, -1)); }
+                                                                    else if (e.key === 'Enter') {
+                                                                        e.preventDefault();
+                                                                        const pick = highlightedProductIdx >= 0 ? a5Filtered[highlightedProductIdx] : a5Filtered.length === 1 ? a5Filtered[0] : null;
+                                                                        if (pick) { addToCart(pick); setRowSearch(s => ({ ...s, [cart.length]: '' })); setActiveRowIndex(null); setHighlightedProductIdx(-1); setTimeout(() => qtyRefs.current[pick.id]?.focus(), 50); }
+                                                                    }
+                                                                }} />
+                                                            {activeRowIndex === cart.length && (
+                                                                <div className="pinv-dropdown">
+                                                                    {a5Filtered.map((p, pi) => (
+                                                                        <div key={p.id} className="pinv-dropdown-item" style={{ background: pi === highlightedProductIdx ? '#e8f5e9' : undefined }}
+                                                                            onMouseDown={() => { addToCart(p); setRowSearch(s => ({ ...s, [cart.length]: '' })); setActiveRowIndex(null); setHighlightedProductIdx(-1); setTimeout(() => qtyRefs.current[p.id]?.focus(), 50); }}>
+                                                                            {p.name} <span style={{ color: '#888' }}>· ₹{posSellingRate(p)}</span>
+                                                                        </div>
+                                                                    ))}
+                                                                    {products.filter(p => p.name.toLowerCase().includes((rowSearch[cart.length] || '').toLowerCase())).length === 0 && (
+                                                                        <div className="pinv-dropdown-item" onMouseDown={openAddProduct} style={{ color: 'var(--primary)' }}>
+                                                                            + Add "{rowSearch[cart.length]}" to inventory
+                                                                        </div>
+                                                                    )}
+                                                                </div>
+                                                            )}
+                                                        </>);
+                                                    })()}
+                                                </td>
+                                                <td colSpan={7} style={{ border: '1px solid #e8e8e8' }}></td>
+                                            </tr>
+                                            {/* Empty padding rows */}
+                                            {Array.from({ length: Math.max(0, 5 - cart.length) }).map((_, i) => (
+                                                <tr key={`pad-${i}`} style={{ height: '26px' }}>
+                                                    <td style={{ border: '1px solid #e8e8e8', color: '#ccc', textAlign: 'center', fontSize: '0.74rem', padding: '2px' }}>{cart.length + 2 + i}</td>
+                                                    {Array.from({ length: 10 }).map((_, j) => <td key={j} style={{ border: '1px solid #e8e8e8' }}></td>)}
+                                                </tr>
+                                            ))}
+                                            {/* Total row */}
+                                            <tr style={{ background: '#f5f5f5', borderTop: '1.5px solid #333' }}>
+                                                <td colSpan={9} style={{ border: '1px solid #ccc', padding: '4px 8px', textAlign: 'right', fontWeight: 800, textTransform: 'uppercase', letterSpacing: '0.04em', fontSize: '0.78rem' }}>Total</td>
+                                                <td style={{ border: '1px solid #ccc', padding: '4px 4px', textAlign: 'right', fontWeight: 900, fontSize: '0.88rem' }}>{invFmt(cartSubtotal)}</td>
+                                                <td style={{ border: '1px solid #ccc' }}></td>
+                                            </tr>
+                                        </tbody>
+                                    </table>
+                                </div>
+
+                                {/* ══ FOOTER ═══════════════════════════════════════════════════ */}
+                                <div style={{ display: 'grid', gridTemplateColumns: '1.2fr 1.1fr 1.0fr', borderTop: '1.5px solid #333' }}>
+
+                                    {/* Col 1 – GST Summary + Declaration */}
+                                    <div style={{ borderRight: '1px solid #aaa', display: 'flex', flexDirection: 'column' }}>
+                                        <div style={{ background: '#f5f5f5', padding: '2px 4px', borderBottom: '1px solid #ccc', fontSize: '0.68rem', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em', textAlign: 'center' }}>GST Summary</div>
+                                        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.68rem' }}>
+                                            <thead>
+                                                <tr>
+                                                    {['Taxable', 'CGST 2.5%', 'SGST 2.5%', 'Total Tax'].map(h => (
+                                                        <th key={h} style={{ border: '1px solid #ddd', padding: '2px 2px', textAlign: 'center', background: '#fafafa', fontWeight: 700 }}>{h}</th>
+                                                    ))}
+                                                </tr>
+                                            </thead>
+                                            <tbody>
+                                                <tr>
+                                                    {[computedTaxable, totalCgst, totalSgst, totalTax].map((v, vi) => (
+                                                        <td key={vi} style={{ border: '1px solid #ddd', padding: '2px 2px', textAlign: 'center' }}>{invFmt(v)}</td>
+                                                    ))}
+                                                </tr>
+                                            </tbody>
+                                        </table>
+                                        <div style={{ padding: '4px 6px', fontSize: '0.63rem', color: '#555', lineHeight: 1.4, flex: 1 }}>
+                                            <strong>{L('declaration')}:</strong> {L('declaration_text')}
+                                        </div>
+                                    </div>
+
+                                    {/* Col 2 – Net Amount + Words + Categories */}
+                                    <div style={{ borderRight: '1px solid #aaa', display: 'flex', flexDirection: 'column' }}>
+                                        <div style={{ padding: '5px 8px', flex: 1, fontSize: '0.78rem', display: 'flex', flexDirection: 'column', gap: '3px' }}>
+                                            {loyaltyDiscount > 0 && (
+                                                <div style={{ display: 'flex', justifyContent: 'space-between', color: '#2E7D32' }}>
+                                                    <span>{L('discount')} ({effectiveRedeemPoints} pts)</span><span>-{invFmt(loyaltyDiscount)}</span>
+                                                </div>
+                                            )}
+                                            {transportCharges > 0 && (
+                                                <div style={{ display: 'flex', justifyContent: 'space-between' }}><span>{L('transport_charges')}</span><span>+{invFmt(transportCharges)}</span></div>
+                                            )}
+                                            {laborCharges > 0 && (
+                                                <div style={{ display: 'flex', justifyContent: 'space-between' }}><span>{L('labor_charges')}</span><span>+{invFmt(laborCharges)}</span></div>
+                                            )}
+                                            <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                                                <span>Round Off</span>
+                                                <span>{invFmt(invNetAmount - (computedTaxable + totalTax + transportCharges - loyaltyDiscount))}</span>
+                                            </div>
+                                            <div style={{ borderTop: '2px solid #333', paddingTop: '3px', display: 'flex', justifyContent: 'space-between', fontWeight: 900, fontSize: '0.95rem' }}>
+                                                <span>NET AMOUNT</span><span>₹{invNetAmount.toLocaleString('en-IN')}</span>
+                                            </div>
+                                            {isCreditBill && (<>
+                                                <div style={{ display: 'flex', justifyContent: 'space-between', color: '#10b981' }}>
+                                                    <span>{L('amount_paid')}</span><span>₹{effectiveCreditPaidNow.toLocaleString('en-IN')}</span>
+                                                </div>
+                                                <div style={{ borderTop: '1px solid #555', paddingTop: '2px', display: 'flex', justifyContent: 'space-between', fontWeight: 900, color: effectiveCreditAmount > 0 ? '#c62828' : '#10b981' }}>
+                                                    <span>{L('credit_amount')}</span><span>₹{effectiveCreditAmount.toLocaleString('en-IN')}</span>
+                                                </div>
+                                            </>)}
+                                            {customerOutstanding > 0 && (<>
+                                                <div style={{ display: 'flex', justifyContent: 'space-between', color: '#c62828' }}>
+                                                    <span>{L('previous_outstanding')} (Dr)</span><span>₹{customerOutstanding.toLocaleString('en-IN')}</span>
+                                                </div>
+                                                <div style={{ borderTop: '1.5px solid #333', paddingTop: '2px', display: 'flex', justifyContent: 'space-between', fontWeight: 900 }}>
+                                                    <span>{L('total_payable')}</span><span>₹{(invNetAmount + customerOutstanding).toLocaleString('en-IN')}</span>
+                                                </div>
+                                            </>)}
+                                        </div>
+                                        <div style={{ borderTop: '1px solid #ddd', padding: '3px 8px', fontSize: '0.66rem' }}>
+                                            <strong>Amt in Words:</strong>{' '}
+                                            <span style={{ fontStyle: 'italic', fontWeight: 600 }}>INR {numberToWords(invNetAmount)}</span>
+                                        </div>
+                                    </div>
+
+                                    {/* Col 3 – Signatures side by side */}
+                                    <div style={{ display: 'flex', flexDirection: 'row' }}>
+                                        <div style={{ flex: 1, display: 'flex', flexDirection: 'column', justifyContent: 'flex-end', padding: '6px 10px', alignItems: 'center' }}>
+                                            <div style={{ borderTop: '1px solid #555', paddingTop: '3px', fontSize: '0.7rem', fontWeight: 700, textAlign: 'center', width: '100%' }}>Customer Signature</div>
+                                        </div>
+                                        <div style={{ flex: 1, borderLeft: '1px solid #ccc', display: 'flex', flexDirection: 'column', justifyContent: 'flex-end', padding: '6px 10px', alignItems: 'center' }}>
+                                            {branding?.signatureUrl && (
+                                                <img src={branding.signatureUrl} alt="" style={{ height: '44px', maxWidth: '100%', objectFit: 'contain', display: 'block', margin: '0 auto 4px' }} />
+                                            )}
+                                            <div style={{ borderTop: '1px solid #555', paddingTop: '3px', fontSize: '0.7rem', fontWeight: 700, textAlign: 'center', width: '100%' }}>Authorized Signature</div>
+                                        </div>
                                     </div>
                                 </div>
                             </div>
-                            <div style={{ textAlign: 'right', fontWeight: 700, fontSize: '0.95rem', color: '#111', border: '2px solid #111', padding: '4px 12px', borderRadius: '6px' }}>
-                                {modeOfPayment === 'Khata' || modeOfPayment === 'Credit' ? L('credit_bill') : L('cash_bill')}
-                            </div>
-                        </div>
-
-                        {/* GSTIN BANNER */}
-                        {branding?.gstin && (
-                            <div style={{ textAlign: 'center', fontWeight: 700, fontSize: '0.9rem', marginBottom: '10px', letterSpacing: '0.05em' }}>
-                                {L('gstin_no')}: {branding.gstin}
-                            </div>
-                        )}
-
-                        {/* BUYER (FARMER) + INVOICE META */}
-                        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0', marginBottom: '10px', border: '1px solid #222' }}>
-                            {/* Farmer box */}
-                            <div style={{ borderRight: '1px solid #222', padding: '8px' }}>
-                                <div className="pinv-label" style={{ marginBottom: '4px' }}>{L('buyer_title')}</div>
-                                <div style={{ position: 'relative' }}>
-                                    <input
-                                        className="pinv-input"
-                                        style={{ fontWeight: 700, fontSize: '0.88rem' }}
-                                        placeholder={L('buyer_name_ph')}
-                                        value={customer.name}
-                                        onChange={e => { setCustomer({ ...customer, name: e.target.value }); setShowFarmerDropdown(e.target.value.length > 0); }}
-                                        onFocus={() => customer.name.length > 0 && setShowFarmerDropdown(true)}
-                                        onBlur={() => setTimeout(() => setShowFarmerDropdown(false), 200)}
-                                    />
-                                    {showFarmerDropdown && (
-                                        <div className="pinv-dropdown" style={{ width: '100%' }}>
-                                            {farmers
-                                                .filter(r => (r.name || '').toLowerCase().includes(customer.name.toLowerCase()) && customer.name.toLowerCase() !== (r.name || '').toLowerCase())
-                                                .sort((a, b) => (a.channel === 'pos' ? -1 : 1) - (b.channel === 'pos' ? -1 : 1))
-                                                .slice(0, 10)
-                                                .map(r => (
-                                                    <div key={r.id} className="pinv-dropdown-item"
-                                                        onMouseDown={() => {
-                                                            lastMatchedPhoneRef.current = r.number || null;
-                                                            setCustomer({ name: r.name || '', phone: r.number || '', address: r.atPost || '', pin: r.pin || '' });
-                                                            setCustomerOutstanding(Number(r.outstandingAmount) || 0);
-                                                            setShowFarmerDropdown(false);
-                                                        }}>
-                                                        <div style={{ fontWeight: 600 }}>{r.name}</div>
-                                                        <div style={{ fontSize: '0.75rem', color: '#666' }}>{r.number} {r.atPost ? `• ${r.atPost}` : ''}</div>
+                        ) : (
+                            // ── A4 PORTRAIT ON-SCREEN LAYOUT (unchanged) ─────────────────────
+                            <>
+                                {/* TITLE */}
+                                <div style={{ textAlign: 'center', fontWeight: 700, fontSize: '1rem', letterSpacing: '0.15em', marginBottom: '2px' }}>{L('gst_invoice')}</div>
+                                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', borderBottom: '2px solid #111', paddingBottom: '8px', marginBottom: '10px', flexWrap: 'wrap', gap: '0.5rem' }}>
+                                    <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                                        {branding?.logoUrl && <img src={branding.logoUrl} alt="Logo" style={{ height: '44px', objectFit: 'contain' }} />}
+                                        <div>
+                                            <h1 style={{ margin: 0, fontSize: '1.5rem', fontWeight: 900, letterSpacing: '-0.01em' }}>{branding?.businessName || 'Your Business Name'}</h1>
+                                            <div style={{ fontSize: '0.78rem', color: '#444', marginTop: '2px' }}>
+                                                {branding?.address || 'Address'}<br />
+                                                {branding?.gstin && <><strong>GSTIN:</strong> {branding.gstin} &nbsp;</>}
+                                                {branding?.contact && <>Contact No.: {branding.contact}</>}
+                                            </div>
+                                            {(() => {
+                                                const lics = getAllConfiguredLicenses(branding);
+                                                return lics.length > 0 ? (
+                                                    <div style={{ fontSize: '0.72rem', color: '#555', marginTop: '2px', display: 'flex', gap: '10px', flexWrap: 'wrap' }}>
+                                                        {lics.map(lic => <span key={lic.label}><strong>{lic.label}:</strong> {lic.number}</span>)}
                                                     </div>
-                                                ))}
+                                                ) : null;
+                                            })()}
                                         </div>
-                                    )}
+                                    </div>
+                                    <div style={{ textAlign: 'right', fontWeight: 700, fontSize: '0.95rem', color: '#111', border: '2px solid #111', padding: '4px 12px', borderRadius: '6px' }}>
+                                        {modeOfPayment === 'Khata' || modeOfPayment === 'Credit' ? L('credit_bill') : L('cash_bill')}
+                                    </div>
                                 </div>
-                                <div style={{ display: 'flex', gap: '8px', marginTop: '4px' }}>
-                                    <span className="pinv-label">{L('contact')} :</span>
-                                    <input className="pinv-input" style={{ flexGrow: 1 }} placeholder="Phone No" value={customer.phone}
-                                        onChange={e => setCustomer({ ...customer, phone: e.target.value })} onBlur={handlePhoneLookup} />
-                                </div>
-                                <div style={{ display: 'flex', gap: '8px', marginTop: '4px' }}>
-                                    <span className="pinv-label">{L('address')} :</span>
-                                    <input className="pinv-input" style={{ flexGrow: 1 }} placeholder={L('village_ph')} value={customer.address}
-                                        onChange={e => setCustomer({ ...customer, address: e.target.value })} />
-                                </div>
-                                <div style={{ display: 'flex', gap: '8px', marginTop: '4px' }}>
-                                    <span className="pinv-label">{L('pin')} :</span>
-                                    <input className="pinv-input" style={{ flexGrow: 1 }} placeholder={L('pin')} value={customer.pin}
-                                        onChange={e => setCustomer({ ...customer, pin: e.target.value })} />
-                                </div>
-                            </div>
-                            {/* Invoice meta */}
-                            <div style={{ padding: '8px', display: 'flex', flexDirection: 'column', gap: '5px' }}>
-                                <div style={{ display: 'grid', gridTemplateColumns: '120px 1fr', gap: '4px', alignItems: 'center' }}>
-                                    <span className="pinv-label">{L('bill_no')} :</span>
-                                    <span style={{ fontWeight: 700 }}>{nextBillNumber}</span>
-                                </div>
-                                <div style={{ display: 'grid', gridTemplateColumns: '120px 1fr', gap: '4px', alignItems: 'center' }}>
-                                    <span className="pinv-label">{L('bill_date')} :</span>
-                                    <input type="date" className="pinv-input" value={invoiceDate} onChange={e => setInvoiceDate(e.target.value)} />
-                                </div>
-                                <div style={{ display: 'grid', gridTemplateColumns: '120px 1fr', gap: '4px', alignItems: 'center' }}>
-                                    <span className="pinv-label">{L('mode_of_payment')} :</span>
-                                    {/* Counter bills are settled either now (Cash — includes
-                                        UPI/card, all treated as paid) or on udhar (Credit). */}
-                                    <select className="pinv-input" value={modeOfPayment} onChange={e => setModeOfPayment(e.target.value)}>
-                                        {['Cash', 'Credit'].map(m => <option key={m} value={m}>{m}</option>)}
-                                    </select>
-                                </div>
-                            </div>
-                        </div>
 
-                        {/* ITEMS TABLE */}
-                        <div style={{ marginBottom: '10px', overflowX: 'auto' }}>
-                            <table className="pinv-table">
-                                <thead>
-                                    <tr>
-                                        <th style={{ width: '34px' }}>{L('sno')}</th>
-                                        <th style={{ minWidth: '140px' }}>{L('item_description')}</th>
-                                        <th style={{ width: '110px' }}>{L('company')}</th>
-                                        <th style={{ width: '78px' }}>{L('batch_no')}</th>
-                                        <th style={{ width: '78px' }}>{L('exp_date')}</th>
-                                        <th style={{ width: '46px' }}>{L('gst_pct')}</th>
-                                        <th style={{ width: '48px' }}>{L('per')}</th>
-                                        <th style={{ width: '58px' }}>{L('qty')}</th>
-                                        <th style={{ width: '68px' }}>{L('rate')}</th>
-                                        <th style={{ width: '86px' }}>{L('gross_amount')}</th>
-                                        <th style={{ width: '30px' }}></th>
-                                    </tr>
-                                </thead>
-                                <tbody>
-                                    {cart.map((item, idx) => (
-                                        <tr key={item.id}>
-                                            <td style={{ textAlign: 'center' }}>{idx + 1}</td>
-                                            <td style={{ fontWeight: 600 }}>{item.name}</td>
-                                            <td style={{ fontSize: '0.78rem' }}>{item.mfgCompany || ''}</td>
-                                            <td><input className="pinv-input" style={{ textAlign: 'center' }} value={rowMeta[item.id]?.batchNo ?? (item.batchNumber || '')}
-                                                onChange={e => setRowMeta(m => ({ ...m, [item.id]: { ...m[item.id], batchNo: e.target.value } }))} /></td>
-                                            <td><input type="month" className="pinv-input" style={{ textAlign: 'center', fontSize: '0.74rem' }} value={rowMeta[item.id]?.expDate ?? (item.expiryDate || '')}
-                                                onChange={e => setRowMeta(m => ({ ...m, [item.id]: { ...m[item.id], expDate: e.target.value } }))} /></td>
-                                            <td style={{ textAlign: 'center' }}><input type="number" className="pinv-input" style={{ textAlign: 'center' }} value={item.gstPct ?? 5}
-                                                onChange={e => setCart(prev => prev.map(c => c.id === item.id ? { ...c, gstPct: Number(e.target.value) } : c))} /></td>
-                                            <td style={{ textAlign: 'center' }}>{item.unit || item.baseUnit}</td>
-                                            <td style={{ textAlign: 'center', fontWeight: 600 }}><input type="number" min="0" className="pinv-input" style={{ textAlign: 'center', fontWeight: 600 }} value={item.cartQuantity}
-                                                onChange={e => setQty(item.id, Number(e.target.value))} /></td>
-                                            <td style={{ textAlign: 'center' }}><input type="number" min="0" className="pinv-input" style={{ textAlign: 'center' }} value={posSellingRate(item)}
-                                                onChange={e => setRate(item.id, Number(e.target.value))} /></td>
-                                            <td style={{ textAlign: 'center', fontWeight: 600 }}>{item.cartTotal ? invFmt(item.cartTotal) : ''}</td>
-                                            <td style={{ textAlign: 'center', padding: '2px' }}>
-                                                <button onClick={() => removeCartItem(item.id)} style={{ border: 'none', background: 'transparent', cursor: 'pointer', color: '#e53935', padding: '2px' }}>
-                                                    <Trash2 size={14} />
-                                                </button>
-                                            </td>
-                                        </tr>
-                                    ))}
-                                    {/* Add-product search row */}
-                                    <tr>
-                                        <td style={{ textAlign: 'center', color: '#999' }}>{cart.length + 1}</td>
-                                        <td colSpan={3} style={{ position: 'relative' }}>
+                                {/* GSTIN BANNER */}
+                                {branding?.gstin && (
+                                    <div style={{ textAlign: 'center', fontWeight: 700, fontSize: '0.9rem', marginBottom: '10px', letterSpacing: '0.05em' }}>
+                                        {L('gstin_no')}: {branding.gstin}
+                                    </div>
+                                )}
+
+                                {/* BUYER (FARMER) + INVOICE META */}
+                                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0', marginBottom: '10px', border: '1px solid #222' }}>
+                                    <div style={{ borderRight: '1px solid #222', padding: '8px' }}>
+                                        <div className="pinv-label" style={{ marginBottom: '4px' }}>{L('buyer_title')}</div>
+                                        <div style={{ position: 'relative' }}>
                                             <input
                                                 className="pinv-input"
-                                                placeholder={L('search_product')}
-                                                value={rowSearch[cart.length] || ''}
-                                                onChange={e => { setRowSearch(s => ({ ...s, [cart.length]: e.target.value })); setActiveRowIndex(e.target.value.length > 0 ? cart.length : null); }}
-                                                onFocus={() => (rowSearch[cart.length] || '').length > 0 && setActiveRowIndex(cart.length)}
-                                                onBlur={() => setTimeout(() => setActiveRowIndex(null), 200)}
+                                                style={{ fontWeight: 700, fontSize: '0.88rem' }}
+                                                placeholder={L('buyer_name_ph')}
+                                                value={customer.name}
+                                                onChange={e => { setCustomer({ ...customer, name: e.target.value }); setShowFarmerDropdown(e.target.value.length > 0); }}
+                                                onFocus={() => customer.name.length > 0 && setShowFarmerDropdown(true)}
+                                                onBlur={() => setTimeout(() => setShowFarmerDropdown(false), 200)}
+                                                onKeyDown={e => { if (e.key === 'Enter' && !showFarmerDropdown) { e.preventDefault(); customerPhoneRef.current?.focus(); } }}
                                             />
-                                            {activeRowIndex === cart.length && (
-                                                <div className="pinv-dropdown">
-                                                    {products
-                                                        .filter(p => p.name.toLowerCase().includes((rowSearch[cart.length] || '').toLowerCase()) || p.barcode === (rowSearch[cart.length] || ''))
-                                                        .slice(0, 50)
-                                                        .map(p => (
-                                                            <div key={p.id} className="pinv-dropdown-item"
-                                                                onMouseDown={() => { addToCart(p); setRowSearch(s => ({ ...s, [cart.length]: '' })); setActiveRowIndex(null); }}>
-                                                                {p.name} <span style={{ color: '#888' }}>· ₹{posSellingRate(p)}</span>
+                                            {showFarmerDropdown && (
+                                                <div className="pinv-dropdown" style={{ width: '100%' }}>
+                                                    {farmers
+                                                        .filter(r => (r.name || '').toLowerCase().includes(customer.name.toLowerCase()) && customer.name.toLowerCase() !== (r.name || '').toLowerCase())
+                                                        .sort((a, b) => (a.channel === 'pos' ? -1 : 1) - (b.channel === 'pos' ? -1 : 1))
+                                                        .slice(0, 10)
+                                                        .map(r => (
+                                                            <div key={r.id} className="pinv-dropdown-item"
+                                                                onMouseDown={() => {
+                                                                    lastMatchedPhoneRef.current = r.number || null;
+                                                                    setCustomer({ name: r.name || '', phone: r.number || '', address: r.atPost || '', pin: r.pin || '', taluka: r.taluka || '', district: r.district || '', retailerId: r.id });
+                                                                    setCustomerOutstanding(Number(r.outstandingAmount) || 0);
+                                                                    setShowFarmerDropdown(false);
+                                                                }}>
+                                                                <div style={{ fontWeight: 600 }}>{r.name}</div>
+                                                                <div style={{ fontSize: '0.75rem', color: '#666' }}>{r.number} {r.atPost ? `• ${r.atPost}` : ''}</div>
                                                             </div>
                                                         ))}
-                                                    {products.filter(p => p.name.toLowerCase().includes((rowSearch[cart.length] || '').toLowerCase())).length === 0 && (
-                                                        <div className="pinv-dropdown-item" onMouseDown={openAddProduct} style={{ color: 'var(--primary)' }}>
-                                                            + Add "{rowSearch[cart.length]}" to inventory
-                                                        </div>
-                                                    )}
                                                 </div>
                                             )}
-                                        </td>
-                                        <td colSpan={7}></td>
-                                    </tr>
-                                    {/* Padding rows so the grid reads like a printed invoice */}
-                                    {Array.from({ length: Math.max(0, 5 - cart.length) }).map((_, i) => (
-                                        <tr key={`pad-${i}`}>
-                                            <td style={{ textAlign: 'center', color: '#bbb' }}>{cart.length + 2 + i}</td>
-                                            <td></td><td></td><td></td><td></td><td></td><td></td><td></td><td></td><td></td><td></td>
-                                        </tr>
-                                    ))}
-                                    {/* TOTAL row */}
-                                    <tr style={{ fontWeight: 700, background: '#f9f9f9' }}>
-                                        <td colSpan={9} style={{ textAlign: 'right', paddingRight: '8px' }}>{L('total')}</td>
-                                        <td style={{ textAlign: 'center' }}>{invFmt(cartSubtotal)}</td>
-                                        <td></td>
-                                    </tr>
-                                </tbody>
-                            </table>
-                        </div>
+                                        </div>
+                                        <div style={{ display: 'flex', gap: '8px', marginTop: '4px' }}>
+                                            <span className="pinv-label">{L('contact')} :</span>
+                                            <input ref={customerPhoneRef} className="pinv-input" style={{ flexGrow: 1 }} placeholder="Phone No" value={customer.phone}
+                                                onChange={e => setCustomer({ ...customer, phone: e.target.value })} onBlur={handlePhoneLookup}
+                                                onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); customerAddressRef.current?.focus(); } }} />
+                                        </div>
+                                        <div style={{ display: 'flex', gap: '8px', marginTop: '4px' }}>
+                                            <span className="pinv-label">{L('address')} :</span>
+                                            <input ref={customerAddressRef} className="pinv-input" style={{ flexGrow: 1 }} placeholder={L('village_ph')} value={customer.address}
+                                                onChange={e => setCustomer({ ...customer, address: e.target.value })}
+                                                onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); customerPinRef.current?.focus(); } }} />
+                                        </div>
+                                        <div style={{ display: 'flex', gap: '8px', marginTop: '4px' }}>
+                                            <span className="pinv-label">{L('pin')} :</span>
+                                            <input ref={customerPinRef} className="pinv-input" style={{ flexGrow: 1 }} placeholder={L('pin')} value={customer.pin}
+                                                onChange={e => setCustomer({ ...customer, pin: e.target.value })}
+                                                onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); rowSearchRef.current?.focus(); } }} />
+                                        </div>
+                                    </div>
+                                    <div style={{ padding: '8px', display: 'flex', flexDirection: 'column', gap: '5px' }}>
+                                        <div style={{ display: 'grid', gridTemplateColumns: '120px 1fr', gap: '4px', alignItems: 'center' }}>
+                                            <span className="pinv-label">{L('bill_no')} :</span>
+                                            <span style={{ fontWeight: 700 }}>{nextBillNumber}</span>
+                                        </div>
+                                        <div style={{ display: 'grid', gridTemplateColumns: '120px 1fr', gap: '4px', alignItems: 'center' }}>
+                                            <span className="pinv-label">{L('bill_date')} :</span>
+                                            <input type="date" className="pinv-input" value={invoiceDate} onChange={e => setInvoiceDate(e.target.value)} />
+                                        </div>
+                                        <div style={{ display: 'grid', gridTemplateColumns: '120px 1fr', gap: '4px', alignItems: 'center' }}>
+                                            <span className="pinv-label">{L('mode_of_payment')} :</span>
+                                            <select className="pinv-input" value={modeOfPayment} onChange={e => setModeOfPayment(e.target.value)}>
+                                                {['Cash', 'Credit'].map(m => <option key={m} value={m}>{m}</option>)}
+                                            </select>
+                                        </div>
+                                    </div>
+                                </div>
 
-                        {/* GST SUMMARY + NET AMOUNT */}
-                        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0', marginBottom: '10px', border: '1px solid #222' }}>
-                            <div style={{ borderRight: '1px solid #222', padding: '8px' }}>
-                                <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.8rem' }}>
-                                    <thead>
-                                        <tr>
-                                            {[L('taxable'), `${L('cgst')} %`, L('gross_amount'), `${L('sgst')} %`, L('gross_amount'), L('total_tax')].map((h, hi) => (
-                                                <th key={hi} style={{ border: '1px solid #ccc', padding: '3px 5px', background: '#f2f2f2' }}>{h}</th>
+                                {/* ITEMS TABLE */}
+                                <div style={{ marginBottom: '10px', overflowX: 'auto' }}>
+                                    <table className="pinv-table">
+                                        <thead>
+                                            <tr>
+                                                <th style={{ width: '34px' }}>{L('sno')}</th>
+                                                <th style={{ minWidth: '140px' }}>{L('item_description')}</th>
+                                                <th style={{ width: '110px' }}>{L('company')}</th>
+                                                <th style={{ width: '78px' }}>{L('batch_no')}</th>
+                                                <th style={{ width: '62px' }}>{L('exp_date')}</th>
+                                                <th style={{ width: '46px' }}>{L('gst_pct')}</th>
+                                                <th style={{ width: '48px' }}>{L('per')}</th>
+                                                <th style={{ width: '58px' }}>{L('qty')}</th>
+                                                <th style={{ width: '68px' }}>{L('rate')}</th>
+                                                <th style={{ width: '86px' }}>{L('gross_amount')}</th>
+                                                <th style={{ width: '30px' }}></th>
+                                            </tr>
+                                        </thead>
+                                        <tbody>
+                                            {cart.map((item, idx) => (
+                                                <tr key={item.id}>
+                                                    <td style={{ textAlign: 'center' }}>{idx + 1}</td>
+                                                    <td style={{ fontWeight: 600 }}>{item.name}</td>
+                                                    <td style={{ fontSize: '0.78rem' }}>{item.mfgCompany || ''}</td>
+                                                    <td><input className="pinv-input" style={{ textAlign: 'center' }} value={rowMeta[item.id]?.batchNo ?? (item.batchNumber || '')}
+                                                        onChange={e => setRowMeta(m => ({ ...m, [item.id]: { ...m[item.id], batchNo: e.target.value } }))} /></td>
+                                                    <td><input type="text" className="pinv-input" style={{ textAlign: 'center', fontSize: '0.72rem', width: '100%' }} placeholder="MM/YY" value={toMonthYear(rowMeta[item.id]?.expDate ?? (item.expiryDate || ''))}
+                                                        onChange={e => setRowMeta(m => ({ ...m, [item.id]: { ...m[item.id], expDate: fromMonthYear(e.target.value) } }))} /></td>
+                                                    <td style={{ textAlign: 'center' }}><input type="number" className="pinv-input" style={{ textAlign: 'center' }} value={item.gstPct ?? 5}
+                                                        onChange={e => setCart(prev => prev.map(c => c.id === item.id ? { ...c, gstPct: Number(e.target.value) } : c))}
+                                                        onWheel={e => e.currentTarget.blur()} /></td>
+                                                    <td style={{ textAlign: 'center' }}>{item.unit || item.baseUnit}</td>
+                                                    <td style={{ textAlign: 'center', fontWeight: 600 }}><input type="number" min="0" className="pinv-input" style={{ textAlign: 'center', fontWeight: 600 }} value={item.cartQuantity}
+                                                        ref={el => { qtyRefs.current[item.id] = el; }}
+                                                        onChange={e => setQty(item.id, Number(e.target.value))}
+                                                        onWheel={e => e.currentTarget.blur()}
+                                                        onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); rowSearchRef.current?.focus(); } }} /></td>
+                                                    <td style={{ textAlign: 'center' }}><input type="number" min="0" className="pinv-input" style={{ textAlign: 'center' }} value={posSellingRate(item)}
+                                                        onChange={e => setRate(item.id, Number(e.target.value))}
+                                                        onWheel={e => e.currentTarget.blur()} /></td>
+                                                    <td style={{ textAlign: 'center', fontWeight: 600 }}>{item.cartTotal ? invFmt(item.cartTotal) : ''}</td>
+                                                    <td style={{ textAlign: 'center', padding: '2px' }}>
+                                                        <button onClick={() => removeCartItem(item.id)} style={{ border: 'none', background: 'transparent', cursor: 'pointer', color: '#e53935', padding: '2px' }}>
+                                                            <Trash2 size={14} />
+                                                        </button>
+                                                    </td>
+                                                </tr>
                                             ))}
-                                        </tr>
-                                    </thead>
-                                    <tbody>
-                                        <tr>
-                                            <td style={{ border: '1px solid #ccc', padding: '3px 5px', textAlign: 'center' }}>{invFmt(computedTaxable)}</td>
-                                            <td style={{ border: '1px solid #ccc', padding: '3px 5px', textAlign: 'center' }}>2.5%</td>
-                                            <td style={{ border: '1px solid #ccc', padding: '3px 5px', textAlign: 'center' }}>{invFmt(totalCgst)}</td>
-                                            <td style={{ border: '1px solid #ccc', padding: '3px 5px', textAlign: 'center' }}>2.5%</td>
-                                            <td style={{ border: '1px solid #ccc', padding: '3px 5px', textAlign: 'center' }}>{invFmt(totalSgst)}</td>
-                                            <td style={{ border: '1px solid #ccc', padding: '3px 5px', textAlign: 'center' }}>{invFmt(totalTax)}</td>
-                                        </tr>
-                                    </tbody>
-                                </table>
-                            </div>
-                            <div style={{ padding: '8px', display: 'flex', flexDirection: 'column', gap: '3px', fontSize: '0.82rem' }}>
-                                <div style={{ display: 'flex', justifyContent: 'space-between' }}><span>{L('output_cgst')}@2.5%</span><span>{invFmt(totalCgst)}</span></div>
-                                <div style={{ display: 'flex', justifyContent: 'space-between' }}><span>{L('output_sgst')}@2.5%</span><span>{invFmt(totalSgst)}</span></div>
-                                <div style={{ display: 'flex', justifyContent: 'space-between' }}><span>{L('round_off')}</span><span>{invFmt(invNetAmount - (computedTaxable + totalTax - loyaltyDiscount))}</span></div>
-                                {loyaltyDiscount > 0 && (
-                                    <div style={{ display: 'flex', justifyContent: 'space-between', color: '#2E7D32' }}><span>{L('discount')} ({effectiveRedeemPoints} pts)</span><span>-{invFmt(loyaltyDiscount)}</span></div>
-                                )}
-                                <div style={{ borderTop: '2px solid #111', marginTop: '4px', paddingTop: '4px', display: 'flex', justifyContent: 'space-between', fontWeight: 900, fontSize: '1rem' }}>
-                                    <span>{L('net_amount')}</span><span>₹{invNetAmount.toLocaleString('en-IN')}</span>
+                                            {/* Add-product search row */}
+                                            <tr>
+                                                <td style={{ textAlign: 'center', color: '#999' }}>{cart.length + 1}</td>
+                                                <td colSpan={3} style={{ position: 'relative' }}>
+                                                    {(() => {
+                                                        const a4Filtered = products.filter(p => p.name.toLowerCase().includes((rowSearch[cart.length] || '').toLowerCase()) || p.barcode === (rowSearch[cart.length] || '')).slice(0, 50);
+                                                        return (<>
+                                                            <input
+                                                                ref={rowSearchRef}
+                                                                className="pinv-input"
+                                                                placeholder={L('search_product')}
+                                                                value={rowSearch[cart.length] || ''}
+                                                                onChange={e => { setRowSearch(s => ({ ...s, [cart.length]: e.target.value })); setActiveRowIndex(e.target.value.length > 0 ? cart.length : null); setHighlightedProductIdx(-1); }}
+                                                                onFocus={() => (rowSearch[cart.length] || '').length > 0 && setActiveRowIndex(cart.length)}
+                                                                onBlur={() => setTimeout(() => setActiveRowIndex(null), 200)}
+                                                                onKeyDown={e => {
+                                                                    if (e.key === 'ArrowDown') { e.preventDefault(); setHighlightedProductIdx(i => Math.min(i + 1, a4Filtered.length - 1)); }
+                                                                    else if (e.key === 'ArrowUp') { e.preventDefault(); setHighlightedProductIdx(i => Math.max(i - 1, -1)); }
+                                                                    else if (e.key === 'Enter') {
+                                                                        e.preventDefault();
+                                                                        const pick = highlightedProductIdx >= 0 ? a4Filtered[highlightedProductIdx] : a4Filtered.length === 1 ? a4Filtered[0] : null;
+                                                                        if (pick) { addToCart(pick); setRowSearch(s => ({ ...s, [cart.length]: '' })); setActiveRowIndex(null); setHighlightedProductIdx(-1); setTimeout(() => qtyRefs.current[pick.id]?.focus(), 50); }
+                                                                    }
+                                                                }}
+                                                            />
+                                                            {activeRowIndex === cart.length && (
+                                                                <div className="pinv-dropdown">
+                                                                    {a4Filtered.map((p, pi) => (
+                                                                        <div key={p.id} className="pinv-dropdown-item" style={{ background: pi === highlightedProductIdx ? '#e8f5e9' : undefined }}
+                                                                            onMouseDown={() => { addToCart(p); setRowSearch(s => ({ ...s, [cart.length]: '' })); setActiveRowIndex(null); setHighlightedProductIdx(-1); setTimeout(() => qtyRefs.current[p.id]?.focus(), 50); }}>
+                                                                            {p.name} <span style={{ color: '#888' }}>· ₹{posSellingRate(p)}</span>
+                                                                        </div>
+                                                                    ))}
+                                                                    {products.filter(p => p.name.toLowerCase().includes((rowSearch[cart.length] || '').toLowerCase())).length === 0 && (
+                                                                        <div className="pinv-dropdown-item" onMouseDown={openAddProduct} style={{ color: 'var(--primary)' }}>
+                                                                            + Add "{rowSearch[cart.length]}" to inventory
+                                                                        </div>
+                                                                    )}
+                                                                </div>
+                                                            )}
+                                                        </>);
+                                                    })()}
+                                                </td>
+                                                <td colSpan={7}></td>
+                                            </tr>
+                                            {/* Padding rows so the grid reads like a printed invoice */}
+                                            {Array.from({ length: Math.max(0, 5 - cart.length) }).map((_, i) => (
+                                                <tr key={`pad-${i}`}>
+                                                    <td style={{ textAlign: 'center', color: '#bbb' }}>{cart.length + 2 + i}</td>
+                                                    <td></td><td></td><td></td><td></td><td></td><td></td><td></td><td></td><td></td><td></td>
+                                                </tr>
+                                            ))}
+                                            {/* TOTAL row */}
+                                            <tr style={{ fontWeight: 700, background: '#f9f9f9' }}>
+                                                <td colSpan={9} style={{ textAlign: 'right', paddingRight: '8px' }}>{L('total')}</td>
+                                                <td style={{ textAlign: 'center' }}>{invFmt(cartSubtotal)}</td>
+                                                <td></td>
+                                            </tr>
+                                        </tbody>
+                                    </table>
                                 </div>
-                                {customerOutstanding > 0 && (
-                                    <>
-                                        <div style={{ display: 'flex', justifyContent: 'space-between', color: '#c62828', marginTop: '3px' }}>
-                                            <span>{L('previous_outstanding')} (Dr)</span><span>₹{customerOutstanding.toLocaleString('en-IN')}</span>
-                                        </div>
-                                        <div style={{ borderTop: '1px solid #111', paddingTop: '3px', display: 'flex', justifyContent: 'space-between', fontWeight: 900 }}>
-                                            <span>{L('total_payable')}</span><span>₹{(invNetAmount + customerOutstanding).toLocaleString('en-IN')}</span>
-                                        </div>
-                                    </>
-                                )}
-                            </div>
-                        </div>
 
-                        {/* AMOUNT IN WORDS */}
-                        <div style={{ border: '1px solid #222', marginBottom: '10px', display: 'grid', gridTemplateColumns: '100px 1fr', alignItems: 'stretch' }}>
-                            <div style={{ borderRight: '1px solid #222', padding: '6px', fontWeight: 700, display: 'flex', alignItems: 'center', fontSize: '0.82rem' }}>{L('amount_in_words')}</div>
-                            <div style={{ padding: '6px', fontWeight: 600, fontSize: '0.85rem', fontStyle: 'italic' }}>INR {numberToWords(invNetAmount)}</div>
-                        </div>
+                                {/* GST SUMMARY + NET AMOUNT */}
+                                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0', marginBottom: '10px', border: '1px solid #222' }}>
+                                    <div style={{ borderRight: '1px solid #222', padding: '8px' }}>
+                                        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.8rem' }}>
+                                            <thead>
+                                                <tr>
+                                                    {[L('taxable'), `${L('cgst')} %`, L('gross_amount'), `${L('sgst')} %`, L('gross_amount'), L('total_tax')].map((h, hi) => (
+                                                        <th key={hi} style={{ border: '1px solid #ccc', padding: '3px 5px', background: '#f2f2f2' }}>{h}</th>
+                                                    ))}
+                                                </tr>
+                                            </thead>
+                                            <tbody>
+                                                <tr>
+                                                    <td style={{ border: '1px solid #ccc', padding: '3px 5px', textAlign: 'center' }}>{invFmt(computedTaxable)}</td>
+                                                    <td style={{ border: '1px solid #ccc', padding: '3px 5px', textAlign: 'center' }}>2.5%</td>
+                                                    <td style={{ border: '1px solid #ccc', padding: '3px 5px', textAlign: 'center' }}>{invFmt(totalCgst)}</td>
+                                                    <td style={{ border: '1px solid #ccc', padding: '3px 5px', textAlign: 'center' }}>2.5%</td>
+                                                    <td style={{ border: '1px solid #ccc', padding: '3px 5px', textAlign: 'center' }}>{invFmt(totalSgst)}</td>
+                                                    <td style={{ border: '1px solid #ccc', padding: '3px 5px', textAlign: 'center' }}>{invFmt(totalTax)}</td>
+                                                </tr>
+                                            </tbody>
+                                        </table>
+                                    </div>
+                                    <div style={{ padding: '8px', display: 'flex', flexDirection: 'column', gap: '3px', fontSize: '0.82rem' }}>
+                                        <div style={{ display: 'flex', justifyContent: 'space-between' }}><span>{L('output_cgst')}@2.5%</span><span>{invFmt(totalCgst)}</span></div>
+                                        <div style={{ display: 'flex', justifyContent: 'space-between' }}><span>{L('output_sgst')}@2.5%</span><span>{invFmt(totalSgst)}</span></div>
+                                        <div style={{ display: 'flex', justifyContent: 'space-between' }}><span>{L('round_off')}</span><span>{invFmt(invNetAmount - (computedTaxable + totalTax + transportCharges - loyaltyDiscount))}</span></div>
+                                        {loyaltyDiscount > 0 && (
+                                            <div style={{ display: 'flex', justifyContent: 'space-between', color: '#2E7D32' }}><span>{L('discount')} ({effectiveRedeemPoints} pts)</span><span>-{invFmt(loyaltyDiscount)}</span></div>
+                                        )}
+                                        {transportCharges > 0 && (
+                                            <div style={{ display: 'flex', justifyContent: 'space-between' }}><span>{L('transport_charges')}</span><span>+{invFmt(transportCharges)}</span></div>
+                                        )}
+                                        {laborCharges > 0 && (
+                                            <div style={{ display: 'flex', justifyContent: 'space-between' }}><span>{L('labor_charges')}</span><span>+{invFmt(laborCharges)}</span></div>
+                                        )}
+                                        <div style={{ borderTop: '2px solid #111', marginTop: '4px', paddingTop: '4px', display: 'flex', justifyContent: 'space-between', fontWeight: 900, fontSize: '1rem' }}>
+                                            <span>{L('net_amount')}</span><span>₹{invNetAmount.toLocaleString('en-IN')}</span>
+                                        </div>
+                                        {isCreditBill && (
+                                            <>
+                                                <div style={{ display: 'flex', justifyContent: 'space-between', color: '#10b981', marginTop: '3px' }}>
+                                                    <span>{L('amount_paid')}</span><span>₹{effectiveCreditPaidNow.toLocaleString('en-IN')}</span>
+                                                </div>
+                                                <div style={{ borderTop: '1px solid #111', paddingTop: '3px', display: 'flex', justifyContent: 'space-between', fontWeight: 900, color: effectiveCreditAmount > 0 ? '#c62828' : '#10b981' }}>
+                                                    <span>{L('credit_amount')}</span><span>₹{effectiveCreditAmount.toLocaleString('en-IN')}</span>
+                                                </div>
+                                            </>
+                                        )}
+                                        {customerOutstanding > 0 && (
+                                            <>
+                                                <div style={{ display: 'flex', justifyContent: 'space-between', color: '#c62828', marginTop: '3px' }}>
+                                                    <span>{L('previous_outstanding')} (Dr)</span><span>₹{customerOutstanding.toLocaleString('en-IN')}</span>
+                                                </div>
+                                                <div style={{ borderTop: '1px solid #111', paddingTop: '3px', display: 'flex', justifyContent: 'space-between', fontWeight: 900 }}>
+                                                    <span>{L('total_payable')}</span><span>₹{(invNetAmount + customerOutstanding).toLocaleString('en-IN')}</span>
+                                                </div>
+                                            </>
+                                        )}
+                                    </div>
+                                </div>
 
-                        {/* DECLARATION + SIGNATURE */}
-                        <div style={{ border: '1px solid #222', display: 'grid', gridTemplateColumns: '1fr 1fr' }}>
-                            <div style={{ borderRight: '1px solid #222', padding: '8px', fontSize: '0.75rem' }}>
-                                <div className="pinv-label" style={{ marginBottom: '3px' }}>{L('declaration')} :</div>
-                                <div style={{ color: '#444', lineHeight: '1.5' }}>
-                                    {L('declaration_text')}
+                                {/* AMOUNT IN WORDS */}
+                                <div style={{ border: '1px solid #222', marginBottom: '10px', display: 'grid', gridTemplateColumns: '100px 1fr', alignItems: 'stretch' }}>
+                                    <div style={{ borderRight: '1px solid #222', padding: '6px', fontWeight: 700, display: 'flex', alignItems: 'center', fontSize: '0.82rem' }}>{L('amount_in_words')}</div>
+                                    <div style={{ padding: '6px', fontWeight: 600, fontSize: '0.85rem', fontStyle: 'italic' }}>INR {numberToWords(invNetAmount)}</div>
                                 </div>
-                            </div>
-                            <div style={{ padding: '8px', display: 'flex', flexDirection: 'column', alignItems: 'flex-end', justifyContent: 'space-between', fontSize: '0.8rem' }}>
-                                <div style={{ fontWeight: 700 }}>{L('for_business')} {branding?.businessName || 'Your Business Name'}</div>
-                                {branding?.signatureUrl && (
-                                    <img src={branding.signatureUrl} alt="" style={{ height: '42px', maxWidth: '150px', objectFit: 'contain', marginTop: '4px' }} />
-                                )}
-                                <div style={{ borderTop: '1px solid #555', paddingTop: '4px', minWidth: '140px', textAlign: 'center', marginTop: branding?.signatureUrl ? '4px' : '28px' }}>
-                                    {branding?.signatureName || L('authorised_signatory')}
+
+                                {/* Category intentionally omitted from printed invoice — tracked internally for analytics only */}
+
+                                {/* DECLARATION + SIGNATURE */}
+                                <div style={{ border: '1px solid #222', display: 'grid', gridTemplateColumns: '1fr 1fr' }}>
+                                    <div style={{ borderRight: '1px solid #222', padding: '8px', fontSize: '0.75rem' }}>
+                                        <div className="pinv-label" style={{ marginBottom: '3px' }}>{L('declaration')} :</div>
+                                        <div style={{ color: '#444', lineHeight: '1.5' }}>
+                                            {L('declaration_text')}
+                                        </div>
+                                    </div>
+                                    <div style={{ padding: '8px', display: 'flex', flexDirection: 'column', alignItems: 'flex-end', justifyContent: 'space-between', fontSize: '0.8rem' }}>
+                                        <div style={{ fontWeight: 700 }}>{L('for_business')} {branding?.businessName || 'Your Business Name'}</div>
+                                        {branding?.signatureUrl && (
+                                            <img src={branding.signatureUrl} alt="" style={{ height: '42px', maxWidth: '150px', objectFit: 'contain', marginTop: '4px' }} />
+                                        )}
+                                        <div style={{ borderTop: '1px solid #555', paddingTop: '4px', minWidth: '140px', textAlign: 'center', marginTop: branding?.signatureUrl ? '4px' : '28px' }}>
+                                            {branding?.signatureName || L('authorised_signatory')}
+                                        </div>
+                                    </div>
                                 </div>
-                            </div>
-                        </div>
+                            </>
+                        )}
                     </div>
 
                     {/* ── Loyalty redeem + action buttons (no-print) ─────────────────── */}
-                    <div style={{ maxWidth: billFormat === 'A5' ? '640px' : '1040px', margin: '1rem auto 2.5rem' }}>
+                    <div style={{ maxWidth: billFormat === 'A5' ? '960px' : '1040px', margin: '1rem auto 2.5rem' }}>
                         {loyaltyIsActive && customerLoyalty && customerLoyalty.points > 0 && (
                             <div style={{ background: 'hsla(45,93%,47%,0.08)', border: '1px solid hsla(45,93%,47%,0.2)', borderRadius: '10px', padding: '0.6rem 1rem', marginBottom: '0.9rem', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
                                 <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
@@ -1501,38 +2154,167 @@ export default function POSPage() {
                                             const minRedeem = loyaltyConfig?.minRedeemPoints || 0;
                                             setRedeemPoints(raw > 0 && raw < minRedeem ? 0 : raw);
                                         }}
+                                        onWheel={e => e.currentTarget.blur()}
                                         style={{ width: '70px', border: '1px solid var(--surface-border)', borderRadius: '6px', padding: '0.2rem 0.4rem', fontSize: '0.85rem', background: 'var(--surface-raised)', color: 'var(--text-primary)' }} />
                                     <span style={{ fontSize: '0.78rem', color: 'var(--text-tertiary)' }}>pts</span>
                                 </div>
                             </div>
                         )}
-                        <div style={{ display: 'flex', gap: '0.6rem', flexWrap: 'wrap', alignItems: 'center' }}>
-                            <button
-                                onClick={() => handleCheckout(modeOfPayment === 'Credit' ? 'Khata' : modeOfPayment)}
-                                disabled={isProcessing || cart.length === 0}
-                                className="btn"
-                                style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', padding: '0.75rem 1.75rem', fontSize: '1rem', borderRadius: '8px', background: '#1565C0', color: '#fff', border: 'none', cursor: isProcessing ? 'not-allowed' : 'pointer', fontWeight: 700 }}>
-                                {isProcessing ? <Loader2 className="animate-spin" size={18} /> : <Printer size={18} />} Save &amp; Print
-                            </button>
-                            <ModuleGate moduleId="cash_tender" moduleName="Cash Tender" paywallVariant="badge">
-                                <button onClick={() => { setCashTenderAmount(grandTotal); setShowCashTenderDialog(true); }} disabled={isProcessing || cart.length === 0} className="btn" style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', padding: '0.75rem 1.25rem', borderRadius: '8px', background: '#16a34a', color: 'white', border: 'none', fontWeight: 700, cursor: 'pointer' }}>
-                                    <Banknote size={18} /> Cash+Change
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
+                            {/* Transport Charges + Labor Charges */}
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '1.25rem', flexWrap: 'wrap' }}>
+                                <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                                    <label style={{ fontSize: '0.88rem', fontWeight: 600, color: 'var(--text-secondary)', whiteSpace: 'nowrap' }}>{L('transport_charges')} (₹)</label>
+                                    <input
+                                        type="number"
+                                        min={0}
+                                        value={transportCharges || ''}
+                                        onChange={e => setTransportCharges(Math.max(0, Number(e.target.value) || 0))}
+                                        onWheel={e => e.currentTarget.blur()}
+                                        placeholder="0"
+                                        style={{ width: '110px', border: '1px solid var(--surface-border)', borderRadius: '8px', padding: '0.4rem 0.6rem', fontSize: '0.9rem', background: 'var(--surface-raised)', color: 'var(--text-primary)' }}
+                                    />
+                                </div>
+                                <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                                    <label style={{ fontSize: '0.88rem', fontWeight: 600, color: 'var(--text-secondary)', whiteSpace: 'nowrap' }}>{L('labor_charges')} (₹)</label>
+                                    <input
+                                        type="number"
+                                        min={0}
+                                        value={laborCharges || ''}
+                                        onChange={e => setLaborCharges(Math.max(0, Number(e.target.value) || 0))}
+                                        onWheel={e => e.currentTarget.blur()}
+                                        placeholder="0"
+                                        style={{ width: '110px', border: '1px solid var(--surface-border)', borderRadius: '8px', padding: '0.4rem 0.6rem', fontSize: '0.9rem', background: 'var(--surface-raised)', color: 'var(--text-primary)' }}
+                                    />
+                                </div>
+                            </div>
+                            {/* Partial Credit: Amount Paid Now (only shown for Credit bills) */}
+                            {isCreditBill && (
+                                <div style={{ background: 'hsla(220,70%,55%,0.07)', border: '1px solid hsla(220,70%,55%,0.2)', borderRadius: '10px', padding: '0.75rem 1rem' }}>
+                                    <div style={{ fontSize: '0.8rem', fontWeight: 700, color: 'var(--text-secondary)', marginBottom: '0.6rem', textTransform: 'uppercase', letterSpacing: '0.04em' }}>
+                                        Payment Summary
+                                    </div>
+                                    <div style={{ display: 'flex', alignItems: 'center', gap: '1rem', flexWrap: 'wrap' }}>
+                                        <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                                            <label style={{ fontSize: '0.85rem', fontWeight: 600, color: 'var(--text-secondary)', whiteSpace: 'nowrap' }}>{L('amount_paid')} (₹)</label>
+                                            <input
+                                                type="number"
+                                                min={0}
+                                                max={grandTotal}
+                                                value={creditPaidNow || ''}
+                                                onChange={e => setCreditPaidNow(Math.max(0, Math.min(grandTotal, Number(e.target.value) || 0)))}
+                                                onWheel={e => e.currentTarget.blur()}
+                                                placeholder="0"
+                                                style={{ width: '120px', border: '1px solid hsla(220,70%,55%,0.4)', borderRadius: '8px', padding: '0.4rem 0.6rem', fontSize: '0.9rem', background: 'var(--surface-raised)', color: 'var(--text-primary)' }}
+                                            />
+                                        </div>
+                                        <div style={{ display: 'flex', gap: '1.25rem', fontSize: '0.88rem' }}>
+                                            <span style={{ color: 'var(--text-secondary)' }}>
+                                                Bill: <strong>₹{grandTotal.toLocaleString('en-IN')}</strong>
+                                            </span>
+                                            <span style={{ color: '#10b981' }}>
+                                                Paid: <strong>₹{effectiveCreditPaidNow.toLocaleString('en-IN')}</strong>
+                                            </span>
+                                            <span style={{ color: effectiveCreditAmount > 0 ? '#ef4444' : '#10b981' }}>
+                                                {L('credit_amount')}: <strong>₹{effectiveCreditAmount.toLocaleString('en-IN')}</strong>
+                                            </span>
+                                        </div>
+                                    </div>
+                                </div>
+                            )}
+                            {/* Khata Integration — shown when credit amount > 0 */}
+                            {isCreditBill && effectiveCreditAmount > 0 && (
+                                <div style={{ background: 'hsla(30,90%,50%,0.07)', border: '1px solid hsla(30,90%,50%,0.25)', borderRadius: '10px', padding: '0.85rem 1rem' }}>
+                                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.65rem' }}>
+                                        <BookOpen size={15} style={{ color: '#f59e0b', flexShrink: 0 }} />
+                                        <span style={{ fontWeight: 700, fontSize: '0.82rem', color: 'var(--text-primary)', textTransform: 'uppercase', letterSpacing: '0.04em' }}>Khata / Udhaari</span>
+                                        <span style={{ fontSize: '0.72rem', color: 'var(--text-tertiary)' }}>— outstanding will be added to customer's Khata account</span>
+                                    </div>
+
+                                    {/* Customer resolved from bill header */}
+                                    {(customer.name || customer.phone) ? (
+                                        <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: '1rem', marginBottom: '0.6rem', flexWrap: 'wrap' }}>
+                                            <div>
+                                                <div style={{ fontWeight: 700, fontSize: '0.9rem', color: 'var(--text-primary)', display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+                                                    <User size={13} style={{ color: '#f59e0b' }} />
+                                                    {customer.name || 'Unnamed Customer'}
+                                                    {customer.retailerId && (
+                                                        <Link to={`/customers/${customer.retailerId}`} target="_blank"
+                                                            style={{ fontSize: '0.7rem', fontWeight: 600, color: 'var(--primary-light)', textDecoration: 'none', padding: '1px 6px', borderRadius: '8px', background: 'hsla(152,60%,40%,0.1)', border: '1px solid hsla(152,60%,40%,0.2)', whiteSpace: 'nowrap' }}>
+                                                            View Profile ↗
+                                                        </Link>
+                                                    )}
+                                                </div>
+                                                {customer.phone && (
+                                                    <div style={{ fontSize: '0.76rem', color: 'var(--text-tertiary)', display: 'flex', alignItems: 'center', gap: '0.3rem', marginTop: '0.1rem' }}>
+                                                        <Phone size={11} /> {customer.phone}
+                                                    </div>
+                                                )}
+                                                {customerOutstanding > 0 ? (
+                                                    <div style={{ fontSize: '0.75rem', color: '#f59e0b', marginTop: '0.2rem', fontWeight: 600 }}>
+                                                        Current Khata balance: ₹{customerOutstanding.toLocaleString('en-IN')}
+                                                    </div>
+                                                ) : (
+                                                    <div style={{ fontSize: '0.72rem', color: 'var(--text-tertiary)', marginTop: '0.2rem' }}>
+                                                        {farmers.some(f => {
+                                                            const stored = (f.number ?? f.phone ?? '').replace(/\D/g, '');
+                                                            const key = customer.phone.replace(/\D/g, '');
+                                                            return key.length >= 6 && (stored === key || stored.slice(-10) === key.slice(-10));
+                                                        }) ? 'Existing customer · no outstanding balance' : '✦ New customer — Khata account will be created'}
+                                                    </div>
+                                                )}
+                                            </div>
+                                            <div style={{ textAlign: 'right', flexShrink: 0 }}>
+                                                <div style={{ fontSize: '0.72rem', color: 'var(--text-tertiary)' }}>Adding to Khata</div>
+                                                <div style={{ fontWeight: 800, fontSize: '1.05rem', color: '#ef4444' }}>+₹{effectiveCreditAmount.toLocaleString('en-IN')}</div>
+                                                {customerOutstanding > 0 && (
+                                                    <div style={{ fontSize: '0.72rem', color: 'var(--text-secondary)', marginTop: '2px' }}>
+                                                        New total: ₹{(customerOutstanding + effectiveCreditAmount).toLocaleString('en-IN')}
+                                                    </div>
+                                                )}
+                                            </div>
+                                        </div>
+                                    ) : (
+                                        <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.6rem', padding: '0.5rem 0.6rem', background: 'hsla(38,92%,50%,0.1)', borderRadius: '8px', fontSize: '0.8rem', color: '#f59e0b', fontWeight: 600 }}>
+                                            <AlertTriangle size={14} />
+                                            Enter customer name or phone above to link this credit to their Khata account.
+                                        </div>
+                                    )}
+
+                                    {/* Note — visible in Khata ledger */}
+                                    <div>
+                                        <label style={{ display: 'block', fontSize: '0.72rem', fontWeight: 600, color: 'var(--text-tertiary)', marginBottom: '0.25rem' }}>Note for Khata record (optional)</label>
+                                        <input
+                                            className="input-field"
+                                            placeholder="e.g. Seeds & fertilizer purchase on credit"
+                                            value={khataNote}
+                                            onChange={e => setKhataNote(e.target.value)}
+                                            style={{ margin: 0, width: '100%', fontSize: '0.85rem' }}
+                                        />
+                                    </div>
+                                </div>
+                            )}
+                            {/* Save + Print + To Pay */}
+                            <div style={{ display: 'flex', gap: '0.6rem', flexWrap: 'wrap', alignItems: 'center' }}>
+                                <button
+                                    onClick={() => handleCheckout(modeOfPayment === 'Credit' ? 'Khata' : modeOfPayment)}
+                                    disabled={isProcessing || cart.length === 0}
+                                    className="btn"
+                                    style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', padding: '0.75rem 1.75rem', fontSize: '1rem', borderRadius: '8px', background: '#1565C0', color: '#fff', border: 'none', cursor: isProcessing ? 'not-allowed' : 'pointer', fontWeight: 700 }}>
+                                    {isProcessing ? <Loader2 className="animate-spin" size={18} /> : <Save size={18} />} Save
                                 </button>
-                            </ModuleGate>
-                            <ModuleGate moduleId="vpay" moduleName="V Pay" paywallVariant="badge">
-                                <button onClick={() => setShowVPayDialog(true)} disabled={isProcessing || cart.length === 0} className="btn" style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', padding: '0.75rem 1.25rem', borderRadius: '8px', background: '#0055ff', color: 'white', border: 'none', fontWeight: 700, cursor: 'pointer' }}>
-                                    <QrCode size={18} /> V Pay
+                                <button
+                                    onClick={() => {
+                                        if (cart.length === 0) { showToast('Add items to the bill before printing.', 'error'); return; }
+                                        triggerPrint();
+                                    }}
+                                    disabled={isProcessing}
+                                    className="btn btn-secondary"
+                                    style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', padding: '0.75rem 1.25rem', fontSize: '1rem', borderRadius: '8px', fontWeight: 700, cursor: 'pointer' }}>
+                                    <Printer size={18} /> Print
                                 </button>
-                            </ModuleGate>
-                            <ModuleGate moduleId="multiple_payment_modes" moduleName="Split Payment" paywallVariant="badge">
-                                <button onClick={() => { setSplits([{ method: 'Cash', amount: grandTotal }]); setShowSplitDialog(true); }} disabled={isProcessing || cart.length === 0} className="btn" style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', padding: '0.75rem 1.25rem', borderRadius: '8px', background: '#7c3aed', color: 'white', border: 'none', fontWeight: 700, cursor: 'pointer' }}>
-                                    <CreditCard size={18} /> Split
-                                </button>
-                            </ModuleGate>
-                            <button onClick={() => handleCheckout('Khata')} disabled={isProcessing || cart.length === 0} className="btn" style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', padding: '0.75rem 1.25rem', borderRadius: '8px', background: 'var(--secondary)', color: 'var(--secondary-dark)', border: 'none', fontWeight: 700, cursor: 'pointer' }}>
-                                Credit / Khata <ChevronRight size={18} />
-                            </button>
-                            <span style={{ marginLeft: 'auto', fontSize: '1.1rem', fontWeight: 800 }}>To Pay: <span style={{ color: 'var(--primary)' }}>₹{Math.round(grandTotal).toLocaleString('en-IN')}</span></span>
+                                <span style={{ marginLeft: 'auto', fontSize: '1.1rem', fontWeight: 800 }}>To Pay: <span style={{ color: 'var(--primary)' }}>₹{Math.round(grandTotal).toLocaleString('en-IN')}</span></span>
+                            </div>
                         </div>
                     </div>
                 </div>
@@ -1747,27 +2529,51 @@ export default function POSPage() {
                 </div>
             )}
 
-            {/* Hidden reprint layout — separate from the live checkout print layout below */}
-            {reprintOrder && (
-                <div className="print-only">
-                    <TraditionalPrintLayout
-                        cart={(reprintOrder.lineItems || []).map((li: any) => ({
-                            name: li.productName, cartQuantity: li.quantity, baseUnit: li.unit,
-                            sellingPrice: li.mrp, maxRetailPrice: li.mrp, cartTotal: li.amount, gstPct: li.gstPct,
-                            mfgCompany: li.mfgCompany, batchNo: li.batchNo, expDate: li.expDate,
-                        }))}
-                        customer={{ name: reprintOrder.retailerName, phone: reprintOrder.phoneNumber, address: reprintOrder.address, pin: reprintOrder.pin }}
-                        branding={branding}
-                        billNumber={reprintOrder.orderNumber}
-                        subtotal={reprintOrder.subtotal || 0}
-                        discount={reprintOrder.discount || 0}
-                        grandTotal={reprintOrder.grandTotal || 0}
-                        billFormat={billFormat}
-                        invoiceDate={reprintOrder.invoiceDate || ''}
-                        modeOfPayment={reprintOrder.paymentMethod || 'Cash'}
-                        L={L}
-                    />
-                </div>
+            {/* Bill print portal — rendered directly on <body> so body.pos-printing CSS
+                can hide everything else (sidebar, nav, app wrapper) without any className
+                gymnastics on the surrounding layout. Both Print and Reprint share this portal;
+                reprintOrder controls which content is active at print time. */}
+            {createPortal(
+                <div id="pos-print-root">
+                    {reprintOrder ? (
+                        <PosInvoicePreview
+                            cart={(reprintOrder.lineItems || []).map((li: any) => ({
+                                name: li.productName, cartQuantity: li.quantity, baseUnit: li.unit,
+                                sellingPrice: li.mrp, maxRetailPrice: li.mrp, cartTotal: li.amount, gstPct: li.gstPct,
+                                mfgCompany: li.mfgCompany, batchNo: li.batchNo, expDate: li.expDate,
+                            }))}
+                            customer={{ name: reprintOrder.retailerName, phone: reprintOrder.phoneNumber, address: reprintOrder.address, pin: reprintOrder.pin, taluka: reprintOrder.taluka, district: reprintOrder.district }}
+                            branding={branding}
+                            billNumber={reprintOrder.orderNumber}
+                            discount={reprintOrder.discount || 0}
+                            grandTotal={reprintOrder.grandTotal || 0}
+                            billFormat={billFormat}
+                            invoiceDate={reprintOrder.invoiceDate || ''}
+                            modeOfPayment={reprintOrder.paymentMethod || 'Cash'}
+                            L={L}
+                        />
+                    ) : (
+                        <PosInvoicePreview
+                            cart={cart.map(c => ({ ...c, batchNo: rowMeta[c.id]?.batchNo ?? c.batchNumber, expDate: rowMeta[c.id]?.expDate ?? c.expiryDate }))}
+                            customer={customer}
+                            branding={branding}
+                            billNumber={nextBillNumber}
+                            transportCharges={transportCharges}
+                            laborCharges={laborCharges}
+                            discount={loyaltyDiscount}
+                            grandTotal={grandTotal}
+                            creditPaidNow={effectiveCreditPaidNow}
+                            creditAmount={effectiveCreditAmount}
+                            billFormat={billFormat}
+                            invoiceDate={invoiceDate}
+                            modeOfPayment={modeOfPayment}
+                            previousOutstanding={customerOutstanding}
+                            activeCats={invoiceCategories ?? getInvoiceProductCategories(cart)}
+                            L={L}
+                        />
+                    )}
+                </div>,
+                document.body
             )}
 
             {/* ── V-Pay Dialog ──────────────────────────────────────────────────────── */}
@@ -1835,6 +2641,7 @@ export default function POSPage() {
                                 type="number"
                                 value={cashTenderAmount || ''}
                                 onChange={e => setCashTenderAmount(Number(e.target.value))}
+                                onWheel={e => e.currentTarget.blur()}
                                 placeholder="Enter amount"
                                 className="input-field"
                                 style={{ fontSize: '1.1rem', fontWeight: 700 }}
@@ -1886,6 +2693,7 @@ export default function POSPage() {
                                     {PAYMENT_METHODS.map(m => <option key={m} value={m}>{m}</option>)}
                                 </select>
                                 <input type="number" value={sp.amount || ''} onChange={e => setSplits(prev => prev.map((s, idx) => idx === i ? { ...s, amount: Number(e.target.value) } : s))}
+                                    onWheel={e => e.currentTarget.blur()}
                                     placeholder="₹0"
                                     style={{ width: '90px', padding: '0.5rem', borderRadius: '8px', border: '1px solid var(--surface-border)', fontSize: '0.9rem', fontWeight: 700, background: 'var(--surface-raised)', color: 'var(--text-primary)' }} />
                                 {splits.length > 1 && (
@@ -1988,201 +2796,8 @@ export default function POSPage() {
                 />
             )}
 
-            {/* Hidden print layout — suppressed while a reprint (below) is in flight,
-                so window.print() never renders both layouts at once. */}
-            {!reprintOrder && (
-                <div className="print-only">
-                    <TraditionalPrintLayout
-                        cart={cart.map(c => ({ ...c, batchNo: rowMeta[c.id]?.batchNo ?? c.batchNumber, expDate: rowMeta[c.id]?.expDate ?? c.expiryDate }))}
-                        customer={customer}
-                        branding={branding}
-                        billNumber={nextBillNumber}
-                        subtotal={cartSubtotal}
-                        discount={loyaltyDiscount}
-                        grandTotal={grandTotal}
-                        billFormat={billFormat}
-                        invoiceDate={invoiceDate}
-                        modeOfPayment={modeOfPayment}
-                        previousOutstanding={customerOutstanding}
-                        L={L}
-                    />
-                </div>
-            )}
-        </div>
-    );
-}
-
-// Printed GST invoice — mirrors B2BInvoicePage's layout so the POS (farmer) bill
-// looks identical to the B2B one. `billFormat` drives the print @page size (A4/A5).
-function TraditionalPrintLayout({ cart, customer, branding, billNumber, discount, grandTotal, billFormat = 'A4', invoiceDate, modeOfPayment = 'Cash', previousOutstanding = 0, L = (k: string) => k }: any) {
-    const fmt = (n: number) => (Number.isFinite(n) ? n : 0).toFixed(2);
-    const lineGst = (i: any) => (typeof i.gstPct === 'number' ? i.gstPct : 5);
-    const taxable = cart.reduce((s: number, i: any) => s + (i.cartTotal || 0) / (1 + lineGst(i) / 100), 0);
-    const cgst = cart.reduce((s: number, i: any) => { const g = lineGst(i); return s + ((i.cartTotal || 0) / (1 + g / 100)) * (g / 2) / 100; }, 0);
-    const sgst = cgst;
-    const tax = cgst + sgst;
-    const net = Math.round(grandTotal || 0);
-    const roundOff = net - (taxable + tax - (discount || 0));
-    const sellerName = branding?.businessName || 'Your Business Name';
-    const isA5 = billFormat === 'A5';
-    const baseFont = isA5 ? '0.72rem' : '0.82rem';
-    const dateLabel = invoiceDate || new Date().toISOString().split('T')[0];
-
-    return (
-        <div style={{ padding: isA5 ? '8mm' : '12mm', fontFamily: "'Times New Roman', serif", background: '#fff', color: '#000', fontSize: baseFont }}>
-            <style>{`
-                @media print { @page { size: ${billFormat}; margin: ${isA5 ? '6mm' : '10mm'}; } }
-                .kaprint-table { border-collapse: collapse; width: 100%; }
-                .kaprint-table th, .kaprint-table td { border: 1px solid #222; padding: ${isA5 ? '2px 3px' : '3px 5px'}; font-size: ${baseFont}; }
-                .kaprint-table th { background: #f2f2f2; font-weight: 700; text-align: center; }
-                * { -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important; }
-            `}</style>
-
-            {/* TITLE + SELLER */}
-            <div style={{ textAlign: 'center', fontWeight: 700, letterSpacing: '0.15em', marginBottom: '2px' }}>{L('gst_invoice')}</div>
-            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', borderBottom: '2px solid #111', paddingBottom: '6px', marginBottom: '8px', gap: '8px' }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-                    {branding?.logoUrl && <img src={branding.logoUrl} alt="Logo" style={{ height: isA5 ? '34px' : '44px', objectFit: 'contain' }} />}
-                    <div>
-                        <h1 style={{ margin: 0, fontSize: isA5 ? '1.1rem' : '1.5rem', fontWeight: 900 }}>{sellerName}</h1>
-                        <div style={{ fontSize: isA5 ? '0.66rem' : '0.78rem', color: '#333', marginTop: '2px' }}>
-                            {branding?.address || ''}<br />
-                            {branding?.gstin && <><strong>GSTIN:</strong> {branding.gstin} &nbsp;</>}
-                            {branding?.contact && <>Contact: {branding.contact}</>}
-                        </div>
-                    </div>
-                </div>
-                <div style={{ textAlign: 'right', fontWeight: 700, border: '2px solid #111', padding: '3px 10px', borderRadius: '6px', whiteSpace: 'nowrap' }}>
-                    {modeOfPayment === 'Khata' || modeOfPayment === 'Credit' ? L('credit_bill') : L('cash_bill')}
-                </div>
-            </div>
-
-            {/* BUYER + META */}
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', border: '1px solid #222', marginBottom: '8px' }}>
-                <div style={{ borderRight: '1px solid #222', padding: '6px' }}>
-                    <div style={{ fontWeight: 700, marginBottom: '3px' }}>{L('buyer_title')}</div>
-                    <div style={{ fontWeight: 700 }}>{customer.name}</div>
-                    {customer.address && <div>{customer.address}{customer.pin ? ` - ${customer.pin}` : ''}</div>}
-                    {customer.phone && <div>{L('contact')}: {customer.phone}</div>}
-                </div>
-                <div style={{ padding: '6px', display: 'flex', flexDirection: 'column', gap: '3px' }}>
-                    <div style={{ display: 'flex', justifyContent: 'space-between' }}><strong>{L('bill_no')} :</strong><span>{billNumber}</span></div>
-                    <div style={{ display: 'flex', justifyContent: 'space-between' }}><strong>{L('bill_date')} :</strong><span>{dateLabel}</span></div>
-                    <div style={{ display: 'flex', justifyContent: 'space-between' }}><strong>{L('mode_of_payment')} :</strong><span>{modeOfPayment}</span></div>
-                </div>
-            </div>
-
-            {/* ITEMS */}
-            <table className="kaprint-table" style={{ marginBottom: '8px' }}>
-                <thead>
-                    <tr>
-                        <th style={{ width: '30px' }}>{L('sno')}</th>
-                        <th style={{ textAlign: 'left' }}>{L('item_description')}</th>
-                        <th>{L('company')}</th>
-                        <th>{L('batch_no')}</th>
-                        <th>{L('exp_date')}</th>
-                        <th>{L('gst_pct')}</th>
-                        <th>{L('per')}</th>
-                        <th>{L('qty')}</th>
-                        <th>{L('rate')}</th>
-                        <th>{L('gross_amount')}</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    {cart.map((item: any, i: number) => (
-                        <tr key={i}>
-                            <td style={{ textAlign: 'center' }}>{i + 1}</td>
-                            <td>{item.name}</td>
-                            <td>{item.mfgCompany || ''}</td>
-                            <td style={{ textAlign: 'center' }}>{item.batchNo || ''}</td>
-                            <td style={{ textAlign: 'center' }}>{item.expDate || ''}</td>
-                            <td style={{ textAlign: 'center' }}>{lineGst(item)}</td>
-                            <td style={{ textAlign: 'center' }}>{item.unit || item.baseUnit || ''}</td>
-                            <td style={{ textAlign: 'center' }}>{item.cartQuantity}</td>
-                            <td style={{ textAlign: 'center' }}>{posSellingRate(item)}</td>
-                            <td style={{ textAlign: 'center' }}>{fmt(item.cartTotal)}</td>
-                        </tr>
-                    ))}
-                    {Array.from({ length: Math.max(0, (isA5 ? 4 : 6) - cart.length) }).map((_: any, i: number) => (
-                        <tr key={`e-${i}`} style={{ height: '20px' }}>
-                            <td></td><td></td><td></td><td></td><td></td><td></td><td></td><td></td><td></td><td></td>
-                        </tr>
-                    ))}
-                    <tr style={{ fontWeight: 700, background: '#f9f9f9' }}>
-                        <td colSpan={9} style={{ textAlign: 'right', paddingRight: '8px' }}>{L('total')}</td>
-                        <td style={{ textAlign: 'center' }}>{fmt(taxable + tax)}</td>
-                    </tr>
-                </tbody>
-            </table>
-
-            {/* GST SUMMARY + NET */}
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', border: '1px solid #222', marginBottom: '8px' }}>
-                <div style={{ borderRight: '1px solid #222', padding: '6px' }}>
-                    <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: isA5 ? '0.66rem' : '0.78rem' }}>
-                        <thead>
-                            <tr>{[L('taxable'), `${L('cgst')}%`, L('gross_amount'), `${L('sgst')}%`, L('gross_amount'), L('total_tax')].map((h, hi) => <th key={hi} style={{ border: '1px solid #ccc', padding: '2px 4px', background: '#f2f2f2' }}>{h}</th>)}</tr>
-                        </thead>
-                        <tbody>
-                            <tr>
-                                <td style={{ border: '1px solid #ccc', padding: '2px 4px', textAlign: 'center' }}>{fmt(taxable)}</td>
-                                <td style={{ border: '1px solid #ccc', padding: '2px 4px', textAlign: 'center' }}>2.5%</td>
-                                <td style={{ border: '1px solid #ccc', padding: '2px 4px', textAlign: 'center' }}>{fmt(cgst)}</td>
-                                <td style={{ border: '1px solid #ccc', padding: '2px 4px', textAlign: 'center' }}>2.5%</td>
-                                <td style={{ border: '1px solid #ccc', padding: '2px 4px', textAlign: 'center' }}>{fmt(sgst)}</td>
-                                <td style={{ border: '1px solid #ccc', padding: '2px 4px', textAlign: 'center' }}>{fmt(tax)}</td>
-                            </tr>
-                        </tbody>
-                    </table>
-                </div>
-                <div style={{ padding: '6px', display: 'flex', flexDirection: 'column', gap: '2px' }}>
-                    <div style={{ display: 'flex', justifyContent: 'space-between' }}><span>{L('output_cgst')}@2.5%</span><span>{fmt(cgst)}</span></div>
-                    <div style={{ display: 'flex', justifyContent: 'space-between' }}><span>{L('output_sgst')}@2.5%</span><span>{fmt(sgst)}</span></div>
-                    <div style={{ display: 'flex', justifyContent: 'space-between' }}><span>{L('round_off')}</span><span>{fmt(roundOff)}</span></div>
-                    {discount > 0 && <div style={{ display: 'flex', justifyContent: 'space-between', color: '#2E7D32' }}><span>{L('discount')}</span><span>-{fmt(discount)}</span></div>}
-                    <div style={{ borderTop: '2px solid #111', marginTop: '3px', paddingTop: '3px', display: 'flex', justifyContent: 'space-between', fontWeight: 900, fontSize: isA5 ? '0.85rem' : '1rem' }}>
-                        <span>{L('net_amount')}</span><span>₹{net.toLocaleString('en-IN')}</span>
-                    </div>
-                    {previousOutstanding > 0 && (
-                        <>
-                            <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: '2px' }}>
-                                <span>{L('previous_outstanding')} (Dr)</span><span>₹{Number(previousOutstanding).toLocaleString('en-IN')}</span>
-                            </div>
-                            <div style={{ borderTop: '1px solid #111', paddingTop: '2px', display: 'flex', justifyContent: 'space-between', fontWeight: 900 }}>
-                                <span>{L('total_payable')}</span><span>₹{(net + Number(previousOutstanding)).toLocaleString('en-IN')}</span>
-                            </div>
-                        </>
-                    )}
-                </div>
-            </div>
-
-            {/* AMOUNT IN WORDS */}
-            <div style={{ border: '1px solid #222', marginBottom: '8px', display: 'grid', gridTemplateColumns: '90px 1fr' }}>
-                <div style={{ borderRight: '1px solid #222', padding: '5px', fontWeight: 700, display: 'flex', alignItems: 'center' }}>{L('amount_in_words')}</div>
-                <div style={{ padding: '5px', fontWeight: 600, fontStyle: 'italic' }}>INR {numberToWords(net)}</div>
-            </div>
-
-            {/* DECLARATION + SIGNATURE + QR */}
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end', gap: '10px', marginTop: '6px' }}>
-                <div style={{ fontSize: isA5 ? '0.62rem' : '0.72rem', color: '#444', maxWidth: '60%' }}>
-                    <strong>{L('declaration')} :</strong> {L('declaration_text')}
-                </div>
-                {branding?.upiId && (
-                    <div style={{ textAlign: 'center' }}>
-                        <UpiQrCode upiId={branding.upiId} payeeName={sellerName} amount={net} transactionNote={billNumber} size={isA5 ? 64 : 80} />
-                        <div style={{ fontSize: '9px' }}>{L('scan_to_pay')}</div>
-                    </div>
-                )}
-                <div style={{ textAlign: 'center', minWidth: '130px' }}>
-                    <div style={{ fontWeight: 700 }}>{L('for_business')} {sellerName}</div>
-                    {branding?.signatureUrl ? (
-                        <img src={branding.signatureUrl} alt="" style={{ height: isA5 ? '34px' : '46px', maxWidth: '150px', objectFit: 'contain', margin: '2px auto' }} />
-                    ) : (
-                        <div style={{ height: isA5 ? '20px' : '30px' }} />
-                    )}
-                    <div style={{ borderTop: '1px solid #555', paddingTop: '3px' }}>{branding?.signatureName || L('authorised_signatory')}</div>
-                </div>
-            </div>
-        </div>
+        </div>} {/* end billing tab */}
+        </> /* end module fragment */
     );
 }
 
@@ -2296,31 +2911,31 @@ function QuickProductModal({ tenantId, product, defaultName, products, onClose }
                 <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.75rem', marginBottom: '0.9rem' }}>
                     <div>
                         <label style={labelStyle}>Selling Price (₹) *</label>
-                        <input required type="number" min="0" step="0.01" value={form.sellingPrice || ''} onChange={e => set({ sellingPrice: Number(e.target.value) })} placeholder="0.00" style={fieldStyle} />
+                        <input required type="number" min="0" step="0.01" value={form.sellingPrice || ''} onChange={e => set({ sellingPrice: Number(e.target.value) })} onWheel={e => e.currentTarget.blur()} placeholder="0.00" style={fieldStyle} />
                     </div>
                     <div>
                         <label style={labelStyle}>MRP (₹)</label>
-                        <input type="number" min="0" step="0.01" value={form.maxRetailPrice || ''} onChange={e => set({ maxRetailPrice: Number(e.target.value) })} placeholder="0.00" style={fieldStyle} />
+                        <input type="number" min="0" step="0.01" value={form.maxRetailPrice || ''} onChange={e => set({ maxRetailPrice: Number(e.target.value) })} onWheel={e => e.currentTarget.blur()} placeholder="0.00" style={fieldStyle} />
                     </div>
                     <div>
                         <label style={labelStyle}>Purchase Rate (₹)</label>
-                        <input type="number" min="0" step="0.01" value={form.purchasePrice || ''} onChange={e => set({ purchasePrice: Number(e.target.value) })} placeholder="0.00" style={fieldStyle} />
+                        <input type="number" min="0" step="0.01" value={form.purchasePrice || ''} onChange={e => set({ purchasePrice: Number(e.target.value) })} onWheel={e => e.currentTarget.blur()} placeholder="0.00" style={fieldStyle} />
                     </div>
                     <div>
                         <label style={labelStyle}>GST %</label>
-                        <input type="number" min="0" value={form.gstPct} onChange={e => set({ gstPct: Number(e.target.value) })} style={fieldStyle} />
+                        <input type="number" min="0" value={form.gstPct} onChange={e => set({ gstPct: Number(e.target.value) })} onWheel={e => e.currentTarget.blur()} style={fieldStyle} />
                     </div>
                     <div>
                         <label style={labelStyle}>Stock (Boxes)</label>
-                        <input type="number" min="0" value={form.quantity} onChange={e => set({ quantity: Number(e.target.value) })} style={fieldStyle} />
+                        <input type="number" min="0" value={form.quantity} onChange={e => set({ quantity: Number(e.target.value) })} onWheel={e => e.currentTarget.blur()} style={fieldStyle} />
                     </div>
                     <div>
                         <label style={labelStyle}>Loose Pieces</label>
-                        <input type="number" min="0" value={form.loosePieces} onChange={e => set({ loosePieces: Number(e.target.value) })} style={fieldStyle} />
+                        <input type="number" min="0" value={form.loosePieces} onChange={e => set({ loosePieces: Number(e.target.value) })} onWheel={e => e.currentTarget.blur()} style={fieldStyle} />
                     </div>
                     <div>
                         <label style={labelStyle}>Pcs / Box</label>
-                        <input type="number" min="1" value={form.boxCapacity} onChange={e => set({ boxCapacity: Number(e.target.value) })} style={fieldStyle} />
+                        <input type="number" min="1" value={form.boxCapacity} onChange={e => set({ boxCapacity: Number(e.target.value) })} onWheel={e => e.currentTarget.blur()} style={fieldStyle} />
                     </div>
                     <div>
                         <label style={labelStyle}>Unit</label>

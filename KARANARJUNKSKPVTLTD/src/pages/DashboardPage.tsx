@@ -40,7 +40,7 @@ const ALL_QUICK_ACTIONS = [
     { id: 'online-dashboard', label: 'Online Dashboard',   path: '/online-dashboard',    color: '#22d3ee',              icon: 'Activity',      roles: ['admin', 'analyst'] },
     { id: 'ai',               label: 'AI Advisor',         path: '/ai-advisor',          color: '#a78bfa',              icon: 'Bot',           roles: ['admin'] },
     { id: 'onboarding',       label: 'New Retailer',       path: '/onboarding',          color: 'var(--primary)',       icon: 'UserPlus',      roles: ['admin'] },
-    { id: 'manufacturers',    label: 'Manufacturers',      path: '/admin/manufacturers', color: '#fb923c',              icon: 'Factory',       roles: ['admin'] },
+    { id: 'manufacturers',    label: 'Manufacturers',      path: '/admin#manufacturers', color: '#fb923c',              icon: 'Factory',       roles: ['admin'] },
     { id: 'payment-links',    label: 'Payment Links',      path: '/payment-links',       color: '#38bdf8',              icon: 'Link2',         roles: ['admin'] },
 ];
 
@@ -111,6 +111,7 @@ export default function DashboardPage() {
                 const retailersSnapshot = await getDocs(retailersQ);
 
                 let total = 0, big = 0, medium = 0, small = 0;
+                let outstandingKhata = 0;
                 const fetchedRetailers: Retailer[] = [];
 
                 retailersSnapshot.docs.forEach(doc => {
@@ -120,6 +121,7 @@ export default function DashboardPage() {
                     if (data.portfolioSize === 'Big') big++;
                     else if (data.portfolioSize === 'Medium') medium++;
                     else small++;
+                    outstandingKhata += Math.max(0, Number((data as any).totalSales ?? 0) - Number((data as any).totalPaid ?? 0));
                 });
 
                 let totalRevenue = 0;
@@ -129,29 +131,34 @@ export default function DashboardPage() {
                 const dailyData: Record<string, number> = {};
 
                 const now = new Date();
-                const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-                const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+                const todayStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+                const startOfMonthStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-01`;
 
                 // Read from salesOrders — contains both POS bills and B2B GST invoices
+                // orderBy invoiceDate so KPIs reflect the business transaction date, not the
+                // document creation timestamp (which can differ if a bill is created late).
                 const salesQ = query(
                     getTenantCollection(db, tenantId, 'salesOrders'),
-                    orderBy('createdAt', 'desc'),
+                    orderBy('invoiceDate', 'desc'),
                     limit(300)
                 );
                 const salesSnap = await getDocs(salesQ);
                 salesSnap.forEach(doc => {
                     const data = doc.data();
-                    const amount = Number(data.grandTotal || data.netAmount || data.amount || 0);
+                    const amount = Number(data.grandTotal ?? data.netAmount ?? (data as any).totalAmount ?? data.amount ?? 0);
                     totalRevenue += amount;
 
-                    const ts: Date = data.createdAt?.toDate ? data.createdAt.toDate() : new Date(data.createdAt || 0);
-                    const dateStr = ts.toISOString().split('T')[0];
+                    // Prefer invoiceDate (YYYY-MM-DD string set by the user); fall back to
+                    // createdAt only for legacy documents that predate the invoiceDate field.
+                    const dateStr = (typeof data.invoiceDate === 'string' && data.invoiceDate)
+                        ? data.invoiceDate
+                        : (() => { const ts = data.createdAt?.toDate ? data.createdAt.toDate() : new Date(data.createdAt || 0); return `${ts.getFullYear()}-${String(ts.getMonth() + 1).padStart(2, '0')}-${String(ts.getDate()).padStart(2, '0')}`; })();
                     dailyData[dateStr] = (dailyData[dateStr] || 0) + amount;
 
-                    if (ts >= startOfToday) { todaySales += amount; todayCount++; }
-                    if (ts >= startOfMonth) { monthSales += amount; monthCount++; }
+                    if (dateStr === todayStr) { todaySales += amount; todayCount++; }
+                    if (dateStr >= startOfMonthStr) { monthSales += amount; monthCount++; }
 
-                    const isPending = data.status === 'pending' || (data.modeOfPayment && data.modeOfPayment !== 'Cash' && data.status !== 'paid');
+                    const isPending = data.status === 'pending' || (data as any).paymentStatus === 'pending';
                     if (isPending) { pendingDues += amount; pendingCount++; }
                 });
 
@@ -159,7 +166,6 @@ export default function DashboardPage() {
 
                 const formattedChartData = Object.entries(dailyData).map(([date, amount]) => ({ date, amount })).sort((a, b) => a.date.localeCompare(b.date)).slice(-30);
 
-                let outstandingKhata = pendingDues; // Use consistent source
                 const pos: any[] = [];
                 if (userRole === 'admin') {
                     try {

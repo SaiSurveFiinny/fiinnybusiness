@@ -1,16 +1,22 @@
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useMemo, useRef } from 'react';
+import { createPortal } from 'react-dom';
 import {
-    query, onSnapshot, orderBy, addDoc, updateDoc, deleteDoc, setDoc, serverTimestamp, Timestamp, writeBatch,
+    query, onSnapshot, orderBy, addDoc, updateDoc, setDoc, serverTimestamp, Timestamp, writeBatch,
 } from 'firebase/firestore';
+import * as XLSX from 'xlsx';
 import { db } from '../firebase';
 import { useAuth } from '../contexts/AuthContext';
+import { softDelete } from '../utils/softDelete';
 import { getTenantCollection, getTenantDoc } from '../utils/tenantPath';
 import { useToast } from '../contexts/ToastContext';
 import {
     BookOpen, Search, IndianRupee, Clock, CheckCircle2, AlertCircle, Phone, User, Calendar, ArrowUpRight,
     ArrowLeft, FileText, Printer, Pencil, Plus, Receipt, X, Trash2, Wallet, AlertTriangle, Ban,
+    Download, ChevronUp, ChevronDown,
 } from 'lucide-react';
 import { Link, useNavigate } from 'react-router-dom';
+
+const PAYMENT_METHODS = ['Cash', 'UPI', 'NEFT', 'RTGS', 'Bank Transfer', 'Cheque', 'Other'] as const;
 
 interface KhataEntry {
     id: string;
@@ -78,12 +84,36 @@ const modalOverlayStyle: React.CSSProperties = {
     padding: '1rem', background: 'hsla(220, 30%, 4%, 0.72)', backdropFilter: 'blur(4px)', WebkitBackdropFilter: 'blur(4px)',
 };
 
+function SuggestionItem({
+    c, style, onSelect,
+}: {
+    c: { name: string; phone: string; outstanding: number };
+    style: (hover: boolean) => React.CSSProperties;
+    onSelect: () => void;
+}) {
+    const [hover, setHover] = useState(false);
+    return (
+        <div
+            style={style(hover)}
+            onMouseEnter={() => setHover(true)}
+            onMouseLeave={() => setHover(false)}
+            onMouseDown={e => { e.preventDefault(); onSelect(); }}
+        >
+            <span style={{ fontWeight: 600, fontSize: '0.85rem', color: '#f1f5f9' }}>{c.name}</span>
+            {c.phone && <span style={{ fontSize: '0.75rem', color: '#94a3b8' }}>{c.phone} · Outstanding: ₹{Math.round(c.outstanding).toLocaleString('en-IN')}</span>}
+        </div>
+    );
+}
+
 export default function DigitalKhataPage() {
-    const { tenantId } = useAuth();
+    const { tenantId, currentUser, userName, userRole } = useAuth();
     const [entries, setEntries] = useState<KhataEntry[]>([]);
     const [loading, setLoading] = useState(true);
     const [search, setSearch] = useState('');
     const [tab, setTab] = useState<FilterTab>('all');
+    type SortCol = 'name' | 'outstanding' | 'total' | 'paid' | 'lastTs';
+    const [sortCol, setSortCol] = useState<SortCol>('outstanding');
+    const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc');
     // Which customer's ledger is open (master/detail within this page).
     const [selectedKey, setSelectedKey] = useState<string | null>(null);
     const navigate = useNavigate();
@@ -108,7 +138,7 @@ export default function DigitalKhataPage() {
         const unsub = onSnapshot(q, snap => {
             const b2cEntries = snap.docs
                 .map(d => ({ id: d.id, ...d.data() }) as KhataEntry)
-                .filter(e => e.invoiceType !== 'B2B_GST'); // keep POS + undefined (walk-in)
+                .filter(e => e.invoiceType !== 'B2B_GST' && !(e as any).deleted); // keep POS + undefined (walk-in), exclude soft-deleted
             setEntries(b2cEntries);
             setLoading(false);
         }, err => {
@@ -201,9 +231,16 @@ export default function DigitalKhataPage() {
     const [editError, setEditError] = useState<string | null>(null);
 
     const [paymentFor, setPaymentFor] = useState<CustomerRow | null>(null);
-    const [paymentAmount, setPaymentAmount] = useState('');
+    const emptyPaymentForm = () => ({ amount: '', method: 'Cash', date: new Date().toISOString().slice(0, 10), ref: '', notes: '' });
+    const [paymentForm, setPaymentForm] = useState(emptyPaymentForm());
     const [paymentSaving, setPaymentSaving] = useState(false);
     const [paymentError, setPaymentError] = useState<string | null>(null);
+
+    // Autocomplete state for Add modal
+    const [nameSuggestions, setNameSuggestions] = useState<typeof customers>([]);
+    const [phoneSuggestions, setPhoneSuggestions] = useState<typeof customers>([]);
+    const addNameRef = useRef<HTMLDivElement>(null);
+    const addPhoneRef = useRef<HTMLDivElement>(null);
 
     const [deleteTarget, setDeleteTarget] = useState<BillRow | null>(null);
     const [deleting, setDeleting] = useState(false);
@@ -215,17 +252,39 @@ export default function DigitalKhataPage() {
     const [cancelTarget, setCancelTarget] = useState<BillRow | null>(null);
     const [cancelling, setCancelling] = useState(false);
 
+    const isAddFormDirty = (f: EntryForm) =>
+        !!(f.name || f.phone || f.billAmount || f.paidAmount || f.note);
+
     const openAddForNew = () => {
         setAddLocked(false);
         setAddForm(emptyEntryForm());
         setAddError(null);
+        setNameSuggestions([]);
+        setPhoneSuggestions([]);
         setAddOpen(true);
     };
     const openAddForCustomer = (c: CustomerRow) => {
         setAddLocked(true);
         setAddForm({ ...emptyEntryForm(), name: c.name, phone: c.phone, address: c.address, pin: c.pin });
         setAddError(null);
+        setNameSuggestions([]);
+        setPhoneSuggestions([]);
         setAddOpen(true);
+    };
+
+    const tryCloseAdd = () => {
+        if (addSaving) return;
+        if (isAddFormDirty(addForm)) {
+            if (!window.confirm('You have unsaved data. Close and discard it?')) return;
+        }
+        setAddOpen(false);
+    };
+
+    const selectCustomerSuggestion = (c: CustomerRow) => {
+        setAddLocked(true);
+        setAddForm(f => ({ ...f, name: c.name, phone: c.phone, address: c.address, pin: c.pin }));
+        setNameSuggestions([]);
+        setPhoneSuggestions([]);
     };
 
     const submitAdd = async () => {
@@ -260,6 +319,7 @@ export default function DigitalKhataPage() {
             }
             showToast('Udhari entry added.', 'success');
             setAddOpen(false);
+            setAddLocked(false);
         } catch (e) {
             console.error('Add udhari failed:', e);
             setAddError('Could not save. Please try again.');
@@ -320,7 +380,7 @@ export default function DigitalKhataPage() {
     // first) so a partial payment settles the longest-standing dues first.
     const submitPayment = async () => {
         if (!tenantId || !paymentFor) return;
-        let remaining = Math.min(Number(paymentAmount) || 0, paymentFor.outstanding);
+        let remaining = Math.min(Number(paymentForm.amount) || 0, paymentFor.outstanding);
         if (remaining <= 0) { setPaymentError('Enter a valid amount.'); return; }
         setPaymentSaving(true);
         setPaymentError(null);
@@ -331,13 +391,20 @@ export default function DigitalKhataPage() {
                 if (remaining <= 0) break;
                 if (b.outstanding <= 0) continue;
                 const apply = Math.min(remaining, b.outstanding);
-                batch.update(getTenantDoc(db, tenantId, 'salesOrders', b.id), { amountPaid: b.paid + apply, updatedAt: serverTimestamp() });
+                batch.update(getTenantDoc(db, tenantId, 'salesOrders', b.id), {
+                    amountPaid: b.paid + apply,
+                    paymentMethod: paymentForm.method,
+                    paymentDate: paymentForm.date,
+                    transactionRef: paymentForm.ref.trim() || null,
+                    paymentNotes: paymentForm.notes.trim() || null,
+                    updatedAt: serverTimestamp(),
+                });
                 remaining -= apply;
             }
             await batch.commit();
             showToast('Payment recorded.', 'success');
             setPaymentFor(null);
-            setPaymentAmount('');
+            setPaymentForm(emptyPaymentForm());
         } catch (e) {
             console.error('Record payment failed:', e);
             setPaymentError('Could not save payment. Please try again.');
@@ -350,7 +417,16 @@ export default function DigitalKhataPage() {
         if (!tenantId || !deleteTarget) return;
         setDeleting(true);
         try {
-            await deleteDoc(getTenantDoc(db, tenantId, 'salesOrders', deleteTarget.id));
+            await softDelete({
+                db, tenantId,
+                collectionName: 'salesOrders',
+                docId: deleteTarget.id,
+                userId: currentUser?.uid || '',
+                userName: userName || currentUser?.email || 'Unknown',
+                userRole: userRole || 'unknown',
+                module: 'Digital Khata',
+                entityName: (deleteTarget as any).billNumber || deleteTarget.id,
+            });
             showToast('Udhari entry deleted.', 'success');
             setDeleteTarget(null);
         } catch (e) {
@@ -378,6 +454,27 @@ export default function DigitalKhataPage() {
         }
     };
 
+    // Lock background scroll whenever any modal is open.
+    const anyModalOpen = addOpen || !!editingBill || !!paymentFor || !!deleteTarget || !!cancelTarget;
+    useEffect(() => {
+        if (anyModalOpen) {
+            const prev = document.body.style.overflow;
+            document.body.style.overflow = 'hidden';
+            return () => { document.body.style.overflow = prev; };
+        }
+    }, [anyModalOpen]);
+
+    // Close suggestions when clicking outside their containers.
+    useEffect(() => {
+        if (!nameSuggestions.length && !phoneSuggestions.length) return;
+        const handler = (e: MouseEvent) => {
+            if (addNameRef.current && !addNameRef.current.contains(e.target as Node)) setNameSuggestions([]);
+            if (addPhoneRef.current && !addPhoneRef.current.contains(e.target as Node)) setPhoneSuggestions([]);
+        };
+        document.addEventListener('mousedown', handler);
+        return () => document.removeEventListener('mousedown', handler);
+    }, [nameSuggestions.length, phoneSuggestions.length]);
+
     // KPIs — now counted per customer, not per bill.
     const kpi = useMemo(() => {
         const totalOutstanding = customers.reduce((s, c) => s + c.outstanding, 0);
@@ -403,6 +500,51 @@ export default function DigitalKhataPage() {
         }
         return list;
     }, [customers, tab, search]);
+
+    const sorted = useMemo(() => {
+        const mult = sortDir === 'asc' ? 1 : -1;
+        return [...filtered].sort((a, b) => {
+            switch (sortCol) {
+                case 'name': return mult * a.name.localeCompare(b.name);
+                case 'outstanding': return mult * (a.outstanding - b.outstanding);
+                case 'total': return mult * (a.total - b.total);
+                case 'paid': return mult * (a.paid - b.paid);
+                case 'lastTs': return mult * (a.lastTs.getTime() - b.lastTs.getTime());
+                default: return 0;
+            }
+        });
+    }, [filtered, sortCol, sortDir]);
+
+    const toggleSort = (col: SortCol) => {
+        if (sortCol === col) setSortDir(d => d === 'asc' ? 'desc' : 'asc');
+        else { setSortCol(col); setSortDir('desc'); }
+    };
+
+    const exportPendingCustomers = () => {
+        const rows = customers
+            .filter(c => c.status === 'pending' || c.status === 'partial')
+            .sort((a, b) => b.outstanding - a.outstanding)
+            .map(c => ({
+                'Customer Name': c.name,
+                'Phone': c.phone || '',
+                'Address': c.address || '',
+                'PIN': c.pin || '',
+                'Total Billed (₹)': c.total,
+                'Total Paid (₹)': c.paid,
+                'Outstanding (₹)': c.outstanding,
+                'Last Transaction': c.lastTs.toLocaleDateString('en-IN'),
+                'Status': c.status === 'pending' ? 'Pending' : 'Partial',
+            }));
+        const ws = XLSX.utils.json_to_sheet(rows);
+        const colWidths = [
+            { wch: 28 }, { wch: 14 }, { wch: 32 }, { wch: 8 },
+            { wch: 16 }, { wch: 14 }, { wch: 16 }, { wch: 18 }, { wch: 10 },
+        ];
+        ws['!cols'] = colWidths;
+        const wb = XLSX.utils.book_new();
+        XLSX.utils.book_append_sheet(wb, ws, 'Pending Customers');
+        XLSX.writeFile(wb, `pending-customers-${new Date().toISOString().slice(0, 10)}.xlsx`);
+    };
 
     // Selected customer for the details view (re-derived so it stays live).
     const selected: CustomerRow | null = selectedKey
@@ -456,17 +598,78 @@ export default function DigitalKhataPage() {
 
     // ── Add / Edit / Payment / Delete modals — shared across both the list and
     // customer-detail views below. ───────────────────────────────────────────
+    const suggestionListStyle: React.CSSProperties = {
+        position: 'absolute', top: '100%', left: 0, right: 0, zIndex: 2000,
+        background: '#1e2535',
+        border: '1px solid rgba(255,255,255,0.12)',
+        borderRadius: '10px', marginTop: '4px', maxHeight: '220px', overflowY: 'auto',
+        boxShadow: '0 12px 32px rgba(0,0,0,0.55)',
+    };
+    const suggestionItemStyle = (hover: boolean): React.CSSProperties => ({
+        padding: '0.6rem 0.9rem', cursor: 'pointer',
+        background: hover ? 'rgba(255,255,255,0.08)' : 'transparent',
+        display: 'flex', flexDirection: 'column', gap: '0.15rem',
+        borderBottom: '1px solid rgba(255,255,255,0.06)',
+        transition: 'background 0.1s',
+    });
+
     const entryFormFields = (form: EntryForm, setForm: React.Dispatch<React.SetStateAction<EntryForm>>, locked: boolean) => (
         <div style={{ display: 'flex', flexDirection: 'column', gap: '0.85rem' }}>
-            <div>
+            <div ref={locked ? undefined : addNameRef} style={{ position: 'relative' }}>
                 <label style={labelStyle}>Customer Name *</label>
                 <input className="input-field" style={{ width: '100%', margin: 0 }} value={form.name} disabled={locked}
-                    onChange={e => setForm(f => ({ ...f, name: e.target.value }))} placeholder="e.g. Ramesh Patil" />
+                    onChange={e => {
+                        const val = e.target.value;
+                        setForm(f => ({ ...f, name: val }));
+                        if (!locked && val.length >= 1) {
+                            const q = val.toLowerCase();
+                            setNameSuggestions(customers.filter(c => c.name.toLowerCase().includes(q)).slice(0, 6));
+                        } else {
+                            setNameSuggestions([]);
+                        }
+                    }}
+                    onFocus={() => {
+                        if (!locked && form.name.length >= 1) {
+                            const q = form.name.toLowerCase();
+                            setNameSuggestions(customers.filter(c => c.name.toLowerCase().includes(q)).slice(0, 6));
+                        }
+                    }}
+                    placeholder="e.g. Ramesh Patil" autoComplete="off" />
+                {!locked && nameSuggestions.length > 0 && (
+                    <div style={suggestionListStyle}>
+                        {nameSuggestions.map(c => (
+                            <SuggestionItem key={c.key} c={c} style={suggestionItemStyle} onSelect={() => selectCustomerSuggestion(c)} />
+                        ))}
+                    </div>
+                )}
             </div>
-            <div>
+            <div ref={locked ? undefined : addPhoneRef} style={{ position: 'relative' }}>
                 <label style={labelStyle}>Phone</label>
                 <input className="input-field" style={{ width: '100%', margin: 0 }} value={form.phone} disabled={locked}
-                    onChange={e => setForm(f => ({ ...f, phone: e.target.value }))} placeholder="10-digit mobile" />
+                    onChange={e => {
+                        const val = e.target.value;
+                        setForm(f => ({ ...f, phone: val }));
+                        if (!locked && val.replace(/\D/g, '').length >= 3) {
+                            const q = val.replace(/\D/g, '');
+                            setPhoneSuggestions(customers.filter(c => c.phone.includes(q)).slice(0, 6));
+                        } else {
+                            setPhoneSuggestions([]);
+                        }
+                    }}
+                    onFocus={() => {
+                        if (!locked && form.phone.replace(/\D/g, '').length >= 3) {
+                            const q = form.phone.replace(/\D/g, '');
+                            setPhoneSuggestions(customers.filter(c => c.phone.includes(q)).slice(0, 6));
+                        }
+                    }}
+                    placeholder="10-digit mobile" autoComplete="off" />
+                {!locked && phoneSuggestions.length > 0 && (
+                    <div style={suggestionListStyle}>
+                        {phoneSuggestions.map(c => (
+                            <SuggestionItem key={c.key} c={c} style={suggestionItemStyle} onSelect={() => selectCustomerSuggestion(c)} />
+                        ))}
+                    </div>
+                )}
             </div>
             <div style={{ display: 'flex', gap: '0.75rem' }}>
                 <div style={{ flex: 1 }}>
@@ -505,21 +708,31 @@ export default function DigitalKhataPage() {
         </div>
     );
 
+    const modalPortal = (content: React.ReactNode) => createPortal(content, document.body);
+
     const modals = (
         <>
-            {addOpen && (
-                <div onMouseDown={e => { if (e.target === e.currentTarget && !addSaving) setAddOpen(false); }} style={modalOverlayStyle} role="dialog" aria-modal="true" aria-label="Add Udhari">
+            {addOpen && modalPortal(
+                <div onMouseDown={e => { if (e.target === e.currentTarget) tryCloseAdd(); }} style={modalOverlayStyle} role="dialog" aria-modal="true" aria-label="Add Udhari">
                     <div className="glass-panel" style={{ width: '100%', maxWidth: '480px', maxHeight: '90vh', overflowY: 'auto', padding: '1.75rem', borderRadius: '16px', position: 'relative' }}>
-                        <button onClick={() => !addSaving && setAddOpen(false)} style={{ position: 'absolute', top: '1rem', right: '1rem', background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-tertiary)' }} aria-label="Close">
+                        <button onClick={tryCloseAdd} style={{ position: 'absolute', top: '1rem', right: '1rem', background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-tertiary)' }} aria-label="Close">
                             <X size={20} />
                         </button>
                         <h2 style={{ fontSize: '1.2rem', fontWeight: 800, marginBottom: '1rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
                             <Plus size={18} className="primary-gradient-text" /> Add Udhari
                         </h2>
+                        {addLocked && (
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.75rem', padding: '0.5rem 0.75rem', background: 'var(--primary)11', borderRadius: '8px', fontSize: '0.8rem', color: 'var(--primary-light)' }}>
+                                <User size={13} /> Adding bill for existing customer — name &amp; phone locked.
+                                <button onClick={() => { setAddLocked(false); setAddForm(f => f); }} style={{ marginLeft: 'auto', background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-secondary)', fontSize: '0.75rem', fontFamily: 'inherit' }}>
+                                    Change
+                                </button>
+                            </div>
+                        )}
                         {entryFormFields(addForm, setAddForm, addLocked)}
                         {addError && <div style={errStyle}><AlertCircle size={13} /> {addError}</div>}
                         <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '0.6rem', marginTop: '1.1rem' }}>
-                            <button onClick={() => setAddOpen(false)} className="btn btn-secondary" disabled={addSaving} style={{ padding: '0.55rem 1.1rem', fontSize: '0.85rem' }}>Cancel</button>
+                            <button onClick={tryCloseAdd} className="btn btn-secondary" disabled={addSaving} style={{ padding: '0.55rem 1.1rem', fontSize: '0.85rem' }}>Cancel</button>
                             <button onClick={submitAdd} className="btn btn-primary" disabled={addSaving} style={{ padding: '0.55rem 1.1rem', fontSize: '0.85rem' }}>
                                 {addSaving ? 'Saving...' : 'Save Udhari'}
                             </button>
@@ -528,7 +741,7 @@ export default function DigitalKhataPage() {
                 </div>
             )}
 
-            {editingBill && (
+            {editingBill && modalPortal(
                 <div onMouseDown={e => { if (e.target === e.currentTarget && !editSaving) setEditingBill(null); }} style={modalOverlayStyle} role="dialog" aria-modal="true" aria-label="Edit Udhari">
                     <div className="glass-panel" style={{ width: '100%', maxWidth: '480px', maxHeight: '90vh', overflowY: 'auto', padding: '1.75rem', borderRadius: '16px', position: 'relative' }}>
                         <button onClick={() => !editSaving && setEditingBill(null)} style={{ position: 'absolute', top: '1rem', right: '1rem', background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-tertiary)' }} aria-label="Close">
@@ -549,33 +762,63 @@ export default function DigitalKhataPage() {
                 </div>
             )}
 
-            {paymentFor && (
-                <div onMouseDown={e => { if (e.target === e.currentTarget && !paymentSaving) setPaymentFor(null); }} style={modalOverlayStyle} role="dialog" aria-modal="true" aria-label="Record Payment">
-                    <div className="glass-panel" style={{ width: '100%', maxWidth: '380px', padding: '1.75rem', borderRadius: '16px', position: 'relative' }}>
-                        <button onClick={() => !paymentSaving && setPaymentFor(null)} style={{ position: 'absolute', top: '1rem', right: '1rem', background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-tertiary)' }} aria-label="Close">
+            {paymentFor && modalPortal(
+                <div onMouseDown={e => { if (e.target === e.currentTarget && !paymentSaving) { setPaymentFor(null); setPaymentForm(emptyPaymentForm()); } }} style={modalOverlayStyle} role="dialog" aria-modal="true" aria-label="Record Payment">
+                    <div className="glass-panel" style={{ width: '100%', maxWidth: '440px', padding: '1.75rem', borderRadius: '16px', position: 'relative' }}>
+                        <button onClick={() => { if (!paymentSaving) { setPaymentFor(null); setPaymentForm(emptyPaymentForm()); } }} style={{ position: 'absolute', top: '1rem', right: '1rem', background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-tertiary)' }} aria-label="Close">
                             <X size={20} />
                         </button>
                         <h2 style={{ fontSize: '1.2rem', fontWeight: 800, marginBottom: '0.25rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
                             <Wallet size={18} className="primary-gradient-text" /> Record Payment
                         </h2>
-                        <p style={{ color: 'var(--text-secondary)', fontSize: '0.85rem', marginBottom: '1rem' }}>
-                            {paymentFor.name} &middot; Outstanding {fmtINR(paymentFor.outstanding)}
+                        <p style={{ color: 'var(--text-secondary)', fontSize: '0.85rem', marginBottom: '1.25rem' }}>
+                            <strong>{paymentFor.name}</strong> &middot; Outstanding <strong style={{ color: '#ef4444' }}>{fmtINR(paymentFor.outstanding)}</strong>
                         </p>
-                        <label style={labelStyle}>Amount Received (₹)</label>
-                        <input type="number" className="input-field" style={{ width: '100%', margin: 0 }} value={paymentAmount}
-                            onChange={e => setPaymentAmount(e.target.value)} placeholder="0" autoFocus />
-                        {paymentError && <div style={errStyle}><AlertCircle size={13} /> {paymentError}</div>}
-                        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '0.6rem', marginTop: '1.1rem' }}>
-                            <button onClick={() => setPaymentFor(null)} className="btn btn-secondary" disabled={paymentSaving} style={{ padding: '0.55rem 1.1rem', fontSize: '0.85rem' }}>Cancel</button>
-                            <button onClick={submitPayment} className="btn btn-primary" disabled={paymentSaving} style={{ padding: '0.55rem 1.1rem', fontSize: '0.85rem' }}>
-                                {paymentSaving ? 'Saving...' : 'Record Payment'}
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: '0.85rem' }}>
+                            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.75rem' }}>
+                                <div>
+                                    <label style={labelStyle}>Amount Received (₹) *</label>
+                                    <input type="number" className="input-field" style={{ width: '100%', margin: 0 }} value={paymentForm.amount}
+                                        onChange={e => setPaymentForm(f => ({ ...f, amount: e.target.value }))} placeholder="0" autoFocus />
+                                </div>
+                                <div>
+                                    <label style={labelStyle}>Payment Date</label>
+                                    <input type="date" className="input-field" style={{ width: '100%', margin: 0 }} value={paymentForm.date}
+                                        onChange={e => setPaymentForm(f => ({ ...f, date: e.target.value }))} />
+                                </div>
+                            </div>
+                            <div>
+                                <label style={labelStyle}>Payment Method</label>
+                                <select className="input-field" style={{ width: '100%', margin: 0 }} value={paymentForm.method}
+                                    onChange={e => setPaymentForm(f => ({ ...f, method: e.target.value }))}>
+                                    {PAYMENT_METHODS.map(m => <option key={m}>{m}</option>)}
+                                </select>
+                            </div>
+                            {paymentForm.method !== 'Cash' && (
+                                <div>
+                                    <label style={labelStyle}>Transaction Reference / UTR</label>
+                                    <input className="input-field" style={{ width: '100%', margin: 0 }} value={paymentForm.ref}
+                                        onChange={e => setPaymentForm(f => ({ ...f, ref: e.target.value }))} placeholder="UPI Ref / Cheque No / UTR" />
+                                </div>
+                            )}
+                            <div>
+                                <label style={labelStyle}>Notes (optional)</label>
+                                <input className="input-field" style={{ width: '100%', margin: 0 }} value={paymentForm.notes}
+                                    onChange={e => setPaymentForm(f => ({ ...f, notes: e.target.value }))} placeholder="e.g. partial payment for July dues" />
+                            </div>
+                        </div>
+                        {paymentError && <div style={{ ...errStyle, marginTop: '0.75rem' }}><AlertCircle size={13} /> {paymentError}</div>}
+                        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '0.6rem', marginTop: '1.25rem' }}>
+                            <button onClick={() => { setPaymentFor(null); setPaymentForm(emptyPaymentForm()); }} className="btn btn-secondary" disabled={paymentSaving} style={{ padding: '0.55rem 1.1rem', fontSize: '0.85rem' }}>Cancel</button>
+                            <button onClick={submitPayment} className="btn btn-primary" disabled={paymentSaving} style={{ padding: '0.55rem 1.1rem', fontSize: '0.85rem', display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+                                <IndianRupee size={14} /> {paymentSaving ? 'Saving...' : 'Record Payment'}
                             </button>
                         </div>
                     </div>
                 </div>
             )}
 
-            {deleteTarget && (
+            {deleteTarget && modalPortal(
                 <div onMouseDown={e => { if (e.target === e.currentTarget && !deleting) setDeleteTarget(null); }} style={modalOverlayStyle} role="dialog" aria-modal="true" aria-label="Delete Udhari">
                     <div className="glass-panel" style={{ width: '100%', maxWidth: '380px', padding: '1.75rem', borderRadius: '16px' }}>
                         <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', marginBottom: '0.75rem' }}>
@@ -596,7 +839,7 @@ export default function DigitalKhataPage() {
                 </div>
             )}
 
-            {cancelTarget && (
+            {cancelTarget && modalPortal(
                 <div onMouseDown={e => { if (e.target === e.currentTarget && !cancelling) setCancelTarget(null); }} style={modalOverlayStyle} role="dialog" aria-modal="true" aria-label="Cancel Bill">
                     <div className="glass-panel" style={{ width: '100%', maxWidth: '380px', padding: '1.75rem', borderRadius: '16px' }}>
                         <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', marginBottom: '0.75rem' }}>
@@ -693,7 +936,7 @@ export default function DigitalKhataPage() {
                             style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', fontSize: '0.85rem', padding: '0.5rem 1rem' }}>
                             <Plus size={15} /> Add Udhari
                         </button>
-                        <button onClick={() => { setPaymentFor(selected); setPaymentAmount(''); setPaymentError(null); }}
+                        <button onClick={() => { setPaymentFor(selected); setPaymentForm(emptyPaymentForm()); setPaymentError(null); }}
                             className="btn btn-secondary" disabled={selected.outstanding <= 0}
                             style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', fontSize: '0.85rem', padding: '0.5rem 1rem', opacity: selected.outstanding <= 0 ? 0.5 : 1, cursor: selected.outstanding <= 0 ? 'not-allowed' : 'pointer' }}>
                             <Wallet size={15} /> Record Payment
@@ -845,7 +1088,16 @@ export default function DigitalKhataPage() {
                         onChange={e => setSearch(e.target.value)}
                     />
                 </div>
-                <span style={{ color: 'var(--text-tertiary)', fontSize: '0.82rem', marginLeft: 'auto' }}>{filtered.length} customers</span>
+                <span style={{ color: 'var(--text-tertiary)', fontSize: '0.82rem' }}>{filtered.length} customers</span>
+                <button
+                    onClick={exportPendingCustomers}
+                    title="Export pending & partial customers to Excel"
+                    style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', padding: '0.45rem 1rem', borderRadius: '20px', border: '1px solid #ef4444', background: 'rgba(239,68,68,0.08)', color: '#ef4444', fontWeight: 600, fontSize: '0.82rem', cursor: 'pointer', fontFamily: 'inherit', whiteSpace: 'nowrap', transition: 'all 0.15s' }}
+                    onMouseOver={e => (e.currentTarget.style.background = 'rgba(239,68,68,0.18)')}
+                    onMouseOut={e => (e.currentTarget.style.background = 'rgba(239,68,68,0.08)')}
+                >
+                    <Download size={14} /> Download Pending Customers
+                </button>
             </div>
 
             {/* Customer list */}
@@ -861,13 +1113,26 @@ export default function DigitalKhataPage() {
                         <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.875rem' }}>
                             <thead>
                                 <tr style={{ borderBottom: '1px solid var(--surface-border)', background: 'var(--surface-raised)' }}>
-                                    {['Customer', 'Phone', 'Bills', 'Last Bill', 'Billed', 'Paid', 'Outstanding', 'Status', ''].map(h => (
-                                        <th key={h} style={{ padding: '0.85rem 1rem', fontWeight: 600, color: 'var(--text-secondary)', textAlign: h === '' ? 'center' : 'left', whiteSpace: 'nowrap' }}>{h}</th>
-                                    ))}
+                                    {([['Customer', 'name'], ['Phone', null], ['Bills', null], ['Last Bill', 'lastTs'], ['Billed', 'total'], ['Paid', 'paid'], ['Outstanding', 'outstanding'], ['Status', null], ['', null]] as [string, SortCol | null][]).map(([label, col]) => {
+                                        const active = col && sortCol === col;
+                                        return (
+                                            <th key={label}
+                                                onClick={col ? () => toggleSort(col) : undefined}
+                                                style={{ padding: '0.85rem 1rem', fontWeight: 600, color: active ? 'var(--primary-light)' : 'var(--text-secondary)', textAlign: label === '' ? 'center' : 'left', whiteSpace: 'nowrap', cursor: col ? 'pointer' : 'default', userSelect: 'none' }}>
+                                                <div style={{ display: 'inline-flex', alignItems: 'center', gap: '0.25rem' }}>
+                                                    {label}
+                                                    {col && (active
+                                                        ? (sortDir === 'desc' ? <ChevronDown size={13} /> : <ChevronUp size={13} />)
+                                                        : <ChevronDown size={13} style={{ opacity: 0.3 }} />
+                                                    )}
+                                                </div>
+                                            </th>
+                                        );
+                                    })}
                                 </tr>
                             </thead>
                             <tbody>
-                                {filtered.map(c => (
+                                {sorted.map(c => (
                                     <tr key={c.key}
                                         onClick={() => setSelectedKey(c.key)}
                                         style={{ borderBottom: '1px solid var(--surface-border)', cursor: 'pointer', transition: 'background 0.15s' }}

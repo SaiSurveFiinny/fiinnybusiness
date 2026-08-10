@@ -13,6 +13,7 @@ import '../data/catalog_repository.dart';
 import '../data/listing_repository.dart';
 import '../data/review_repository.dart';
 import '../data/store_repository.dart';
+import 'selected_location_provider.dart';
 import '../../../core/models/brand_model.dart';
 import '../../brand/data/brand_repository.dart';
 
@@ -428,11 +429,15 @@ final storesListProvider = FutureProvider<List<StoreModel>>((ref) {
   return ref.read(storeRepositoryProvider).fetchStores();
 });
 
-/// Stores enriched with the distance from the user's current location and
-/// sorted nearest-first. Stores without a usable location sink to the bottom.
+/// Stores enriched with the distance from the effective browsing location —
+/// the user's manually-picked area (`selectedLocationProvider`) when set,
+/// otherwise their live GPS position — and sorted nearest-first. Stores
+/// without a usable location sink to the bottom.
 final storesByDistanceProvider = FutureProvider<List<StoreModel>>((ref) async {
   final stores = await ref.watch(storesListProvider.future);
-  final user = ref.watch(locationProvider).value;
+  final manual = ref.watch(selectedLocationProvider);
+  final gps = ref.watch(locationProvider).value;
+  final user = manual != null ? LatLng(manual.lat, manual.lng) : gps;
 
   for (final s in stores) {
     if (user != null && s.hasLocation) {
@@ -702,3 +707,21 @@ final brandProductsProvider = FutureProvider.family<List<CatalogModel>, String>(
     return ref.read(brandRepositoryProvider).fetchBrandProducts(phone);
   },
 );
+
+/// Retailer profile shown in the product page's "Sold by [shop]" section.
+final retailerProfileProvider =
+    FutureProvider.family<StoreModel?, String>((ref, phone) {
+      return ref.read(listingRepositoryProvider).fetchStoreProfile(phone);
+    });
+
+/// "More products from this seller" rail, keyed by retailer phone + the
+/// current product id (so it's excluded from its own "more from" rail).
+final moreFromRetailerProvider =
+    FutureProvider.family<List<CatalogModel>, ({String phone, String excludeId})>((
+      ref,
+      args,
+    ) {
+      return ref
+          .read(catalogRepositoryProvider)
+          .fetchMoreFromRetailer(args.phone, excludeId: args.excludeId);
+    });

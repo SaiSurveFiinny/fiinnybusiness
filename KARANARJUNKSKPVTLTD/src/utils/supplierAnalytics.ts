@@ -7,8 +7,8 @@
 import { getDocs, Firestore, Timestamp } from 'firebase/firestore';
 import { getTenantCollection } from './tenantPath';
 
-export interface SupplierPO { id?: string; supplierName?: string; totalAmount?: number; amount?: number; poDate?: string; date?: string; status?: string; createdAt?: Timestamp; }
-export interface SupplierPayment { id?: string; supplierName?: string; amount?: number; date?: string; createdAt?: Timestamp; }
+export interface SupplierPO { id?: string; supplierId?: string; supplierName?: string; totalAmount?: number; amount?: number; poDate?: string; date?: string; status?: string; createdAt?: Timestamp; }
+export interface SupplierPayment { id?: string; supplierId?: string; supplierName?: string; amount?: number; date?: string; createdAt?: Timestamp; }
 export interface SupplierInvoiceDoc { id?: string; supplierId?: string; supplierName?: string; netAmount?: number; invoiceDate?: string; createdAt?: Timestamp; }
 export interface SupplierDoc { id: string; name: string; createdAt?: Timestamp; }
 

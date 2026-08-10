@@ -25,12 +25,31 @@ class _AssignProductScreenState
   final Set<String> _selectedRetailers = {};
   bool _saving = false;
 
+  final _productSearchCtrl = TextEditingController();
+  final _retailerSearchCtrl = TextEditingController();
+  String _productQuery = '';
+  String _retailerQuery = '';
+
+  // Reveal-more pagination for the retailer list — a manufacturer with a
+  // large network only pays the render cost for the retailers actually
+  // shown, not the whole list at once. Resets whenever the search query
+  // changes so "Show more" always starts fresh against the new filter.
+  static const _kRetailerPageSize = 10;
+  int _retailerRevealCount = _kRetailerPageSize;
+
   @override
   void initState() {
     super.initState();
     if (widget.initialRetailerPhone != null) {
       _selectedRetailers.add(widget.initialRetailerPhone!);
     }
+  }
+
+  @override
+  void dispose() {
+    _productSearchCtrl.dispose();
+    _retailerSearchCtrl.dispose();
+    super.dispose();
   }
 
   @override
@@ -83,15 +102,35 @@ class _AssignProductScreenState
                     style: TextStyle(color: AppColors.onSurfaceVariant),
                   );
                 }
+                final q = _productQuery.trim().toLowerCase();
+                final filtered = q.isEmpty
+                    ? products
+                    : products
+                        .where((p) =>
+                            p.name.toLowerCase().contains(q) ||
+                            p.category.toLowerCase().contains(q))
+                        .toList();
                 return Column(
-                  children: products
-                      .map((p) => _ProductSelectionTile(
+                  children: [
+                    _SearchField(
+                      controller: _productSearchCtrl,
+                      hintText: 'Search products...',
+                      onChanged: (v) => setState(() => _productQuery = v),
+                    ),
+                    const SizedBox(height: 10),
+                    if (filtered.isEmpty)
+                      Text(
+                        'No products match "$_productQuery"',
+                        style: const TextStyle(color: AppColors.onSurfaceVariant),
+                      )
+                    else
+                      ...filtered.map((p) => _ProductSelectionTile(
                             product: p,
                             isSelected: _selectedProduct?.id == p.id,
                             onTap: () =>
                                 setState(() => _selectedProduct = p),
-                          ))
-                      .toList(),
+                          )),
+                  ],
                 );
               },
             ),
@@ -108,30 +147,74 @@ class _AssignProductScreenState
               error: (_, _) =>
                   const ErrorView(message: 'Could not load network.'),
               data: (retailers) {
-                final active =
-                    retailers.where((r) => r.isActive).toList();
-                if (active.isEmpty) {
+                // Every non-revoked retailer, active or still invited —
+                // assignProductToRetailer writes purely by phone number, no
+                // existing account required, so the assignment is already
+                // waiting for an invited retailer the moment they sign in
+                // and open their store/profile. Hiding them here was a
+                // mobile-only restriction; web imposes none.
+                if (retailers.isEmpty) {
                   return const Text(
-                    'No active retailers. Add and activate retailers first.',
+                    'No retailers in your network yet. Invite retailers first.',
                     style: TextStyle(color: AppColors.onSurfaceVariant),
                   );
                 }
+                final q = _retailerQuery.trim().toLowerCase();
+                final filtered = q.isEmpty
+                    ? retailers
+                    : retailers
+                        .where((r) =>
+                            r.shopName.toLowerCase().contains(q) ||
+                            r.ownerName.toLowerCase().contains(q) ||
+                            r.phone.toLowerCase().contains(q))
+                        .toList();
                 return Column(
-                  children: active
-                      .map((r) => _RetailerSelectionTile(
-                            retailer: r,
-                            isSelected:
-                                _selectedRetailers.contains(r.phone),
-                            onToggle: () => setState(() {
-                              if (_selectedRetailers
-                                  .contains(r.phone)) {
-                                _selectedRetailers.remove(r.phone);
-                              } else {
-                                _selectedRetailers.add(r.phone);
-                              }
+                  children: [
+                    _SearchField(
+                      controller: _retailerSearchCtrl,
+                      hintText: 'Search retailers...',
+                      onChanged: (v) => setState(() {
+                        _retailerQuery = v;
+                        _retailerRevealCount = _kRetailerPageSize;
+                      }),
+                    ),
+                    const SizedBox(height: 10),
+                    if (filtered.isEmpty)
+                      Text(
+                        'No retailers match "$_retailerQuery"',
+                        style: const TextStyle(color: AppColors.onSurfaceVariant),
+                      )
+                    else ...[
+                      ...filtered
+                          .take(_retailerRevealCount)
+                          .map((r) => _RetailerSelectionTile(
+                                retailer: r,
+                                isSelected:
+                                    _selectedRetailers.contains(r.phone),
+                                onToggle: () => setState(() {
+                                  if (_selectedRetailers
+                                      .contains(r.phone)) {
+                                    _selectedRetailers.remove(r.phone);
+                                  } else {
+                                    _selectedRetailers.add(r.phone);
+                                  }
+                                }),
+                              )),
+                      if (_retailerRevealCount < filtered.length)
+                        Padding(
+                          padding: const EdgeInsets.only(top: 4),
+                          child: OutlinedButton(
+                            onPressed: () => setState(() {
+                              _retailerRevealCount +=
+                                  _kRetailerPageSize;
                             }),
-                          ))
-                      .toList(),
+                            child: Text(
+                              'Show ${(filtered.length - _retailerRevealCount).clamp(0, _kRetailerPageSize)} more',
+                            ),
+                          ),
+                        ),
+                    ],
+                  ],
                 );
               },
             ),
@@ -225,6 +308,47 @@ class _AssignProductScreenState
     } finally {
       if (mounted) setState(() => _saving = false);
     }
+  }
+}
+
+class _SearchField extends StatelessWidget {
+  final TextEditingController controller;
+  final String hintText;
+  final ValueChanged<String> onChanged;
+  const _SearchField({
+    required this.controller,
+    required this.hintText,
+    required this.onChanged,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return TextField(
+      controller: controller,
+      onChanged: onChanged,
+      decoration: InputDecoration(
+        hintText: hintText,
+        prefixIcon: const Icon(Icons.search, size: 20),
+        suffixIcon: controller.text.isNotEmpty
+            ? IconButton(
+                icon: const Icon(Icons.clear, size: 18),
+                onPressed: () {
+                  controller.clear();
+                  onChanged('');
+                },
+              )
+            : null,
+        isDense: true,
+        filled: true,
+        fillColor: AppColors.surfaceVariant,
+        contentPadding:
+            const EdgeInsets.symmetric(vertical: 10, horizontal: 12),
+        border: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(12),
+          borderSide: BorderSide.none,
+        ),
+      ),
+    );
   }
 }
 
@@ -353,8 +477,34 @@ class _RetailerSelectionTile extends StatelessWidget {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Text(retailer.shopName,
-                      style: AppTextStyles.bodyMedium),
+                  Row(
+                    children: [
+                      Flexible(
+                        child: Text(retailer.shopName,
+                            style: AppTextStyles.bodyMedium,
+                            overflow: TextOverflow.ellipsis),
+                      ),
+                      if (!retailer.isActive) ...[
+                        const SizedBox(width: 6),
+                        Container(
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 6, vertical: 1),
+                          decoration: BoxDecoration(
+                            color: Colors.orange.withValues(alpha: 0.15),
+                            borderRadius: BorderRadius.circular(6),
+                          ),
+                          child: Text(
+                            retailer.isInvited ? 'Invited' : retailer.status,
+                            style: AppTextStyles.caption.copyWith(
+                              color: Colors.orange.shade800,
+                              fontWeight: FontWeight.w700,
+                              fontSize: 9,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ],
+                  ),
                   Text(retailer.ownerName,
                       style: AppTextStyles.caption),
                 ],

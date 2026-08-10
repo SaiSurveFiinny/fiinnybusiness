@@ -265,6 +265,15 @@ async function fetchInventoryForRetailer(
  * Queries by ownerId and manufacturerId separately so both self-created inventory
  * and legacy docs where only manufacturerId was set are captured. Each query is
  * individually validated by the `inventory` Firestore rule.
+ *
+ * The manufacturerId branch is scoped to ownerType=='manufacturer': every
+ * retailer-assignment copy's inventory doc also stamps manufacturerId with
+ * the original manufacturer's uid for traceability, even though the copy is
+ * owned by the retailer (ownerType: 'retailer'). Unscoped, this silently
+ * fetched hundreds of unused inventory docs for a manufacturer with many
+ * retailer assignments — wasted reads with no visible symptom, since the
+ * caller only joins this map by productId against a separately-scoped
+ * product list.
  */
 async function fetchInventoryForManufacturer(
   uid: string,
@@ -274,7 +283,11 @@ async function fetchInventoryForManufacturer(
 
   const queries: Promise<Awaited<ReturnType<typeof getDocs>>>[] = [
     getDocs(query(collection(db, "inventory"), where("ownerId", "==", uid))),
-    getDocs(query(collection(db, "inventory"), where("manufacturerId", "==", uid))),
+    getDocs(query(
+      collection(db, "inventory"),
+      where("manufacturerId", "==", uid),
+      where("ownerType", "==", "manufacturer"),
+    )),
   ];
 
   // Admin-assigned inventory keys ownership by phone (ownerId == phone), never the

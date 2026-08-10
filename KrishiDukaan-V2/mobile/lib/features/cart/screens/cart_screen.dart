@@ -45,18 +45,16 @@ class CartScreen extends ConsumerWidget {
               actionLabel: 'Browse Products',
               onAction: () => context.go('/marketplace'),
             )
-          : Column(
-              children: [
-                Expanded(
-                  child: ListView.builder(
-                    padding: const EdgeInsets.all(16),
-                    itemCount: items.length,
-                    itemBuilder: (_, i) => _CartItemTile(item: items[i]),
-                  ),
-                ),
-                const _CheckoutBar(),
-              ],
+          : ListView.builder(
+              padding: const EdgeInsets.all(16),
+              itemCount: items.length,
+              itemBuilder: (_, i) => _CartItemTile(item: items[i]),
             ),
+      // In the Scaffold's bottomNavigationBar slot (not the body's Column) so
+      // the floating "Added to cart" SnackBar — which dodges bottomNavigationBar
+      // but not in-body widgets — no longer renders on top of the Checkout
+      // button and blocks it from being tapped for the snackbar's duration.
+      bottomNavigationBar: items.isEmpty ? null : const _CheckoutBar(),
     );
   }
 
@@ -89,153 +87,209 @@ class _CartItemTile extends ConsumerWidget {
   final CartItemModel item;
   const _CartItemTile({required this.item});
 
+  /// Removes this line and offers a one-tap Undo — a lighter-weight,
+  /// immediately-reversible alternative to a confirmation dialog, matching
+  /// how a single-line removal (unlike the whole-cart "Clear") is cheap to
+  /// reverse and doesn't need to interrupt the user.
+  void _remove(BuildContext context, WidgetRef ref) {
+    final removed = item;
+    ref
+        .read(cartProvider.notifier)
+        .removeItem(item.listingId, item.variantLabel);
+    ScaffoldMessenger.of(context)
+      ..hideCurrentSnackBar()
+      ..showSnackBar(
+        SnackBar(
+          content: Text('Removed ${removed.catalogName}'),
+          action: SnackBarAction(
+            label: 'Undo',
+            onPressed: () => ref.read(cartProvider.notifier).addItem(removed),
+          ),
+        ),
+      );
+  }
+
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final storeName = item.sellerName.trim().isNotEmpty
         ? item.sellerName.trim()
         : 'Store';
 
-    return Card(
-      margin: const EdgeInsets.only(bottom: 12),
-      child: Padding(
-        padding: const EdgeInsets.all(12),
-        child: Row(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            // Image
-            ClipRRect(
-              borderRadius: BorderRadius.circular(8),
-              child: SizedBox(
-                width: 60,
-                height: 60,
-                child: item.catalogImage != null
-                    ? CachedNetworkImage(
-                        memCacheWidth: 1000,
-                        imageUrl: item.catalogImage!,
-                        fit: BoxFit.cover,
-                        errorWidget: (_, _, _) => _imgPlaceholder(),
-                      )
-                    : _imgPlaceholder(),
+    return Dismissible(
+      key: ValueKey('${item.listingId}_${item.variantLabel}'),
+      direction: DismissDirection.endToStart,
+      background: Container(
+        margin: const EdgeInsets.only(bottom: 12),
+        padding: const EdgeInsets.symmetric(horizontal: 20),
+        alignment: Alignment.centerRight,
+        decoration: BoxDecoration(
+          color: AppColors.error,
+          borderRadius: BorderRadius.circular(12),
+        ),
+        child: const Icon(Icons.delete_outline, color: Colors.white),
+      ),
+      onDismissed: (_) => _remove(context, ref),
+      child: Card(
+        margin: const EdgeInsets.only(bottom: 12),
+        child: Padding(
+          padding: const EdgeInsets.all(12),
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              // Image
+              ClipRRect(
+                borderRadius: BorderRadius.circular(8),
+                child: SizedBox(
+                  width: 60,
+                  height: 60,
+                  child: item.catalogImage != null
+                      ? CachedNetworkImage(
+                          memCacheWidth: 1000,
+                          imageUrl: item.catalogImage!,
+                          fit: BoxFit.cover,
+                          errorWidget: (_, _, _) => _imgPlaceholder(),
+                        )
+                      : _imgPlaceholder(),
+                ),
               ),
-            ),
-            const SizedBox(width: 12),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    item.catalogName,
-                    style: AppTextStyles.bodyMedium,
-                    maxLines: 2,
-                    overflow: TextOverflow.ellipsis,
-                  ),
-                  if (item.variantLabel != null)
-                    Text(item.variantLabel!, style: AppTextStyles.caption),
-                  const SizedBox(height: 6),
-
-                  // ── Selected store + change ──────────────────────────────
-                  Row(
-                    children: [
-                      const Icon(
-                        Icons.storefront_outlined,
-                        size: 14,
-                        color: AppColors.onSurfaceVariant,
-                      ),
-                      const SizedBox(width: 4),
-                      Expanded(
-                        child: Text(
-                          storeName,
-                          style: AppTextStyles.bodySmall.copyWith(
-                            color: AppColors.onSurfaceVariant,
-                          ),
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                        ),
-                      ),
-                      const SizedBox(width: 6),
-                      InkWell(
-                        onTap: () => _changeStore(context, ref),
-                        borderRadius: BorderRadius.circular(6),
-                        child: Padding(
-                          padding: const EdgeInsets.symmetric(
-                            horizontal: 6,
-                            vertical: 2,
-                          ),
-                          child: Row(
-                            mainAxisSize: MainAxisSize.min,
-                            children: [
-                              const Icon(
-                                Icons.swap_horiz,
-                                size: 15,
-                                color: AppColors.primary,
-                              ),
-                              const SizedBox(width: 2),
-                              Text(
-                                'Change',
-                                style: AppTextStyles.caption.copyWith(
-                                  color: AppColors.primary,
-                                  fontWeight: FontWeight.w700,
-                                ),
-                              ),
-                            ],
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Expanded(
+                          child: Text(
+                            item.catalogName,
+                            style: AppTextStyles.bodyMedium,
+                            maxLines: 2,
+                            overflow: TextOverflow.ellipsis,
                           ),
                         ),
-                      ),
-                    ],
-                  ),
-                  const SizedBox(height: 6),
-
-                  // ── Unit price + discount ────────────────────────────────
-                  Wrap(
-                    crossAxisAlignment: WrapCrossAlignment.center,
-                    spacing: 6,
-                    children: [
-                      Text(
-                        CurrencyUtils.format(item.price),
-                        style: AppTextStyles.price.copyWith(
-                          color: item.hasDiscount
-                              ? const Color(0xFF15803D)
-                              : null,
-                        ),
-                      ),
-                      if (item.hasDiscount) ...[
-                        Text(
-                          CurrencyUtils.format(item.originalPrice),
-                          style: AppTextStyles.caption.copyWith(
-                            decoration: TextDecoration.lineThrough,
-                          ),
-                        ),
-                        _discountBadge(),
-                      ],
-                    ],
-                  ),
-                  const SizedBox(height: 8),
-
-                  // ── Line subtotal + quantity ─────────────────────────────
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                    crossAxisAlignment: CrossAxisAlignment.end,
-                    children: [
-                      Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          Text('Subtotal', style: AppTextStyles.caption),
-                          Text(
-                            CurrencyUtils.format(item.lineTotal),
-                            style: AppTextStyles.bodyMedium.copyWith(
-                              fontWeight: FontWeight.w700,
+                        InkWell(
+                          onTap: () => _remove(context, ref),
+                          borderRadius: BorderRadius.circular(16),
+                          child: const Padding(
+                            padding: EdgeInsets.all(4),
+                            child: Icon(
+                              Icons.delete_outline,
+                              size: 20,
+                              color: AppColors.onSurfaceVariant,
                             ),
                           ),
+                        ),
+                      ],
+                    ),
+                    if (item.variantLabel != null)
+                      Text(item.variantLabel!, style: AppTextStyles.caption),
+                    const SizedBox(height: 6),
+
+                    // ── Selected store + change ──────────────────────────────
+                    Row(
+                      children: [
+                        const Icon(
+                          Icons.storefront_outlined,
+                          size: 14,
+                          color: AppColors.onSurfaceVariant,
+                        ),
+                        const SizedBox(width: 4),
+                        Expanded(
+                          child: Text(
+                            storeName,
+                            style: AppTextStyles.bodySmall.copyWith(
+                              color: AppColors.onSurfaceVariant,
+                            ),
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ),
+                        const SizedBox(width: 6),
+                        InkWell(
+                          onTap: () => _changeStore(context, ref),
+                          borderRadius: BorderRadius.circular(6),
+                          child: Padding(
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 6,
+                              vertical: 2,
+                            ),
+                            child: Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                const Icon(
+                                  Icons.swap_horiz,
+                                  size: 15,
+                                  color: AppColors.primary,
+                                ),
+                                const SizedBox(width: 2),
+                                Text(
+                                  'Change',
+                                  style: AppTextStyles.caption.copyWith(
+                                    color: AppColors.primary,
+                                    fontWeight: FontWeight.w700,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 6),
+
+                    // ── Unit price + discount ────────────────────────────────
+                    Wrap(
+                      crossAxisAlignment: WrapCrossAlignment.center,
+                      spacing: 6,
+                      children: [
+                        Text(
+                          CurrencyUtils.format(item.price),
+                          style: AppTextStyles.price.copyWith(
+                            color: item.hasDiscount
+                                ? const Color(0xFF15803D)
+                                : null,
+                          ),
+                        ),
+                        if (item.hasDiscount) ...[
+                          Text(
+                            CurrencyUtils.format(item.originalPrice),
+                            style: AppTextStyles.caption.copyWith(
+                              decoration: TextDecoration.lineThrough,
+                            ),
+                          ),
+                          _discountBadge(),
                         ],
-                      ),
-                      _QtyControl(item: item),
-                    ],
-                  ),
-                ],
+                      ],
+                    ),
+                    const SizedBox(height: 8),
+
+                    // ── Line subtotal + quantity ─────────────────────────────
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      crossAxisAlignment: CrossAxisAlignment.end,
+                      children: [
+                        Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Text('Subtotal', style: AppTextStyles.caption),
+                            Text(
+                              CurrencyUtils.format(item.lineTotal),
+                              style: AppTextStyles.bodyMedium.copyWith(
+                                fontWeight: FontWeight.w700,
+                              ),
+                            ),
+                          ],
+                        ),
+                        _QtyControl(item: item),
+                      ],
+                    ),
+                  ],
+                ),
               ),
-            ),
-          ],
+            ],
+          ),
         ),
       ),
     );
@@ -401,7 +455,9 @@ class _CheckoutBar extends ConsumerWidget {
                     children: [
                       Text(
                         'Est. weight: ${delivery.totalWeight.toStringAsFixed(2)} kg',
-                        style: AppTextStyles.caption.copyWith(color: Colors.black54),
+                        style: AppTextStyles.caption.copyWith(
+                          color: Colors.black54,
+                        ),
                       ),
                     ],
                   ),
@@ -424,7 +480,10 @@ class _CheckoutBar extends ConsumerWidget {
                               fontWeight: FontWeight.w700,
                             ),
                           ),
-                        const Text('Grand Total', style: AppTextStyles.bodySmall),
+                        const Text(
+                          'Grand Total',
+                          style: AppTextStyles.bodySmall,
+                        ),
                         Text(
                           CurrencyUtils.format(grandTotal),
                           style: AppTextStyles.priceLarge,
@@ -433,7 +492,9 @@ class _CheckoutBar extends ConsumerWidget {
                     ),
                   ),
                   FilledButton(
-                    onPressed: deliveryState.isLoading ? null : () => context.push('/checkout'),
+                    onPressed: deliveryState.isLoading
+                        ? null
+                        : () => context.push('/checkout'),
                     style: FilledButton.styleFrom(
                       backgroundColor: AppColors.primary,
                       minimumSize: const Size(160, 48),
@@ -472,7 +533,9 @@ class _CheckoutBar extends ConsumerWidget {
           else
             Text(
               CurrencyUtils.format(amount),
-              style: AppTextStyles.bodyMedium.copyWith(fontWeight: FontWeight.w600),
+              style: AppTextStyles.bodyMedium.copyWith(
+                fontWeight: FontWeight.w600,
+              ),
             ),
         ],
       ),

@@ -20,7 +20,11 @@ import '../providers/dashboard_provider.dart';
 // SeatStats is defined in dashboard_repository.dart
 
 class InventoryScreen extends ConsumerWidget {
-  const InventoryScreen({super.key});
+  // Set when arriving via the Profile screen's "Add Product" shortcut
+  // (?autoAdd=1) so the add-product sheet opens immediately instead of
+  // requiring a second tap on the in-page + button.
+  final bool autoOpenAdd;
+  const InventoryScreen({super.key, this.autoOpenAdd = false});
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -34,7 +38,11 @@ class InventoryScreen extends ConsumerWidget {
         if (user == null) {
           return const Scaffold(body: ErrorView(message: 'Not logged in.'));
         }
-        return _InventoryBody(sellerPhone: user.phone, sellerName: user.name);
+        return _InventoryBody(
+          sellerPhone: user.phone,
+          sellerName: user.name,
+          autoOpenAdd: autoOpenAdd,
+        );
       },
     );
   }
@@ -43,7 +51,12 @@ class InventoryScreen extends ConsumerWidget {
 class _InventoryBody extends ConsumerStatefulWidget {
   final String sellerPhone;
   final String sellerName;
-  const _InventoryBody({required this.sellerPhone, required this.sellerName});
+  final bool autoOpenAdd;
+  const _InventoryBody({
+    required this.sellerPhone,
+    required this.sellerName,
+    this.autoOpenAdd = false,
+  });
 
   @override
   ConsumerState<_InventoryBody> createState() => _InventoryBodyState();
@@ -52,6 +65,16 @@ class _InventoryBody extends ConsumerStatefulWidget {
 class _InventoryBodyState extends ConsumerState<_InventoryBody> {
   final _searchController = TextEditingController();
   String _searchQuery = '';
+
+  @override
+  void initState() {
+    super.initState();
+    if (widget.autoOpenAdd) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) _showAddListingSheet(context, ref);
+      });
+    }
+  }
 
   @override
   void dispose() {
@@ -284,7 +307,7 @@ class _ListingTile extends StatelessWidget {
         : 'Not updated';
 
     final isAssigned = listing.assignedByManufacturerPhone != null;
-    final sourceLabel = isAssigned ? 'Assigned' : 'Own Catalogue';
+    final sourceLabel = isAssigned ? 'Assigned' : 'Own Inventory';
 
     return Card(
       elevation: 0,
@@ -822,7 +845,7 @@ class _AddListingSheetState extends ConsumerState<_AddListingSheet> {
                   mainAxisAlignment: MainAxisAlignment.spaceBetween,
                   children: [
                     Text(
-                      'Add Product to Catalogue',
+                      'Add Product',
                       style: AppTextStyles.heading2,
                     ),
                     IconButton(
@@ -1292,7 +1315,7 @@ class _AddListingSheetState extends ConsumerState<_AddListingSheet> {
                           ),
                         )
                       : const Text(
-                          'Add to Catalogue / Inventory',
+                          'Add to Inventory',
                           style: TextStyle(
                             fontSize: 16,
                             fontWeight: FontWeight.bold,

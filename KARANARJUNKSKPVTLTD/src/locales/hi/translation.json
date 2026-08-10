@@ -1,5 +1,6 @@
 {
     "common": {
+        "help_center": "सहायता केंद्र",
         "dashboard": "डैशबोर्ड",
         "retailers": "रिटेलर्स",
         "inventory": "भंडार",
@@ -118,7 +119,11 @@
         "placeholder_taluka": "जैसे राहुरी",
         "placeholder_district": "जैसे अहमदनगर",
         "placeholder_gstin": "27XXXX...",
-        "placeholder_license": "एलआईसी/2024/..."
+        "placeholder_license": "एलआईसी/2024/...",
+        "full_address": "पूरा पता (वैकल्पिक)",
+        "placeholder_full_address": "गली, लैंडमार्क, आदि",
+        "select_state": "राज्य चुनें…",
+        "select_district": "जिला चुनें…"
     },
     "manage_retailers": {
         "title": "खुदरा विक्रेताओं को प्रबंधित करें",
@@ -657,7 +662,7 @@
         "net_amount": "शुद्ध रकम",
         "amount_in_words": "रकम शब्दों में",
         "declaration": "घोषणा",
-        "declaration_text": "हम घोषणा करते हैं कि इस बिल में वस्तुओं की वास्तविक कीमत दर्शाई गई है और सभी विवरण सत्य और सही हैं।",
+        "declaration_text": "हम प्रमाणित करते हैं कि इस बिल में दिए गए विवरण सत्य और सही हैं। एक बार बेची गई वस्तुएं पूर्ण वापसी के योग्य नहीं हैं।",
         "for_business": "के लिए",
         "authorised_signatory": "अधिकृत हस्ताक्षरकर्ता",
         "previous_outstanding": "पिछला बकाया",
@@ -665,6 +670,10 @@
         "search_product": "वस्तु खोजें...",
         "bill_format": "बिल प्रारूप",
         "bill_language": "बिल भाषा",
-        "scan_to_pay": "भुगतान हेतु स्कैन करें"
+        "scan_to_pay": "भुगतान हेतु स्कैन करें",
+        "transport_charges": "परिवहन शुल्क",
+        "labor_charges": "श्रम शुल्क",
+        "amount_paid": "भुगतान राशि",
+        "credit_amount": "उधार राशि"
     }
 }

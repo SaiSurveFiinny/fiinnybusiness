@@ -40,6 +40,9 @@ dependencies:
 
   # Local storage
   shared_preferences: ^2.4.25
+  in_app_review: ^2.0.9
+  scrollable_positioned_list: ^0.3.8
+  youtube_player_iframe: ^5.2.1
 
   # UI utilities
   shimmer: ^3.0.0

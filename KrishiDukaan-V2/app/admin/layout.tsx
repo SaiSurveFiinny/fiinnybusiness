@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { useRouter } from "next/navigation";
+import { useRouter, usePathname } from "next/navigation";
 import { onAuthStateChanged } from "firebase/auth";
 import { auth, getUserProfile } from "../firebase";
 import { Navbar } from "../../components/shared/navbar";
@@ -14,10 +14,26 @@ import {
   DEFAULT_LOCATION_LABEL,
   type GeoResult,
 } from "../utils/geolocation";
+import {
+  AdminAuthContext,
+  ADMIN_SECTIONS,
+  hasSection,
+  type AdminIdentity,
+  type AdminSection,
+} from "./_context/admin-auth-context";
+
+/** Maps a pathname like /admin/whatsapp/123 to its admin section slug. */
+function sectionForPathname(pathname: string): AdminSection {
+  if (pathname === "/admin" || pathname === "/admin/") return "overview";
+  const seg = pathname.split("/")[2] ?? "";
+  return (ADMIN_SECTIONS as readonly string[]).includes(seg) ? (seg as AdminSection) : "overview";
+}
 
 export default function AdminLayout({ children }: { children: React.ReactNode }) {
   const router = useRouter();
+  const pathname = usePathname();
   const [loading, setLoading] = useState(true);
+  const [identity, setIdentity] = useState<AdminIdentity | null>(null);
 
   // Location — reuse the SAME shared source as the public pages
   // (app/utils/geolocation: localStorage cache + getUserLocation). Seed from the
@@ -41,15 +57,33 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
       }
       const profile = await getUserProfile(user.uid);
       if (profile?.role === "admin") {
+        setIdentity({ uid: user.uid, role: "admin", adminSections: [] });
         setLoading(false);
-      } else {
-        router.push("/admin-login");
+        return;
       }
+      if (profile?.role === "team") {
+        const sections: AdminSection[] = (Array.isArray(profile.adminSections) ? profile.adminSections : [])
+          .filter((s: unknown): s is AdminSection => (ADMIN_SECTIONS as readonly string[]).includes(String(s)));
+        setIdentity({ uid: user.uid, role: "team", adminSections: sections });
+        setLoading(false);
+        return;
+      }
+      router.push("/admin-login");
     });
     return () => unsub();
   }, [router]);
 
-  if (loading) {
+  // Team members are redirected away from any section they weren't granted —
+  // e.g. typing /admin/products directly when only "users" was granted.
+  useEffect(() => {
+    if (loading || !identity || identity.role !== "team") return;
+    const current = sectionForPathname(pathname);
+    if (hasSection(identity, current)) return;
+    const fallback = identity.adminSections[0];
+    router.replace(fallback ? `/admin/${fallback === "overview" ? "" : fallback}` : "/admin-login");
+  }, [loading, identity, pathname, router]);
+
+  if (loading || !identity) {
     return (
       <div className="min-h-screen flex flex-col items-center justify-center bg-gray-50">
         <div className="animate-spin w-10 h-10 border-4 border-primary border-t-transparent rounded-full mb-4" />
@@ -59,47 +93,49 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
   }
 
   return (
-    <div className="min-h-screen flex flex-col">
-      <Navbar
-        isDashboard={true}
-        locationQuery={locationQuery}
-        onLocationChange={(loc) => setLocationQuery(loc)}
-      />
-      <div className="flex-1 flex overflow-hidden pb-16 md:pb-0">
-        <AdminShell>{children}</AdminShell>
-      </div>
-
-      {/* Bottom nav — mobile only */}
-      <nav className="fixed bottom-0 left-0 right-0 z-50 border-t border-surface-container bg-white/95 px-3 py-2 shadow-[0_-6px_20px_rgba(0,0,0,0.06)] backdrop-blur md:hidden">
-        <div className="grid grid-cols-5 gap-2">
-          {([
-            { key: 'home',    icon: ICONS.Home,      label: 'Home',    href: '/' },
-            { key: 'market',  icon: ICONS.Market,    label: 'Market',  href: '/?view=market' },
-            { key: 'hub',     icon: ICONS.Hub,       label: 'Hub',     href: '/?view=hub' },
-            { key: 'map',     icon: ICONS.Location,  label: 'Stores',  href: '/?view=map' },
-            { key: 'admin',   icon: ICONS.Dashboard, label: 'Admin',   href: '/admin' },
-          ] as { key: string; icon: React.ElementType; label: string; href: string }[]).map((item) => {
-            const isActive = item.key === 'admin';
-            return (
-              <Link
-                key={item.key}
-                href={item.href}
-                className={`relative flex h-14 min-w-0 flex-col items-center justify-center gap-1 rounded-2xl px-1 transition-all ${
-                  isActive
-                    ? 'bg-primary/10 text-primary shadow-sm'
-                    : 'text-on-surface-variant hover:bg-surface-container-low'
-                }`}
-              >
-                <item.icon className="h-5 w-5 shrink-0" />
-                <span className="truncate text-[9px] font-bold uppercase tracking-wide">{item.label}</span>
-                {isActive && (
-                  <span className="absolute inset-0 -z-10 rounded-2xl border border-primary/15 bg-primary/10" />
-                )}
-              </Link>
-            );
-          })}
+    <AdminAuthContext.Provider value={identity}>
+      <div className="min-h-screen flex flex-col">
+        <Navbar
+          isDashboard={true}
+          locationQuery={locationQuery}
+          onLocationChange={(loc) => setLocationQuery(loc)}
+        />
+        <div className="flex-1 flex overflow-hidden pb-16 md:pb-0">
+          <AdminShell>{children}</AdminShell>
         </div>
-      </nav>
-    </div>
+
+        {/* Bottom nav — mobile only */}
+        <nav className="fixed bottom-0 left-0 right-0 z-50 border-t border-surface-container bg-white/95 px-3 py-2 shadow-[0_-6px_20px_rgba(0,0,0,0.06)] backdrop-blur md:hidden">
+          <div className="grid grid-cols-5 gap-2">
+            {([
+              { key: 'home',    icon: ICONS.Home,      label: 'Home',    href: '/' },
+              { key: 'market',  icon: ICONS.Market,    label: 'Market',  href: '/?view=market' },
+              { key: 'hub',     icon: ICONS.Hub,       label: 'Hub',     href: '/?view=hub' },
+              { key: 'map',     icon: ICONS.Location,  label: 'Stores',  href: '/?view=map' },
+              { key: 'admin',   icon: ICONS.Dashboard, label: 'Admin',   href: '/admin' },
+            ] as { key: string; icon: React.ElementType; label: string; href: string }[]).map((item) => {
+              const isActive = item.key === 'admin';
+              return (
+                <Link
+                  key={item.key}
+                  href={item.href}
+                  className={`relative flex h-14 min-w-0 flex-col items-center justify-center gap-1 rounded-2xl px-1 transition-all ${
+                    isActive
+                      ? 'bg-primary/10 text-primary shadow-sm'
+                      : 'text-on-surface-variant hover:bg-surface-container-low'
+                  }`}
+                >
+                  <item.icon className="h-5 w-5 shrink-0" />
+                  <span className="truncate text-[9px] font-bold uppercase tracking-wide">{item.label}</span>
+                  {isActive && (
+                    <span className="absolute inset-0 -z-10 rounded-2xl border border-primary/15 bg-primary/10" />
+                  )}
+                </Link>
+              );
+            })}
+          </div>
+        </nav>
+      </div>
+    </AdminAuthContext.Provider>
   );
 }

@@ -31,7 +31,20 @@ class DashboardRepository {
   Future<Map<String, int>> fetchStats(String sellerPhone) async {
     final uid = FirebaseAuth.instance.currentUser?.uid ?? '';
 
-    // Products: phone, retailerId (legacy), and ownerId (web new schema)
+    // Products: phone, retailerId (legacy), and ownerId (web new schema).
+    //
+    // manufacturerPhone/manufacturerId are NOT ownership fields — every
+    // retailer-assignment copy of a manufacturer's product also stamps the
+    // original manufacturer's phone/uid onto the copy for traceability, even
+    // though the copy is owned by the retailer (ownerType: 'retailer'). A raw
+    // equality match on manufacturerPhone/manufacturerId therefore returns
+    // every retailer's copy of every assigned product — a manufacturer with
+    // 5 real products assigned to 100+ retailers showed 600+ "products" here.
+    // ownerType=='manufacturer' is only ever true on the manufacturer's own
+    // doc, never on a retailer's copy, so it's the safe scope. The bare
+    // ownerId==uid branch below already covers self-owned docs for both
+    // roles (ownerId uniquely identifies one account), so no
+    // manufacturerId==uid branch is needed at all.
     final productFutures = <Future<QuerySnapshot>>[
       _db
           .collection('products')
@@ -40,14 +53,10 @@ class DashboardRepository {
       _db
           .collection('products')
           .where('manufacturerPhone', isEqualTo: sellerPhone)
+          .where('ownerType', isEqualTo: 'manufacturer')
           .get(),
       if (uid.isNotEmpty)
         _db.collection('products').where('retailerId', isEqualTo: uid).get(),
-      if (uid.isNotEmpty)
-        _db
-            .collection('products')
-            .where('manufacturerId', isEqualTo: uid)
-            .get(),
       if (uid.isNotEmpty)
         _db.collection('products').where('ownerId', isEqualTo: uid).get(),
     ];
@@ -101,10 +110,21 @@ class DashboardRepository {
   /// Fetches another seller's active listings by phone only.
   /// Used by the shop profile screen so it never mixes in the current user's
   /// uid (which causes wrong data / iOS stream hangs on other people's profiles).
+  ///
+  /// The manufacturerPhone branch is scoped to ownerType=='manufacturer' —
+  /// without it, every retailer's assignment-copy of this seller's products
+  /// (which also carries the seller's phone in manufacturerPhone purely for
+  /// traceability) was counted as one of THIS seller's own products, which is
+  /// why "My Shop" showed hundreds of phantom products for a manufacturer who
+  /// had only a handful and had assigned them out to many retailers.
   Future<List<ListingModel>> fetchSellerListings(String sellerPhone) async {
     final futures = await Future.wait([
       _db.collection('products').where('retailerPhone', isEqualTo: sellerPhone).get(),
-      _db.collection('products').where('manufacturerPhone', isEqualTo: sellerPhone).get(),
+      _db
+          .collection('products')
+          .where('manufacturerPhone', isEqualTo: sellerPhone)
+          .where('ownerType', isEqualTo: 'manufacturer')
+          .get(),
       _db.collection('listings').where('sellerPhone', isEqualTo: sellerPhone).get(),
     ]);
     final seen = <String>{};
@@ -118,6 +138,12 @@ class DashboardRepository {
   /// Streams the seller's own products.
   /// Queries by retailerPhone, retailerId (legacy), and ownerId (web new schema)
   /// so products created via web or mobile both appear.
+  ///
+  /// manufacturerPhone is scoped to ownerType=='manufacturer' — see the
+  /// comment on fetchStats above for why an unscoped match pulls in every
+  /// retailer's copy of this seller's assigned products. No manufacturerId==
+  /// uid stream is needed: the plain ownerId==uid stream below already
+  /// covers self-owned docs (ownerId uniquely identifies one account).
   Stream<List<ListingModel>> watchMyListings(String sellerPhone) {
     final uid = FirebaseAuth.instance.currentUser?.uid ?? '';
 
@@ -129,6 +155,7 @@ class DashboardRepository {
       _db
           .collection('products')
           .where('manufacturerPhone', isEqualTo: sellerPhone)
+          .where('ownerType', isEqualTo: 'manufacturer')
           .snapshots(),
       _db
           .collection('listings')
@@ -140,12 +167,6 @@ class DashboardRepository {
         _db
             .collection('products')
             .where('retailerId', isEqualTo: uid)
-            .snapshots(),
-      );
-      streams.add(
-        _db
-            .collection('products')
-            .where('manufacturerId', isEqualTo: uid)
             .snapshots(),
       );
       streams.add(

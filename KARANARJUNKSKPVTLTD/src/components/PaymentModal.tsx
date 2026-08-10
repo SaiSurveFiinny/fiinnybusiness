@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
+import { createPortal } from 'react-dom';
 import { IndianRupee, X, AlertCircle, Loader2, CheckCircle2, ChevronDown, ChevronRight } from 'lucide-react';
 import { addDoc, updateDoc, serverTimestamp, type Timestamp } from 'firebase/firestore';
 import { db } from '../firebase';
@@ -7,6 +8,7 @@ import { getTenantCollection, getTenantDoc } from '../utils/tenantPath';
 import { generatePaymentId } from '../utils/paymentIdGenerator';
 import { uploadPaymentProof } from '../utils/uploadPaymentProof';
 import PaymentAttachmentField from './PaymentAttachmentField';
+import { logAudit } from '../utils/auditLog';
 
 export interface PaymentForEdit {
   id: string;
@@ -58,6 +60,10 @@ interface PaymentModalProps {
   applicableDocs?: ApplicableDoc[];
   onClose: () => void;
   onSaved: () => void;
+  /** Pre-fill amount when opening for a new payment (ignored in edit mode). */
+  defaultAmount?: number;
+  /** Pre-fill date when opening for a new payment (ignored in edit mode). */
+  defaultDate?: string;
 }
 
 const PAYMENT_METHODS = ['Cash', 'UPI', 'NEFT', 'RTGS', 'Bank Transfer', 'Cheque', 'Other'];
@@ -130,8 +136,9 @@ const labelStyle: React.CSSProperties = {
 
 export default function PaymentModal({
   supplierId, supplierName, outstandingBalance, editing, applicableDocs = [], onClose, onSaved,
+  defaultAmount, defaultDate,
 }: PaymentModalProps) {
-  const { tenantId, currentUser } = useAuth();
+  const { tenantId, currentUser, userName, userRole } = useAuth();
   const isEdit = !!editing;
 
   const [form, setForm] = useState(() => editing
@@ -146,7 +153,14 @@ export default function PaymentModal({
         ...emptyBankDetails,
         ...(editing.bankDetails ?? {}),
       }
-    : { amount: '', paymentMethod: 'Cash', transactionRef: '', accountName: '', notes: '', paymentDate: today(), linkedDocId: '', ...emptyBankDetails }
+    : {
+        amount: defaultAmount != null ? String(defaultAmount) : '',
+        paymentMethod: 'Cash',
+        transactionRef: '', accountName: '', notes: '',
+        paymentDate: defaultDate ?? today(),
+        linkedDocId: '',
+        ...emptyBankDetails,
+      }
   );
 
   const [moreOpen, setMoreOpen] = useState(() => !!editing?.bankDetails && Object.values(editing.bankDetails).some(v => v));
@@ -215,6 +229,7 @@ export default function PaymentModal({
           updateData.attachmentType = null;
         }
         await withTimeout(updateDoc(getTenantDoc(db, tenantId, 'supplierPayments', editing.id), updateData), 20000);
+        logAudit({ db, tenantId: tenantId!, userId: currentUser?.uid || '', userName: userName || currentUser?.email || 'Unknown', userRole: userRole || 'unknown', module: 'Supplier Ledger', action: 'Update', entityName: supplierName, entityId: editing.id, description: `Supplier payment updated · ₹${amt.toLocaleString('en-IN')} · ${form.paymentMethod}`, before: { amount: editing.amount }, after: { amount: amt, paymentMethod: form.paymentMethod } });
       } else {
         const paymentId = await withTimeout(generatePaymentId(tenantId), 15000).catch(() => `PAY-${new Date().getFullYear()}-${String((Date.now() % 9998) + 1).padStart(4, '0')}`);
         const proofData: Record<string, string> = {};
@@ -248,6 +263,7 @@ export default function PaymentModal({
           updatedAt: serverTimestamp(),
           createdBy: currentUser?.email ?? '',
         }), 20000);
+        logAudit({ db, tenantId: tenantId!, userId: currentUser?.uid || '', userName: userName || currentUser?.email || 'Unknown', userRole: userRole || 'unknown', module: 'Supplier Ledger', action: 'Record Payment', entityName: supplierName, description: `Supplier payment recorded · ₹${amt.toLocaleString('en-IN')} · ${form.paymentMethod}`, after: { amount: amt, paymentMethod: form.paymentMethod, paymentDate: form.paymentDate } });
       }
       if (attachmentWarning) alert(attachmentWarning);
       onSaved();
@@ -262,7 +278,13 @@ export default function PaymentModal({
     ? { url: editing.attachmentUrl, name: editing.attachmentName || '', type: editing.attachmentType || '' }
     : null;
 
-  return (
+  useEffect(() => {
+    const prev = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    return () => { document.body.style.overflow = prev; };
+  }, []);
+
+  return createPortal(
     // Outer: fixed overlay, handles background + single scroll container
     <div
       style={{
@@ -404,6 +426,7 @@ export default function PaymentModal({
           </div>
         </div>
       </div>
-    </div>
+    </div>,
+    document.body
   );
 }

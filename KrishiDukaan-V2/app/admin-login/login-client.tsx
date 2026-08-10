@@ -23,7 +23,10 @@ export default function AdminLoginClient() {
       // and falls back to users/{uid} for email-based admin accounts.
       const profile = await getUserProfile(userCredential.user.uid);
 
-      if (profile?.role === "admin") {
+      // "team" accounts are limited-access admin-portal staff created from
+      // the Team tab — same login, fewer visible sections (enforced by
+      // app/admin/layout.tsx once they land on /admin).
+      if (profile?.role === "admin" || profile?.role === "team") {
         router.push("/admin");
       } else {
         setError("Access denied. Not an administrator.");

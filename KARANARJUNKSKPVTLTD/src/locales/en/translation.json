@@ -1,5 +1,6 @@
 ﻿{
     "common":  {
+                   "help_center": "Help Center",
                    "dashboard":  "Dashboard",
                    "retailers":  "Retailers",
                    "inventory":  "Inventory",
@@ -119,7 +120,11 @@
                        "placeholder_taluka":  "e.g. Rahuri",
                        "placeholder_district":  "e.g. Ahmednagar",
                        "placeholder_gstin":  "27XXXXX...",
-                       "placeholder_license":  "Lic/2024/..."
+                       "placeholder_license":  "Lic/2024/...",
+                       "full_address":  "Full Address (Optional)",
+                       "placeholder_full_address":  "Street, landmark, etc.",
+                       "select_state":  "Select state…",
+                       "select_district":  "Select district…"
                    },
     "manage_retailers":  {
                              "title":  "Manage Retailers",
@@ -658,7 +663,7 @@
         "net_amount": "NET AMOUNT",
         "amount_in_words": "Amount in Words",
         "declaration": "Declaration",
-        "declaration_text": "We declare that this invoice shows the actual price of the goods described and that all particulars are true and correct.",
+        "declaration_text": "We certify that the details in this invoice are true and correct. Goods once sold are not eligible for a full refund.",
         "for_business": "For",
         "authorised_signatory": "Authorised Signatory",
         "previous_outstanding": "Previous Outstanding",
@@ -666,6 +671,10 @@
         "search_product": "Search product to add...",
         "bill_format": "Bill Format",
         "bill_language": "Bill Language",
-        "scan_to_pay": "Scan to Pay"
+        "scan_to_pay": "Scan to Pay",
+        "transport_charges": "Transport Charges",
+        "labor_charges": "Labor Charges",
+        "amount_paid": "Amount Paid",
+        "credit_amount": "Credit Amount"
     }
 }

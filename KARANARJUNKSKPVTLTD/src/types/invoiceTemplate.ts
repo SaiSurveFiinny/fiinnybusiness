@@ -17,19 +17,22 @@ export interface InvoiceTemplateBranding {
     businessName: string;
     address: string;
     gstin?: string;
+    /** @deprecated use fertilizerLicense / pesticideLicense / seedsLicense */
     licenseNumbers?: string;
+    fertilizerLicense?: string;
+    pesticideLicense?: string;
+    seedsLicense?: string;
     logoUrl?: string;
     bankDetails?: string;
     signatureName?: string;
-    signatureUrl?: string;    // optional uploaded signature image (printed above the name)
+    signatureUrl?: string;
     terms?: string;
     contact?: string;
     email?: string;
-    upiId?: string;           // UPI VPA for QR code (e.g. "yourname@paytm")
-    razorpayKeyId?: string;   // Razorpay public key for payment links
-    // thermal header customisation
-    thermalHeader?: string;   // defaults to businessName
-    thermalFooter?: string;   // defaults to "Thank You!"
+    upiId?: string;
+    razorpayKeyId?: string;
+    thermalHeader?: string;
+    thermalFooter?: string;
 }
 
 export interface InvoiceTemplate {

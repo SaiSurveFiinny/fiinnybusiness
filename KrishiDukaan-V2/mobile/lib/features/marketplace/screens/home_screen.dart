@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:math';
 
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
@@ -14,6 +15,10 @@ import '../../../core/widgets/section_header.dart';
 import '../../../core/widgets/shimmer_product_card.dart';
 import '../../notifications/notifications.dart';
 import '../providers/marketplace_provider.dart';
+import '../../reels/providers/reels_provider.dart';
+import '../../reels/screens/shop_profile_screen.dart' show StandaloneReelsFeed;
+import '../../../core/models/reel_model.dart';
+import '../../../core/utils/format_count.dart';
 
 class HomeScreen extends ConsumerWidget {
   const HomeScreen({super.key});
@@ -118,6 +123,9 @@ class HomeScreen extends ConsumerWidget {
                   // Rotating promo banners — gives the page a lively hero strip
                   const _PromoCarousel(),
                   const SizedBox(height: 24),
+
+                  // Latest Reels (Added horizontally before trending)
+                  const _ReelsRail(),
 
                   // Trending Near You
                   SectionHeader(
@@ -258,6 +266,9 @@ class HomeScreen extends ConsumerWidget {
                   ),
                   const SizedBox(height: 28),
 
+                  // More Reels at the bottom
+                  const _ReelsRail(skipCount: 4, title: 'More Reels'),
+                  
                   // Friendly closing card so the page ends on a helpful note
                   const _HelpFooter(),
                   const SizedBox(height: 80),
@@ -894,6 +905,193 @@ class _TopDealsRail extends ConsumerWidget {
         );
       },
       orElse: () => const SizedBox.shrink(),
+    );
+  }
+}
+
+// ─────────────────────────── Reels Rail ────────────────────────────────────
+
+class _ReelsRail extends ConsumerWidget {
+  final int skipCount;
+  final String title;
+
+  const _ReelsRail({
+    this.skipCount = 0,
+    this.title = 'Latest Reels',
+  });
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final reelsAsync = ref.watch(reelsFeedProvider);
+    return reelsAsync.maybeWhen(
+      data: (reels) {
+        if (reels.isEmpty) return const SizedBox.shrink();
+        
+        // Seeded from the feed's identity so the selection is stable across
+        // rebuilds (an unseeded shuffle changed which reels the cards showed
+        // on every home rebuild, so the tapped thumbnail no longer matched
+        // what the card was rendering).
+        final seed = reels.length ^ reels.first.id.hashCode;
+        List<ReelModel> displayReels;
+        if (skipCount > 0) {
+          if (reels.length > 4) {
+            final remaining = reels.skip(skipCount).toList();
+            remaining.shuffle(Random(seed));
+            displayReels = remaining.take(4).toList();
+          } else {
+            // Not enough reels to be entirely disjoint. Just mix the existing ones.
+            final mixed = reels.toList();
+            mixed.shuffle(Random(seed));
+            displayReels = mixed.take(4).toList();
+          }
+        } else {
+          displayReels = reels.take(4).toList();
+        }
+
+        if (displayReels.isEmpty) return const SizedBox.shrink();
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            SectionHeader(
+              title: title,
+              icon: Icons.play_circle_fill_rounded,
+              iconColor: AppColors.primary,
+              actionLabel: 'See all',
+              onAction: () {
+                ref.invalidate(reelsFeedProvider);
+                context.go('/reels');
+              },
+            ),
+            const SizedBox(height: 12),
+            SizedBox(
+              height: 200,
+              child: ListView.separated(
+                scrollDirection: Axis.horizontal,
+                padding: const EdgeInsets.symmetric(horizontal: 4),
+                itemCount: displayReels.length,
+                separatorBuilder: (_, _) => const SizedBox(width: 12),
+                itemBuilder: (_, i) => SizedBox(
+                  width: 120,
+                  child: _ReelRailCard(reel: displayReels[i], allReels: reels),
+                ),
+              ),
+            ),
+            const SizedBox(height: 24),
+          ],
+        );
+      },
+      orElse: () => const SizedBox.shrink(),
+    );
+  }
+}
+
+class _ReelRailCard extends ConsumerWidget {
+  final ReelModel reel;
+
+  /// The rail's full (ranked) list — the fullscreen feed opens over it at the
+  /// tapped reel's position, so the reel shown is exactly the thumbnail
+  /// tapped. Routing through the /reels tab instead was racy: the tab's feed
+  /// re-ranks on open, so it frequently started on a different reel.
+  final List<ReelModel> allReels;
+
+  const _ReelRailCard({required this.reel, required this.allReels});
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    return GestureDetector(
+      onTap: () {
+        final index = allReels.indexWhere((r) => r.id == reel.id);
+        final user = ref.read(currentUserProvider).value;
+        Navigator.of(context, rootNavigator: true).push(
+          MaterialPageRoute(
+            fullscreenDialog: true,
+            builder: (_) => ProviderScope(
+              child: StandaloneReelsFeed(
+                reels: allReels,
+                initialIndex: index < 0 ? 0 : index,
+                currentUserId: user?.phone,
+                currentUserName: user?.businessName ?? user?.name ?? '',
+              ),
+            ),
+          ),
+        );
+      },
+      child: Container(
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(12),
+          gradient: const LinearGradient(
+            colors: [AppColors.primaryDark, AppColors.primary],
+            begin: Alignment.topLeft,
+            end: Alignment.bottomRight,
+          ),
+        ),
+        child: Stack(
+          fit: StackFit.expand,
+          children: [
+            if (reel.thumbnailUrl != null && reel.thumbnailUrl!.isNotEmpty) ...[
+              ClipRRect(
+                borderRadius: BorderRadius.circular(12),
+                child: CachedNetworkImage(
+                  imageUrl: resolveImageUrl(reel.thumbnailUrl!),
+                  fit: BoxFit.cover,
+                  errorWidget: (context, url, error) => const SizedBox.shrink(),
+                ),
+              ),
+              Container(
+                decoration: BoxDecoration(
+                  borderRadius: BorderRadius.circular(12),
+                  color: Colors.black.withValues(alpha: 0.3),
+                ),
+              ),
+            ],
+            const Center(
+              child: Icon(
+                Icons.play_circle_outline_rounded,
+                color: Colors.white70,
+                size: 32,
+              ),
+            ),
+            Positioned(
+              left: 8,
+              right: 8,
+              bottom: 8,
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  if (reel.caption.isNotEmpty)
+                    Text(
+                      reel.caption,
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontSize: 10,
+                        fontWeight: FontWeight.w600,
+                        shadows: [Shadow(color: Colors.black87, blurRadius: 4)],
+                      ),
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  const SizedBox(height: 4),
+                  Row(
+                    children: [
+                      const Icon(Icons.remove_red_eye_rounded, size: 10, color: Colors.white70),
+                      const SizedBox(width: 4),
+                      Text(
+                        formatCount(reel.viewsCount),
+                        style: const TextStyle(
+                          color: Colors.white70,
+                          fontSize: 9,
+                          fontWeight: FontWeight.w500,
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
     );
   }
 }

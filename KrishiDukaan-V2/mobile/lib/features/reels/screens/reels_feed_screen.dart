@@ -13,6 +13,7 @@ import '../../../core/providers/user_provider.dart';
 import '../../../core/utils/web_links.dart';
 import '../../../core/utils/format_count.dart';
 import '../../../core/widgets/app_shell.dart';
+import '../../../core/widgets/user_tag_dialog.dart';
 import '../providers/reels_provider.dart';
 import '../widgets/reel_filters.dart';
 
@@ -31,20 +32,6 @@ class _ReelsFeedScreenState extends ConsumerState<ReelsFeedScreen>
   int _currentPage = 0;
   bool _initialized = false;
 
-  // Route-level visibility guard.
-  //
-  // The tab-index listener in build() only fires when the bottom-nav branch
-  // changes, which misses a screen pushed ON TOP of the reels tab: tapping a
-  // reel's seller profile (`/shop/...`) or its linked product (`/product/...`)
-  // pushes a root route while the tab index stays on reels, so nothing paused
-  // the video and its audio kept playing underneath the new screen.
-  //
-  // ReelsNavigatorObserver drives the same shared gate via NavigatorObserver
-  // callbacks, but those fire mid-navigation where a Riverpod write can be
-  // rejected (and is swallowed by its `catch`), so it can't be the only
-  // safeguard. Listening to the router settles after navigation completes and
-  // pauses the controllers directly — audio plays only while the top-most
-  // location is exactly /reels.
   GoRouter? _router;
 
   @override
@@ -69,9 +56,6 @@ class _ReelsFeedScreenState extends ConsumerState<ReelsFeedScreen>
     final visible =
         path == '/reels' && ref.read(activeShellIndexProvider) == reelsTab;
 
-    // Pause/resume the controllers directly FIRST. This is what actually
-    // silences the audio, and it must not depend on the provider write below
-    // succeeding.
     if (!visible) {
       for (final c in _controllers.values) {
         c.pause();
@@ -83,8 +67,6 @@ class _ReelsFeedScreenState extends ConsumerState<ReelsFeedScreen>
       }
     }
 
-    // Then keep the shared gate in sync, so a controller that finishes
-    // initialising while we're away can't start playing on its own.
     try {
       ref.read(reelsFeedPlaybackActiveProvider.notifier).setPlayable(visible);
     } catch (_) {}
@@ -108,8 +90,6 @@ class _ReelsFeedScreenState extends ConsumerState<ReelsFeedScreen>
         c.pause();
       }
     } else {
-      // Only resume if the reels tab is still active — otherwise the user
-      // foregrounded the app while on a different tab and the reel must stay silent.
       const reelsTab = 4;
       if (ref.read(activeShellIndexProvider) != reelsTab) return;
       if (!ref.read(reelsFeedPlaybackActiveProvider)) return;
@@ -153,7 +133,6 @@ class _ReelsFeedScreenState extends ConsumerState<ReelsFeedScreen>
       _controllers[reels[index].id]?.play();
       _ensureController(index + 1, reels);
       if (index > 0) _ensureController(index - 1, reels);
-      // Count a view once per reel per session
       final reelId = reels[index].id;
       _markReelAsSeen(reelId);
     }
@@ -173,11 +152,9 @@ class _ReelsFeedScreenState extends ConsumerState<ReelsFeedScreen>
     final feedAsync = ref.watch(reelsFeedProvider);
     final currentUser = ref.watch(currentUserProvider).value;
 
-    // Pause/resume when the user switches away from / back to the reels tab.
     ref.listen<int>(activeShellIndexProvider, (_, tabIndex) {
       const reelsTab = 4;
       if (tabIndex != reelsTab) {
-        // Mark inactive FIRST so any late-initialising controllers don't sneak in.
         ref.read(reelsFeedPlaybackActiveProvider.notifier).setPlayable(false);
         for (final c in _controllers.values) {
           c.pause();
@@ -206,13 +183,21 @@ class _ReelsFeedScreenState extends ConsumerState<ReelsFeedScreen>
       }
     });
 
+    final reelsData = feedAsync.value;
+    if (reelsData != null && reelsData.isNotEmpty && !_initialized) {
+      _initialized = true;
+      _ensureController(_currentPage, reelsData);
+      _ensureController(_currentPage + 1, reelsData);
+      if (_currentPage > 0) _ensureController(_currentPage - 1, reelsData);
+      _markReelAsSeen(reelsData[_currentPage].id);
+    }
+
     ref.listen<AsyncValue<List<ReelModel>>>(reelsFeedProvider, (prev, next) {
       if (!_initialized && next.value != null && next.value!.isNotEmpty) {
         _initialized = true;
         final reels = next.value!;
         _ensureController(0, reels);
         _ensureController(1, reels);
-        // First reel is shown immediately — count its view
         if (reels.isNotEmpty) {
           _markReelAsSeen(reels[0].id);
         }
@@ -287,6 +272,13 @@ class _ReelsFeedScreenState extends ConsumerState<ReelsFeedScreen>
                 PageView.builder(
                   controller: _pageController,
                   scrollDirection: Axis.vertical,
+                  // Explicit physics — without this, iOS falls back to
+                  // BouncingScrollPhysics (vs Android's ClampingScrollPhysics),
+                  // and a bouncing PageView contesting the gesture arena
+                  // against nested tap targets (the product-link card) is a
+                  // known class of iOS-only tap-swallowing bug. Matches
+                  // Android's existing behavior exactly, so no change there.
+                  physics: const ClampingScrollPhysics(),
                   onPageChanged: _onPageChanged,
                   itemCount: reels.length,
                   itemBuilder: (context, index) {
@@ -299,7 +291,6 @@ class _ReelsFeedScreenState extends ConsumerState<ReelsFeedScreen>
                     );
                   },
                 ),
-                // "AgriReels" header
                 Positioned(
                   top: 0,
                   left: 0,
@@ -354,15 +345,46 @@ class _ReelsFeedScreenState extends ConsumerState<ReelsFeedScreen>
                           const Spacer(),
                           IconButton(
                             icon: const Icon(
+                              Icons.video_call_rounded,
+                              color: Colors.white,
+                              size: 26,
+                            ),
+                            tooltip: 'Upload Reel',
+                            onPressed: () {
+                              if (currentUser == null) {
+                                ScaffoldMessenger.of(context).showSnackBar(
+                                  SnackBar(
+                                    content: const Text('Login to upload reels'),
+                                    action: SnackBarAction(
+                                      label: 'Login',
+                                      onPressed: () => context.push('/login'),
+                                    ),
+                                  ),
+                                );
+                              } else {
+                                context.push('/reels/upload');
+                              }
+                            },
+                          ),
+                          IconButton(
+                            icon: const Icon(
                               Icons.search_rounded,
                               color: Colors.white,
                             ),
                             onPressed: () {
+                              final reels = feedAsync.value ?? [];
                               showModalBottomSheet(
                                 context: context,
                                 isScrollControlled: true,
                                 backgroundColor: Colors.transparent,
-                                builder: (_) => const _ShopSearchSheet(),
+                                builder: (_) => _ShopSearchSheet(
+                                  onSelectReel: (selectedReel) {
+                                    final index = reels.indexWhere((r) => r.id == selectedReel.id);
+                                    if (index != -1) {
+                                      _pageController.jumpToPage(index);
+                                    }
+                                  },
+                                ),
                               );
                             },
                           ),
@@ -403,7 +425,6 @@ class _ReelsFeedScreenState extends ConsumerState<ReelsFeedScreen>
       final seenReels = prefs.getStringList('seen_reels') ?? [];
       if (!seenReels.contains(reelId)) {
         seenReels.add(reelId);
-        // Keep the list from growing indefinitely
         if (seenReels.length > 500) {
           seenReels.removeAt(0);
         }
@@ -412,8 +433,6 @@ class _ReelsFeedScreenState extends ConsumerState<ReelsFeedScreen>
     }
   }
 }
-
-// ── Individual reel page ─────────────────────────────────────────────────────
 
 class _ReelPage extends ConsumerStatefulWidget {
   final ReelModel reel;
@@ -445,8 +464,6 @@ class _ReelPageState extends ConsumerState<_ReelPage>
   late Animation<double> _heartScale;
   late Animation<double> _heartOpacity;
   bool _reposting = false;
-  // The caller's repost doc id for this reel (null = not reposted). Drives the
-  // repost button's active state and one-tap undo.
   String? _repostId;
 
   @override
@@ -476,7 +493,6 @@ class _ReelPageState extends ConsumerState<_ReelPage>
       ),
     ]).animate(_likeAnimController);
 
-    // Double-tap heart burst
     _heartAnimController = AnimationController(
       vsync: this,
       duration: const Duration(milliseconds: 700),
@@ -617,10 +633,6 @@ class _ReelPageState extends ConsumerState<_ReelPage>
     });
   }
 
-  /// Share message leads with the reel's title + description. Both links are
-  /// real website routes (WebLinks slugs match the web's builders): the reel's
-  /// own page, and — when the seller linked a product — that product's page,
-  /// so the receiver can open exactly what was linked.
   String get _shareText {
     final reel = widget.reel;
     final reelLink = WebLinks.reel(reel.title, reel.id);
@@ -690,7 +702,6 @@ class _ReelPageState extends ConsumerState<_ReelPage>
                 if (await canLaunchUrl(url)) {
                   await launchUrl(url, mode: LaunchMode.externalApplication);
                 } else if (mounted) {
-                  // WhatsApp not installed — fall back to the system sheet.
                   SharePlus.instance.share(ShareParams(text: _shareText));
                 }
               },
@@ -755,9 +766,7 @@ class _ReelPageState extends ConsumerState<_ReelPage>
   }
 
   void _onDoubleTap() {
-    // Like if not already liked
     if (_isLiked == false) _toggleLike();
-    // Always burst the heart
     _heartAnimController.forward(from: 0);
   }
 
@@ -773,22 +782,10 @@ class _ReelPageState extends ConsumerState<_ReelPage>
     );
   }
 
-  /// One-tap repost / un-repost. No menus: tapping reposts instantly; tapping
-  /// again removes it. Removal is also available from the seller's own profile.
   Future<void> _toggleRepost() async {
     final user = ref.read(currentUserProvider).value;
     if (user == null) {
       _showLoginPrompt();
-      return;
-    }
-    if (!user.canAccessDashboard) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text(
-            'An active seller subscription is required to repost reels.',
-          ),
-        ),
-      );
       return;
     }
     if (_reposting) return;
@@ -830,6 +827,63 @@ class _ReelPageState extends ConsumerState<_ReelPage>
     }
   }
 
+  /// Files a report, picked from a fixed reason list rather than free text —
+  /// the Cloud Function that acts on these (flagReelOnReports) only counts
+  /// them, it doesn't read them, so structured reasons are enough for a
+  /// human reviewer later and avoid an open text field's abuse surface.
+  Future<void> _reportReel() async {
+    if (widget.currentUserId == null) {
+      _showLoginPrompt();
+      return;
+    }
+    final reason = await showModalBottomSheet<String>(
+      context: context,
+      backgroundColor: Colors.white,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (_) => const _ReportReasonSheet(),
+    );
+    if (reason == null || !mounted) return;
+    try {
+      await ref.read(reelsRepoProvider).reportReel(
+            reelId: widget.reel.id,
+            reporterId: widget.currentUserId!,
+            reason: reason,
+          );
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Reported — thanks for flagging this.')),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Could not submit report: $e')),
+      );
+    }
+  }
+
+  Widget _buildPosterOrLoader() {
+    final thumb = widget.reel.thumbnailUrl ?? widget.reel.linkedProductImageUrl;
+    return Stack(
+      fit: StackFit.expand,
+      children: [
+        if (thumb != null && thumb.isNotEmpty)
+          Image.network(
+            thumb,
+            fit: BoxFit.cover,
+            errorBuilder: (context, error, stackTrace) => const SizedBox.shrink(),
+          ),
+        const Center(
+          child: CircularProgressIndicator(
+            color: Colors.white38,
+            strokeWidth: 2,
+          ),
+        ),
+      ],
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final controller = widget.controller;
@@ -837,7 +891,6 @@ class _ReelPageState extends ConsumerState<_ReelPage>
     return Stack(
       fit: StackFit.expand,
       children: [
-        // ── Video background ─────────────────────────────────────────────
         GestureDetector(
           onTap: _togglePlayPause,
           onDoubleTap: _onDoubleTap,
@@ -848,12 +901,7 @@ class _ReelPageState extends ConsumerState<_ReelPage>
                     valueListenable: controller,
                     builder: (_, value, _) {
                       if (!value.isInitialized) {
-                        return const Center(
-                          child: CircularProgressIndicator(
-                            color: Colors.white38,
-                            strokeWidth: 2,
-                          ),
-                        );
+                        return _buildPosterOrLoader();
                       }
                       return applyReelFilter(
                         widget.reel.filterId,
@@ -870,23 +918,14 @@ class _ReelPageState extends ConsumerState<_ReelPage>
                       );
                     },
                   )
-                : const Center(
-                    child: CircularProgressIndicator(
-                      color: Colors.white38,
-                      strokeWidth: 2,
-                    ),
-                  ),
+                : _buildPosterOrLoader(),
           ),
         ),
-
-        // ── Seller's text overlay (from the upload editor) ───────────────
         if (widget.reel.overlayText != null)
           ReelTextOverlay(
             text: widget.reel.overlayText!,
             pos: widget.reel.overlayPos,
           ),
-
-        // ── Pause icon flash ─────────────────────────────────────────────
         if (_showPauseIcon)
           Center(
             child: Container(
@@ -902,8 +941,6 @@ class _ReelPageState extends ConsumerState<_ReelPage>
               ),
             ),
           ),
-
-        // ── Double-tap heart burst ────────────────────────────────────────
         AnimatedBuilder(
           animation: _heartAnimController,
           builder: (_, _) {
@@ -925,8 +962,6 @@ class _ReelPageState extends ConsumerState<_ReelPage>
             );
           },
         ),
-
-        // ── Top gradient (status bar readability) ────────────────────────
         Positioned(
           top: 0,
           left: 0,
@@ -942,8 +977,6 @@ class _ReelPageState extends ConsumerState<_ReelPage>
             ),
           ),
         ),
-
-        // ── Bottom gradient ───────────────────────────────────────────────
         Positioned(
           bottom: 0,
           left: 0,
@@ -959,8 +992,6 @@ class _ReelPageState extends ConsumerState<_ReelPage>
             ),
           ),
         ),
-
-        // ── Right-side action column ──────────────────────────────────────
         Positioned(
           right: 12,
           bottom: 80,
@@ -1025,12 +1056,19 @@ class _ReelPageState extends ConsumerState<_ReelPage>
                   label: _formatCount(widget.reel.viewsCount),
                   onTap: () {},
                 ),
+                if (!isOwnReel) ...[
+                  const SizedBox(height: 20),
+                  _ActionButton(
+                    icon: Icons.flag_outlined,
+                    iconColor: Colors.white70,
+                    label: 'Report',
+                    onTap: _reportReel,
+                  ),
+                ],
               ],
             ),
           ),
         ),
-
-        // ── Bottom overlay: shop name, caption, product card ─────────────
         Positioned(
           left: 14,
           right: 80,
@@ -1043,10 +1081,6 @@ class _ReelPageState extends ConsumerState<_ReelPage>
                 crossAxisAlignment: CrossAxisAlignment.start,
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  // Instagram-style identity row: small avatar + @handle +
-                  // Follow. The handle is Flexible so a long shop name
-                  // truncates instead of overflowing (and shoving the Follow
-                  // pill into the create-reel FAB).
                   Row(
                     children: [
                       GestureDetector(
@@ -1169,10 +1203,6 @@ class _ReelPageState extends ConsumerState<_ReelPage>
   String _formatCount(int count) => formatCount(count);
 }
 
-// ── Overlay helper widgets ────────────────────────────────────────────────────
-
-/// Small circular shop avatar with an initials fallback. Tap handling is left
-/// to the parent so it can be reused anywhere.
 class _ShopAvatar extends StatelessWidget {
   final String? imageUrl;
   final String shopName;
@@ -1279,6 +1309,10 @@ class _ProductCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return GestureDetector(
+      // Opaque hit-testing (matches _ActionButton) rather than the default
+      // deferToChild — rules out any edge-of-widget dead zone contributing
+      // to the iOS tap-swallowing reports.
+      behavior: HitTestBehavior.opaque,
       onTap: () {
         context.push('/product/$productId');
       },
@@ -1339,8 +1373,6 @@ class _ProductCard extends StatelessWidget {
   }
 }
 
-// ── Comments bottom sheet ─────────────────────────────────────────────────────
-
 class _CommentsSheet extends ConsumerStatefulWidget {
   final String reelId;
   final String? currentUserId;
@@ -1361,9 +1393,67 @@ class _CommentsSheet extends ConsumerStatefulWidget {
 class _CommentsSheetState extends ConsumerState<_CommentsSheet> {
   final _textController = TextEditingController();
   bool _submitting = false;
+  String? _taggedUserId;
+  String? _taggedUserName;
+
+  // Inline "@mention" suggestions while typing.
+  String? _mentionQuery;
+  List<TaggedUser> _mentionResults = const [];
+  bool _mentionLoading = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _textController.addListener(_onTextChanged);
+  }
+
+  void _onTextChanged() {
+    final text = _textController.text;
+    final caret = _textController.selection.baseOffset;
+    final uptoCaret = caret >= 0 ? text.substring(0, caret) : text;
+    final match = RegExp(r'@([^\s@]*)$').firstMatch(uptoCaret);
+    if (match == null) {
+      if (_mentionQuery != null) setState(() => _mentionQuery = null);
+      return;
+    }
+    final q = match.group(1) ?? '';
+    setState(() {
+      _mentionQuery = q;
+      _mentionLoading = true;
+    });
+    searchTaggableUsers(q).then((results) {
+      if (!mounted || _mentionQuery != q) return;
+      setState(() {
+        _mentionResults = results;
+        _mentionLoading = false;
+      });
+    });
+  }
+
+  void _pickMention(TaggedUser u) {
+    // Strip the in-progress "@partial" trigger text back out — the tag
+    // itself is rendered separately (the "Tagging: @name" chip below, and
+    // the bold @name prefix on the posted comment), so leaving "@Name " in
+    // the free-text comment too made every tagged comment show the name twice.
+    final text = _textController.text;
+    final caret = _textController.selection.baseOffset;
+    final uptoCaret = caret >= 0 ? text.substring(0, caret) : text;
+    final stripped = uptoCaret.replaceFirst(RegExp(r'@([^\s@]*)$'), '');
+    final rest = caret >= 0 ? text.substring(caret) : '';
+    _textController.value = TextEditingValue(
+      text: stripped + rest,
+      selection: TextSelection.collapsed(offset: stripped.length),
+    );
+    setState(() {
+      _taggedUserId = u.id;
+      _taggedUserName = u.name;
+      _mentionQuery = null;
+    });
+  }
 
   @override
   void dispose() {
+    _textController.removeListener(_onTextChanged);
     _textController.dispose();
     super.dispose();
   }
@@ -1399,8 +1489,12 @@ class _CommentsSheetState extends ConsumerState<_CommentsSheet> {
                 ? widget.currentUserName
                 : widget.currentUserId!,
             text,
+            taggedUserId: _taggedUserId,
+            taggedUserName: _taggedUserName,
           );
       _textController.clear();
+      _taggedUserId = null;
+      _taggedUserName = null;
       widget.onCommentAdded();
     } catch (e) {
       if (mounted) {
@@ -1428,7 +1522,6 @@ class _CommentsSheetState extends ConsumerState<_CommentsSheet> {
       ),
       child: Column(
         children: [
-          // Drag handle
           Container(
             margin: const EdgeInsets.symmetric(vertical: 10),
             width: 40,
@@ -1440,8 +1533,6 @@ class _CommentsSheetState extends ConsumerState<_CommentsSheet> {
           ),
           Text('Comments', style: AppTextStyles.heading3),
           const Divider(height: 16),
-
-          // Comments list
           Expanded(
             child: commentsAsync.when(
               loading: () => const Center(child: CircularProgressIndicator()),
@@ -1504,7 +1595,23 @@ class _CommentsSheetState extends ConsumerState<_CommentsSheet> {
                                   ),
                                 ),
                                 const SizedBox(height: 2),
-                                Text(c.text, style: AppTextStyles.bodySmall),
+                                c.taggedUserName != null && c.taggedUserName!.isNotEmpty
+                                    ? RichText(
+                                        text: TextSpan(
+                                          style: AppTextStyles.bodySmall.copyWith(color: Colors.black87),
+                                          children: [
+                                            TextSpan(
+                                              text: '@${c.taggedUserName} ',
+                                              style: const TextStyle(
+                                                color: Colors.blue,
+                                                fontWeight: FontWeight.bold,
+                                              ),
+                                            ),
+                                            TextSpan(text: c.text),
+                                          ],
+                                        ),
+                                      )
+                                    : Text(c.text, style: AppTextStyles.bodySmall),
                               ],
                             ),
                           ),
@@ -1520,15 +1627,45 @@ class _CommentsSheetState extends ConsumerState<_CommentsSheet> {
           // Input
           Padding(
             padding: EdgeInsets.only(
-              left: 16,
+              left: 12,
               right: 8,
               top: 8,
               bottom: MediaQuery.of(context).viewInsets.bottom + 12,
             ),
-            child: Row(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Expanded(
-                  child: TextField(
+                if (_mentionQuery != null)
+                  Padding(
+                    padding: const EdgeInsets.only(bottom: 6),
+                    child: MentionSuggestions(
+                      results: _mentionResults,
+                      loading: _mentionLoading,
+                      query: _mentionQuery!,
+                      onSelect: _pickMention,
+                    ),
+                  ),
+                if (_taggedUserName != null)
+                  Padding(
+                    padding: const EdgeInsets.only(left: 12, bottom: 4),
+                    child: Row(
+                      children: [
+                        Text('Tagging: @$_taggedUserName', style: const TextStyle(color: Colors.blue, fontSize: 12, fontWeight: FontWeight.bold)),
+                        const SizedBox(width: 4),
+                        GestureDetector(
+                          onTap: () => setState(() {
+                            _taggedUserId = null;
+                            _taggedUserName = null;
+                          }),
+                          child: const Icon(Icons.close, size: 14, color: Colors.blue),
+                        )
+                      ],
+                    ),
+                  ),
+                Row(
+                  children: [
+                    Expanded(
+                      child: TextField(
                     controller: _textController,
                     decoration: InputDecoration(
                       hintText: widget.currentUserId == null
@@ -1573,17 +1710,22 @@ class _CommentsSheetState extends ConsumerState<_CommentsSheet> {
                 ),
               ],
             ),
-          ),
-        ],
+          ],
+        ),
       ),
-    );
+    ],
+  ),
+);
   }
 }
 
 // ── Shop Search Sheet ────────────────────────────────────────────────────────
 
+// ── Shop & Reels Search Sheet (Explore Grid) ──────────────────────────────────
+
 class _ShopSearchSheet extends ConsumerStatefulWidget {
-  const _ShopSearchSheet();
+  final Function(ReelModel reel)? onSelectReel;
+  const _ShopSearchSheet({this.onSelectReel});
 
   @override
   ConsumerState<_ShopSearchSheet> createState() => _ShopSearchSheetState();
@@ -1592,20 +1734,22 @@ class _ShopSearchSheet extends ConsumerStatefulWidget {
 class _ShopSearchSheetState extends ConsumerState<_ShopSearchSheet> {
   final _searchController = TextEditingController();
   bool _isLoading = false;
-  List<Map<String, dynamic>> _results = [];
+  List<Map<String, dynamic>> _shopResults = [];
 
   Future<void> _search(String query) async {
-    if (query.trim().isEmpty) {
+    final trimmed = query.trim();
+    if (trimmed.isEmpty) {
       setState(() {
-        _results = [];
+        _shopResults = [];
+        _isLoading = false;
       });
       return;
     }
     setState(() => _isLoading = true);
-    final results = await ref.read(reelsRepoProvider).searchShops(query);
+    final results = await ref.read(reelsRepoProvider).searchShops(trimmed);
     if (mounted) {
       setState(() {
-        _results = results;
+        _shopResults = results;
         _isLoading = false;
       });
     }
@@ -1619,86 +1763,391 @@ class _ShopSearchSheetState extends ConsumerState<_ShopSearchSheet> {
 
   @override
   Widget build(BuildContext context) {
+    final allReels = ref.watch(reelsFeedProvider).value ?? [];
+    final query = _searchController.text.trim().toLowerCase();
+
+    final filteredReels = (query.isEmpty
+        ? allReels
+        : allReels.where((r) {
+            final title = r.title.toLowerCase();
+            final caption = r.caption.toLowerCase();
+            final shop = r.shopName.toLowerCase();
+            final prod = (r.linkedProductName ?? '').toLowerCase();
+            return title.contains(query) ||
+                caption.contains(query) ||
+                shop.contains(query) ||
+                prod.contains(query);
+          })).take(48).toList();
+
     return Container(
-      height: MediaQuery.of(context).size.height * 0.7,
+      height: MediaQuery.of(context).size.height * 0.85,
       padding: EdgeInsets.only(
-        top: 20,
-        left: 20,
-        right: 20,
-        bottom: MediaQuery.of(context).viewInsets.bottom + 20,
+        top: 16,
+        left: 16,
+        right: 16,
+        bottom: MediaQuery.of(context).viewInsets.bottom + 16,
       ),
       decoration: const BoxDecoration(
         color: Colors.white,
-        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
       ),
       child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Container(
-            width: 40,
-            height: 4,
-            margin: const EdgeInsets.only(bottom: 20),
-            decoration: BoxDecoration(
-              color: Colors.grey.shade300,
-              borderRadius: BorderRadius.circular(2),
+          Center(
+            child: Container(
+              width: 36,
+              height: 4,
+              margin: const EdgeInsets.only(bottom: 16),
+              decoration: BoxDecoration(
+                color: Colors.grey.shade300,
+                borderRadius: BorderRadius.circular(2),
+              ),
             ),
           ),
           TextField(
             controller: _searchController,
-            autofocus: true,
+            autofocus: false,
             onChanged: _search,
             decoration: InputDecoration(
-              hintText: 'Search username or shop...',
-              prefixIcon: const Icon(Icons.search),
+              hintText: 'Search shops, @username, or reels...',
+              hintStyle: const TextStyle(color: Colors.black38, fontSize: 14),
+              prefixIcon: const Icon(Icons.search_rounded, color: AppColors.primary),
+              suffixIcon: _searchController.text.isNotEmpty
+                  ? IconButton(
+                      icon: const Icon(Icons.clear_rounded, size: 20, color: Colors.grey),
+                      onPressed: () {
+                        _searchController.clear();
+                        _search('');
+                      },
+                    )
+                  : null,
               filled: true,
               fillColor: AppColors.background,
               border: OutlineInputBorder(
                 borderRadius: BorderRadius.circular(16),
                 borderSide: BorderSide.none,
               ),
-              contentPadding: const EdgeInsets.symmetric(horizontal: 16),
+              contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
             ),
           ),
-          const SizedBox(height: 16),
+          const SizedBox(height: 14),
           Expanded(
-            child: _isLoading
-                ? const Center(child: CircularProgressIndicator())
-                : _results.isEmpty && _searchController.text.isNotEmpty
-                ? const Center(child: Text('No shops found'))
-                : ListView.separated(
-                    itemCount: _results.length,
-                    separatorBuilder: (_, __) => const Divider(height: 1),
-                    itemBuilder: (context, index) {
-                      final shop = _results[index];
-                      return ListTile(
-                        leading: CircleAvatar(
-                          radius: 18,
-                          backgroundColor: AppColors.primaryContainer,
-                          child: Text(
-                            (shop['businessName'] as String? ?? '?')
-                                .substring(0, 1)
-                                .toUpperCase(),
-                            style: const TextStyle(
-                              color: AppColors.primary,
-                              fontWeight: FontWeight.bold,
-                            ),
-                          ),
-                        ),
-                        title: Text(shop['businessName'] ?? ''),
-                        subtitle: Text(
-                          '@${shop['username']}',
-                          style: const TextStyle(
-                            color: AppColors.primary,
-                            fontSize: 12,
-                          ),
-                        ),
-                        onTap: () {
-                          Navigator.pop(context);
-                          context.push('/shop/${shop['phone']}');
-                        },
-                      );
-                    },
-                  ),
+            child: query.isEmpty
+                ? _buildExploreGrid(allReels)
+                : _isLoading
+                    ? const Center(child: CircularProgressIndicator())
+                    : _buildSearchResults(_shopResults, filteredReels, query),
           ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildExploreGrid(List<ReelModel> reels) {
+    if (reels.isEmpty) {
+      return const Center(
+        child: Text(
+          'No reels available',
+          style: TextStyle(color: Colors.black45),
+        ),
+      );
+    }
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          children: const [
+            Icon(Icons.grid_view_rounded, size: 16, color: AppColors.primary),
+            SizedBox(width: 6),
+            Text(
+              'Explore Reels',
+              style: TextStyle(
+                fontSize: 14,
+                fontWeight: FontWeight.bold,
+                color: Colors.black87,
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 10),
+        Expanded(
+          child: GridView.builder(
+            gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+              crossAxisCount: 3,
+              childAspectRatio: 0.68,
+              crossAxisSpacing: 6,
+              mainAxisSpacing: 6,
+            ),
+            itemCount: reels.length,
+            itemBuilder: (context, index) {
+              final reel = reels[index];
+              return _ReelGridTile(
+                reel: reel,
+                onTap: () {
+                  Navigator.pop(context);
+                  widget.onSelectReel?.call(reel);
+                },
+              );
+            },
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildSearchResults(
+    List<Map<String, dynamic>> shops,
+    List<ReelModel> reels,
+    String query,
+  ) {
+    if (shops.isEmpty && reels.isEmpty) {
+      return Center(
+        child: Padding(
+          padding: const EdgeInsets.all(24),
+          child: Text(
+            'No accounts or reels matching "$query"',
+            textAlign: TextAlign.center,
+            style: const TextStyle(color: Colors.black45, fontSize: 14),
+          ),
+        ),
+      );
+    }
+
+    return SingleChildScrollView(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          if (shops.isNotEmpty) ...[
+            const Padding(
+              padding: EdgeInsets.symmetric(vertical: 6),
+              child: Text(
+                'Accounts & Shops',
+                style: TextStyle(
+                  fontWeight: FontWeight.bold,
+                  fontSize: 14,
+                  color: Colors.black87,
+                ),
+              ),
+            ),
+            ListView.separated(
+              shrinkWrap: true,
+              physics: const NeverScrollableScrollPhysics(),
+              itemCount: shops.length,
+              separatorBuilder: (context, index) => const Divider(height: 1),
+              itemBuilder: (context, index) {
+                final shop = shops[index];
+                return ListTile(
+                  dense: true,
+                  contentPadding: EdgeInsets.zero,
+                  leading: CircleAvatar(
+                    radius: 18,
+                    backgroundColor: AppColors.primaryContainer,
+                    child: Text(
+                      (shop['businessName'] as String? ?? '?')
+                          .substring(0, 1)
+                          .toUpperCase(),
+                      style: const TextStyle(
+                        color: AppColors.primary,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                  ),
+                  title: Text(
+                    shop['businessName'] ?? '',
+                    style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 14),
+                  ),
+                  subtitle: Text(
+                    '@${shop['username'] ?? ''}',
+                    style: const TextStyle(color: AppColors.primary, fontSize: 12),
+                  ),
+                  onTap: () {
+                    Navigator.pop(context);
+                    context.push('/shop/${shop['phone']}');
+                  },
+                );
+              },
+            ),
+            const SizedBox(height: 16),
+          ],
+          if (reels.isNotEmpty) ...[
+            const Padding(
+              padding: EdgeInsets.symmetric(vertical: 6),
+              child: Text(
+                'Matching Reels',
+                style: TextStyle(
+                  fontWeight: FontWeight.bold,
+                  fontSize: 14,
+                  color: Colors.black87,
+                ),
+              ),
+            ),
+            GridView.builder(
+              shrinkWrap: true,
+              physics: const NeverScrollableScrollPhysics(),
+              gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+                crossAxisCount: 3,
+                childAspectRatio: 0.68,
+                crossAxisSpacing: 6,
+                mainAxisSpacing: 6,
+              ),
+              itemCount: reels.length,
+              itemBuilder: (context, index) {
+                final reel = reels[index];
+                return _ReelGridTile(
+                  reel: reel,
+                  onTap: () {
+                    Navigator.pop(context);
+                    widget.onSelectReel?.call(reel);
+                  },
+                );
+              },
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+}
+
+class _ReelGridTile extends StatelessWidget {
+  final ReelModel reel;
+  final VoidCallback onTap;
+
+  const _ReelGridTile({
+    required this.reel,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final thumb = reel.thumbnailUrl ?? reel.linkedProductImageUrl;
+    return GestureDetector(
+      onTap: onTap,
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(12),
+        child: Container(
+          color: Colors.black87,
+          child: Stack(
+            fit: StackFit.expand,
+            children: [
+              if (thumb != null && thumb.isNotEmpty)
+                Image.network(
+                  thumb,
+                  fit: BoxFit.cover,
+                  errorBuilder: (context, error, stackTrace) => Container(
+                    color: Colors.grey.shade900,
+                    child: const Icon(Icons.play_circle_fill_rounded, color: Colors.white38, size: 28),
+                  ),
+                )
+              else
+                Container(
+                  color: Colors.grey.shade900,
+                  child: const Icon(Icons.play_circle_fill_rounded, color: Colors.white38, size: 28),
+                ),
+              Positioned.fill(
+                child: DecoratedBox(
+                  decoration: BoxDecoration(
+                    gradient: LinearGradient(
+                      colors: [
+                        Colors.transparent,
+                        Colors.black.withValues(alpha: 0.8),
+                      ],
+                      begin: Alignment.topCenter,
+                      end: Alignment.bottomCenter,
+                    ),
+                  ),
+                ),
+              ),
+              const Center(
+                child: Icon(
+                  Icons.play_circle_fill_rounded,
+                  color: Colors.white70,
+                  size: 28,
+                ),
+              ),
+              Positioned(
+                left: 6,
+                right: 6,
+                bottom: 6,
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    if (reel.title.isNotEmpty || reel.caption.isNotEmpty)
+                      Text(
+                        reel.title.isNotEmpty ? reel.title : reel.caption,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 10,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                    const SizedBox(height: 2),
+                    Row(
+                      children: [
+                        const Icon(Icons.remove_red_eye_outlined, color: Colors.white70, size: 10),
+                        const SizedBox(width: 3),
+                        Text(
+                          formatCount(reel.viewsCount),
+                          style: const TextStyle(
+                            color: Colors.white70,
+                            fontSize: 9,
+                            fontWeight: FontWeight.w500,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+// ── Report reason sheet ───────────────────────────────────────────────────────
+
+class _ReportReasonSheet extends StatelessWidget {
+  const _ReportReasonSheet();
+
+  static const _reasons = [
+    'Misleading product or price claim',
+    'Spam or off-platform contact scraping',
+    'Inappropriate or offensive content',
+    'Something else',
+  ];
+
+  @override
+  Widget build(BuildContext context) {
+    return SafeArea(
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Container(
+            margin: const EdgeInsets.only(top: 10, bottom: 4),
+            width: 40,
+            height: 4,
+            decoration: BoxDecoration(
+              color: Colors.grey.shade300,
+              borderRadius: BorderRadius.circular(2),
+            ),
+          ),
+          Padding(
+            padding: const EdgeInsets.symmetric(vertical: 12),
+            child: Text('Report this reel', style: AppTextStyles.heading3),
+          ),
+          for (final reason in _reasons)
+            ListTile(
+              title: Text(reason),
+              onTap: () => Navigator.pop(context, reason),
+            ),
+          const SizedBox(height: 8),
         ],
       ),
     );
