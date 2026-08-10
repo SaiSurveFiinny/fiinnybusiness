@@ -16,6 +16,10 @@
   --surface-raised: hsla(220, 33%, 96%, 0.9);
   --surface-border: hsla(220, 20%, 20%, 0.08);
   --input-bg: hsla(0, 0%, 100%, 0.95);
+  /* Opaque twin of --surface-base, for sticky table cells. The surface tokens
+     are translucent, so a pinned column using them lets the cells scrolling
+     underneath show through. */
+  --surface-solid: hsl(220, 33%, 99%);
 
   /* Text - High Contrast for Maturity */
   --text-primary: hsl(220, 45%, 12%);
@@ -44,6 +48,7 @@
   --surface-raised: hsla(220, 20%, 20%, 0.7);
   --surface-border: hsla(220, 20%, 40%, 0.2);
   --input-bg: hsla(220, 20%, 10%, 0.5);
+  --surface-solid: hsl(220, 20%, 13%);
 
   --text-primary: hsl(220, 10%, 98%);
   --text-secondary: hsl(220, 10%, 75%);
@@ -148,6 +153,18 @@ h3 {
 }
 
 /* Utilities */
+/* Pins a wide table's last column so row actions stay on screen instead of
+   sitting past the horizontal scroll. Apply to both the th and every td. */
+.sticky-actions-col {
+  position: sticky;
+  right: 0;
+  z-index: 2;
+  background: var(--surface-solid);
+  /* inset shadow, not border-left: borders on sticky cells are unreliable
+     under border-collapse: collapse. */
+  box-shadow: inset 1px 0 0 var(--surface-border);
+}
+
 .glass-panel {
   background: var(--surface-base);
   backdrop-filter: blur(var(--blur-radius));

@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
 import { ShoppingCart, FileText, Loader2, Search, Trash2, Pencil, X, Save } from 'lucide-react';
+import { useNavigate } from 'react-router-dom';
 import { query, onSnapshot, orderBy, updateDoc, serverTimestamp } from 'firebase/firestore';
 import { softDelete } from '../utils/softDelete';
 import { db } from '../firebase';
@@ -47,6 +48,7 @@ const PAYMENT_MODES = ['Cash', 'Credit', 'UPI', 'NEFT', 'RTGS', 'Cheque', 'Onlin
 
 export default function OrderHistoryPage() {
     const { tenantId, currentUser, userName, userRole } = useAuth();
+    const navigate = useNavigate();
     const [orders, setOrders] = useState<SalesOrder[]>([]);
     const [loading, setLoading] = useState(true);
     const [searchTerm, setSearchTerm] = useState('');
@@ -72,6 +74,11 @@ export default function OrderHistoryPage() {
         });
         return () => unsubscribe();
     }, [tenantId]);
+
+    // Reuses the POS reprint flow (POSPage reads ?reprintOrderId and prints the
+    // saved bill), the same route the Khata screen's Print button takes.
+    const reprintBill = (order: SalesOrder) =>
+        navigate(`/pos?reprintOrderId=${encodeURIComponent(order.id)}`);
 
     const openEdit = (order: SalesOrder) => {
         setEditOrder(order);
@@ -192,7 +199,7 @@ export default function OrderHistoryPage() {
                             <th style={{ padding: '1rem', fontWeight: 600, textAlign: 'right' }}>Total Amount</th>
                             <th style={{ padding: '1rem', fontWeight: 600 }}>Payment</th>
                             <th style={{ padding: '1rem', fontWeight: 600 }}>Status</th>
-                            <th style={{ padding: '1rem', fontWeight: 600, textAlign: 'center' }}>Actions</th>
+                            <th className="sticky-actions-col" style={{ padding: '1rem', fontWeight: 600, textAlign: 'center' }}>Actions</th>
                         </tr>
                     </thead>
                     <tbody>
@@ -231,7 +238,7 @@ export default function OrderHistoryPage() {
                                                 {isPaid ? 'Paid' : 'Pending'}
                                             </span>
                                         </td>
-                                        <td style={{ padding: '1rem' }}>
+                                        <td className="sticky-actions-col" style={{ padding: '1rem' }}>
                                             <div style={{ display: 'flex', gap: '0.4rem', justifyContent: 'center' }}>
                                                 <button
                                                     onClick={() => openEdit(order)}
@@ -248,6 +255,7 @@ export default function OrderHistoryPage() {
                                                     <Trash2 size={13} /> Delete
                                                 </button>
                                                 <button
+                                                    onClick={() => reprintBill(order)}
                                                     title="Reprint"
                                                     style={{ display: 'flex', alignItems: 'center', gap: '0.25rem', padding: '0.3rem 0.7rem', background: 'rgba(16,185,129,0.1)', color: '#10b981', border: '1px solid rgba(16,185,129,0.25)', borderRadius: '8px', cursor: 'pointer', fontSize: '0.8rem', fontWeight: 600, fontFamily: 'inherit' }}
                                                 >
