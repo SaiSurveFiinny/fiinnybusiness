@@ -1229,16 +1229,52 @@ export default function POSPage() {
     })();
 
     // Isolate print to the bill portal so the app sidebar/nav never appears.
-    const triggerPrint = () => {
+    //
+    // The teardown MUST wait for 'afterprint'. Browsers render the print
+    // preview asynchronously, so removing the class on the line after
+    // window.print() let the preview capture a page that no longer had the
+    // isolation applied — printing the entire app instead of just the bill.
+    // A lingering class is harmless if 'afterprint' never fires: every rule
+    // that uses it lives inside @media print, so it has no on-screen effect.
+    const triggerPrint = (onDone?: () => void) => {
         document.body.classList.add('pos-printing');
+        const cleanup = () => {
+            window.removeEventListener('afterprint', cleanup);
+            document.body.classList.remove('pos-printing');
+            onDone?.();
+        };
+        window.addEventListener('afterprint', cleanup);
         window.print();
-        document.body.classList.remove('pos-printing');
     };
 
-    const openReprint = (order: any) => {
-        setReprintOrder(order);
-        setTimeout(() => { triggerPrint(); setReprintOrder(null); }, 100);
-    };
+    const openReprint = (order: any) => setReprintOrder(order);
+
+    // Print a reprint only once the bill has actually painted into the portal,
+    // and clear it only once printing is done.
+    //
+    // `loading` is the critical gate. While it is true this component returns
+    // only a spinner, so the #pos-print-root portal below is never rendered —
+    // and body.pos-printing then hides every child of <body> with no print
+    // root to reveal, printing a completely blank page. Arriving from Khata
+    // (/pos?reprintOrderId=…) always hit that window, because the old code
+    // printed on a fixed 100ms timer while the page was still fetching.
+    useEffect(() => {
+        if (!reprintOrder || loading) return;
+        let cancelled = false;
+        let inner = 0;
+        // Two frames: one to commit the portal, one to let it paint.
+        const outer = requestAnimationFrame(() => {
+            inner = requestAnimationFrame(() => {
+                if (!cancelled) triggerPrint(() => setReprintOrder(null));
+            });
+        });
+        return () => {
+            cancelled = true;
+            cancelAnimationFrame(outer);
+            cancelAnimationFrame(inner);
+        };
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [reprintOrder, loading]);
 
     const duplicateBill = (order: any) => {
         if (billTabs.length >= 5) { showToast('Close a bill tab first — max 5 open at once.', 'error'); return; }

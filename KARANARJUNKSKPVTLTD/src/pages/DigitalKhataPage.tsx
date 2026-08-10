@@ -112,7 +112,9 @@ export default function DigitalKhataPage() {
     const [search, setSearch] = useState('');
     const [tab, setTab] = useState<FilterTab>('all');
     type SortCol = 'name' | 'outstanding' | 'total' | 'paid' | 'lastTs';
-    const [sortCol, setSortCol] = useState<SortCol>('outstanding');
+    // Default to most-recent-first: the rows people need are the ones just
+    // billed, not the largest balances. Both columns stay sortable.
+    const [sortCol, setSortCol] = useState<SortCol>('lastTs');
     const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc');
     // Which customer's ledger is open (master/detail within this page).
     const [selectedKey, setSelectedKey] = useState<string | null>(null);
