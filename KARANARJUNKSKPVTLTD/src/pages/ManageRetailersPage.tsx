@@ -7,15 +7,7 @@ import { db } from '../firebase';
 import { useAuth } from '../contexts/AuthContext';
 import { getTenantCollection, getTenantDoc } from '../utils/tenantPath';
 import { logAudit } from '../utils/auditLog';
-
-const MAHARASHTRA_DISTRICTS = [
-    'Ahmednagar', 'Akola', 'Amravati', 'Aurangabad', 'Beed', 'Bhandara', 'Buldhana',
-    'Chandrapur', 'Dhule', 'Gadchiroli', 'Gondia', 'Hingoli', 'Jalgaon', 'Jalna',
-    'Kolhapur', 'Latur', 'Mumbai City', 'Mumbai Suburban', 'Nagpur', 'Nanded',
-    'Nandurbar', 'Nashik', 'Osmanabad', 'Palghar', 'Parbhani', 'Pune', 'Raigad',
-    'Ratnagiri', 'Sangli', 'Satara', 'Sindhudurg', 'Solapur', 'Thane', 'Wardha',
-    'Washim', 'Yavatmal',
-];
+import { LOCATION_DATA, STATES } from '../utils/locationData';
 
 interface Retailer {
     id: string;
@@ -27,6 +19,7 @@ interface Retailer {
     district?: string;
     state?: string;
     country?: string;
+    fullAddress?: string;
     gstin?: string;
     licenseNumber?: string;
     portfolioSize: string;
@@ -42,18 +35,18 @@ export default function ManageRetailersPage() {
     const [editingRetailer, setEditingRetailer] = useState<Retailer | null>(null);
     const [isModalOpen, setIsModalOpen] = useState(false);
     const [isSaving, setIsSaving] = useState(false);
-    const [districtIsOther, setDistrictIsOther] = useState(false);
 
     // Form State for Editing
     const [formData, setFormData] = useState({
         name: '',
         number: '',
         email: '',
-        atPost: '',
-        taluka: '',
+        country: 'India',
+        state: 'Maharashtra',
         district: '',
-        state: '',
-        country: '',
+        taluka: '',
+        atPost: '',
+        fullAddress: '',
         gstin: '',
         licenseNumber: '',
         portfolioSize: ''
@@ -75,17 +68,16 @@ export default function ManageRetailersPage() {
 
     const handleEditClick = (retailer: Retailer) => {
         setEditingRetailer(retailer);
-        const d = retailer.district || '';
-        setDistrictIsOther(!!d && !MAHARASHTRA_DISTRICTS.includes(d));
         setFormData({
             name: retailer.name || '',
             number: retailer.number || '',
             email: retailer.email || '',
-            atPost: retailer.atPost || '',
-            taluka: retailer.taluka || '',
-            district: d,
-            state: retailer.state || 'Maharashtra',
             country: retailer.country || 'India',
+            state: retailer.state || 'Maharashtra',
+            district: retailer.district || '',
+            taluka: retailer.taluka || '',
+            atPost: retailer.atPost || '',
+            fullAddress: retailer.fullAddress || '',
             gstin: retailer.gstin || '',
             licenseNumber: retailer.licenseNumber || '',
             portfolioSize: retailer.portfolioSize || 'Small'
@@ -256,8 +248,33 @@ export default function ManageRetailersPage() {
                             </div>
 
                             <div>
-                                <label className="input-label">{t('onboarding.village')}</label>
-                                <input className="input-field" value={formData.atPost} onChange={e => setFormData({ ...formData, atPost: e.target.value })} />
+                                <label className="input-label">{t('onboarding.country')}</label>
+                                <input readOnly className="input-field" value={formData.country} style={{ opacity: 0.6, cursor: 'not-allowed' }} />
+                            </div>
+                            <div>
+                                <label className="input-label">{t('onboarding.state')}</label>
+                                <select
+                                    className="input-field"
+                                    value={formData.state}
+                                    onChange={e => setFormData({ ...formData, state: e.target.value, district: '' })}
+                                    style={{ cursor: 'pointer', appearance: 'auto' }}
+                                >
+                                    <option value="">{t('onboarding.select_state')}</option>
+                                    {STATES.map(s => <option key={s} value={s}>{s}</option>)}
+                                </select>
+                            </div>
+
+                            <div>
+                                <label className="input-label">{t('onboarding.district')}</label>
+                                <select
+                                    className="input-field"
+                                    value={formData.district}
+                                    onChange={e => setFormData({ ...formData, district: e.target.value })}
+                                    style={{ cursor: 'pointer', appearance: 'auto' }}
+                                >
+                                    <option value="">{t('onboarding.select_district')}</option>
+                                    {(LOCATION_DATA[formData.state] ?? []).map(d => <option key={d} value={d}>{d}</option>)}
+                                </select>
                             </div>
                             <div>
                                 <label className="input-label">{t('onboarding.taluka')}</label>
@@ -265,38 +282,20 @@ export default function ManageRetailersPage() {
                             </div>
 
                             <div>
-                                <label className="input-label">{t('onboarding.district')}</label>
-                                <select
-                                    className="input-field"
-                                    value={districtIsOther ? 'Other' : formData.district}
-                                    onChange={e => {
-                                        if (e.target.value === 'Other') {
-                                            setDistrictIsOther(true);
-                                            setFormData({ ...formData, district: '' });
-                                        } else {
-                                            setDistrictIsOther(false);
-                                            setFormData({ ...formData, district: e.target.value });
-                                        }
-                                    }}
-                                >
-                                    <option value="">Select district…</option>
-                                    {MAHARASHTRA_DISTRICTS.map(d => <option key={d} value={d}>{d}</option>)}
-                                    <option value="Other">Other</option>
-                                </select>
-                                {districtIsOther && (
-                                    <input
-                                        className="input-field"
-                                        placeholder="Enter district name"
-                                        value={formData.district}
-                                        onChange={e => setFormData({ ...formData, district: e.target.value })}
-                                        style={{ marginTop: '0.4rem' }}
-                                        autoFocus
-                                    />
-                                )}
+                                <label className="input-label">{t('onboarding.village')}</label>
+                                <input className="input-field" value={formData.atPost} onChange={e => setFormData({ ...formData, atPost: e.target.value })} />
                             </div>
-                            <div>
-                                <label className="input-label">{t('onboarding.state')}</label>
-                                <input className="input-field" value={formData.state} onChange={e => setFormData({ ...formData, state: e.target.value })} />
+
+                            <div style={{ gridColumn: 'span 2' }}>
+                                <label className="input-label">{t('onboarding.full_address')}</label>
+                                <textarea
+                                    className="input-field"
+                                    placeholder={t('onboarding.placeholder_full_address')}
+                                    value={formData.fullAddress}
+                                    onChange={e => setFormData({ ...formData, fullAddress: e.target.value })}
+                                    rows={2}
+                                    style={{ resize: 'vertical' }}
+                                />
                             </div>
 
                             <div>
