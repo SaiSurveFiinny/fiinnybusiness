@@ -1,6 +1,7 @@
 import { doc, onSnapshot } from 'firebase/firestore';
 import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
+import { motion, useReducedMotion } from 'motion/react';
 import { Icons } from '../Icons';
 import { initialAbout, type AboutInfo } from '../../data/mockData';
 import { db } from '../../lib/firebase';
@@ -17,6 +18,7 @@ import { useLanguage } from '../../context/LanguageContext';
  */
 export function SupportContactCTA() {
   const { t } = useLanguage();
+  const reduceMotion = useReducedMotion();
   const [about, setAbout] = useState<AboutInfo>(initialAbout);
 
   useEffect(() => {
@@ -39,20 +41,41 @@ export function SupportContactCTA() {
   }, []);
 
   return (
-    <section className="relative z-10 bg-primary py-20 md:py-28 overflow-hidden">
-      <div className="absolute -top-40 -left-40 w-[500px] h-[500px] bg-secondary/10 rounded-full blur-3xl pointer-events-none" />
-      <div className="absolute -bottom-40 -right-40 w-[500px] h-[500px] bg-secondary-container/10 rounded-full blur-3xl pointer-events-none" />
+    <section className="relative z-10 py-20 md:py-28 overflow-hidden">
+      {/* Interim asset: verified real Unsplash photo of farmers gathered together in a field near Nagpur, Maharashtra — a distinct photo from the same regional series already used elsewhere on this site. Should be replaced with licensed company photography before production. */}
+      <motion.img
+        src="https://images.unsplash.com/photo-1709532386360-bf8651a95368?auto=format&fit=crop&w=2000&q=80"
+        alt="Farmers gathered together in a field near Nagpur, Maharashtra"
+        className="absolute inset-0 w-full h-full object-cover object-center md:object-[center_35%]"
+        initial={reduceMotion ? undefined : { opacity: 0, scale: 1.04 }}
+        whileInView={reduceMotion ? undefined : { opacity: 1, scale: 1 }}
+        viewport={{ once: true, margin: '-100px' }}
+        transition={{ duration: 1 }}
+      />
+      <div className="absolute inset-0 bg-gradient-to-b from-primary/90 via-primary/80 to-primary/90" />
 
       <div className="max-w-6xl mx-auto px-8 relative z-10">
-        <div className="text-center mb-16 max-w-2xl mx-auto">
+        <motion.div
+          className="text-center mb-16 max-w-2xl mx-auto"
+          initial={reduceMotion ? undefined : { opacity: 0, y: 20 }}
+          whileInView={reduceMotion ? undefined : { opacity: 1, y: 0 }}
+          viewport={{ once: true, margin: '-100px' }}
+          transition={{ duration: 0.6, ease: 'easeOut' }}
+        >
           <h2 className="font-sans text-3xl md:text-4xl font-extrabold text-white mb-4 tracking-tight">
             {t.support_contact_cta_title}
           </h2>
           <p className="font-serif text-lg text-white/70">{t.support_contact_cta_subtitle}</p>
-        </div>
+        </motion.div>
 
         <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
-          <div className="bg-white/5 border border-white/10 backdrop-blur-md rounded-[2.5rem] p-8 md:p-10 flex flex-col">
+          <motion.div
+            className="bg-primary/40 border border-white/15 backdrop-blur-sm rounded-[2.5rem] p-8 md:p-10 flex flex-col"
+            initial={reduceMotion ? undefined : { opacity: 0, y: 20 }}
+            whileInView={reduceMotion ? undefined : { opacity: 1, y: 0 }}
+            viewport={{ once: true, margin: '-100px' }}
+            transition={{ duration: 0.6, ease: 'easeOut', delay: reduceMotion ? 0 : 0.1 }}
+          >
             <div className="w-14 h-14 rounded-2xl bg-white/10 flex items-center justify-center text-secondary-container mb-6">
               <Icons.MessageCircle className="w-7 h-7" />
             </div>
@@ -72,9 +95,15 @@ export function SupportContactCTA() {
                 {t.support_cta_track_ticket}
               </Link>
             </div>
-          </div>
+          </motion.div>
 
-          <div className="bg-white/5 border border-white/10 backdrop-blur-md rounded-[2.5rem] p-8 md:p-10 flex flex-col">
+          <motion.div
+            className="bg-primary/40 border border-white/15 backdrop-blur-sm rounded-[2.5rem] p-8 md:p-10 flex flex-col"
+            initial={reduceMotion ? undefined : { opacity: 0, y: 20 }}
+            whileInView={reduceMotion ? undefined : { opacity: 1, y: 0 }}
+            viewport={{ once: true, margin: '-100px' }}
+            transition={{ duration: 0.6, ease: 'easeOut', delay: reduceMotion ? 0 : 0.2 }}
+          >
             <div className="w-14 h-14 rounded-2xl bg-white/10 flex items-center justify-center text-secondary-container mb-6">
               <Icons.MapPin className="w-7 h-7" />
             </div>
@@ -94,7 +123,7 @@ export function SupportContactCTA() {
             >
               {t.contact_cta_button} <Icons.ArrowRight className="w-4 h-4" />
             </Link>
-          </div>
+          </motion.div>
         </div>
       </div>
     </section>

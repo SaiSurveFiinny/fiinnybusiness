@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { useRetailNetwork } from '../hooks/useRetailNetwork';
 import { RetailMap } from './RetailMap';
 import { RetailerList } from './RetailerList';
+import { useLanguage } from '../../../context/LanguageContext';
 
 /**
  * "Our Retail Network" homepage section — reads live, read-only data from
@@ -13,6 +14,7 @@ import { RetailerList } from './RetailerList';
  * homepage load for visitors who don't scroll this far.
  */
 export function RetailNetworkSection() {
+  const { t } = useLanguage();
   const sectionRef = useRef<HTMLElement>(null);
   const [isVisible, setIsVisible] = useState(false);
 
@@ -47,13 +49,13 @@ export function RetailNetworkSection() {
         <div className="flex flex-col md:flex-row md:items-end md:justify-between gap-6 mb-12">
           <div className="max-w-xl">
             <span className="font-sans text-xs font-bold uppercase tracking-[0.2em] text-secondary mb-4 block">
-              Where to Find Us
+              {t.retailnetwork_label}
             </span>
             <h2 className="font-sans text-3xl md:text-[40px] font-extrabold text-primary tracking-tight leading-[1.1] mb-4">
-              Our Retail Network
+              {t.retailnetwork_title}
             </h2>
             <p className="font-serif text-base text-on-surface-variant leading-relaxed">
-              Available through verified retail partners across Maharashtra.
+              {t.retailnetwork_subtitle}
             </p>
           </div>
 
@@ -61,12 +63,12 @@ export function RetailNetworkSection() {
             <div className="flex gap-8">
               <div>
                 <p className="text-2xl font-sans font-black text-primary">{retailers.length}</p>
-                <p className="text-[11px] uppercase tracking-widest font-bold text-slate-400 font-sans">Locations</p>
+                <p className="text-[11px] uppercase tracking-widest font-bold text-slate-400 font-sans">{t.retailnetwork_locations_label}</p>
               </div>
               <div>
                 <p className="text-2xl font-sans font-black text-primary">{states.size || 1}</p>
                 <p className="text-[11px] uppercase tracking-widest font-bold text-slate-400 font-sans">
-                  {states.size === 1 ? 'State' : 'States'}
+                  {states.size === 1 ? t.retailnetwork_state_label : t.retailnetwork_states_label}
                 </p>
               </div>
             </div>
@@ -74,22 +76,31 @@ export function RetailNetworkSection() {
         </div>
 
         {!isVisible || isLoading ? (
-          <div className="h-[420px] rounded-lg border border-slate-200 flex items-center justify-center">
+          <div className="h-[560px] sm:h-[600px] md:h-[480px] rounded-lg border border-slate-200 flex items-center justify-center">
             <p className="font-sans text-sm text-on-surface-variant">
-              {isVisible ? 'Loading retail network...' : ''}
+              {isVisible ? t.retailnetwork_loading : ''}
             </p>
           </div>
         ) : error || !manufacturer ? (
-          <div className="h-[420px] rounded-lg border border-slate-200 flex items-center justify-center">
-            <p className="font-sans text-sm text-on-surface-variant">{error ?? 'Retail network is temporarily unavailable.'}</p>
+          <div className="h-[560px] sm:h-[600px] md:h-[480px] rounded-lg border border-slate-200 flex items-center justify-center">
+            <p className="font-sans text-sm text-on-surface-variant">{error ?? t.retailnetwork_unavailable}</p>
           </div>
         ) : (
-          // Both grid children need min-h-0: without it, a grid item's default
-          // min-height (auto) lets its content — the 25-card list — grow the
-          // row past the container's fixed height instead of clipping and
-          // scrolling, which is exactly why the list previously showed only a
-          // few entries with no working scrollbar.
-          <div className="grid grid-cols-1 lg:grid-cols-[1.4fr_1fr] gap-0 rounded-lg overflow-hidden border border-slate-200 h-[420px] md:h-[480px]">
+          // Below `lg`, grid-cols-1 stacks map and list into two rows instead
+          // of two columns — but with no explicit row sizing, implicit rows
+          // default to `auto` (sized to content), which gives RetailMap's
+          // `h-full` nothing definite to resolve a percentage against, so it
+          // silently collapsed to 0px (not `hidden`/`display:none` — just an
+          // unresolvable height). Explicit row tracks below `lg` (a fixed
+          // height for the map row, the remainder for the list row) fix that
+          // by giving every row a definite height on every breakpoint, same
+          // as the `lg:` column layout already had via the shared container
+          // height. Both grid children still need min-h-0: without it, a
+          // grid item's default min-height (auto) lets its content — the
+          // 25-card list — grow the row past the container's fixed height
+          // instead of clipping and scrolling, which is exactly why the list
+          // previously showed only a few entries with no working scrollbar.
+          <div className="grid grid-cols-1 grid-rows-[280px_1fr] sm:grid-rows-[320px_1fr] lg:grid-rows-1 lg:grid-cols-[1.4fr_1fr] gap-0 rounded-lg overflow-hidden border border-slate-200 h-[560px] sm:h-[600px] md:h-[480px]">
             <div className="h-full min-h-0">
               <RetailMap
                 manufacturer={manufacturer}

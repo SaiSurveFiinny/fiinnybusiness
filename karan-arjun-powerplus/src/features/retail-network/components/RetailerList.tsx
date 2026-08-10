@@ -1,5 +1,6 @@
 import { useEffect, useRef } from 'react';
 import { RetailerCard } from './RetailerCard';
+import { useLanguage } from '../../../context/LanguageContext';
 import type { RetailerWithDistance } from '../types';
 
 interface RetailerListProps {
@@ -16,6 +17,7 @@ interface RetailerListProps {
  * StoreLocatorView.tsx ref-registry + scrollTo pattern.
  */
 export function RetailerList({ retailers, selectedRetailerId, onSelectRetailer }: RetailerListProps) {
+  const { t } = useLanguage();
   const listRef = useRef<HTMLDivElement>(null);
   const cardRefs = useRef<Map<string, HTMLDivElement>>(new Map());
 
@@ -32,7 +34,7 @@ export function RetailerList({ retailers, selectedRetailerId, onSelectRetailer }
   if (retailers.length === 0) {
     return (
       <div className="p-6 text-center">
-        <p className="text-sm text-on-surface-variant font-sans">No retail partners to display right now.</p>
+        <p className="text-sm text-on-surface-variant font-sans">{t.retailnetwork_empty}</p>
       </div>
     );
   }
