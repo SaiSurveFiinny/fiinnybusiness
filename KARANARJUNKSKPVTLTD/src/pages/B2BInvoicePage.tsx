@@ -176,7 +176,14 @@ export default function B2BInvoicePage() {
 
         const qProducts = query(getTenantCollection(db, tenantId, 'products'));
         const unsubProducts = onSnapshot(qProducts, snap => {
-            setProducts(snap.docs.map(d => ({ id: d.id, ...d.data() })) as Product[]);
+            // `name` is coerced to a string here rather than guarded at each use:
+            // the product search runs unconditionally on every render, so a single
+            // doc missing `name` throws on .toLowerCase() and the error boundary
+            // takes down the whole invoice screen.
+            setProducts(snap.docs.map(d => {
+                const data = d.data();
+                return { id: d.id, ...data, name: String(data.name ?? '') };
+            }) as Product[]);
         });
 
         const qRetailers = query(getTenantCollection(db, tenantId, 'retailers'));

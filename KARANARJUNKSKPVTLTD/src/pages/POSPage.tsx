@@ -325,6 +325,9 @@ export default function POSPage() {
                 return {
                     id: doc.id,
                     ...data,
+                    // Same reason as B2BInvoicePage: filteredProducts runs on every
+                    // render, so a doc with no `name` would crash the POS screen.
+                    name: String(data.name ?? ''),
                     quantity: data.quantity ?? (data as any).stock ?? 0,
                     baseUnit: data.baseUnit ?? data.unit ?? 'pcs',
                     loosePieces: data.loosePieces ?? 0,
@@ -1638,7 +1641,7 @@ export default function POSPage() {
                                                     ['GST%', 'center', '3px 1px'],
                                                     ['Amount', 'right', '3px 3px'],
                                                 ] as const).map(([label, align, pad]) => (
-                                                    <th key={label} style={{ border: '1px solid #ccc', padding: pad, textAlign: align as const, fontWeight: 700, fontSize: '0.74rem', overflow: 'hidden', whiteSpace: 'nowrap' }}>
+                                                    <th key={label} style={{ border: '1px solid #ccc', padding: pad, textAlign: align, fontWeight: 700, fontSize: '0.74rem', overflow: 'hidden', whiteSpace: 'nowrap' }}>
                                                         {label}
                                                     </th>
                                                 ))}
