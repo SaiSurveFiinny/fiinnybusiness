@@ -64,7 +64,9 @@ const MODULES_ALL = 'All Modules';
 
 export default function RecentlyDeletedPage() {
     const { tenantId, currentUser, userName, userRole, userRole: role } = useAuth();
-    const isAdmin = role === 'owner' || role === 'admin';
+    // 'admin' is the only role with trash-management rights — UserRole has no
+    // 'owner' member, so the old `role === 'owner'` clause was always false.
+    const isAdmin = role === 'admin';
 
     const [records, setRecords] = useState<DeletedRecord[]>([]);
     const [loading, setLoading] = useState(true);

@@ -9,6 +9,7 @@ import { getTenantCollection, getTenantDoc } from '../utils/tenantPath';
 interface SalesOrder {
     id: string;
     orderNumber: string;
+    billNumber?: string;
     retailerName: string;
     phoneNumber?: string;
     subtotal?: number;

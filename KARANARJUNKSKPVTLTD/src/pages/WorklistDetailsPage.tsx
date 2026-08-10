@@ -4,7 +4,7 @@ import { useParams, useNavigate } from 'react-router-dom';
 import { ArrowLeft, User, Phone, MapPin, Calendar, MessageCircle, FileText, CheckSquare, ShoppingCart, Loader2, Trash2, Mic, TrendingUp, X, AlertTriangle, FilePen, Printer, PlusCircle, Square, Wallet, Pencil, Paperclip, Link2, Download, Package, Search } from 'lucide-react';
 import { ResponsiveContainer, BarChart, Bar, XAxis, YAxis, Tooltip, CartesianGrid, PieChart, Pie, Cell } from 'recharts';
 import { useTranslation } from 'react-i18next';
-import { getDoc, getDocs, query, orderBy, onSnapshot, addDoc, serverTimestamp, updateDoc, where, writeBatch, arrayUnion, arrayRemove, doc as fsDoc, collection } from 'firebase/firestore';
+import { getDoc, getDocs, query, orderBy, onSnapshot, addDoc, serverTimestamp, deleteDoc, updateDoc, where, writeBatch, arrayUnion, arrayRemove, doc as fsDoc, collection } from 'firebase/firestore';
 import { softDelete } from '../utils/softDelete';
 import { generateRetailerStatement } from '../utils/statementGenerator';
 import { generatePaymentId } from '../utils/paymentIdGenerator';
