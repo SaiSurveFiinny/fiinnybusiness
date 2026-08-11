@@ -433,6 +433,8 @@ export default function POSPage() {
                 district: searchParams.get('district') || '',
                 retailerId: searchParams.get('retailerId') || undefined,
             });
+            // New Bill from Khata prefills the buyer — show the form it filled.
+            setPosModuleTab('billing');
             return;
         }
 
@@ -473,6 +475,12 @@ export default function POSPage() {
                 });
                 setModeOfPayment(order.paymentMethod === 'Khata' ? 'Credit' : 'Cash');
                 setEditingOrder(order);
+                // Khata and Order History are tabs of THIS page, so their Edit
+                // buttons only change the query string — without this the bill
+                // loads into the billing tab while the user keeps staring at the
+                // tab they clicked from, and Edit looks like a dead button.
+                setPosModuleTab('billing');
+                showToast(`Editing ${order.orderNumber || 'bill'} — saving issues a corrected bill.`, 'success');
             } catch (err) {
                 console.error('Failed to load bill from Khata:', err);
                 showToast('Could not open that bill.', 'error');

@@ -339,16 +339,34 @@ select.input-field option {
   }
 }
 
+/* NO animation-fill-mode: forwards on any of these.
+ *
+ * All three keyframes end on a transform (translateY(0) / translateX(0) /
+ * scale(1)). With `forwards` the browser RETAINS that final transform for the
+ * life of the element, so getComputedStyle reports matrix(1,0,0,1,0,0) rather
+ * than `none`. Any transform other than `none` makes the element the
+ * containing block for its position:fixed descendants — so every modal inside
+ * a .animate-fade-in page (53 of them) was being positioned against the page
+ * wrapper instead of the viewport. On a long page that centred the modal
+ * thousands of pixels below the fold: it opened, but nobody could see it, so
+ * the button looked dead.
+ *
+ * Dropping `forwards` is safe because each `to` state is identical to the
+ * element's natural base state (opacity 1, no transform) — nothing moves when
+ * the animation stops applying, and the retained transform becomes `none`.
+ * Ending the keyframe on `transform: none` does NOT work: with `forwards` the
+ * computed value is still an identity matrix. Verified both ways in-browser.
+ */
 .animate-fade-in {
-  animation: fadeIn 0.5s ease-out forwards;
+  animation: fadeIn 0.5s ease-out;
 }
 
 .animate-slide-in {
-  animation: slideInRight 0.5s ease-out forwards;
+  animation: slideInRight 0.5s ease-out;
 }
 
 .animate-scale-up {
-  animation: scaleUp 0.4s ease-out forwards;
+  animation: scaleUp 0.4s ease-out;
 }
 
 .animate-pulse:hover {
