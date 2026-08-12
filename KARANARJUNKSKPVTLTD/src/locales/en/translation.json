@@ -120,7 +120,11 @@
                        "placeholder_taluka":  "e.g. Rahuri",
                        "placeholder_district":  "e.g. Ahmednagar",
                        "placeholder_gstin":  "27XXXXX...",
-                       "placeholder_license":  "Lic/2024/..."
+                       "placeholder_license":  "Lic/2024/...",
+                       "full_address":  "Full Address (Optional)",
+                       "placeholder_full_address":  "Street, landmark, etc.",
+                       "select_state":  "Select state…",
+                       "select_district":  "Select district…"
                    },
     "manage_retailers":  {
                              "title":  "Manage Retailers",

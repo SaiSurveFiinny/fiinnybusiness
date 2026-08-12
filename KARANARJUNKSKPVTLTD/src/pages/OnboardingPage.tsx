@@ -5,17 +5,19 @@ import { addDoc, serverTimestamp } from 'firebase/firestore';
 import { db } from '../firebase';
 import { useAuth } from '../contexts/AuthContext';
 import { getTenantCollection } from '../utils/tenantPath';
+import { LOCATION_DATA, STATES } from '../utils/locationData';
 
 export default function OnboardingPage() {
     const [formData, setFormData] = useState({
         name: '',
         number: '',
         email: '',
-        atPost: '',
-        taluka: '',
-        district: '',
-        state: 'Maharashtra',
         country: 'India',
+        state: 'Maharashtra',
+        district: '',
+        taluka: '',
+        atPost: '',
+        fullAddress: '',
         gstin: '',
         licenseNumber: '',
         portfolioSize: 'Small'
@@ -50,9 +52,9 @@ export default function OnboardingPage() {
             setSubmitStatus('success');
             setFormData({
                 name: '', number: '', email: '',
-                atPost: '', taluka: '', district: '',
-                state: 'Maharashtra', country: 'India',
-                gstin: '', licenseNumber: '',
+                country: 'India', state: 'Maharashtra',
+                district: '', taluka: '', atPost: '',
+                fullAddress: '', gstin: '', licenseNumber: '',
                 portfolioSize: 'Small'
             });
         } catch (err) {
@@ -118,28 +120,66 @@ export default function OnboardingPage() {
 
                     <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem' }}>
                         <div className="input-group">
-                            <label htmlFor="atPost">{t('onboarding.village')}</label>
-                            <input required type="text" id="atPost" name="atPost" className="input-field" placeholder={t('onboarding.placeholder_village')} value={formData.atPost} onChange={handleChange} />
-                        </div>
-                        <div className="input-group">
-                            <label htmlFor="taluka">{t('onboarding.taluka')}</label>
-                            <input required type="text" id="taluka" name="taluka" className="input-field" placeholder={t('onboarding.placeholder_taluka')} value={formData.taluka} onChange={handleChange} />
-                        </div>
-                    </div>
-
-                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '1rem' }}>
-                        <div className="input-group">
-                            <label htmlFor="district">{t('onboarding.district')}</label>
-                            <input required type="text" id="district" name="district" className="input-field" placeholder={t('onboarding.placeholder_district')} value={formData.district} onChange={handleChange} />
+                            <label htmlFor="country">{t('onboarding.country')}</label>
+                            <input readOnly type="text" id="country" name="country" className="input-field" value={formData.country} style={{ opacity: 0.6, cursor: 'not-allowed' }} />
                         </div>
                         <div className="input-group">
                             <label htmlFor="state">{t('onboarding.state')}</label>
-                            <input required type="text" id="state" name="state" className="input-field" value={formData.state} onChange={handleChange} />
+                            <select
+                                id="state"
+                                name="state"
+                                className="input-field"
+                                value={formData.state}
+                                onChange={e => setFormData(prev => ({ ...prev, state: e.target.value, district: '' }))}
+                                style={{ cursor: 'pointer', appearance: 'auto' }}
+                            >
+                                <option value="">{t('onboarding.select_state')}</option>
+                                {STATES.map(s => <option key={s} value={s}>{s}</option>)}
+                            </select>
+                        </div>
+                    </div>
+
+                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem' }}>
+                        <div className="input-group">
+                            <label htmlFor="district">{t('onboarding.district')}</label>
+                            <select
+                                required
+                                id="district"
+                                name="district"
+                                className="input-field"
+                                value={formData.district}
+                                onChange={handleChange}
+                                style={{ cursor: 'pointer', appearance: 'auto' }}
+                            >
+                                <option value="">{t('onboarding.select_district')}</option>
+                                {(LOCATION_DATA[formData.state] ?? []).map(d => <option key={d} value={d}>{d}</option>)}
+                            </select>
                         </div>
                         <div className="input-group">
-                            <label htmlFor="country">{t('onboarding.country')}</label>
-                            <input required type="text" id="country" name="country" className="input-field" value={formData.country} onChange={handleChange} />
+                            <label htmlFor="taluka">{t('onboarding.taluka')}</label>
+                            <input type="text" id="taluka" name="taluka" className="input-field" placeholder={t('onboarding.placeholder_taluka')} value={formData.taluka} onChange={handleChange} />
                         </div>
+                    </div>
+
+                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem' }}>
+                        <div className="input-group">
+                            <label htmlFor="atPost">{t('onboarding.village')}</label>
+                            <input type="text" id="atPost" name="atPost" className="input-field" placeholder={t('onboarding.placeholder_village')} value={formData.atPost} onChange={handleChange} />
+                        </div>
+                    </div>
+
+                    <div className="input-group">
+                        <label htmlFor="fullAddress">{t('onboarding.full_address')}</label>
+                        <textarea
+                            id="fullAddress"
+                            name="fullAddress"
+                            className="input-field"
+                            placeholder={t('onboarding.placeholder_full_address')}
+                            value={formData.fullAddress}
+                            onChange={e => setFormData(prev => ({ ...prev, fullAddress: e.target.value }))}
+                            rows={2}
+                            style={{ resize: 'vertical' }}
+                        />
                     </div>
 
                     <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem' }}>
