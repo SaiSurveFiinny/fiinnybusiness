@@ -9,6 +9,7 @@ import {
 import { prepareStockDeduction, recordStockMovements, formatLowStockAlert } from '../utils/stockDeduction';
 import { db } from '../firebase';
 import { useAuth } from '../contexts/AuthContext';
+import { useToast } from '../contexts/ToastContext';
 import { getTenantCollection, getTenantDoc } from '../utils/tenantPath';
 import { fetchInvoiceBranding } from '../services/invoiceTemplateService';
 import { getAllConfiguredLicenses } from '../utils/invoiceCategories';
@@ -110,6 +111,7 @@ function numberToWords(num: number): string {
 // ─────────────────────────────────────────────
 export default function B2BInvoicePage() {
     const { tenantId, tenantData, currentUser, userName, userRole } = useAuth();
+    const { showToast } = useToast();
     const [searchParams] = useSearchParams();
     const navigate = useNavigate();
     const prefilledRetailerId = searchParams.get('retailerId') || '';
@@ -643,60 +645,79 @@ ${styles}
                 }
             }
 
-            // If editing and the order previously belonged to a different retailer
-            // (or had no retailer), reverse its contribution there first.
-            const prevRetailerId = isEditing ? (existingOrder.retailerId || '') : '';
-            if (isEditing && prevRetailerId && prevRetailerId !== header.retailerId) {
-                const prevRetailerRef = getTenantDoc(db, tenantId, 'retailers', prevRetailerId);
-                const prevRetailerSnap = await getDoc(prevRetailerRef);
-                if (prevRetailerSnap.exists()) {
-                    const rData = prevRetailerSnap.data();
-                    const wasPaid = existingOrder.modeOfPayment === 'Cash';
-                    const prevNetAmount = Number(existingOrder.netAmount || existingOrder.grandTotal || 0);
-                    await updateDoc(prevRetailerRef, {
-                        totalSales: Math.max(0, Number(rData.totalSales || 0) - prevNetAmount),
-                        outstandingAmount: Math.max(0, Number(rData.outstandingAmount || 0) - (wasPaid ? 0 : prevNetAmount)),
-                        totalPaid: Math.max(0, Number(rData.totalPaid || 0) - (wasPaid ? prevNetAmount : 0)),
-                    });
+            // ── The invoice itself is now committed. ──────────────────────────
+            // Confirm it immediately, on BOTH the Save and Save & Print paths.
+            // Previously only the non-print path alerted, so Save & Print saved
+            // silently and there was no way to tell it had worked.
+            showToast(`Invoice ${invNo} saved.`, 'success');
+
+            // Everything below is bookkeeping ON TOP of a saved invoice. It runs
+            // in its own try/catch so a failure here can never surface as
+            // "Error saving invoice" — that message sent people back to press
+            // Save again, which burns a fresh number off the counter and writes
+            // a SECOND invoice for the same sale, double-applying these totals.
+            try {
+                // If editing and the order previously belonged to a different retailer
+                // (or had no retailer), reverse its contribution there first.
+                const prevRetailerId = isEditing ? (existingOrder.retailerId || '') : '';
+                if (isEditing && prevRetailerId && prevRetailerId !== header.retailerId) {
+                    const prevRetailerRef = getTenantDoc(db, tenantId, 'retailers', prevRetailerId);
+                    const prevRetailerSnap = await getDoc(prevRetailerRef);
+                    if (prevRetailerSnap.exists()) {
+                        const rData = prevRetailerSnap.data();
+                        const wasPaid = existingOrder.modeOfPayment === 'Cash';
+                        const prevNetAmount = Number(existingOrder.netAmount || existingOrder.grandTotal || 0);
+                        await updateDoc(prevRetailerRef, {
+                            totalSales: Math.max(0, Number(rData.totalSales || 0) - prevNetAmount),
+                            outstandingAmount: Math.max(0, Number(rData.outstandingAmount || 0) - (wasPaid ? 0 : prevNetAmount)),
+                            totalPaid: Math.max(0, Number(rData.totalPaid || 0) - (wasPaid ? prevNetAmount : 0)),
+                        });
+                    }
                 }
-            }
 
-            // Apply this invoice's contribution to the (current) retailer's financials.
-            // On edit against the SAME retailer, reverse the order's previous contribution
-            // before applying the new one so totals reflect the delta, not a double-count.
-            if (header.retailerId) {
-                const retailerRef = getTenantDoc(db, tenantId, 'retailers', header.retailerId);
-                const retailerSnap = await getDoc(retailerRef);
-                if (retailerSnap.exists()) {
-                    const rData = retailerSnap.data();
-                    const currentSales = Number(rData.totalSales || 0);
-                    const currentOutstanding = Number(rData.outstandingAmount || 0);
-                    const currentTotalPaid = Number(rData.totalPaid || 0);
+                // Apply this invoice's contribution to the (current) retailer's financials.
+                // On edit against the SAME retailer, reverse the order's previous contribution
+                // before applying the new one so totals reflect the delta, not a double-count.
+                if (header.retailerId) {
+                    const retailerRef = getTenantDoc(db, tenantId, 'retailers', header.retailerId);
+                    const retailerSnap = await getDoc(retailerRef);
+                    if (retailerSnap.exists()) {
+                        const rData = retailerSnap.data();
+                        const currentSales = Number(rData.totalSales || 0);
+                        const currentOutstanding = Number(rData.outstandingAmount || 0);
+                        const currentTotalPaid = Number(rData.totalPaid || 0);
 
-                    const sameRetailer = isEditing && prevRetailerId === header.retailerId;
-                    const wasPaid = sameRetailer && existingOrder.modeOfPayment === 'Cash';
-                    const prevNetAmount = sameRetailer ? Number(existingOrder.netAmount || existingOrder.grandTotal || 0) : 0;
+                        const sameRetailer = isEditing && prevRetailerId === header.retailerId;
+                        const wasPaid = sameRetailer && existingOrder.modeOfPayment === 'Cash';
+                        const prevNetAmount = sameRetailer ? Number(existingOrder.netAmount || existingOrder.grandTotal || 0) : 0;
 
-                    const salesAfterReversal = currentSales - prevNetAmount;
-                    const outstandingAfterReversal = currentOutstanding - (wasPaid ? 0 : prevNetAmount);
-                    const totalPaidAfterReversal = currentTotalPaid - (wasPaid ? prevNetAmount : 0);
+                        const salesAfterReversal = currentSales - prevNetAmount;
+                        const outstandingAfterReversal = currentOutstanding - (wasPaid ? 0 : prevNetAmount);
+                        const totalPaidAfterReversal = currentTotalPaid - (wasPaid ? prevNetAmount : 0);
 
-                    const isPaid = header.modeOfPayment === 'Cash';
-                    const newSales = salesAfterReversal + netAmount;
-                    const newOutstanding = outstandingAfterReversal + (isPaid ? 0 : netAmount);
-                    const newTotalPaid = totalPaidAfterReversal + (isPaid ? netAmount : 0);
+                        const isPaid = header.modeOfPayment === 'Cash';
+                        const newSales = salesAfterReversal + netAmount;
+                        const newOutstanding = outstandingAfterReversal + (isPaid ? 0 : netAmount);
+                        const newTotalPaid = totalPaidAfterReversal + (isPaid ? netAmount : 0);
 
-                    await updateDoc(retailerRef, {
-                        totalSales: Math.max(0, newSales),
-                        outstandingAmount: Math.max(0, newOutstanding),
-                        totalPaid: Math.max(0, newTotalPaid),
-                        lastOrderedAt: serverTimestamp()
-                    });
+                        await updateDoc(retailerRef, {
+                            totalSales: Math.max(0, newSales),
+                            outstandingAmount: Math.max(0, newOutstanding),
+                            totalPaid: Math.max(0, newTotalPaid),
+                            lastOrderedAt: serverTimestamp()
+                        });
+                    }
                 }
+            } catch (bookkeepingErr) {
+                console.error('Retailer totals update failed (invoice already saved):', bookkeepingErr);
+                showToast(
+                    `Invoice ${invNo} saved, but the retailer's balance could not be updated. Do NOT save again — reopen the retailer to refresh their totals.`,
+                    'error',
+                    9000,
+                );
             }
 
             if (!isPrint) {
-                alert(`Invoice ${invNo} saved!`);
                 if (isEditing) {
                     navigate(header.retailerId ? `/worklist/${header.retailerId}` : '/worklist');
                 } else {
@@ -718,8 +739,11 @@ ${styles}
                 return;
             }
         } catch (e) {
+            // Only the invoice write itself reaches here now — the retailer
+            // bookkeeping has its own handler — so "nothing was saved" is
+            // accurate, and retrying is genuinely the right thing to do.
             console.error(e);
-            alert('Error saving invoice. Please try again.');
+            alert('Error saving invoice — nothing was saved. Please try again.');
         }
         setIsProcessing(false);
     };
