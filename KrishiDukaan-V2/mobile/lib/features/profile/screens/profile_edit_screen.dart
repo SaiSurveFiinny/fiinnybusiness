@@ -1,13 +1,19 @@
+import 'dart:io';
+
+import 'package:cached_network_image/cached_network_image.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
+import 'package:image_picker/image_picker.dart';
 import '../../../core/constants/app_colors.dart';
 import '../../../core/constants/app_text_styles.dart';
 import '../../../core/providers/user_provider.dart';
 import '../../../core/widgets/loading_overlay.dart';
 import '../../auth/data/auth_repository.dart';
+import '../../dashboard/data/dashboard_repository.dart';
+import '../../marketplace/providers/marketplace_provider.dart';
 
 /// Editable profile / "complete your profile" screen.
 ///
@@ -44,6 +50,11 @@ class _ProfileEditScreenState extends ConsumerState<ProfileEditScreen> {
   bool _prefilled = false;
   String? _error;
 
+  // Shop/profile logo — picked file shown immediately, uploaded on Save.
+  File? _logoFile;
+  String? _existingLogoUrl;
+  bool _uploadingLogo = false;
+
   @override
   void dispose() {
     _nameCtrl.dispose();
@@ -78,11 +89,55 @@ class _ProfileEditScreenState extends ConsumerState<ProfileEditScreen> {
       if (mapsUrl != null && mapsUrl.isNotEmpty && _mapsUrlCtrl.text.isEmpty) {
         _mapsUrlCtrl.text = mapsUrl;
       }
+      final logo = d['logo'] as String?;
+      if (logo != null && logo.isNotEmpty && _existingLogoUrl == null) {
+        setState(() => _existingLogoUrl = logo);
+      }
     } catch (_) {}
   }
 
   String? _required(String? v) =>
       (v == null || v.trim().isEmpty) ? 'Required' : null;
+
+  Future<void> _pickLogo() async {
+    final picker = ImagePicker();
+    final source = await showDialog<ImageSource>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Select image source'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, ImageSource.camera),
+            child: const Text('Camera'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, ImageSource.gallery),
+            child: const Text('Gallery'),
+          ),
+        ],
+      ),
+    );
+    if (source == null) return;
+    final xFile = await picker.pickImage(
+      source: source,
+      maxWidth: 1024,
+      imageQuality: 85,
+    );
+    if (xFile == null || !mounted) return;
+    final file = File(xFile.path);
+    // Matches storage.rules' 5 MB cap on profile-images/** — fail fast with a
+    // clear message instead of letting the upload get rejected server-side.
+    final bytes = await file.length();
+    if (bytes > 5 * 1024 * 1024) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Image must be less than 5MB')),
+        );
+      }
+      return;
+    }
+    setState(() => _logoFile = file);
+  }
 
   Future<void> _save(String role, String phone) async {
     if (!_formKey.currentState!.validate()) return;
@@ -93,6 +148,17 @@ class _ProfileEditScreenState extends ConsumerState<ProfileEditScreen> {
     });
 
     try {
+      String? logoUrl = _existingLogoUrl;
+      if (_logoFile != null) {
+        setState(() => _uploadingLogo = true);
+        try {
+          logoUrl =
+              await DashboardRepository().uploadProfileLogo(_logoFile!, phone);
+        } finally {
+          if (mounted) setState(() => _uploadingLogo = false);
+        }
+      }
+
       await _repo.saveProfile(
         phone: phone,
         role: role,
@@ -105,9 +171,13 @@ class _ProfileEditScreenState extends ConsumerState<ProfileEditScreen> {
         pincode: _pincodeCtrl.text.trim(),
         gstin: _gstinCtrl.text.trim().toUpperCase(),
         googleMapsUrl: _mapsUrlCtrl.text.trim(),
+        logoUrl: logoUrl,
       );
 
       ref.invalidate(currentUserProvider);
+      // The avatar on Profile reads retailerProfileProvider, which is keyed
+      // by phone and won't otherwise know the logo doc just changed.
+      ref.invalidate(retailerProfileProvider(phone));
       if (!mounted) return;
 
       ScaffoldMessenger.of(context).showSnackBar(
@@ -161,8 +231,10 @@ class _ProfileEditScreenState extends ConsumerState<ProfileEditScreen> {
           _pincodeCtrl.text = user.pincode ?? '';
           _gstinCtrl.text = user.gstin ?? '';
           _mapsUrlCtrl.text = user.googleMapsUrl ?? '';
-          if (user.isSeller &&
-              (_gstinCtrl.text.isEmpty || _mapsUrlCtrl.text.isEmpty)) {
+          // Always fetch for sellers — not just when gstin/mapsUrl are
+          // empty — since this is also the only place the existing logo
+          // (never mirrored to users/{phone}) can be prefilled from.
+          if (user.isSeller) {
             _prefillFromRoleDoc(user.role, user.phone);
           }
           _prefilled = true;
@@ -201,6 +273,20 @@ class _ProfileEditScreenState extends ConsumerState<ProfileEditScreen> {
                               .copyWith(color: AppColors.onSurfaceVariant),
                         ),
                       ),
+
+                    // Shop/profile logo — sellers only, same field
+                    // (retailers/manufacturers/{phone}.logo, mirrored to
+                    // profiles/{phone}.logo) the web dashboard's logo
+                    // uploader sets.
+                    if (isSeller) ...[
+                      Center(child: _LogoPicker(
+                        file: _logoFile,
+                        existingUrl: _existingLogoUrl,
+                        uploading: _uploadingLogo,
+                        onTap: _pickLogo,
+                      )),
+                      const SizedBox(height: 24),
+                    ],
 
                     Text('Your Details', style: AppTextStyles.heading3),
                     const SizedBox(height: 12),
@@ -392,6 +478,77 @@ class _ProfileEditScreenState extends ConsumerState<ProfileEditScreen> {
           borderRadius: BorderRadius.circular(12),
           borderSide: const BorderSide(color: AppColors.primary, width: 2),
         ),
+      ),
+    );
+  }
+}
+
+/// Tappable circular avatar with a camera badge — shows the freshly-picked
+/// file if there is one, else the existing logo URL, else an icon
+/// placeholder. Upload itself happens on Save (see `_save`), not on pick, so
+/// there's a single write path and no orphaned-then-abandoned edit state.
+class _LogoPicker extends StatelessWidget {
+  final File? file;
+  final String? existingUrl;
+  final bool uploading;
+  final VoidCallback onTap;
+  const _LogoPicker({
+    required this.file,
+    required this.existingUrl,
+    required this.uploading,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final hasExisting = existingUrl != null && existingUrl!.isNotEmpty;
+
+    return GestureDetector(
+      onTap: uploading ? null : onTap,
+      child: Stack(
+        children: [
+          CircleAvatar(
+            radius: 44,
+            backgroundColor: AppColors.primaryContainer,
+            backgroundImage: file != null
+                ? FileImage(file!)
+                : hasExisting
+                    ? CachedNetworkImageProvider(existingUrl!) as ImageProvider
+                    : null,
+            child: (file == null && !hasExisting)
+                ? const Icon(Icons.storefront_outlined,
+                    size: 36, color: AppColors.primary)
+                : null,
+          ),
+          if (uploading)
+            const Positioned.fill(
+              child: CircleAvatar(
+                backgroundColor: Colors.black38,
+                child: SizedBox(
+                  width: 24,
+                  height: 24,
+                  child: CircularProgressIndicator(
+                    strokeWidth: 2, color: Colors.white),
+                ),
+              ),
+            )
+          else
+            Positioned(
+              right: 0,
+              bottom: 0,
+              child: Container(
+                padding: const EdgeInsets.all(6),
+                decoration: const BoxDecoration(
+                  color: AppColors.primary,
+                  shape: BoxShape.circle,
+                  border: Border.fromBorderSide(
+                      BorderSide(color: Colors.white, width: 2)),
+                ),
+                child: const Icon(Icons.camera_alt,
+                    size: 16, color: Colors.white),
+              ),
+            ),
+        ],
       ),
     );
   }

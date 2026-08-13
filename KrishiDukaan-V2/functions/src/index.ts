@@ -310,11 +310,57 @@ export const decrementStockOnOrder = onDocumentCreated(
  * Runs daily. Finds users whose subscription has expired (expiryDate < now)
  * and flips isPaid=false so canAccessDashboard correctly returns false.
  * Also marks the subscription doc as expired.
+ *
+ * Also promotes future-dated admin-assigned subscriptions (subscriptionStatus
+ * "scheduled", written by /api/admin/subscriptions/assign when the admin
+ * picks a future start date) to "active" once startDate has arrived, and
+ * flips isPaid=true at that point — access is intentionally NOT granted at
+ * creation time for a scheduled subscription, only once it actually starts.
  */
 export const expireSubscriptions = onSchedule(
   { schedule: "every 24 hours", timeZone: "Asia/Kolkata" },
   async () => {
     const now = admin.firestore.Timestamp.now();
+
+    // ── Promote scheduled subscriptions whose start date has arrived ───────
+    // Single-field equality query (no composite index needed — scheduled
+    // subscriptions are rare, admin-assigned only, so filtering startDate
+    // in code instead of a second range clause is cheap and avoids needing
+    // a new Firestore composite index deploy for this one query).
+    const scheduledSnap = await db
+      .collection("subscriptions")
+      .where("subscriptionStatus", "==", "scheduled")
+      .get();
+    const dueDocs = scheduledSnap.docs.filter((d) => {
+      const startDate = d.data().startDate as FirebaseFirestore.Timestamp | undefined;
+      return !!startDate && startDate.toMillis() <= now.toMillis();
+    });
+
+    if (dueDocs.length > 0) {
+      const promoteBatch = db.batch();
+      for (const subDoc of dueDocs) {
+        const d = subDoc.data() as Record<string, unknown>;
+        promoteBatch.update(subDoc.ref, {
+          subscriptionStatus: "active",
+          updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+        });
+        const ownerPhone = String(d.ownerPhone ?? "");
+        const seats = Number(d.seatsPurchased) || 0;
+        if (ownerPhone) {
+          const userRef = db.collection("users").doc(ownerPhone);
+          const userSnap = await userRef.get();
+          const currentSeats = Number(userSnap.data()?.totalSeats) || 0;
+          promoteBatch.update(userRef, {
+            isPaid: true,
+            subscriptionStatus: "paid",
+            totalSeats: currentSeats + seats,
+            updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+          });
+        }
+      }
+      await promoteBatch.commit();
+      console.log(`[expireSubscriptions] promoted ${dueDocs.length} scheduled subscriptions to active`);
+    }
 
     // Find active subscriptions that have passed their expiry date
     const expiredSnap = await db

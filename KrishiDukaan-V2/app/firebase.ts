@@ -7,6 +7,7 @@ import {
   deleteDoc,
   doc,
   getDoc,
+  getCountFromServer,
   getDocs,
   getFirestore,
   increment,
@@ -15,11 +16,14 @@ import {
   orderBy,
   serverTimestamp,
   setDoc,
+  startAfter,
   Timestamp,
   updateDoc,
   where,
   writeBatch,
   GeoPoint,
+  type QueryDocumentSnapshot,
+  type DocumentData,
 } from 'firebase/firestore';
 import { getAuth } from 'firebase/auth';
 import { getStorage } from 'firebase/storage';
@@ -1860,6 +1864,91 @@ export async function fetchAllUsers(): Promise<any[]> {
   return snapshot.docs.map(d => ({ id: d.id, ...d.data() }));
 }
 
+/** One page of the users list, newest first — for admin "browse mode" instead of a full collection scan. */
+export async function fetchUsersPage(
+  pageSize: number,
+  cursor?: QueryDocumentSnapshot<DocumentData> | null,
+): Promise<{ users: any[]; lastDoc: QueryDocumentSnapshot<DocumentData> | null; hasMore: boolean }> {
+  const base = query(collection(db, 'users'), orderBy('createdAt', 'desc'), limit(pageSize));
+  const q = cursor ? query(collection(db, 'users'), orderBy('createdAt', 'desc'), startAfter(cursor), limit(pageSize)) : base;
+  const snap = await getDocs(q);
+  return {
+    users: snap.docs.map(d => ({ id: d.id, ...d.data() })),
+    lastDoc: snap.docs.length ? snap.docs[snap.docs.length - 1] : null,
+    hasMore: snap.docs.length === pageSize,
+  };
+}
+
+/** Cheap server-side aggregate counts for the role chips — avoids pulling every user doc just to count them. */
+export async function fetchUserRoleCounts(): Promise<{
+  all: number; retailer: number; manufacturer: number; admin: number; customer: number;
+}> {
+  const usersCol = collection(db, 'users');
+  const [all, retailer, manufacturer, admin] = await Promise.all([
+    getCountFromServer(usersCol),
+    getCountFromServer(query(usersCol, where('role', '==', 'retailer'))),
+    getCountFromServer(query(usersCol, where('role', '==', 'manufacturer'))),
+    getCountFromServer(query(usersCol, where('role', '==', 'admin'))),
+  ]);
+  const allCount = all.data().count;
+  const retailerCount = retailer.data().count;
+  const manufacturerCount = manufacturer.data().count;
+  const adminCount = admin.data().count;
+  // "Customer" has no dedicated role value (missing role field OR role === 'customer'),
+  // which Firestore can't count directly — derive it as the remainder. This slightly
+  // over-counts if internal-staff roles (team/salesExecutive) exist, an accepted
+  // approximation since those accounts are few and the chip is informational.
+  const customerCount = Math.max(0, allCount - retailerCount - manufacturerCount - adminCount);
+  return { all: allCount, retailer: retailerCount, manufacturer: manufacturerCount, admin: adminCount, customer: customerCount };
+}
+
+/** Splits an array into chunks of at most `size` — Firestore 'in' queries cap at 30 values. */
+function chunk<T>(arr: T[], size: number): T[][] {
+  const out: T[][] = [];
+  for (let i = 0; i < arr.length; i += size) out.push(arr.slice(i, i + size));
+  return out;
+}
+
+/**
+ * Fetches only the product docs owned (by any of the 6 legacy/current owner fields — see
+ * productOwnerKeys below) by the given set of uid/phone/id keys, instead of the full
+ * `products` collection. Used to scope per-row product counts to whatever page of users
+ * is currently loaded in the admin Users & Roles browse mode.
+ */
+export async function fetchProductsForUserKeys(keys: string[]): Promise<RawProductDoc[]> {
+  const uniqueKeys = Array.from(new Set(keys.filter(Boolean).map(String)));
+  if (uniqueKeys.length === 0) return [];
+  const fields = ['ownerId', 'retailerId', 'manufacturerId', 'ownerPhone', 'retailerPhone', 'manufacturerPhone'] as const;
+  const productsCol = collection(db, 'products');
+  const queries: Promise<any>[] = [];
+  for (const field of fields) {
+    for (const batch of chunk(uniqueKeys, 30)) {
+      queries.push(getDocs(query(productsCol, where(field, 'in', batch))));
+    }
+  }
+  const snaps = await Promise.all(queries);
+  const byId = new Map<string, RawProductDoc>();
+  for (const snap of snaps) {
+    for (const d of snap.docs) byId.set(d.id, { id: d.id, ...(d.data() as Record<string, unknown>) });
+  }
+  return Array.from(byId.values());
+}
+
+/** Fetches only the subscription docs for the given owner phones — scoped equivalent of fetchAllSubscriptions. */
+export async function fetchSubscriptionsForPhones(phones: string[]): Promise<any[]> {
+  const uniquePhones = Array.from(new Set(phones.filter(Boolean).map(String)));
+  if (uniquePhones.length === 0) return [];
+  const subsCol = collection(db, 'subscriptions');
+  const snaps = await Promise.all(
+    chunk(uniquePhones, 30).map(batch => getDocs(query(subsCol, where('ownerPhone', 'in', batch)))),
+  );
+  const byId = new Map<string, any>();
+  for (const snap of snaps) {
+    for (const d of snap.docs) byId.set(d.id, { id: d.id, ...d.data() });
+  }
+  return Array.from(byId.values());
+}
+
 export type StoreAutocompleteOption = {
   phone: string;
   shopName: string;
@@ -2049,6 +2138,13 @@ export async function adminUpdateUser(uid: string, updates: {
 
 export async function fetchAllSubscriptions(): Promise<any[]> {
   const snapshot = await getDocs(collection(db, 'subscriptions'));
+  return snapshot.docs.map(d => ({ id: d.id, ...d.data() }));
+}
+
+// `plans` has a public read rule (see firestore.rules) — writes all go through
+// app/api/admin/plans/* (Admin SDK), so this is read-only client access.
+export async function fetchAllPlans(): Promise<any[]> {
+  const snapshot = await getDocs(collection(db, 'plans'));
   return snapshot.docs.map(d => ({ id: d.id, ...d.data() }));
 }
 
@@ -2732,6 +2828,18 @@ function productOwnerKeys(d: RawProductDoc): string[] {
 /** Fetches every product doc once (raw, with ownership fields) for client-side indexing. */
 export async function fetchAllSellerProducts(): Promise<RawProductDoc[]> {
   const snap = await getDocs(collection(db, 'products'));
+  return snap.docs.map(d => ({ id: d.id, ...(d.data() as Record<string, unknown>) }));
+}
+
+/**
+ * Fetches only the admin-assigned copy docs (source === 'admin_assigned') — the small
+ * subset of the `products` collection the admin Products tab needs to compute "N sellers
+ * assigned" badges and to deactivate stale duplicates on edit. A single-equality query,
+ * so it stays cheap even though `products` itself is dominated by manufacturer_assigned
+ * inventory copies (~95% of the collection) that this tab never needs to read.
+ */
+export async function fetchAdminAssignedCopies(): Promise<RawProductDoc[]> {
+  const snap = await getDocs(query(collection(db, 'products'), where('source', '==', 'admin_assigned')));
   return snap.docs.map(d => ({ id: d.id, ...(d.data() as Record<string, unknown>) }));
 }
 

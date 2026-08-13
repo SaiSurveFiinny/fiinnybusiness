@@ -32,7 +32,6 @@ const baseNav = [
   { href: "/dashboard/orders", labelKey: "sideOrders" as const, icon: ReceiptText },
   { href: "/dashboard/delivery", labelKey: "sideDelivery" as const, icon: Truck },
   { href: "/dashboard/reviews", labelKey: "sideReviews" as const, icon: Star },
-  { href: "/dashboard/profile", labelKey: "sideProfile" as const, icon: UserCircle2 },
 ] as const;
 
 const subscriptionNavKey = {

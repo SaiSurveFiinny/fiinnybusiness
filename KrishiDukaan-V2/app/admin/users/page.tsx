@@ -10,6 +10,7 @@ import {
 import {
   fetchAllUsers, promoteToAdmin,
   fetchAllSellerProducts, fetchAllSubscriptions,
+  fetchUsersPage, fetchUserRoleCounts, fetchProductsForUserKeys, fetchSubscriptionsForPhones,
   selectUserProductDocs, collapseUserProductDocs,
   adminAssignProductToSeller, adminRemoveAssignment, ensureSellerStorefront,
   adminUpdateProductSellMode,
@@ -104,9 +105,24 @@ function AdminSellModeToggle({
 export default function AdminUsersPage() {
   const identity = useAdminAuth();
   const isFullAdmin = identity.role === "admin";
-  const [users, setUsers] = useState<any[]>([]);
-  const [allProducts, setAllProducts] = useState<any[]>([]);
-  const [allSubs, setAllSubs] = useState<any[]>([]);
+  // Browse mode — Firestore-paginated "page N of users", loaded 25 at a time via "See More".
+  const PAGE_SIZE = 25;
+  const [pageUsers, setPageUsers] = useState<any[]>([]);
+  const [pageProducts, setPageProducts] = useState<any[]>([]);
+  const [pageSubs, setPageSubs] = useState<any[]>([]);
+  const [lastDoc, setLastDoc] = useState<any>(null);
+  const [hasMore, setHasMore] = useState(true);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [roleCounts, setRoleCounts] = useState({ all: 0, retailer: 0, manufacturer: 0, admin: 0, customer: 0 });
+
+  // Full mode — the complete users/products/subscriptions collections, fetched once and
+  // cached for the rest of the session the moment search/role-filter/advanced-filter/promote
+  // needs to look beyond whatever pages are currently loaded.
+  const [fullUsers, setFullUsers] = useState<any[] | null>(null);
+  const [fullProducts, setFullProducts] = useState<any[] | null>(null);
+  const [fullSubs, setFullSubs] = useState<any[] | null>(null);
+  const [fullLoading, setFullLoading] = useState(false);
+
   const [search, setSearch] = useState("");
   const [loading, setLoading] = useState(true);
   const [filterRole, setFilterRole] = useState("all");
@@ -158,6 +174,11 @@ export default function AdminUsersPage() {
 
   // Products panel (products derived from allProducts — see memos below)
   const [productsUser, setProductsUser] = useState<any | null>(null);
+  // Full products catalog, lazily fetched once the Products panel is first opened —
+  // the "Assign Product" dropdown needs every assignable product, not just the ones
+  // owned by whichever users happen to be paginated in.
+  const [catalogProducts, setCatalogProducts] = useState<any[] | null>(null);
+  const [catalogLoading, setCatalogLoading] = useState(false);
   const [assignProductId, setAssignProductId] = useState("");
   const [assigning, setAssigning] = useState(false);
   const [removingId, setRemovingId] = useState<string | null>(null);
@@ -167,18 +188,83 @@ export default function AdminUsersPage() {
   const createAddressInputRef = useRef<HTMLInputElement>(null);
   const createAcListenerRef   = useRef<any>(null);
 
+  // Whether the admin has engaged search/role-chip/advanced-filter/promote-panel — any of
+  // these need to look beyond whatever pages are currently loaded, so they trigger a
+  // one-time fetch-and-cache of the complete collections instead of scoped paginated data.
+  const isFiltering = !!search.trim() || filterRole !== "all" ||
+    filterActive !== "all" || filterHasSubscription !== "all" ||
+    !!filterDateFrom || !!filterDateTo || filterMinProducts !== "" || filterMaxProducts !== "" ||
+    !!filterCity.trim() || !!filterState.trim();
+  const needsFullData = isFiltering || showPromotePanel;
+
+  // Derived "current dataset" — paginated browse-mode pages by default, or the fully
+  // cached collections once full mode has been triggered and loaded.
+  const users = isFiltering ? (fullUsers ?? []) : pageUsers;
+  const allProducts = isFiltering ? (fullProducts ?? []) : pageProducts;
+  const allSubs = isFiltering ? (fullSubs ?? []) : pageSubs;
+  // Promote-to-admin search always needs the full user list regardless of the main
+  // table's mode, falling back to whatever page is loaded while the full fetch is in flight.
+  const promoteSourceUsers = fullUsers ?? pageUsers;
+
+  const scopedKeysForUsers = (us: any[]) => us.flatMap(u => [u.uid, u.phone, u.id].filter(Boolean).map(String));
+
   const load = () => {
     setLoading(true);
+    setPageUsers([]); setPageProducts([]); setPageSubs([]);
+    setLastDoc(null); setHasMore(true);
+    setFullUsers(null); setFullProducts(null); setFullSubs(null);
+    Promise.all([fetchUsersPage(PAGE_SIZE), fetchUserRoleCounts()])
+      .then(async ([page, counts]) => {
+        setPageUsers(page.users);
+        setLastDoc(page.lastDoc);
+        setHasMore(page.hasMore);
+        setRoleCounts(counts);
+        const [ps, ss] = await Promise.all([
+          fetchProductsForUserKeys(scopedKeysForUsers(page.users)).catch(() => []),
+          fetchSubscriptionsForPhones(page.users.map(u => u.phone).filter(Boolean)).catch(() => []),
+        ]);
+        setPageProducts(ps); setPageSubs(ss);
+      })
+      .finally(() => setLoading(false));
+  };
+
+  useEffect(() => { load(); }, []);
+
+  const loadMore = async () => {
+    if (!lastDoc || loadingMore) return;
+    setLoadingMore(true);
+    try {
+      const page = await fetchUsersPage(PAGE_SIZE, lastDoc);
+      setPageUsers(prev => [...prev, ...page.users]);
+      setLastDoc(page.lastDoc);
+      setHasMore(page.hasMore);
+      const [ps, ss] = await Promise.all([
+        fetchProductsForUserKeys(scopedKeysForUsers(page.users)).catch(() => []),
+        fetchSubscriptionsForPhones(page.users.map(u => u.phone).filter(Boolean)).catch(() => []),
+      ]);
+      const dedupe = (prev: any[], fresh: any[]) => {
+        const seen = new Set(prev.map(p => p.id));
+        return [...prev, ...fresh.filter(p => !seen.has(p.id))];
+      };
+      setPageProducts(prev => dedupe(prev, ps));
+      setPageSubs(prev => dedupe(prev, ss));
+    } finally {
+      setLoadingMore(false);
+    }
+  };
+
+  // Lazily fetch and cache the full collections the moment full mode is needed.
+  useEffect(() => {
+    if (!needsFullData || fullUsers !== null || fullLoading) return;
+    setFullLoading(true);
     Promise.all([
       fetchAllUsers(),
       fetchAllSellerProducts().catch(() => []),
       fetchAllSubscriptions().catch(() => []),
     ])
-      .then(([us, ps, ss]) => { setUsers(us); setAllProducts(ps); setAllSubs(ss); })
-      .finally(() => setLoading(false));
-  };
-
-  useEffect(() => { load(); }, []);
+      .then(([us, ps, ss]) => { setFullUsers(us); setFullProducts(ps); setFullSubs(ss); })
+      .finally(() => setFullLoading(false));
+  }, [needsFullData, fullUsers, fullLoading]);
 
   // Google Maps autocomplete for the Create User modal
   useEffect(() => {
@@ -245,18 +331,14 @@ export default function AdminUsersPage() {
     return () => { document.body.style.overflow = ""; };
   }, [showCreate]);
 
-  const promoteCandidates = users.filter(u =>
+  const promoteCandidates = promoteSourceUsers.filter(u =>
     u.role !== "admin" &&
     (!promoteSearch || [u.name, u.email].join(" ").toLowerCase().includes(promoteSearch.toLowerCase()))
   );
 
-  const counts = {
-    all: users.length,
-    retailer: users.filter(u => u.role === "retailer").length,
-    manufacturer: users.filter(u => u.role === "manufacturer").length,
-    admin: users.filter(u => u.role === "admin").length,
-    customer: users.filter(u => !u.role || u.role === "customer").length,
-  };
+  // Role-chip counts come from cheap server-side aggregates (roleCounts), not the
+  // currently-loaded page — they stay accurate no matter how many pages are loaded.
+  const counts = roleCounts;
 
   // Accurate per-user product count (deduped) — keyed by user doc id.
   const productCounts = useMemo(() => {
@@ -368,12 +450,14 @@ export default function AdminUsersPage() {
     [productsUser, allProducts],
   );
 
-  // Canonical (non-copy) products that an admin can assign, de-duped by name.
+  // Canonical (non-copy) products that an admin can assign, de-duped by name. This needs
+  // the entire products catalog — not just the products owned by currently-loaded users —
+  // so it's backed by its own lazily-fetched full snapshot (catalogProducts), not allProducts.
   const assignableProducts = useMemo(() => {
     const copySources = new Set(["admin_assigned", "retailer_inventory_copy", "manufacturer_assigned"]);
     const seen = new Set<string>();
     const out: { id: string; name: string; category: string; image: string; price: number }[] = [];
-    for (const d of allProducts) {
+    for (const d of (catalogProducts ?? [])) {
       if (d.isActive === false || copySources.has(d.source) || !d.name) continue;
       const key = String(d.name).toLowerCase().trim();
       if (seen.has(key)) continue;
@@ -382,12 +466,16 @@ export default function AdminUsersPage() {
       out.push({ id: d.id, name: String(d.name), category: String(d.category || ""), image, price: Number(d.price || 0) });
     }
     return out.sort((a, b) => a.name.localeCompare(b.name));
-  }, [allProducts]);
+  }, [catalogProducts]);
 
   const openProducts = (u: any) => {
     setProductsUser(u);
     setAssignProductId("");
     setAssignMsg(null);
+    if (catalogProducts === null && !catalogLoading) {
+      setCatalogLoading(true);
+      fetchAllSellerProducts().then(setCatalogProducts).catch(() => setCatalogProducts([])).finally(() => setCatalogLoading(false));
+    }
     // Self-heal: make sure this seller has a live storefront record so they appear
     // in stores and their assigned products attach to a store.
     if (u.role === "retailer" || u.role === "manufacturer") {
@@ -401,7 +489,18 @@ export default function AdminUsersPage() {
   };
 
   const refreshProducts = async () => {
-    try { setAllProducts(await fetchAllSellerProducts()); } catch { /* keep current */ }
+    if (!productsUser) return;
+    try {
+      const all = await fetchAllSellerProducts();
+      setCatalogProducts(all);
+      const scoped = selectUserProductDocs(all, productsUser);
+      const mergeFresh = (prev: any[]) => {
+        const staleIds = new Set(selectUserProductDocs(prev, productsUser).map((d: any) => d.id));
+        return [...prev.filter(p => !staleIds.has(p.id)), ...scoped];
+      };
+      setPageProducts(mergeFresh);
+      setFullProducts(prev => (prev === null ? prev : mergeFresh(prev)));
+    } catch { /* keep current */ }
   };
 
   const handleEditProduct = async (entry: UserProduct) => {
@@ -515,7 +614,10 @@ export default function AdminUsersPage() {
     setPromoting(true);
     try {
       await promoteToAdmin(promoteTarget.id);
-      setUsers(prev => prev.map(u => u.id === promoteTarget.id ? { ...u, role: "admin", isPaid: true } : u));
+      const promote = (prev: any[]) => prev.map(u => u.id === promoteTarget.id ? { ...u, role: "admin", isPaid: true } : u);
+      setPageUsers(promote);
+      setFullUsers(prev => (prev === null ? prev : promote(prev)));
+      fetchUserRoleCounts().then(setRoleCounts).catch(() => {});
       setPromoteTarget(null);
       setConfirmEmail("");
       setShowPromotePanel(false);
@@ -865,7 +967,7 @@ export default function AdminUsersPage() {
           </div>
 
           <div className="rounded-xl bg-surface-container-low border border-outline-variant/20 px-3 py-2 text-xs text-on-surface-variant">
-            Showing <span className="font-bold text-on-surface">{filtered.length}</span> of <span className="font-bold text-on-surface">{users.length}</span> users
+            Showing <span className="font-bold text-on-surface">{filtered.length}</span> of <span className="font-bold text-on-surface">{roleCounts.all}</span> users
           </div>
         </div>
       )}
@@ -876,8 +978,17 @@ export default function AdminUsersPage() {
         </div>
       ) : (
         <div className="rounded-2xl border border-outline-variant/30 bg-surface-container-lowest overflow-hidden">
-          <div className="px-4 sm:px-5 py-3 border-b border-outline-variant/20 bg-surface-container-low">
-            <span className="text-xs font-bold text-on-surface-variant">{filtered.length} user{filtered.length !== 1 ? "s" : ""}</span>
+          <div className="px-4 sm:px-5 py-3 border-b border-outline-variant/20 bg-surface-container-low flex items-center gap-2">
+            <span className="text-xs font-bold text-on-surface-variant">
+              {isFiltering
+                ? `${filtered.length} user${filtered.length !== 1 ? "s" : ""}`
+                : `Showing ${filtered.length} of ${roleCounts.all} user${roleCounts.all !== 1 ? "s" : ""}`}
+            </span>
+            {fullLoading && (
+              <span className="flex items-center gap-1 text-[11px] text-on-surface-variant">
+                <Loader2 className="h-3 w-3 animate-spin" /> Searching all users…
+              </span>
+            )}
           </div>
           {/* Desktop table */}
           <div className="hidden md:block overflow-x-auto">
@@ -1059,6 +1170,20 @@ export default function AdminUsersPage() {
               <div className="px-4 py-10 text-center text-sm text-on-surface-variant">No users found.</div>
             )}
           </div>
+
+          {/* See More — only in browse mode; search/filters already show every match. */}
+          {!isFiltering && hasMore && (
+            <div className="flex justify-center border-t border-outline-variant/20 py-3">
+              <button
+                type="button"
+                onClick={loadMore}
+                disabled={loadingMore}
+                className="flex items-center gap-2 rounded-xl border border-outline-variant/40 bg-surface-container-low px-5 py-2 text-sm font-bold text-on-surface hover:bg-surface-container disabled:opacity-60"
+              >
+                {loadingMore ? <><Loader2 className="h-4 w-4 animate-spin" /> Loading…</> : "See More"}
+              </button>
+            </div>
+          )}
         </div>
       )}
 
