@@ -58,3 +58,16 @@ database.rules
 .env
 .env.production
 .env.development
+
+# Security — credentials removed from tracking after the 2026-08 key leak.
+# NOTE: .gitignore does not untrack already-committed files; these were
+# removed with `git rm --cached`. Do not re-add them.
+*.p8
+*.cer
+*.mobileprovision
+ios_dist.key
+functions/.env
+**/.env
+.env.uat
+.env.*
+!.env*.example
