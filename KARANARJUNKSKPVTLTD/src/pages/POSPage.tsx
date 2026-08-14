@@ -1112,7 +1112,7 @@ export default function POSPage() {
         const isDummy = p.purchasePrice === 0 && (p as any).sku?.startsWith('SKU-');
         if (realProductsExist && isDummy) return false;
         return (selectedCategory === 'All' || (p.type || '').toLowerCase() === selectedCategory.toLowerCase()) &&
-            (p.name.toLowerCase().includes(searchQuery.toLowerCase()) || p.barcode === searchQuery);
+            ((p.name || '').toLowerCase().includes(searchQuery.toLowerCase()) || p.barcode === searchQuery);
     });
 
     // Category tabs are data-driven: only show categories that actually exist in
@@ -1329,8 +1329,8 @@ export default function POSPage() {
                             const q = searchQuery.trim();
                             if (!q) return;
                             const match = products.find(p => p.barcode === q)
-                                || products.find(p => p.name.toLowerCase() === q.toLowerCase())
-                                || products.find(p => p.name.toLowerCase().includes(q.toLowerCase()));
+                                || products.find(p => (p.name || '').toLowerCase() === q.toLowerCase())
+                                || products.find(p => (p.name || '').toLowerCase().includes(q.toLowerCase()));
                             if (match) {
                                 addToCart(match);
                                 setSearchQuery('');
@@ -1689,7 +1689,7 @@ export default function POSPage() {
                                                 <td style={{ border: '1px solid #e8e8e8', padding: '2px', textAlign: 'center', color: '#bbb', fontSize: '0.74rem' }}>{cart.length + 1}</td>
                                                 <td colSpan={3} style={{ border: '1px solid #e8e8e8', padding: '1px 3px', position: 'relative' }}>
                                                     {(() => {
-                                                        const a5Filtered = products.filter(p => p.name.toLowerCase().includes((rowSearch[cart.length] || '').toLowerCase()) || p.barcode === (rowSearch[cart.length] || '')).slice(0, 50);
+                                                        const a5Filtered = products.filter(p => (p.name || '').toLowerCase().includes((rowSearch[cart.length] || '').toLowerCase()) || p.barcode === (rowSearch[cart.length] || '')).slice(0, 50);
                                                         return (<>
                                                             <input ref={rowSearchRef} className="pinv-input" placeholder={L('search_product')} value={rowSearch[cart.length] || ''}
                                                                 onChange={e => { setRowSearch(s => ({ ...s, [cart.length]: e.target.value })); setActiveRowIndex(e.target.value.length > 0 ? cart.length : null); setHighlightedProductIdx(-1); }}
@@ -1712,7 +1712,7 @@ export default function POSPage() {
                                                                             {p.name} <span style={{ color: '#888' }}>· ₹{posSellingRate(p)}</span>
                                                                         </div>
                                                                     ))}
-                                                                    {products.filter(p => p.name.toLowerCase().includes((rowSearch[cart.length] || '').toLowerCase())).length === 0 && (
+                                                                    {products.filter(p => (p.name || '').toLowerCase().includes((rowSearch[cart.length] || '').toLowerCase())).length === 0 && (
                                                                         <div className="pinv-dropdown-item" onMouseDown={openAddProduct} style={{ color: 'var(--primary)' }}>
                                                                             + Add "{rowSearch[cart.length]}" to inventory
                                                                         </div>
@@ -1989,7 +1989,7 @@ export default function POSPage() {
                                                 <td style={{ textAlign: 'center', color: '#999' }}>{cart.length + 1}</td>
                                                 <td colSpan={3} style={{ position: 'relative' }}>
                                                     {(() => {
-                                                        const a4Filtered = products.filter(p => p.name.toLowerCase().includes((rowSearch[cart.length] || '').toLowerCase()) || p.barcode === (rowSearch[cart.length] || '')).slice(0, 50);
+                                                        const a4Filtered = products.filter(p => (p.name || '').toLowerCase().includes((rowSearch[cart.length] || '').toLowerCase()) || p.barcode === (rowSearch[cart.length] || '')).slice(0, 50);
                                                         return (<>
                                                             <input
                                                                 ref={rowSearchRef}
@@ -2017,7 +2017,7 @@ export default function POSPage() {
                                                                             {p.name} <span style={{ color: '#888' }}>· ₹{posSellingRate(p)}</span>
                                                                         </div>
                                                                     ))}
-                                                                    {products.filter(p => p.name.toLowerCase().includes((rowSearch[cart.length] || '').toLowerCase())).length === 0 && (
+                                                                    {products.filter(p => (p.name || '').toLowerCase().includes((rowSearch[cart.length] || '').toLowerCase())).length === 0 && (
                                                                         <div className="pinv-dropdown-item" onMouseDown={openAddProduct} style={{ color: 'var(--primary)' }}>
                                                                             + Add "{rowSearch[cart.length]}" to inventory
                                                                         </div>

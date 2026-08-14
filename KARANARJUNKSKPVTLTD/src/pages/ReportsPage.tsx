@@ -17,7 +17,7 @@ export default function ReportsPage() {
     const [active, setActive] = useHashTab<ReportTab>(VALID_TABS, 'financial', 'fiinny-tab-reports');
 
     return (
-        <div className="animate-fade-in" style={{ maxWidth: '1600px', margin: '0 auto' }}>
+        <div className="animate-fade-in" style={{ width: '100%' }}>
 
             {/* Sticky Tab Bar */}
             <div style={{
