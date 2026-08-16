@@ -5,16 +5,58 @@ import '../../../core/constants/app_colors.dart';
 import '../../../core/constants/app_text_styles.dart';
 import '../../../core/providers/user_provider.dart';
 
-class _DrawerItem {
+class DashboardNavItem {
   final IconData icon;
   final String label;
   final String route;
-  const _DrawerItem(this.icon, this.label, this.route);
+  const DashboardNavItem(this.icon, this.label, this.route);
 }
 
 /// Mirrors web's persistent dashboard sidebar (app/dashboard/_components/
 /// sidebar.tsx) — same 11 destinations, same order, same role conditionals.
-/// Opened only from the Overview screen's AppBar; leaf dashboard screens keep
+/// Shared by the Dashboard drawer and the Profile tab's nav-hub section, so
+/// both stay in sync with a single source of truth.
+List<DashboardNavItem> buildDashboardNavItems({
+  required bool isManufacturer,
+  required bool isSeller,
+}) {
+  return [
+    // Overview now lives on Profile itself (see profile_screen.dart) — the
+    // old standalone /dashboard screen was a second, differently-laid-out
+    // "Overview" that confused users navigating here from the drawer.
+    const DashboardNavItem(Icons.dashboard_outlined, 'Overview', '/profile'),
+    const DashboardNavItem(
+        Icons.bar_chart_outlined, 'Analytics', '/dashboard/analytics'),
+    DashboardNavItem(
+      Icons.inventory_2_outlined,
+      'Inventory',
+      isManufacturer
+          ? '/dashboard/manufacturer/catalog'
+          : '/dashboard/inventory',
+    ),
+    if (isManufacturer)
+      const DashboardNavItem(Icons.groups_outlined, 'Retailer network',
+          '/dashboard/manufacturer/retailers'),
+    if (isSeller)
+      const DashboardNavItem(
+          Icons.credit_card_outlined, 'Subscription', '/subscription'),
+    const DashboardNavItem(
+        Icons.video_collection_outlined, 'Reels', '/dashboard/reels'),
+    const DashboardNavItem(
+        Icons.receipt_long_outlined, 'Orders', '/dashboard/orders'),
+    const DashboardNavItem(Icons.local_shipping_outlined, 'Delivery Settings',
+        '/dashboard/delivery'),
+    const DashboardNavItem(
+        Icons.star_outline, 'Reviews', '/dashboard/reviews'),
+    if (isManufacturer)
+      const DashboardNavItem(Icons.business_outlined, 'Company Page',
+          '/dashboard/manufacturer/brand'),
+    const DashboardNavItem(Icons.account_circle_outlined,
+        'Business Settings', '/dashboard/profile'),
+  ];
+}
+
+/// Opened from the Overview screen's AppBar; leaf dashboard screens keep
 /// their normal back-button navigation instead of repeating this drawer.
 class DashboardDrawer extends ConsumerWidget {
   const DashboardDrawer({super.key});
@@ -25,37 +67,10 @@ class DashboardDrawer extends ConsumerWidget {
     final isManufacturer = ref.watch(isManufacturerProvider);
     final isSeller = user?.isSeller ?? false;
 
-    final items = <_DrawerItem>[
-      const _DrawerItem(Icons.dashboard_outlined, 'Overview', '/dashboard'),
-      const _DrawerItem(
-          Icons.bar_chart_outlined, 'Analytics', '/dashboard/analytics'),
-      _DrawerItem(
-        Icons.inventory_2_outlined,
-        'Inventory',
-        isManufacturer
-            ? '/dashboard/manufacturer/catalog'
-            : '/dashboard/inventory',
-      ),
-      if (isManufacturer)
-        const _DrawerItem(Icons.groups_outlined, 'Retailer network',
-            '/dashboard/manufacturer/retailers'),
-      if (isSeller)
-        const _DrawerItem(
-            Icons.credit_card_outlined, 'Subscription', '/subscription'),
-      const _DrawerItem(
-          Icons.video_collection_outlined, 'Reels', '/dashboard/reels'),
-      const _DrawerItem(
-          Icons.receipt_long_outlined, 'Orders', '/dashboard/orders'),
-      const _DrawerItem(Icons.local_shipping_outlined, 'Delivery Settings',
-          '/dashboard/delivery'),
-      const _DrawerItem(
-          Icons.star_outline, 'Reviews', '/dashboard/reviews'),
-      if (isManufacturer)
-        const _DrawerItem(Icons.business_outlined, 'Company Page',
-            '/dashboard/manufacturer/brand'),
-      const _DrawerItem(
-          Icons.account_circle_outlined, 'Profile', '/dashboard/profile'),
-    ];
+    final items = buildDashboardNavItems(
+      isManufacturer: isManufacturer,
+      isSeller: isSeller,
+    );
 
     return Drawer(
       child: SafeArea(
@@ -81,7 +96,13 @@ class DashboardDrawer extends ConsumerWidget {
                 title: Text(item.label, style: AppTextStyles.bodyMedium),
                 onTap: () {
                   Navigator.of(context).pop();
-                  context.push(item.route);
+                  // Avoid pushing a duplicate screen on top of itself — most
+                  // relevant for "Overview", since the drawer is opened from
+                  // Profile (== Overview) and would otherwise stack a second
+                  // copy of the same screen.
+                  if (GoRouterState.of(context).uri.path != item.route) {
+                    context.push(item.route);
+                  }
                 },
               ),
           ],

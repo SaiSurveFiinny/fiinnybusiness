@@ -119,7 +119,11 @@
         "placeholder_taluka": "उदा. राहुरी",
         "placeholder_district": "उदा. अहमदनगर",
         "placeholder_gstin": "२७XXXXXXX...",
-        "placeholder_license": "Lic/2024/..."
+        "placeholder_license": "Lic/2024/...",
+        "full_address": "पूर्ण पत्ता (ऐच्छिक)",
+        "placeholder_full_address": "रस्ता, खूण, इ.",
+        "select_state": "राज्य निवडा…",
+        "select_district": "जिल्हा निवडा…"
     },
     "manage_retailers": {
         "title": "किरकोळ विक्रेते व्यवस्थापित करा",

@@ -102,10 +102,20 @@ export default function DashboardLayout({
       setUidState(user.uid);
       const profile = await getUserProfile(user.uid);
       const role = profile?.role;
+      // "team" accounts (limited-access admin-portal staff) get the same
+      // "view seller's dashboard" link as full admins in Users & Roles, but
+      // only when they were actually granted that section — without this
+      // check every team account fell through to the "normal user" branch
+      // below (role is 'team', not 'admin', 'retailer', or 'manufacturer')
+      // and got redirected to '/' instead of seeing the seller's dashboard.
+      const adminSections = Array.isArray((profile as any)?.adminSections)
+        ? (profile as any).adminSections as string[]
+        : [];
+      const isTeamWithUsersAccess = role === 'team' && adminSections.includes('users');
       console.debug('[AdminView] auth user uid:', user.uid, '| role:', role, '| adminViewUid:', adminViewUid);
 
       // ── Admin impersonation ───────────────────────────────────────────────
-      if (role === 'admin' && adminViewUid) {
+      if ((role === 'admin' || isTeamWithUsersAccess) && adminViewUid) {
         console.debug('[AdminView] entering admin path, loading target profile for:', adminViewUid);
         const targetProfile = await getUserProfile(adminViewUid).catch((e) => {
           console.error('[AdminView] getUserProfile threw:', e);

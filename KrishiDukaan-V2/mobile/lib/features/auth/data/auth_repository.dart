@@ -94,6 +94,7 @@ class AuthRepository {
     String? pincode,
     String? gstin,
     String? googleMapsUrl,
+    String? logoUrl,
   }) async {
     final isSeller = role == 'retailer' || role == 'manufacturer';
 
@@ -134,6 +135,28 @@ class AuthRepository {
         'gstin': ?gstin,
         // Buyer-facing "open in Google Maps" prefers this over coordinates.
         'googleMapsUrl': ?googleMapsUrl,
+        if (logoUrl != null && logoUrl.isNotEmpty) 'logo': logoUrl,
+        'updatedAt': FieldValue.serverTimestamp(),
+      }, SetOptions(merge: true));
+
+      // 3. Mirror to profiles/{phone} — the unified public snapshot web's
+      //    saveManufacturerProfile/saveRetailerProfile also write to, and the
+      //    FIRST place ListingRepository._fetchProfile/retailerProfileProvider
+      //    look (before falling back to the role collection above). Without
+      //    this, a name/logo change made here wouldn't show on the seller's
+      //    own storefront or product pages until something else happened to
+      //    write profiles/{phone} first.
+      await _db.collection('profiles').doc(phone).set({
+        'phone': phone,
+        'role': role,
+        'businessName': businessName ?? '',
+        'shopName': businessName ?? '',
+        'ownerName': name,
+        'address': ?address,
+        'city': ?city,
+        'state': ?state,
+        'gstin': ?gstin,
+        if (logoUrl != null && logoUrl.isNotEmpty) 'logo': logoUrl,
         'updatedAt': FieldValue.serverTimestamp(),
       }, SetOptions(merge: true));
     }

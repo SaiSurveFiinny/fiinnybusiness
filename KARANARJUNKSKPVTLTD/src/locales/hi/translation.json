@@ -119,7 +119,11 @@
         "placeholder_taluka": "जैसे राहुरी",
         "placeholder_district": "जैसे अहमदनगर",
         "placeholder_gstin": "27XXXX...",
-        "placeholder_license": "एलआईसी/2024/..."
+        "placeholder_license": "एलआईसी/2024/...",
+        "full_address": "पूरा पता (वैकल्पिक)",
+        "placeholder_full_address": "गली, लैंडमार्क, आदि",
+        "select_state": "राज्य चुनें…",
+        "select_district": "जिला चुनें…"
     },
     "manage_retailers": {
         "title": "खुदरा विक्रेताओं को प्रबंधित करें",

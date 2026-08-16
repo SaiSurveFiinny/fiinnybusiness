@@ -226,10 +226,14 @@ service cloud.firestore {
     // ─── subscriptions ───────────────────────────────────────────────────────
     // Accepts both new (ownerPhone) and legacy (ownerId) field names.
     match /subscriptions/{docId} {
+      // teamHas('users') covers the admin "view seller's dashboard" link in
+      // Users & Roles (app/dashboard/layout.tsx's admin-impersonation path) —
+      // without it, a team member landed on the dashboard but every read
+      // still denied since they aren't the seller and aren't a full admin.
       allow read: if isAuthed() && (
         (resource.data.ownerPhone is string && resource.data.ownerPhone == myPhone()) ||
         resource.data.ownerId == request.auth.uid ||
-        isAdmin()
+        isAdmin() || teamHas('users')
       );
       allow create: if isAuthed() && (
         (request.resource.data.ownerPhone is string && request.resource.data.ownerPhone == myPhone()) ||
@@ -237,6 +241,17 @@ service cloud.firestore {
         isAdmin()
       ) && request.resource.data.ownerType in ['retailer', 'manufacturer'];
       allow update, delete: if isAdmin();
+    }
+
+    // ─── plans ───────────────────────────────────────────────────────────────
+    // Admin-configurable subscription plan templates. Public read (a future
+    // self-checkout page can list active plans without a server round-trip);
+    // all writes go through app/api/admin/plans/* (Firebase Admin SDK, which
+    // bypasses these rules entirely) — client-side writes are denied outright
+    // so plan mutations always get the server-side validation/audit-log path.
+    match /plans/{planId} {
+      allow read: if true;
+      allow write: if false;
     }
 
     // ─── payments ────────────────────────────────────────────────────────────
@@ -275,7 +290,8 @@ service cloud.firestore {
       ) && request.resource.data.status == 'placed'
         && request.resource.data.sellerType in ['retailer', 'manufacturer'];
 
-      allow read: if isAdmin() || (isAuthed() && (
+      // teamHas('users') covers the admin "view seller's dashboard" link.
+      allow read: if isAdmin() || teamHas('users') || (isAuthed() && (
         resource.data.customerPhone == myPhone() ||
         resource.data.sellerPhone == myPhone() ||
         resource.data.customerId == request.auth.uid ||
@@ -554,7 +570,9 @@ service cloud.firestore {
     }
 
     match /retailerSeatListings/{docId} {
-      allow read: if isAdmin() || (isAuthed() && (
+      // teamHas('users') covers the admin "view seller's dashboard" link —
+      // the dashboard's "Listing Seats" card needs this too.
+      allow read: if isAdmin() || teamHas('users') || (isAuthed() && (
         resource.data.ownerId == request.auth.uid ||
         resource.data.retailerId == request.auth.uid ||
         resource.data.manufacturerId == request.auth.uid ||

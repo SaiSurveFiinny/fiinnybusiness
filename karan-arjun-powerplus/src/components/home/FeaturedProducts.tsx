@@ -26,8 +26,7 @@ export function FeaturedProducts() {
             {t.featured_products_subtitle}
           </p>
           <p className="text-on-surface-variant text-sm mb-10 max-w-md leading-relaxed">
-            22% Humates & Fulvates liquid biostimulant — one of the products behind our commitment to Indian
-            agriculture.
+            {t.featured_products_body}
           </p>
           <Link
             to="/products"
