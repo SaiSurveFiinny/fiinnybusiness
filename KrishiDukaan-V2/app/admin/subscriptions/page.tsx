@@ -3,22 +3,70 @@
 import { useEffect, useState } from "react";
 import {
   CreditCard, Search, RefreshCw, ShieldOff, Plus, X, Check,
-  ChevronDown, CalendarPlus, AlertTriangle, Pencil,
+  ChevronDown, CalendarPlus, AlertTriangle, Pencil, Package, Archive,
+  UserPlus, Trash2, Ban,
 } from "lucide-react";
 import {
-  fetchAllSubscriptions, fetchAllUsers,
+  fetchAllSubscriptions, fetchAllUsers, fetchAllPlans, auth,
   adminRevokeSubscription, adminExtendSubscription, adminSetSubscriptionExpiry, adminManualActivate,
   adminUpdateSubscriptionSeats, fetchFailedPayments
 } from "../../firebase";
+import { SearchableDropdown } from "../_components/searchable-dropdown";
+import { PLAN_FEATURE_CATALOG, featureLabel } from "../_lib/plan-features";
+
+// Thin wrapper around the new server-validated admin routes (plan CRUD,
+// subscription assign/edit/cancel) — these mutate pricing/entitlements
+// directly, so unlike the rest of this page's actions (which write Firestore
+// straight from the client, gated only by firestore.rules) they go through
+// Next.js API routes with a verified ID token + server-side admin check.
+async function callAdminApi(path: string, method: string, body?: unknown) {
+  const idToken = await auth.currentUser?.getIdToken();
+  if (!idToken) throw new Error("Not authenticated.");
+  const res = await fetch(path, {
+    method,
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${idToken}` },
+    body: body !== undefined ? JSON.stringify(body) : undefined,
+  });
+  const json = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(json.error || `HTTP ${res.status}`);
+  return json;
+}
 
 const STATUS_BADGE: Record<string, string> = {
   active: "bg-green-100 text-green-700 border border-green-200",
   unpaid: "bg-gray-100 text-gray-500 border border-gray-200",
   revoked: "bg-red-100 text-red-600 border border-red-200",
   manual_admin: "bg-purple-100 text-purple-700 border border-purple-200",
+  scheduled: "bg-blue-100 text-blue-700 border border-blue-200",
+  cancelled: "bg-orange-100 text-orange-700 border border-orange-200",
+  expired: "bg-gray-100 text-gray-500 border border-gray-200",
+};
+
+const PLAN_STATUS_BADGE: Record<string, string> = {
+  active: "bg-green-100 text-green-700 border border-green-200",
+  inactive: "bg-gray-100 text-gray-500 border border-gray-200",
+  archived: "bg-red-100 text-red-600 border border-red-200",
 };
 
 const DURATION_OPTIONS = [1, 3, 6, 12];
+
+type PlanForm = {
+  name: string; description: string; price: string; durationMonths: string;
+  seats: string; features: string[]; displayOrder: string; trialDays: string;
+};
+const EMPTY_PLAN_FORM: PlanForm = {
+  name: "", description: "", price: "", durationMonths: "1",
+  seats: "1", features: [], displayOrder: "0", trialDays: "0",
+};
+
+type AssignForm = {
+  targetPhone: string; planId: string; seats: string; price: string;
+  durationMonths: string; startDate: string; features: string[]; notes: string;
+};
+const EMPTY_ASSIGN_FORM: AssignForm = {
+  targetPhone: "", planId: "", seats: "1", price: "0",
+  durationMonths: "1", startDate: "", features: [], notes: "",
+};
 
 type ManualForm = {
   userDocId: string;
@@ -35,8 +83,9 @@ const EMPTY_MANUAL: ManualForm = {
 export default function AdminSubscriptionsPage() {
   const [subs, setSubs] = useState<any[]>([]);
   const [users, setUsers] = useState<any[]>([]);
+  const [plans, setPlans] = useState<any[]>([]);
   const [failedPayments, setFailedPayments] = useState<any[]>([]);
-  const [activeTab, setActiveTab] = useState<'subscriptions' | 'failedPayments'>('subscriptions');
+  const [activeTab, setActiveTab] = useState<'subscriptions' | 'plans' | 'failedPayments'>('subscriptions');
   const [loading, setLoading] = useState(true);
   const [failedPaymentsError, setFailedPaymentsError] = useState<string | null>(null);
   const [search, setSearch] = useState("");
@@ -63,9 +112,39 @@ export default function AdminSubscriptionsPage() {
   const [showManual, setShowManual] = useState(false);
   const [manualForm, setManualForm] = useState<ManualForm>(EMPTY_MANUAL);
 
-  // Lock scroll when modal is open
+  const [manualSaving, setManualSaving] = useState(false);
+  const [manualError, setManualError] = useState<string | null>(null);
+  const [manualSuccess, setManualSuccess] = useState(false);
+  const [userSearch, setUserSearch] = useState("");
+
+  // Plans tab
+  const [planStatusFilter, setPlanStatusFilter] = useState<"active" | "inactive" | "archived" | "all">("active");
+  const [showPlanModal, setShowPlanModal] = useState(false);
+  const [editingPlan, setEditingPlan] = useState<any | null>(null);
+  const [planForm, setPlanForm] = useState<PlanForm>(EMPTY_PLAN_FORM);
+  const [planSaving, setPlanSaving] = useState(false);
+  const [planError, setPlanError] = useState<string | null>(null);
+  const [planActionError, setPlanActionError] = useState<string | null>(null);
+  const [deletingPlanId, setDeletingPlanId] = useState<string | null>(null);
+
+  // Assign Subscription wizard
+  const [showAssign, setShowAssign] = useState(false);
+  const [assignStep, setAssignStep] = useState<"target" | "configure" | "review">("target");
+  const [assignForm, setAssignForm] = useState<AssignForm>(EMPTY_ASSIGN_FORM);
+  const [assignSaving, setAssignSaving] = useState(false);
+  const [assignError, setAssignError] = useState<string | null>(null);
+  const [assignSuccess, setAssignSuccess] = useState(false);
+
+  // Edit / cancel an existing subscription
+  const [editingSub, setEditingSub] = useState<any | null>(null);
+  const [editSubForm, setEditSubForm] = useState({ seats: "", price: "", durationMonths: "", features: [] as string[], notes: "" });
+  const [editSubSaving, setEditSubSaving] = useState(false);
+  const [editSubError, setEditSubError] = useState<string | null>(null);
+  const [cancelling, setCancelling] = useState<string | null>(null);
+
+  const anyModalOpen = showManual || showPlanModal || showAssign || !!editingSub;
   useEffect(() => {
-    if (showManual) {
+    if (anyModalOpen) {
       document.body.style.overflow = 'hidden';
       document.documentElement.style.overflow = 'hidden';
     } else {
@@ -76,19 +155,16 @@ export default function AdminSubscriptionsPage() {
       document.body.style.overflow = '';
       document.documentElement.style.overflow = '';
     };
-  }, [showManual]);
-  const [manualSaving, setManualSaving] = useState(false);
-  const [manualError, setManualError] = useState<string | null>(null);
-  const [manualSuccess, setManualSuccess] = useState(false);
-  const [userSearch, setUserSearch] = useState("");
+  }, [anyModalOpen]);
 
   const load = async () => {
     setLoading(true);
     setFailedPaymentsError(null);
     try {
-      const [subsData, usersData] = await Promise.all([fetchAllSubscriptions(), fetchAllUsers()]);
+      const [subsData, usersData, plansData] = await Promise.all([fetchAllSubscriptions(), fetchAllUsers(), fetchAllPlans()]);
       setSubs(subsData);
       setUsers(usersData);
+      setPlans(plansData);
     } finally {
       setLoading(false);
     }
@@ -243,6 +319,186 @@ export default function AdminSubscriptionsPage() {
     }
   };
 
+  // ─── Plans ────────────────────────────────────────────────────────────────
+
+  const openCreatePlan = () => {
+    setEditingPlan(null);
+    setPlanForm(EMPTY_PLAN_FORM);
+    setPlanError(null);
+    setShowPlanModal(true);
+  };
+
+  const openEditPlan = (plan: any) => {
+    setEditingPlan(plan);
+    setPlanForm({
+      name: plan.name ?? "",
+      description: plan.description ?? "",
+      price: String(plan.price ?? ""),
+      durationMonths: String(plan.durationMonths ?? "1"),
+      seats: String(plan.seats ?? "1"),
+      features: Array.isArray(plan.features) ? plan.features : [],
+      displayOrder: String(plan.displayOrder ?? "0"),
+      trialDays: String(plan.trialDays ?? "0"),
+    });
+    setPlanError(null);
+    setShowPlanModal(true);
+  };
+
+  const handleSavePlan = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setPlanSaving(true);
+    setPlanError(null);
+    try {
+      const body = {
+        name: planForm.name.trim(),
+        description: planForm.description.trim(),
+        price: Number(planForm.price),
+        durationMonths: Number(planForm.durationMonths),
+        seats: Number(planForm.seats),
+        features: planForm.features,
+        displayOrder: Number(planForm.displayOrder) || 0,
+        trialDays: Number(planForm.trialDays) || 0,
+      };
+      if (editingPlan) {
+        await callAdminApi(`/api/admin/plans/${editingPlan.id}`, "PATCH", body);
+      } else {
+        await callAdminApi("/api/admin/plans", "POST", body);
+      }
+      setShowPlanModal(false);
+      await load();
+    } catch (e) {
+      setPlanError(e instanceof Error ? e.message : "Failed to save plan.");
+    } finally {
+      setPlanSaving(false);
+    }
+  };
+
+  const handleSetPlanStatus = async (plan: any, status: "active" | "inactive" | "archived") => {
+    setPlanActionError(null);
+    try {
+      await callAdminApi(`/api/admin/plans/${plan.id}`, "PATCH", { status });
+      await load();
+    } catch (e) {
+      setPlanActionError(e instanceof Error ? e.message : "Failed to update plan status.");
+    }
+  };
+
+  const handleDeletePlan = async (plan: any) => {
+    if (!confirm(`Delete plan "${plan.name}"? This only succeeds if no subscriptions reference it.`)) return;
+    setDeletingPlanId(plan.id);
+    setPlanActionError(null);
+    try {
+      await callAdminApi(`/api/admin/plans/${plan.id}`, "DELETE");
+      await load();
+    } catch (e) {
+      setPlanActionError(e instanceof Error ? e.message : "Failed to delete plan.");
+    } finally {
+      setDeletingPlanId(null);
+    }
+  };
+
+  // ─── Assign Subscription ────────────────────────────────────────────────
+
+  const openAssign = (plan?: any) => {
+    setAssignStep("target");
+    setAssignSuccess(false);
+    setAssignError(null);
+    setAssignForm({
+      ...EMPTY_ASSIGN_FORM,
+      planId: plan?.id ?? "",
+      seats: plan ? String(plan.seats ?? "1") : "1",
+      price: plan ? String(plan.price ?? "0") : "0",
+      durationMonths: plan ? String(plan.durationMonths ?? "1") : "1",
+      features: plan?.features ?? [],
+    });
+    setShowAssign(true);
+  };
+
+  const applyPlanToAssignForm = (planId: string) => {
+    const plan = plans.find(p => p.id === planId);
+    setAssignForm(f => ({
+      ...f,
+      planId,
+      seats: plan ? String(plan.seats ?? "1") : f.seats,
+      price: plan ? String(plan.price ?? "0") : f.price,
+      durationMonths: plan ? String(plan.durationMonths ?? "1") : f.durationMonths,
+      features: plan ? (plan.features ?? []) : f.features,
+    }));
+  };
+
+  const handleAssignSubmit = async () => {
+    setAssignSaving(true);
+    setAssignError(null);
+    try {
+      await callAdminApi("/api/admin/subscriptions/assign", "POST", {
+        targetPhone: assignForm.targetPhone,
+        planId: assignForm.planId || null,
+        seats: Number(assignForm.seats),
+        price: Number(assignForm.price),
+        durationMonths: Number(assignForm.durationMonths),
+        startDate: assignForm.startDate || undefined,
+        features: assignForm.features,
+        notes: assignForm.notes.trim() || undefined,
+      });
+      setAssignSuccess(true);
+      await load();
+    } catch (e) {
+      setAssignError(e instanceof Error ? e.message : "Failed to assign subscription.");
+    } finally {
+      setAssignSaving(false);
+    }
+  };
+
+  // ─── Edit / cancel a subscription ───────────────────────────────────────
+
+  const openEditSub = (sub: any) => {
+    setEditingSub(sub);
+    setEditSubForm({
+      seats: String(sub.seatsPurchased ?? ""),
+      price: String(sub.amountPaid ?? ""),
+      durationMonths: String(sub.durationMonths ?? ""),
+      features: Array.isArray(sub.features) ? sub.features : [],
+      notes: sub.notes ?? "",
+    });
+    setEditSubError(null);
+  };
+
+  const handleSaveEditSub = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!editingSub) return;
+    setEditSubSaving(true);
+    setEditSubError(null);
+    try {
+      await callAdminApi(`/api/admin/subscriptions/${editingSub.id}`, "PATCH", {
+        seats: Number(editSubForm.seats),
+        price: Number(editSubForm.price),
+        durationMonths: Number(editSubForm.durationMonths),
+        features: editSubForm.features,
+        notes: editSubForm.notes.trim() || null,
+      });
+      setEditingSub(null);
+      await load();
+    } catch (e) {
+      setEditSubError(e instanceof Error ? e.message : "Failed to update subscription.");
+    } finally {
+      setEditSubSaving(false);
+    }
+  };
+
+  const handleCancelSub = async (sub: any) => {
+    if (!confirm(`Cancel subscription for ${getUserName(sub)}? Their dashboard access will be revoked immediately.`)) return;
+    setCancelling(sub.id);
+    setActionError(null);
+    try {
+      await callAdminApi(`/api/admin/subscriptions/${sub.id}`, "PATCH", { action: "cancel" });
+      await load();
+    } catch (e) {
+      setActionError(e instanceof Error ? e.message : "Failed to cancel subscription.");
+    } finally {
+      setCancelling(null);
+    }
+  };
+
   return (
     <div className="space-y-6">
       {/* Tabs */}
@@ -252,6 +508,12 @@ export default function AdminSubscriptionsPage() {
           className={`pb-2 px-1 font-semibold text-sm ${activeTab === 'subscriptions' ? 'border-b-2 border-primary text-primary' : 'text-on-surface-variant hover:text-on-surface'}`}
         >
           Active Subscriptions
+        </button>
+        <button
+          onClick={() => setActiveTab('plans')}
+          className={`pb-2 px-1 font-semibold text-sm ${activeTab === 'plans' ? 'border-b-2 border-primary text-primary' : 'text-on-surface-variant hover:text-on-surface'}`}
+        >
+          Plans
         </button>
         <button
           onClick={() => setActiveTab('failedPayments')}
@@ -266,6 +528,50 @@ export default function AdminSubscriptionsPage() {
         </button>
       </div>
 
+      {activeTab === 'plans' && (
+        <PlansTab
+          plans={plans}
+          planStatusFilter={planStatusFilter}
+          setPlanStatusFilter={setPlanStatusFilter}
+          planActionError={planActionError}
+          deletingPlanId={deletingPlanId}
+          onCreate={openCreatePlan}
+          onEdit={openEditPlan}
+          onSetStatus={handleSetPlanStatus}
+          onDelete={handleDeletePlan}
+          onAssign={openAssign}
+        />
+      )}
+
+      {showPlanModal && (
+        <PlanModal
+          editingPlan={editingPlan}
+          form={planForm}
+          setForm={setPlanForm}
+          saving={planSaving}
+          error={planError}
+          onClose={() => setShowPlanModal(false)}
+          onSubmit={handleSavePlan}
+        />
+      )}
+
+      {showAssign && (
+        <AssignSubscriptionModal
+          users={users}
+          plans={plans}
+          step={assignStep}
+          setStep={setAssignStep}
+          form={assignForm}
+          setForm={setAssignForm}
+          onApplyPlan={applyPlanToAssignForm}
+          saving={assignSaving}
+          error={assignError}
+          success={assignSuccess}
+          onClose={() => setShowAssign(false)}
+          onSubmit={handleAssignSubmit}
+        />
+      )}
+
       {activeTab === 'subscriptions' ? (
       <>
       {/* Header */}
@@ -277,9 +583,13 @@ export default function AdminSubscriptionsPage() {
           </div>
           <p className="text-xs sm:text-sm text-on-surface-variant ml-7 sm:ml-9">Manage subscriptions — extend, revoke, or activate.</p>
         </div>
-        <div className="grid grid-cols-2 gap-2 shrink-0 sm:flex">
+        <div className="grid grid-cols-3 gap-2 shrink-0 sm:flex">
           <button onClick={() => load()} className="flex items-center justify-center gap-1.5 border border-outline-variant/40 text-xs sm:text-sm font-medium px-2.5 sm:px-3 py-2 rounded-xl hover:bg-surface-container transition-colors">
             <RefreshCw className="h-3.5 w-3.5 sm:h-4 sm:w-4" /> Refresh
+          </button>
+          <button onClick={() => openAssign()}
+            className="flex items-center justify-center gap-1.5 border border-primary/40 text-primary text-xs sm:text-sm font-bold px-3 sm:px-4 py-2 sm:py-2.5 rounded-xl hover:bg-primary/5 transition-colors">
+            <UserPlus className="h-3.5 w-3.5 sm:h-4 sm:w-4" /> Assign
           </button>
           <button onClick={() => { setShowManual(true); setManualSuccess(false); setManualError(null); }}
             className="flex items-center justify-center gap-1.5 bg-primary text-white text-xs sm:text-sm font-bold px-3 sm:px-4 py-2 sm:py-2.5 rounded-xl hover:opacity-90 transition-colors">
@@ -363,6 +673,21 @@ export default function AdminSubscriptionsPage() {
                   <div className="flex-1 min-w-0">
                     <p className="text-sm sm:text-base font-semibold text-on-surface truncate">{userName}</p>
                     <p className="text-[11px] sm:text-xs text-on-surface-variant font-mono truncate">{sub.ownerPhone || sub.ownerId || "—"}</p>
+                    <div className="flex flex-wrap items-center gap-1.5 mt-1">
+                      <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold ${sub.isCustom ? "bg-purple-50 text-purple-700 border border-purple-200" : "bg-surface-container text-on-surface-variant"}`}>
+                        <Package className="h-2.5 w-2.5" /> {sub.planName || (sub.isCustom ? "Custom" : "Standard")}
+                      </span>
+                      {sub.basePlanPrice != null && Number(sub.basePlanPrice) !== Number(sub.amountPaid) && (
+                        <span className="text-[10px] text-on-surface-variant">
+                          base ₹{sub.basePlanPrice} → <span className="font-bold text-on-surface">₹{sub.amountPaid}</span>
+                        </span>
+                      )}
+                      {Array.isArray(sub.features) && sub.features.length > 0 && (
+                        <span className="text-[10px] text-on-surface-variant truncate max-w-[220px]" title={sub.features.map(featureLabel).join(", ")}>
+                          {sub.features.map(featureLabel).join(", ")}
+                        </span>
+                      )}
+                    </div>
                   </div>
 
                   {/* Plan info */}
@@ -441,6 +766,27 @@ export default function AdminSubscriptionsPage() {
                       Extend
                       <ChevronDown className={`h-3 w-3 transition-transform ${isExpanded ? "rotate-180" : ""}`} />
                     </button>
+                    <button
+                      type="button"
+                      onClick={() => openEditSub(sub)}
+                      className="flex-1 sm:flex-initial flex items-center justify-center gap-1.5 rounded-xl border border-outline-variant/40 px-3 py-1.5 text-[11px] sm:text-xs font-medium text-on-surface hover:bg-surface-container transition-colors">
+                      <Pencil className="h-3.5 w-3.5" />
+                      Edit
+                    </button>
+                    {sub.subscriptionStatus !== "cancelled" && (
+                      <button
+                        type="button"
+                        onClick={() => handleCancelSub(sub)}
+                        disabled={cancelling === sub.id}
+                        className="flex-1 sm:flex-initial flex items-center justify-center gap-1.5 rounded-xl border border-orange-200 px-3 py-1.5 text-[11px] sm:text-xs font-medium text-orange-600 hover:bg-orange-50 transition-colors disabled:opacity-50">
+                        {cancelling === sub.id ? (
+                          <div className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-orange-500 border-t-transparent" />
+                        ) : (
+                          <Ban className="h-3.5 w-3.5" />
+                        )}
+                        Cancel
+                      </button>
+                    )}
                     <button
                       type="button"
                       onClick={() => handleRevoke(sub)}
@@ -641,8 +987,20 @@ export default function AdminSubscriptionsPage() {
           </div>
         </div>
       )}
+
+      {editingSub && (
+        <EditSubscriptionModal
+          sub={editingSub}
+          form={editSubForm}
+          setForm={setEditSubForm}
+          saving={editSubSaving}
+          error={editSubError}
+          onClose={() => setEditingSub(null)}
+          onSubmit={handleSaveEditSub}
+        />
+      )}
       </>
-      ) : (
+      ) : activeTab === 'plans' ? null : (
         <div className="space-y-4">
           {/* Header */}
           <div className="flex items-center justify-between">
@@ -769,6 +1127,539 @@ export default function AdminSubscriptionsPage() {
           )}
         </div>
       )}
+    </div>
+  );
+}
+
+// ─── Plans tab ────────────────────────────────────────────────────────────
+
+function PlansTab({
+  plans, planStatusFilter, setPlanStatusFilter, planActionError, deletingPlanId,
+  onCreate, onEdit, onSetStatus, onDelete, onAssign,
+}: {
+  plans: any[];
+  planStatusFilter: "active" | "inactive" | "archived" | "all";
+  setPlanStatusFilter: (s: "active" | "inactive" | "archived" | "all") => void;
+  planActionError: string | null;
+  deletingPlanId: string | null;
+  onCreate: () => void;
+  onEdit: (plan: any) => void;
+  onSetStatus: (plan: any, status: "active" | "inactive" | "archived") => void;
+  onDelete: (plan: any) => void;
+  onAssign: (plan: any) => void;
+}) {
+  const filtered = planStatusFilter === "all" ? plans : plans.filter(p => (p.status ?? "active") === planStatusFilter);
+  const sorted = [...filtered].sort((a, b) => (a.displayOrder ?? 0) - (b.displayOrder ?? 0));
+
+  return (
+    <div className="space-y-4">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between sm:gap-4">
+        <div>
+          <h2 className="text-lg sm:text-xl font-black text-on-surface">Subscription Plans</h2>
+          <p className="text-xs sm:text-sm text-on-surface-variant mt-0.5">
+            Reusable templates — editing a plan never changes subscriptions already assigned from it.
+          </p>
+        </div>
+        <button onClick={onCreate}
+          className="flex items-center justify-center gap-1.5 bg-primary text-white text-xs sm:text-sm font-bold px-3 sm:px-4 py-2 sm:py-2.5 rounded-xl hover:opacity-90 transition-colors shrink-0">
+          <Plus className="h-3.5 w-3.5 sm:h-4 sm:w-4" /> Create Plan
+        </button>
+      </div>
+
+      <div className="flex gap-2 overflow-x-auto pb-1 scrollbar-hide">
+        {(["active", "inactive", "archived", "all"] as const).map(s => (
+          <button key={s} onClick={() => setPlanStatusFilter(s)}
+            className={`px-3 sm:px-4 py-1.5 rounded-full text-[11px] sm:text-xs font-bold transition-all whitespace-nowrap shrink-0 ${planStatusFilter === s ? "bg-primary text-white" : "bg-surface-container text-on-surface-variant hover:bg-surface-container-high"}`}>
+            {s.charAt(0).toUpperCase() + s.slice(1)}
+          </button>
+        ))}
+      </div>
+
+      {planActionError && (
+        <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700 font-semibold flex items-center gap-2">
+          <AlertTriangle className="h-4 w-4 shrink-0" /> {planActionError}
+        </div>
+      )}
+
+      {sorted.length === 0 ? (
+        <div className="rounded-2xl border border-outline-variant/30 bg-surface-container-lowest px-5 py-10 text-center text-sm text-on-surface-variant">
+          No plans found.
+        </div>
+      ) : (
+        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+          {sorted.map(plan => (
+            <div key={plan.id} className="rounded-2xl border border-outline-variant/30 bg-surface-container-lowest p-4 space-y-3">
+              <div className="flex items-start justify-between gap-2">
+                <div className="min-w-0">
+                  <p className="text-sm font-bold text-on-surface truncate">{plan.name}</p>
+                  {plan.description && <p className="text-xs text-on-surface-variant line-clamp-2 mt-0.5">{plan.description}</p>}
+                </div>
+                <span className={`px-2 py-0.5 rounded-full text-[10px] font-black uppercase shrink-0 ${PLAN_STATUS_BADGE[plan.status] || PLAN_STATUS_BADGE.active}`}>
+                  {plan.status ?? "active"}
+                </span>
+              </div>
+
+              <div className="flex flex-wrap items-center gap-3 text-xs text-on-surface-variant">
+                <span className="font-black text-lg text-on-surface">₹{plan.price}</span>
+                <span>{plan.durationMonths} mo</span>
+                <span>{plan.seats} seats</span>
+                {plan.trialDays > 0 && <span>{plan.trialDays}d trial</span>}
+              </div>
+
+              {Array.isArray(plan.features) && plan.features.length > 0 && (
+                <div className="flex flex-wrap gap-1.5">
+                  {plan.features.map((f: string) => (
+                    <span key={f} className="px-2 py-0.5 rounded-lg bg-primary/5 text-primary text-[10px] font-semibold">
+                      {featureLabel(f)}
+                    </span>
+                  ))}
+                </div>
+              )}
+
+              <div className="flex flex-wrap items-center gap-2 pt-1">
+                <button onClick={() => onEdit(plan)}
+                  className="flex items-center gap-1 rounded-lg border border-outline-variant/40 px-2.5 py-1.5 text-[11px] font-medium text-on-surface hover:bg-surface-container">
+                  <Pencil className="h-3 w-3" /> Edit
+                </button>
+                <button onClick={() => onAssign(plan)}
+                  className="flex items-center gap-1 rounded-lg border border-primary/30 px-2.5 py-1.5 text-[11px] font-medium text-primary hover:bg-primary/5">
+                  <UserPlus className="h-3 w-3" /> Assign
+                </button>
+                {plan.status !== "active" && (
+                  <button onClick={() => onSetStatus(plan, "active")}
+                    className="flex items-center gap-1 rounded-lg border border-green-200 px-2.5 py-1.5 text-[11px] font-medium text-green-700 hover:bg-green-50">
+                    <Check className="h-3 w-3" /> Activate
+                  </button>
+                )}
+                {plan.status === "active" && (
+                  <button onClick={() => onSetStatus(plan, "inactive")}
+                    className="flex items-center gap-1 rounded-lg border border-outline-variant/40 px-2.5 py-1.5 text-[11px] font-medium text-on-surface hover:bg-surface-container">
+                    Deactivate
+                  </button>
+                )}
+                {plan.status !== "archived" && (
+                  <button onClick={() => onSetStatus(plan, "archived")}
+                    className="flex items-center gap-1 rounded-lg border border-outline-variant/40 px-2.5 py-1.5 text-[11px] font-medium text-on-surface hover:bg-surface-container">
+                    <Archive className="h-3 w-3" /> Archive
+                  </button>
+                )}
+                <button onClick={() => onDelete(plan)} disabled={deletingPlanId === plan.id}
+                  className="flex items-center gap-1 rounded-lg border border-red-200 px-2.5 py-1.5 text-[11px] font-medium text-red-600 hover:bg-red-50 disabled:opacity-50">
+                  <Trash2 className="h-3 w-3" /> Delete
+                </button>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── Plan create/edit modal ─────────────────────────────────────────────────
+
+function PlanModal({
+  editingPlan, form, setForm, saving, error, onClose, onSubmit,
+}: {
+  editingPlan: any | null;
+  form: PlanForm;
+  setForm: React.Dispatch<React.SetStateAction<PlanForm>>;
+  saving: boolean;
+  error: string | null;
+  onClose: () => void;
+  onSubmit: (e: React.FormEvent) => void;
+}) {
+  const toggleFeature = (key: string) => {
+    setForm(f => ({
+      ...f,
+      features: f.features.includes(key) ? f.features.filter(k => k !== key) : [...f.features, key],
+    }));
+  };
+
+  return (
+    <div className="fixed inset-0 z-[75] flex items-end sm:items-center justify-center bg-black/40 backdrop-blur-sm sm:p-4">
+      <div className="w-full sm:max-w-lg rounded-t-2xl sm:rounded-2xl bg-white shadow-2xl overflow-hidden flex flex-col max-h-[90vh]">
+        <div className="flex items-center justify-between border-b border-outline-variant/30 px-5 py-4 shrink-0">
+          <div>
+            <h2 className="text-base font-semibold text-on-surface">{editingPlan ? "Edit Plan" : "Create Plan"}</h2>
+            <p className="text-xs text-on-surface-variant mt-0.5">
+              {editingPlan ? "Existing subscriptions assigned from this plan keep their own values." : "A reusable template admins can assign to customers."}
+            </p>
+          </div>
+          <button type="button" onClick={onClose} className="rounded-xl p-1.5 text-on-surface-variant hover:bg-surface-container">
+            <X className="h-4 w-4" />
+          </button>
+        </div>
+
+        <form onSubmit={onSubmit} className="overflow-y-auto p-5 space-y-4">
+          {error && <div className="rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">{error}</div>}
+
+          <div>
+            <label className="block text-xs font-black uppercase tracking-widest text-on-surface-variant mb-1">Plan Name *</label>
+            <input type="text" value={form.name} onChange={e => setForm(f => ({ ...f, name: e.target.value }))}
+              placeholder="e.g. Business Pro" required
+              className="w-full rounded-xl border border-outline-variant/40 bg-surface-container-low px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/30" />
+          </div>
+
+          <div>
+            <label className="block text-xs font-black uppercase tracking-widest text-on-surface-variant mb-1">Description</label>
+            <textarea value={form.description} onChange={e => setForm(f => ({ ...f, description: e.target.value }))}
+              rows={2}
+              className="w-full rounded-xl border border-outline-variant/40 bg-surface-container-low px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/30" />
+          </div>
+
+          <div className="grid gap-3 sm:grid-cols-2">
+            <div>
+              <label className="block text-xs font-black uppercase tracking-widest text-on-surface-variant mb-1">Price (₹) *</label>
+              <input type="number" min="0" step="0.01" value={form.price} onChange={e => setForm(f => ({ ...f, price: e.target.value }))}
+                required
+                className="w-full rounded-xl border border-outline-variant/40 bg-surface-container-low px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/30" />
+            </div>
+            <div>
+              <label className="block text-xs font-black uppercase tracking-widest text-on-surface-variant mb-1">Duration (months) *</label>
+              <select value={form.durationMonths} onChange={e => setForm(f => ({ ...f, durationMonths: e.target.value }))}
+                className="w-full rounded-xl border border-outline-variant/40 bg-surface-container-low px-3 py-2 text-sm focus:outline-none appearance-none">
+                {DURATION_OPTIONS.map(m => <option key={m} value={m}>{m} month{m > 1 ? "s" : ""}</option>)}
+              </select>
+            </div>
+          </div>
+
+          <div className="grid gap-3 sm:grid-cols-2">
+            <div>
+              <label className="block text-xs font-black uppercase tracking-widest text-on-surface-variant mb-1">Seats *</label>
+              <input type="number" min="1" value={form.seats} onChange={e => setForm(f => ({ ...f, seats: e.target.value }))}
+                required
+                className="w-full rounded-xl border border-outline-variant/40 bg-surface-container-low px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/30" />
+            </div>
+            <div>
+              <label className="block text-xs font-black uppercase tracking-widest text-on-surface-variant mb-1">Trial Days</label>
+              <input type="number" min="0" value={form.trialDays} onChange={e => setForm(f => ({ ...f, trialDays: e.target.value }))}
+                className="w-full rounded-xl border border-outline-variant/40 bg-surface-container-low px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/30" />
+            </div>
+          </div>
+
+          <div>
+            <label className="block text-xs font-black uppercase tracking-widest text-on-surface-variant mb-2">Features Included</label>
+            <div className="grid gap-2 sm:grid-cols-2">
+              {PLAN_FEATURE_CATALOG.map(f => (
+                <label key={f.key} className="flex items-center gap-2 rounded-xl border border-outline-variant/30 px-3 py-2 text-sm cursor-pointer hover:bg-surface-container-low">
+                  <input type="checkbox" checked={form.features.includes(f.key)} onChange={() => toggleFeature(f.key)}
+                    className="rounded border-outline-variant/40 text-primary focus:ring-primary/30" />
+                  {f.label}
+                </label>
+              ))}
+            </div>
+          </div>
+
+          <div>
+            <label className="block text-xs font-black uppercase tracking-widest text-on-surface-variant mb-1">Display Order</label>
+            <input type="number" value={form.displayOrder} onChange={e => setForm(f => ({ ...f, displayOrder: e.target.value }))}
+              className="w-full rounded-xl border border-outline-variant/40 bg-surface-container-low px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/30" />
+            <p className="text-[11px] text-on-surface-variant mt-1">Lower numbers show first.</p>
+          </div>
+
+          <div className="flex flex-col-reverse gap-3 pt-2 sm:flex-row">
+            <button type="button" onClick={onClose}
+              className="flex-1 py-2.5 rounded-xl border border-outline-variant/40 text-sm font-medium text-on-surface hover:bg-surface-container">
+              Cancel
+            </button>
+            <button type="submit" disabled={saving}
+              className="flex-1 py-2.5 rounded-xl bg-primary text-white text-sm font-bold hover:opacity-90 disabled:opacity-60 flex items-center justify-center gap-2">
+              {saving ? (
+                <><div className="h-4 w-4 animate-spin rounded-full border-2 border-white border-t-transparent" /> Saving…</>
+              ) : (
+                <><Check className="h-4 w-4" /> {editingPlan ? "Save Changes" : "Create Plan"}</>
+              )}
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+}
+
+// ─── Assign Subscription wizard ─────────────────────────────────────────────
+
+function AssignSubscriptionModal({
+  users, plans, step, setStep, form, setForm, onApplyPlan, saving, error, success, onClose, onSubmit,
+}: {
+  users: any[];
+  plans: any[];
+  step: "target" | "configure" | "review";
+  setStep: (s: "target" | "configure" | "review") => void;
+  form: AssignForm;
+  setForm: React.Dispatch<React.SetStateAction<AssignForm>>;
+  onApplyPlan: (planId: string) => void;
+  saving: boolean;
+  error: string | null;
+  success: boolean;
+  onClose: () => void;
+  onSubmit: () => void;
+}) {
+  const eligibleUsers = users.filter(u => u.role === "retailer" || u.role === "manufacturer");
+  const targetUser = eligibleUsers.find(u => (u.phone || u.id) === form.targetPhone);
+  const activePlans = plans.filter(p => (p.status ?? "active") === "active");
+  const selectedPlan = plans.find(p => p.id === form.planId);
+  const finalPrice = Number(form.price) || 0;
+  const basePrice = selectedPlan ? Number(selectedPlan.price) : null;
+  const toggleFeature = (key: string) => {
+    setForm(f => ({ ...f, features: f.features.includes(key) ? f.features.filter(k => k !== key) : [...f.features, key] }));
+  };
+
+  return (
+    <div className="fixed inset-0 z-[75] flex items-end sm:items-center justify-center bg-black/40 backdrop-blur-sm sm:p-4">
+      <div className="w-full sm:max-w-lg rounded-t-2xl sm:rounded-2xl bg-white shadow-2xl overflow-hidden flex flex-col max-h-[90vh]">
+        <div className="flex items-center justify-between border-b border-outline-variant/30 px-5 py-4 shrink-0">
+          <div>
+            <h2 className="text-base font-semibold text-on-surface">Assign Subscription</h2>
+            <p className="text-xs text-on-surface-variant mt-0.5">
+              Step {step === "target" ? "1" : step === "configure" ? "2" : "3"} of 3 — {
+                step === "target" ? "Select customer" : step === "configure" ? "Configure" : "Review & assign"
+              }
+            </p>
+          </div>
+          <button type="button" onClick={onClose} className="rounded-xl p-1.5 text-on-surface-variant hover:bg-surface-container">
+            <X className="h-4 w-4" />
+          </button>
+        </div>
+
+        <div className="overflow-y-auto p-5 space-y-4">
+          {error && <div className="rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">{error}</div>}
+          {success && (
+            <div className="rounded-xl border border-green-200 bg-green-50 px-3 py-2 text-sm text-green-700 font-semibold flex items-center gap-2">
+              <Check className="h-4 w-4" /> Subscription assigned successfully!
+            </div>
+          )}
+
+          {step === "target" && !success && (
+            <SearchableDropdown
+              label="Customer (retailer or manufacturer)"
+              placeholder="Search by name, email or phone…"
+              items={eligibleUsers.map(u => ({ ...u, id: u.phone || u.id }))}
+              selectedId={form.targetPhone}
+              onSelect={(id) => setForm(f => ({ ...f, targetPhone: id }))}
+              filterFn={(u, q) => [u.name, u.email, u.phone, u.id].join(" ").toLowerCase().includes(q.toLowerCase())}
+              renderOption={(u) => (
+                <div className="flex items-center justify-between gap-2 w-full">
+                  <div className="min-w-0">
+                    <p className="text-sm font-semibold text-on-surface truncate">{u.name || "—"}</p>
+                    <p className="text-xs text-on-surface-variant truncate">{u.email || u.id}</p>
+                  </div>
+                  <span className="text-[10px] font-black uppercase px-2 py-0.5 rounded-full bg-gray-100 text-gray-600 shrink-0">{u.role}</span>
+                </div>
+              )}
+              renderSelected={(u) => (
+                <div>
+                  <p className="text-sm font-semibold text-on-surface">{u.name || "—"}</p>
+                  <p className="text-xs text-on-surface-variant">{u.email || u.id}</p>
+                </div>
+              )}
+            />
+          )}
+
+          {step === "configure" && !success && (
+            <div className="space-y-4">
+              <div className="rounded-xl border border-primary/30 bg-primary/5 px-3 py-2.5">
+                <p className="text-xs text-on-surface-variant">Assigning to</p>
+                <p className="text-sm font-semibold text-on-surface">{targetUser?.name || form.targetPhone}</p>
+              </div>
+
+              <div>
+                <label className="block text-xs font-black uppercase tracking-widest text-on-surface-variant mb-1">Base on Plan (optional)</label>
+                <select value={form.planId} onChange={e => onApplyPlan(e.target.value)}
+                  className="w-full rounded-xl border border-outline-variant/40 bg-surface-container-low px-3 py-2 text-sm focus:outline-none appearance-none">
+                  <option value="">— Fully custom, no plan —</option>
+                  {activePlans.map(p => <option key={p.id} value={p.id}>{p.name} (₹{p.price}, {p.seats} seats, {p.durationMonths}mo)</option>)}
+                </select>
+                <p className="text-[11px] text-on-surface-variant mt-1">Prefills the fields below — every value stays editable.</p>
+              </div>
+
+              <div className="grid gap-3 sm:grid-cols-3">
+                <div>
+                  <label className="block text-xs font-black uppercase tracking-widest text-on-surface-variant mb-1">Seats</label>
+                  <input type="number" min="1" value={form.seats} onChange={e => setForm(f => ({ ...f, seats: e.target.value }))}
+                    className="w-full rounded-xl border border-outline-variant/40 bg-surface-container-low px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/30" />
+                </div>
+                <div>
+                  <label className="block text-xs font-black uppercase tracking-widest text-on-surface-variant mb-1">Price (₹)</label>
+                  <input type="number" min="0" step="0.01" value={form.price} onChange={e => setForm(f => ({ ...f, price: e.target.value }))}
+                    className="w-full rounded-xl border border-outline-variant/40 bg-surface-container-low px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/30" />
+                </div>
+                <div>
+                  <label className="block text-xs font-black uppercase tracking-widest text-on-surface-variant mb-1">Duration (mo)</label>
+                  <input type="number" min="1" value={form.durationMonths} onChange={e => setForm(f => ({ ...f, durationMonths: e.target.value }))}
+                    className="w-full rounded-xl border border-outline-variant/40 bg-surface-container-low px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/30" />
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-xs font-black uppercase tracking-widest text-on-surface-variant mb-1">Start Date</label>
+                <input type="date" value={form.startDate} onChange={e => setForm(f => ({ ...f, startDate: e.target.value }))}
+                  className="w-full rounded-xl border border-outline-variant/40 bg-surface-container-low px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/30" />
+                <p className="text-[11px] text-on-surface-variant mt-1">Leave blank to start immediately. A future date creates a "scheduled" subscription that activates automatically on that day.</p>
+              </div>
+
+              <div>
+                <label className="block text-xs font-black uppercase tracking-widest text-on-surface-variant mb-2">Features</label>
+                <div className="grid gap-2 sm:grid-cols-2">
+                  {PLAN_FEATURE_CATALOG.map(f => (
+                    <label key={f.key} className="flex items-center gap-2 rounded-xl border border-outline-variant/30 px-3 py-2 text-sm cursor-pointer hover:bg-surface-container-low">
+                      <input type="checkbox" checked={form.features.includes(f.key)} onChange={() => toggleFeature(f.key)}
+                        className="rounded border-outline-variant/40 text-primary focus:ring-primary/30" />
+                      {f.label}
+                    </label>
+                  ))}
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-xs font-black uppercase tracking-widest text-on-surface-variant mb-1">Internal Notes (optional)</label>
+                <textarea value={form.notes} onChange={e => setForm(f => ({ ...f, notes: e.target.value }))} rows={2}
+                  className="w-full rounded-xl border border-outline-variant/40 bg-surface-container-low px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/30" />
+              </div>
+            </div>
+          )}
+
+          {step === "review" && !success && (
+            <div className="space-y-3">
+              <div className="rounded-xl border border-outline-variant/30 bg-surface-container-low px-4 py-3 space-y-2 text-sm">
+                <div className="flex justify-between"><span className="text-on-surface-variant">Customer</span><span className="font-semibold text-on-surface">{targetUser?.name || form.targetPhone}</span></div>
+                <div className="flex justify-between"><span className="text-on-surface-variant">Plan</span><span className="font-semibold text-on-surface">{selectedPlan?.name || "Custom"}</span></div>
+                {basePrice != null && basePrice !== finalPrice && (
+                  <div className="flex justify-between"><span className="text-on-surface-variant">Base Plan Price</span><span className="text-on-surface">₹{basePrice}</span></div>
+                )}
+                <div className="flex justify-between"><span className="text-on-surface-variant">Final Price</span><span className="font-black text-on-surface">₹{finalPrice}</span></div>
+                <div className="flex justify-between"><span className="text-on-surface-variant">Seats</span><span className="text-on-surface">{form.seats}</span></div>
+                <div className="flex justify-between"><span className="text-on-surface-variant">Duration</span><span className="text-on-surface">{form.durationMonths} month(s)</span></div>
+                <div className="flex justify-between"><span className="text-on-surface-variant">Start</span><span className="text-on-surface">{form.startDate || "Immediately"}</span></div>
+                {form.features.length > 0 && (
+                  <div className="flex justify-between"><span className="text-on-surface-variant">Features</span><span className="text-on-surface text-right">{form.features.map(featureLabel).join(", ")}</span></div>
+                )}
+              </div>
+              <p className="text-[11px] text-on-surface-variant">This is a direct grant — no payment is collected. The customer's dashboard access unlocks {form.startDate ? "on the start date above" : "immediately"}.</p>
+            </div>
+          )}
+        </div>
+
+        <div className="flex flex-col-reverse gap-3 border-t border-outline-variant/20 p-5 sm:flex-row shrink-0">
+          {success ? (
+            <button type="button" onClick={onClose}
+              className="flex-1 py-2.5 rounded-xl bg-primary text-white text-sm font-bold hover:opacity-90">
+              Done
+            </button>
+          ) : (
+            <>
+              <button type="button"
+                onClick={() => step === "target" ? onClose() : setStep(step === "review" ? "configure" : "target")}
+                className="flex-1 py-2.5 rounded-xl border border-outline-variant/40 text-sm font-medium text-on-surface hover:bg-surface-container">
+                {step === "target" ? "Cancel" : "Back"}
+              </button>
+              <button type="button"
+                disabled={(step === "target" && !form.targetPhone) || saving}
+                onClick={() => step === "review" ? onSubmit() : setStep(step === "target" ? "configure" : "review")}
+                className="flex-1 py-2.5 rounded-xl bg-primary text-white text-sm font-bold hover:opacity-90 disabled:opacity-60 flex items-center justify-center gap-2">
+                {saving ? (
+                  <><div className="h-4 w-4 animate-spin rounded-full border-2 border-white border-t-transparent" /> Assigning…</>
+                ) : step === "review" ? (
+                  <><Check className="h-4 w-4" /> Assign Subscription</>
+                ) : (
+                  "Next"
+                )}
+              </button>
+            </>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── Edit subscription modal ────────────────────────────────────────────────
+
+function EditSubscriptionModal({
+  sub, form, setForm, saving, error, onClose, onSubmit,
+}: {
+  sub: any;
+  form: { seats: string; price: string; durationMonths: string; features: string[]; notes: string };
+  setForm: React.Dispatch<React.SetStateAction<{ seats: string; price: string; durationMonths: string; features: string[]; notes: string }>>;
+  saving: boolean;
+  error: string | null;
+  onClose: () => void;
+  onSubmit: (e: React.FormEvent) => void;
+}) {
+  const toggleFeature = (key: string) => {
+    setForm(f => ({ ...f, features: f.features.includes(key) ? f.features.filter(k => k !== key) : [...f.features, key] }));
+  };
+
+  return (
+    <div className="fixed inset-0 z-[75] flex items-end sm:items-center justify-center bg-black/40 backdrop-blur-sm sm:p-4">
+      <div className="w-full sm:max-w-lg rounded-t-2xl sm:rounded-2xl bg-white shadow-2xl overflow-hidden flex flex-col max-h-[90vh]">
+        <div className="flex items-center justify-between border-b border-outline-variant/30 px-5 py-4 shrink-0">
+          <div>
+            <h2 className="text-base font-semibold text-on-surface">Edit Subscription</h2>
+            <p className="text-xs text-on-surface-variant mt-0.5">{sub.ownerPhone || sub.ownerId}</p>
+          </div>
+          <button type="button" onClick={onClose} className="rounded-xl p-1.5 text-on-surface-variant hover:bg-surface-container">
+            <X className="h-4 w-4" />
+          </button>
+        </div>
+
+        <form onSubmit={onSubmit} className="overflow-y-auto p-5 space-y-4">
+          {error && <div className="rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">{error}</div>}
+
+          <div className="grid gap-3 sm:grid-cols-3">
+            <div>
+              <label className="block text-xs font-black uppercase tracking-widest text-on-surface-variant mb-1">Seats</label>
+              <input type="number" min="1" value={form.seats} onChange={e => setForm(f => ({ ...f, seats: e.target.value }))}
+                className="w-full rounded-xl border border-outline-variant/40 bg-surface-container-low px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/30" />
+            </div>
+            <div>
+              <label className="block text-xs font-black uppercase tracking-widest text-on-surface-variant mb-1">Price (₹)</label>
+              <input type="number" min="0" step="0.01" value={form.price} onChange={e => setForm(f => ({ ...f, price: e.target.value }))}
+                className="w-full rounded-xl border border-outline-variant/40 bg-surface-container-low px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/30" />
+            </div>
+            <div>
+              <label className="block text-xs font-black uppercase tracking-widest text-on-surface-variant mb-1">Duration (mo)</label>
+              <input type="number" min="1" value={form.durationMonths} onChange={e => setForm(f => ({ ...f, durationMonths: e.target.value }))}
+                className="w-full rounded-xl border border-outline-variant/40 bg-surface-container-low px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/30" />
+            </div>
+          </div>
+
+          <div>
+            <label className="block text-xs font-black uppercase tracking-widest text-on-surface-variant mb-2">Features</label>
+            <div className="grid gap-2 sm:grid-cols-2">
+              {PLAN_FEATURE_CATALOG.map(f => (
+                <label key={f.key} className="flex items-center gap-2 rounded-xl border border-outline-variant/30 px-3 py-2 text-sm cursor-pointer hover:bg-surface-container-low">
+                  <input type="checkbox" checked={form.features.includes(f.key)} onChange={() => toggleFeature(f.key)}
+                    className="rounded border-outline-variant/40 text-primary focus:ring-primary/30" />
+                  {f.label}
+                </label>
+              ))}
+            </div>
+          </div>
+
+          <div>
+            <label className="block text-xs font-black uppercase tracking-widest text-on-surface-variant mb-1">Internal Notes</label>
+            <textarea value={form.notes} onChange={e => setForm(f => ({ ...f, notes: e.target.value }))} rows={2}
+              className="w-full rounded-xl border border-outline-variant/40 bg-surface-container-low px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/30" />
+          </div>
+
+          <div className="flex flex-col-reverse gap-3 pt-2 sm:flex-row">
+            <button type="button" onClick={onClose}
+              className="flex-1 py-2.5 rounded-xl border border-outline-variant/40 text-sm font-medium text-on-surface hover:bg-surface-container">
+              Cancel
+            </button>
+            <button type="submit" disabled={saving}
+              className="flex-1 py-2.5 rounded-xl bg-primary text-white text-sm font-bold hover:opacity-90 disabled:opacity-60 flex items-center justify-center gap-2">
+              {saving ? (
+                <><div className="h-4 w-4 animate-spin rounded-full border-2 border-white border-t-transparent" /> Saving…</>
+              ) : (
+                <><Check className="h-4 w-4" /> Save Changes</>
+              )}
+            </button>
+          </div>
+        </form>
+      </div>
     </div>
   );
 }

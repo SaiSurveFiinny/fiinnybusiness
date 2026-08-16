@@ -19,7 +19,6 @@ import '../../features/orders/screens/order_detail_screen.dart';
 import '../../features/hubs/screens/hubs_screen.dart';
 import '../../features/hubs/screens/hub_detail_screen.dart';
 import '../../features/brand/screens/brand_screen.dart';
-import '../../features/dashboard/screens/dashboard_home_screen.dart';
 import '../../features/dashboard/screens/inventory_screen.dart';
 import '../../features/dashboard/screens/seller_orders_screen.dart';
 import '../../features/dashboard/screens/delivery_settings_screen.dart';
@@ -230,13 +229,23 @@ final routerProvider = Provider<GoRouter>((ref) {
         }
       }
 
+      // "/dashboard" itself is now just an alias for the seller's Overview,
+      // which lives on Profile — Profile already renders the same read-only
+      // overview/nav-hub content (and its own paywall-free access for unpaid
+      // sellers), so having a second, different "Overview" screen reachable
+      // both from the Profile tab and from this URL was confusing users who
+      // saw two different pages for what the sidebar calls one destination.
+      // Sub-routes (/dashboard/analytics, /dashboard/orders, etc.) are real,
+      // distinct screens and keep the paywall gate below untouched.
+      if (path == '/dashboard') return '/profile';
+
       if (isLoggedIn && path.startsWith('/dashboard')) {
         final canAccess = ref.read(canAccessDashboardProvider);
         if (!canAccess) return '/subscription?reason=paywall';
       }
 
       if (isLoggedIn && path.startsWith('/dashboard/manufacturer')) {
-        if (!ref.read(isManufacturerProvider)) return '/dashboard';
+        if (!ref.read(isManufacturerProvider)) return '/profile';
       }
 
       return null;
@@ -389,11 +398,8 @@ final routerProvider = Provider<GoRouter>((ref) {
         ),
       ),
       // ── Dashboard routes ─────────────────────────────────────────────────
-      GoRoute(
-        path: '/dashboard',
-        parentNavigatorKey: _rootKey,
-        builder: (_, _) => const _RootBackFallback(child: DashboardHomeScreen()),
-      ),
+      // "/dashboard" (Overview) has no route of its own — it redirects to
+      // /profile in the redirect callback above.
       GoRoute(
         path: '/dashboard/inventory',
         parentNavigatorKey: _rootKey,

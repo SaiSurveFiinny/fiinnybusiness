@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { collection, getDocs, orderBy, query, limit, where } from "firebase/firestore";
+import { collection, getDocs, orderBy, query, limit, where, getCountFromServer } from "firebase/firestore";
 import { db } from "../../firebase";
 import { Users, Eye, MousePointer, Navigation, TrendingUp, Store, Package, BarChart3, AlertTriangle } from "lucide-react";
 
@@ -95,17 +95,19 @@ export default function AnalyticsPage() {
           setError((prev) => (prev ? prev + "\n" : "") + `Product Catalog: ${err.message || err}`);
         }
 
-        // Count users, retailers, manufacturers
+        // Count users, retailers, manufacturers — cheap server-side aggregates,
+        // avoids pulling every user doc just to count them.
         let totalUsers = 0, totalRetailers = 0, totalManufacturers = 0;
         try {
+          const usersCol = collection(db, "users");
           const [usersSnap, retailersSnap, mfrSnap] = await Promise.all([
-            getDocs(collection(db, "users")),
-            getDocs(query(collection(db, "users"), where("role", "==", "retailer"))),
-            getDocs(query(collection(db, "users"), where("role", "==", "manufacturer"))),
+            getCountFromServer(usersCol),
+            getCountFromServer(query(usersCol, where("role", "==", "retailer"))),
+            getCountFromServer(query(usersCol, where("role", "==", "manufacturer"))),
           ]);
-          totalUsers = usersSnap.size;
-          totalRetailers = retailersSnap.size;
-          totalManufacturers = mfrSnap.size;
+          totalUsers = usersSnap.data().count;
+          totalRetailers = retailersSnap.data().count;
+          totalManufacturers = mfrSnap.data().count;
         } catch (err: any) {
           console.error("Failed to load user stats:", err);
           setError((prev) => (prev ? prev + "\n" : "") + `Platform Users: ${err.message || err}`);
