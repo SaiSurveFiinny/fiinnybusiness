@@ -7,7 +7,7 @@ import { getTenantCollection } from '../utils/tenantPath';
 import { classifySale, gstFromInclusive, resolveSaleLine, openingStock } from '../utils/stockReport';
 import {
     Package2, Loader2, Search, X, Download,
-    ChevronDown, ChevronRight, Calendar, ExternalLink,
+    Calendar, Eye, Pencil,
 } from 'lucide-react';
 import Papa from 'papaparse';
 
@@ -133,6 +133,28 @@ interface ProductView {
     txnCount: number;
 }
 
+// Flat, spreadsheet-style row — one per transaction (or one stock-only row for a
+// product with no movement in the period). Maps 1:1 onto the reference sheet.
+interface FlatRow {
+    key: string;
+    productId: string;
+    productName: string;
+    currentStock: number;            // product closing stock (shown once per product)
+    showStock: boolean;              // true only on the first row of each product
+    batchNumber: string;
+    channel: TxnChannel | 'stock';
+    channelLabel: string;
+    party: string;
+    date: string;
+    txn: Txn | null;                 // drives the Invoice actions
+    b2bQty: number | null;
+    b2cQty: number | null;
+    remaining: number | null;
+    purchaseAmount: number;
+    salesAmount: number;
+    gst: number;
+}
+
 // ── Period helpers ─────────────────────────────────────────────────────────────
 
 type Period = 'today' | 'this_week' | 'this_month' | 'all_time' | 'custom';
@@ -181,16 +203,23 @@ const CHANNEL_CHIP: Record<TxnChannel, { label: string; bg: string; color: strin
     adjustment: { label: 'Adjustment',  bg: 'hsla(38,92%,50%,0.12)',  color: '#d97706' },
 };
 
-// Signed stock number — red + NEG chip when negative
-function StockNum({ value }: { value: number | null }) {
-    if (value == null) return <span style={{ color: 'var(--text-tertiary)' }}>—</span>;
-    const neg = value < 0;
-    return (
-        <span style={{ fontWeight: 700, color: neg ? '#ef4444' : value === 0 ? 'var(--text-secondary)' : 'var(--text-primary)' }}>
-            {fmtNum(value)}
-            {neg && <span style={{ marginLeft: '0.3rem', fontSize: '0.6rem', padding: '0.05rem 0.3rem', borderRadius: '999px', background: 'hsla(0,84%,60%,0.14)', color: '#ef4444', fontWeight: 800 }}>NEG</span>}
-        </span>
-    );
+// Low-stock threshold — quantities below this are highlighted red (per reference sheet).
+const LOW_STOCK = 100;
+
+const NEG_BADGE: React.CSSProperties = {
+    marginLeft: '0.3rem', fontSize: '0.6rem', padding: '0.05rem 0.3rem', borderRadius: '999px',
+    background: 'hsla(0,84%,60%,0.2)', color: '#ef4444', fontWeight: 800,
+};
+
+// Visual tone for a stock / remaining quantity:
+//   negative  → strong red text + red cell + NEG badge
+//   < 100     → red text + faint red cell
+//   otherwise → normal
+function stockTone(v: number | null): { td: React.CSSProperties; text: string; neg: boolean } {
+    if (v == null) return { td: {}, text: 'var(--text-tertiary)', neg: false };
+    if (v < 0)        return { td: { background: 'hsla(0,84%,60%,0.16)' }, text: '#ef4444', neg: true };
+    if (v < LOW_STOCK) return { td: { background: 'hsla(0,84%,60%,0.07)' }, text: '#ef4444', neg: false };
+    return { td: {}, text: 'var(--text-primary)', neg: false };
 }
 
 // ── Component ─────────────────────────────────────────────────────────────────
@@ -220,10 +249,6 @@ export default function StockReportPage() {
 
     // ── Sale-type filter ──────────────────────────────────────────────────────
     const [saleType, setSaleType] = useState<SaleType>('all');
-
-    // ── Expansion state ───────────────────────────────────────────────────────
-    const [expandedProducts, setExpandedProducts] = useState<Set<string>>(new Set());
-    const [expandedBatches, setExpandedBatches]   = useState<Set<string>>(new Set());
 
     // ── Data ──────────────────────────────────────────────────────────────────
     const [products, setProducts]   = useState<Product[]>([]);
@@ -527,59 +552,152 @@ export default function StockReportPage() {
         });
     }, [products, selectedProduct, productSearch, saleType, batchesByProduct, txnsByProduct]);
 
-    // ── Summary totals (filtered period) ──────────────────────────────────────
-    const summary = useMemo(() => {
-        const uniqueBatches = new Set<string>();
-        let activeProducts = 0;
+    // ── Flatten to spreadsheet rows (one per transaction) ─────────────────────
+    const flatRows = useMemo((): FlatRow[] => {
+        const rows: FlatRow[] = [];
         for (const v of productViews) {
-            if (v.txnCount > 0) activeProducts++;
-            for (const g of v.batchGroups) {
-                if (g.txns.length > 0 && g.batchNumber !== '—') uniqueBatches.add(`${v.product.id}||${g.batchNumber}`);
+            // All transactions for this product, newest first.
+            const txns = v.batchGroups.flatMap(g => g.txns).sort((a, b) => (b.date || '').localeCompare(a.date || ''));
+
+            if (txns.length === 0) {
+                // Stock-only row — keeps the product visible even with no movement.
+                rows.push({
+                    key: `stock-${v.product.id}`,
+                    productId: v.product.id,
+                    productName: v.product.name,
+                    currentStock: v.currentStock,
+                    showStock: true,
+                    batchNumber: '',
+                    channel: 'stock',
+                    channelLabel: '—',
+                    party: '',
+                    date: '',
+                    txn: null,
+                    b2bQty: null,
+                    b2cQty: null,
+                    remaining: null,
+                    purchaseAmount: 0,
+                    salesAmount: 0,
+                    gst: 0,
+                });
+                continue;
             }
+
+            txns.forEach((t, i) => {
+                const isSale = t.kind === 'sale';
+                rows.push({
+                    key: t.id,
+                    productId: v.product.id,
+                    productName: v.product.name,
+                    currentStock: v.currentStock,
+                    showStock: i === 0,
+                    batchNumber: t.batchNumber || '—',
+                    channel: t.channel,
+                    channelLabel: CHANNEL_CHIP[t.channel].label,
+                    party: t.party,
+                    date: t.date,
+                    txn: t,
+                    b2bQty: isSale && t.channel === 'b2b' ? t.qty : null,
+                    b2cQty: isSale && t.channel === 'pos' ? t.qty : null,
+                    remaining: t.remaining,
+                    purchaseAmount: t.kind === 'purchase' ? t.value : 0,
+                    salesAmount: isSale ? t.value : 0,
+                    gst: t.gst,
+                });
+            });
         }
-        return {
-            totalCurrentStock: productViews.reduce((s, v) => s + v.currentStock, 0),
-            totalPurchaseValue: productViews.reduce((s, v) => s + v.purchaseValue, 0),
-            totalSalesValue: productViews.reduce((s, v) => s + v.salesValue, 0),
-            totalGst: productViews.reduce((s, v) => s + v.gstValue, 0),
-            uniqueProducts: activeProducts,
-            uniqueBatches: uniqueBatches.size,
-        };
+        return rows;
     }, [productViews]);
 
-    // ── CSV export ────────────────────────────────────────────────────────────
+    // ── Grand-total aggregates (over the filtered rows) ───────────────────────
+    const grandTotal = useMemo(() => {
+        const productIds = new Set<string>();
+        const batchKeys = new Set<string>();
+        const names = new Set<string>();
+        const stockByProduct = new Map<string, number>();
+        let b2b = 0, b2c = 0, remaining = 0, purchase = 0, sales = 0, gst = 0;
+
+        for (const r of flatRows) {
+            productIds.add(r.productId);
+            stockByProduct.set(r.productId, r.currentStock);
+            if (r.batchNumber && r.batchNumber !== '—') batchKeys.add(r.batchNumber);
+            if (r.party && r.party !== '—') names.add(r.party.trim().toLowerCase());
+            b2b += r.b2bQty || 0;
+            b2c += r.b2cQty || 0;
+            remaining += r.remaining || 0;
+            purchase += r.purchaseAmount;
+            sales += r.salesAmount;
+            gst += r.gst;
+        }
+        let currentStock = 0;
+        for (const s of stockByProduct.values()) currentStock += s;
+
+        return {
+            productCount: productIds.size,
+            currentStock,
+            batchCount: batchKeys.size,
+            nameCount: names.size,
+            b2b, b2c, remaining, purchase, sales, gst,
+        };
+    }, [flatRows]);
+
+    // ── CSV export (mirrors the on-screen columns) ────────────────────────────
     const handleExport = () => {
-        const rows = productViews.map(v => ({
-            'Product': v.product.name,
-            'Opening Stock': v.openingStock,
-            'Purchases': v.purchasesQty,
-            'Sales': v.salesQty,
-            'Adjustments': v.adjustQty,
-            'Current Stock': v.currentStock,
-            'Batches': v.batchCount,
-            'Purchase Value': v.purchaseValue.toFixed(2),
-            'Sales Value': v.salesValue.toFixed(2),
-            'GST': v.gstValue.toFixed(2),
+        const rows = flatRows.map((r, i) => ({
+            'Sr. No.': i + 1,
+            'Product': r.productName,
+            'Current Stock': r.showStock ? r.currentStock : '',
+            'Batch Number': r.batchNumber && r.batchNumber !== '—' ? r.batchNumber : '',
+            'B2B / B2C': r.channelLabel === '—' ? '' : r.channelLabel,
+            'Name / Retailer / Shopkeeper': r.party,
+            'Date': r.date ? fmtDate(r.date) : '',
+            'Invoice': r.txn?.invoiceNumber && r.txn.invoiceNumber !== '—' ? r.txn.invoiceNumber : '',
+            'B2B': r.b2bQty ?? '',
+            'B2C': r.b2cQty ?? '',
+            'Total Remaining Quantity': r.remaining ?? '',
+            'Purchase Amount': r.purchaseAmount ? r.purchaseAmount.toFixed(2) : '',
+            'Sales Amount': r.salesAmount ? r.salesAmount.toFixed(2) : '',
+            'GST': r.gst ? r.gst.toFixed(2) : '',
         }));
         const blob = new Blob(['﻿' + Papa.unparse(rows)], { type: 'text/csv;charset=utf-8;' });
         const a = document.createElement('a'); a.href = URL.createObjectURL(blob);
         a.download = `stock_report_${dateFrom}_${dateTo}.csv`; a.click(); URL.revokeObjectURL(a.href);
     };
 
-    const toggleProduct = (id: string) =>
-        setExpandedProducts(s => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n; });
-    const toggleBatch = (key: string) =>
-        setExpandedBatches(s => { const n = new Set(s); n.has(key) ? n.delete(key) : n.add(key); return n; });
-
-    const openInvoice = (t: Txn) => {
+    // ── Invoice actions — reuse existing POS / B2B routes ─────────────────────
+    // View/download: POS opens its reprint dialog (print + PDF); B2B opens the
+    // invoice page (print + PDF). Edit loads the order back into the editor.
+    const viewInvoice = (t: Txn) => {
         if (t.kind !== 'sale' || !t.orderId) return;
         if (t.orderType === 'sale_pos') navigate(`/pos?reprintOrderId=${t.orderId}`);
         else navigate(`/b2b-invoice?orderId=${t.orderId}`);
     };
+    const editInvoice = (t: Txn) => {
+        if (t.kind !== 'sale' || !t.orderId) return;
+        navigate(t.orderType === 'sale_pos' ? `/pos?orderId=${t.orderId}` : `/b2b-invoice?orderId=${t.orderId}`);
+    };
 
     const labelStyle: React.CSSProperties = { display: 'block', fontSize: '0.72rem', fontWeight: 600, color: 'var(--text-secondary)', marginBottom: '0.3rem' };
-    const numHead: React.CSSProperties = { padding: '0.7rem 0.7rem', fontWeight: 600, textAlign: 'right', whiteSpace: 'nowrap' };
-    const numCell: React.CSSProperties = { padding: '0.6rem 0.7rem', textAlign: 'right', whiteSpace: 'nowrap' };
+    const numHead: React.CSSProperties = { padding: '0.6rem 0.7rem', fontWeight: 600, textAlign: 'right', whiteSpace: 'nowrap' };
+    const numCell: React.CSSProperties = { padding: '0.55rem 0.7rem', textAlign: 'right', whiteSpace: 'nowrap' };
+    const txtHead: React.CSSProperties = { padding: '0.6rem 0.7rem', fontWeight: 600, textAlign: 'left', whiteSpace: 'nowrap' };
+    const txtCell: React.CSSProperties = { padding: '0.55rem 0.7rem', textAlign: 'left', whiteSpace: 'nowrap' };
+    const stickyHead: React.CSSProperties = { position: 'sticky', top: 0, zIndex: 2, background: 'var(--surface-raised)' };
+
+    // Renders a stock/remaining <td> with red highlighting below 100 / negative.
+    const stockCell = (value: number | null, show = true, extra?: React.CSSProperties) => {
+        if (!show) return <td style={{ ...numCell, ...extra }} />;
+        const s = stockTone(value);
+        return (
+            <td style={{ ...numCell, ...s.td, ...extra }}>
+                {value == null
+                    ? <span style={{ color: 'var(--text-tertiary)' }}>—</span>
+                    : <span style={{ fontWeight: 700, color: s.text }}>{fmtNum(value)}{s.neg && <span style={NEG_BADGE}>NEG</span>}</span>}
+            </td>
+        );
+    };
+
+    const iconBtn: React.CSSProperties = { background: 'none', border: '1px solid var(--surface-border)', borderRadius: '6px', padding: '0.2rem', cursor: 'pointer', color: 'var(--text-secondary)', display: 'inline-flex', alignItems: 'center' };
 
     // ── Render ────────────────────────────────────────────────────────────────
     return (
@@ -592,7 +710,7 @@ export default function StockReportPage() {
                         <Package2 size={26} /> Stock Report
                     </h1>
                     <p style={{ color: 'var(--text-secondary)', fontSize: '0.85rem' }}>
-                        Opening stock, movement (purchases · sales · adjustments) and closing stock — product → batch → transaction.
+                        Current stock, batch, channel (B2B / B2C) and invoice for every transaction in the selected period.
                     </p>
                 </div>
                 <button onClick={handleExport} className="btn btn-secondary" style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', fontSize: '0.85rem' }}>
@@ -601,7 +719,7 @@ export default function StockReportPage() {
             </div>
 
             {/* ── Compact control section ───────────────────────────────────── */}
-            <div className="glass-panel" style={{ position: 'relative', zIndex: 30, padding: '0.9rem 1.1rem', marginBottom: '1.1rem', borderRadius: '12px', display: 'flex', gap: '1.25rem', flexWrap: 'wrap', alignItems: 'flex-end' }}>
+            <div className="glass-panel" style={{ position: 'relative', zIndex: 50, padding: '0.9rem 1.1rem', marginBottom: '1.1rem', borderRadius: '12px', display: 'flex', gap: '1.25rem', flexWrap: 'wrap', alignItems: 'flex-end' }}>
 
                 {/* Product search */}
                 <div style={{ flex: '1 1 260px', minWidth: '220px' }}>
@@ -629,7 +747,7 @@ export default function StockReportPage() {
                             </button>
                         )}
                         {showProductDropdown && productSuggestions.length > 0 && (
-                            <div style={{ position: 'absolute', top: '100%', left: 0, right: 0, zIndex: 1500, backgroundColor: 'var(--bg-color)', border: '1px solid var(--surface-border)', borderRadius: '10px', boxShadow: '0 8px 32px rgba(0,0,0,0.22)', marginTop: '3px', overflow: 'hidden' }}>
+                            <div style={{ position: 'absolute', top: '100%', left: 0, right: 0, zIndex: 3000, backgroundColor: 'var(--bg-color, #ffffff)', opacity: 1, border: '1px solid var(--surface-border)', borderRadius: '10px', boxShadow: '0 8px 32px rgba(0,0,0,0.22)', marginTop: '3px', overflow: 'hidden', maxHeight: '320px', overflowY: 'auto' }}>
                                 {productSuggestions.map(p => (
                                     <button key={p.id}
                                         onMouseDown={() => { setSelectedProduct(p); setProductSearch(p.name || ''); setShowProductDropdown(false); }}
@@ -690,164 +808,92 @@ export default function StockReportPage() {
             {loading ? (
                 <div style={{ textAlign: 'center', padding: '4rem' }}><Loader2 className="animate-spin" size={28} style={{ margin: '0 auto' }} /></div>
             ) : (
-                <>
-                    {/* ── Unified stock table ───────────────────────────────── */}
-                    <div className="glass-panel" style={{ borderRadius: '12px', overflow: 'hidden' }}>
-                        <div style={{ overflowX: 'auto' }}>
-                            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.85rem' }}>
-                                <thead>
-                                    <tr style={{ borderBottom: '2px solid var(--surface-border)', color: 'var(--text-secondary)' }}>
-                                        <th style={{ padding: '0.7rem 0.85rem', fontWeight: 600, textAlign: 'left', whiteSpace: 'nowrap' }}>Product</th>
-                                        <th style={numHead}>Opening</th>
-                                        <th style={numHead}>Purchases</th>
-                                        <th style={numHead}>Sales</th>
-                                        <th style={numHead}>Current</th>
-                                        <th style={numHead}>Batches</th>
-                                        <th style={numHead}>Purchase ₹</th>
-                                        <th style={numHead}>Sales ₹</th>
-                                        <th style={numHead}>GST ₹</th>
-                                    </tr>
-                                </thead>
-                                <tbody>
-                                    {productViews.length === 0 ? (
-                                        <tr><td colSpan={9} style={{ padding: '3rem', textAlign: 'center', color: 'var(--text-tertiary)' }}>No products found.</td></tr>
-                                    ) : productViews.map((v, i) => {
-                                        const pOpen = expandedProducts.has(v.product.id);
-                                        return [
-                                            // ── Product row ──
-                                            <tr key={v.product.id}
-                                                onClick={() => toggleProduct(v.product.id)}
-                                                style={{ borderBottom: '1px solid var(--surface-border)', background: i % 2 === 0 ? 'transparent' : 'var(--surface-raised)', cursor: 'pointer' }}>
-                                                <td style={{ padding: '0.65rem 0.85rem', fontWeight: 600 }}>
-                                                    <span style={{ display: 'inline-flex', alignItems: 'center', gap: '0.45rem' }}>
-                                                        {pOpen ? <ChevronDown size={14} style={{ color: 'var(--text-tertiary)' }} /> : <ChevronRight size={14} style={{ color: 'var(--text-tertiary)' }} />}
-                                                        <span>{v.product.name}</span>
+                <div className="glass-panel" style={{ borderRadius: '12px', overflow: 'hidden' }}>
+                    <div style={{ overflowX: 'auto', maxHeight: '72vh', overflowY: 'auto' }}>
+                        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.82rem' }}>
+                            <thead>
+                                <tr style={{ borderBottom: '2px solid var(--surface-border)', color: 'var(--text-secondary)' }}>
+                                    <th style={{ ...numHead, ...stickyHead }}>Sr. No.</th>
+                                    <th style={{ ...txtHead, ...stickyHead }}>Product</th>
+                                    <th style={{ ...numHead, ...stickyHead }}>Current Stock</th>
+                                    <th style={{ ...txtHead, ...stickyHead }}>Batch Number</th>
+                                    <th style={{ ...txtHead, ...stickyHead }}>B2B / B2C</th>
+                                    <th style={{ ...txtHead, ...stickyHead }}>Name / Retailer / Shopkeeper</th>
+                                    <th style={{ ...txtHead, ...stickyHead }}>Date</th>
+                                    <th style={{ ...txtHead, ...stickyHead }}>Invoice</th>
+                                    <th style={{ ...numHead, ...stickyHead }}>B2B</th>
+                                    <th style={{ ...numHead, ...stickyHead }}>B2C</th>
+                                    <th style={{ ...numHead, ...stickyHead }}>Total Remaining Qty</th>
+                                    <th style={{ ...numHead, ...stickyHead }}>Purchase Amount</th>
+                                    <th style={{ ...numHead, ...stickyHead }}>Sales Amount</th>
+                                    <th style={{ ...numHead, ...stickyHead }}>GST</th>
+                                </tr>
+                                {/* Grand Total — directly below the headers */}
+                                <tr style={{ ...({ position: 'sticky', top: '2.55rem', zIndex: 2 } as React.CSSProperties), background: 'var(--surface-raised)', fontWeight: 800, borderBottom: '2px solid var(--surface-border)' }}>
+                                    <td style={{ ...txtCell, fontWeight: 800 }}>Total</td>
+                                    <td style={{ ...txtCell, fontWeight: 800 }}>{fmtNum(grandTotal.productCount)} product{grandTotal.productCount === 1 ? '' : 's'}</td>
+                                    <td style={numCell}>{fmtNum(grandTotal.currentStock)}</td>
+                                    <td style={txtCell}>{fmtNum(grandTotal.batchCount)} batch{grandTotal.batchCount === 1 ? '' : 'es'}</td>
+                                    <td style={txtCell} />
+                                    <td style={txtCell}>{fmtNum(grandTotal.nameCount)} name{grandTotal.nameCount === 1 ? '' : 's'}</td>
+                                    <td style={txtCell} />
+                                    <td style={txtCell} />
+                                    <td style={numCell}>{grandTotal.b2b ? fmtNum(grandTotal.b2b) : '—'}</td>
+                                    <td style={numCell}>{grandTotal.b2c ? fmtNum(grandTotal.b2c) : '—'}</td>
+                                    <td style={numCell}>{fmtNum(grandTotal.remaining)}</td>
+                                    <td style={{ ...numCell, color: '#10b981' }}>{fmtInr(grandTotal.purchase)}</td>
+                                    <td style={{ ...numCell, color: '#f59e0b' }}>{fmtInr(grandTotal.sales)}</td>
+                                    <td style={numCell}>{fmtInr(grandTotal.gst)}</td>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {flatRows.length === 0 ? (
+                                    <tr><td colSpan={14} style={{ padding: '3rem', textAlign: 'center', color: 'var(--text-tertiary)' }}>No stock or transactions found for this filter.</td></tr>
+                                ) : flatRows.map((r, i) => {
+                                    const groupStart = r.showStock && i > 0;
+                                    const chip = r.channel !== 'stock' ? CHANNEL_CHIP[r.channel] : null;
+                                    const t = r.txn;
+                                    const isSale = t?.kind === 'sale' && !!t.orderId;
+                                    return (
+                                        <tr key={r.key} style={{ borderBottom: '1px solid var(--surface-border)', borderTop: groupStart ? '2px solid var(--surface-border)' : undefined, background: i % 2 === 0 ? 'transparent' : 'hsla(0,0%,50%,0.03)' }}>
+                                            <td style={{ ...numCell, color: 'var(--text-tertiary)' }}>{i + 1}</td>
+                                            <td style={{ ...txtCell, fontWeight: r.showStock ? 700 : 400 }}>{r.showStock ? r.productName : ''}</td>
+                                            {stockCell(r.currentStock, r.showStock)}
+                                            <td style={{ ...txtCell, fontFamily: 'monospace', fontSize: '0.78rem', color: 'var(--text-secondary)' }}>{r.batchNumber || '—'}</td>
+                                            <td style={txtCell}>
+                                                {chip ? (
+                                                    <span style={{ fontSize: '0.66rem', padding: '0.12rem 0.5rem', borderRadius: '999px', fontWeight: 700, background: chip.bg, color: chip.color, whiteSpace: 'nowrap' }}>{r.channelLabel}</span>
+                                                ) : <span style={{ color: 'var(--text-tertiary)' }}>—</span>}
+                                            </td>
+                                            <td style={{ ...txtCell, color: 'var(--text-secondary)' }}>{r.party || '—'}</td>
+                                            <td style={{ ...txtCell, color: 'var(--text-secondary)' }}>{r.date ? fmtDate(r.date) : '—'}</td>
+                                            <td style={txtCell}>
+                                                {isSale ? (
+                                                    <span style={{ display: 'inline-flex', alignItems: 'center', gap: '0.3rem' }}>
+                                                        <button onClick={() => viewInvoice(t!)} title="Open invoice"
+                                                            style={{ background: 'none', border: 'none', padding: 0, cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: '0.25rem', fontFamily: 'monospace', fontSize: '0.74rem', fontWeight: 600, color: 'var(--primary-light)' }}>
+                                                            {t!.invoiceNumber}<Eye size={12} style={{ opacity: 0.8 }} />
+                                                        </button>
+                                                        <button onClick={() => viewInvoice(t!)} title="Download / print invoice" style={iconBtn}><Download size={12} /></button>
+                                                        <button onClick={() => editInvoice(t!)} title="Edit invoice" style={iconBtn}><Pencil size={12} /></button>
                                                     </span>
-                                                </td>
-                                                <td style={numCell}><StockNum value={v.openingStock} /></td>
-                                                <td style={{ ...numCell, color: '#10b981', fontWeight: 600 }}>{v.purchasesQty > 0 ? `+${fmtNum(v.purchasesQty)}` : '—'}</td>
-                                                <td style={{ ...numCell, color: '#ef4444', fontWeight: 600 }}>{v.salesQty > 0 ? `-${fmtNum(v.salesQty)}` : '—'}</td>
-                                                <td style={numCell}><StockNum value={v.currentStock} /></td>
-                                                <td style={{ ...numCell, color: 'var(--text-secondary)' }}>{v.batchCount}</td>
-                                                <td style={{ ...numCell, color: '#10b981' }}>{fmtInr(v.purchaseValue)}</td>
-                                                <td style={{ ...numCell, color: '#f59e0b' }}>{fmtInr(v.salesValue)}</td>
-                                                <td style={{ ...numCell, color: 'var(--text-secondary)' }}>{fmtInr(v.gstValue)}</td>
-                                            </tr>,
-
-                                            // ── Batch rows ──
-                                            ...(pOpen ? (v.batchGroups.length === 0 ? [
-                                                <tr key={`${v.product.id}-nobatch`} style={{ borderBottom: '1px solid var(--surface-border)', background: 'hsla(0,0%,50%,0.04)' }}>
-                                                    <td colSpan={9} style={{ padding: '0.6rem 0.85rem 0.6rem 2.5rem', color: 'var(--text-tertiary)', fontSize: '0.8rem' }}>
-                                                        No batches or transactions in this period.
-                                                    </td>
-                                                </tr>,
-                                            ] : v.batchGroups.flatMap(g => {
-                                                const bKey = `${v.product.id}||${g.batchNumber}`;
-                                                const bOpen = expandedBatches.has(bKey);
-                                                return [
-                                                    <tr key={bKey}
-                                                        onClick={() => toggleBatch(bKey)}
-                                                        style={{ borderBottom: '1px solid var(--surface-border)', background: 'hsla(0,0%,50%,0.04)', cursor: 'pointer' }}>
-                                                        <td style={{ padding: '0.5rem 0.85rem 0.5rem 2.5rem' }}>
-                                                            <span style={{ display: 'inline-flex', alignItems: 'center', gap: '0.4rem' }}>
-                                                                {bOpen ? <ChevronDown size={12} style={{ color: 'var(--text-tertiary)' }} /> : <ChevronRight size={12} style={{ color: 'var(--text-tertiary)' }} />}
-                                                                <span style={{ fontFamily: 'monospace', fontSize: '0.8rem', color: 'var(--text-secondary)' }}>
-                                                                    {g.batchNumber === '—' ? 'No batch' : g.batchNumber}
-                                                                </span>
-                                                            </span>
-                                                        </td>
-                                                        <td style={numCell}><StockNum value={g.openingStock} /></td>
-                                                        <td style={{ ...numCell, color: '#10b981' }}>{g.purchasesQty > 0 ? `+${fmtNum(g.purchasesQty)}` : '—'}</td>
-                                                        <td style={{ ...numCell, color: '#ef4444' }}>{g.salesQty > 0 ? `-${fmtNum(g.salesQty)}` : '—'}</td>
-                                                        <td style={numCell}><StockNum value={g.currentStock} /></td>
-                                                        <td colSpan={4} style={{ padding: '0.5rem 0.85rem', textAlign: 'right', color: 'var(--text-tertiary)', fontSize: '0.78rem' }}>
-                                                            {g.txns.length} transaction{g.txns.length === 1 ? '' : 's'}
-                                                        </td>
-                                                    </tr>,
-
-                                                    // ── Transactions ──
-                                                    ...(bOpen ? [
-                                                        <tr key={`${bKey}-txns`}>
-                                                            <td colSpan={9} style={{ padding: 0, background: 'var(--surface-base)' }}>
-                                                                {g.txns.length === 0 ? (
-                                                                    <div style={{ padding: '0.75rem 0.85rem 0.75rem 3.5rem', color: 'var(--text-tertiary)', fontSize: '0.8rem' }}>
-                                                                        No transactions in this period.
-                                                                    </div>
-                                                                ) : (
-                                                                    <div style={{ padding: '0.4rem 0.85rem 0.75rem 3.5rem', overflowX: 'auto' }}>
-                                                                        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.78rem' }}>
-                                                                            <thead>
-                                                                                <tr style={{ borderBottom: '1px solid var(--surface-border)', color: 'var(--text-tertiary)' }}>
-                                                                                    {['Type', 'Channel', 'Party', 'Date', 'Invoice', 'Qty', 'Value', 'Remaining'].map(h => (
-                                                                                        <th key={h} style={{ padding: '0.35rem 0.6rem', fontWeight: 600, textAlign: ['Qty', 'Value', 'Remaining'].includes(h) ? 'right' : 'left', whiteSpace: 'nowrap' }}>{h}</th>
-                                                                                    ))}
-                                                                                </tr>
-                                                                            </thead>
-                                                                            <tbody>
-                                                                                {g.txns.map(t => {
-                                                                                    const chip = CHANNEL_CHIP[t.channel];
-                                                                                    const typeLabel = t.kind === 'purchase' ? 'Purchase' : t.kind === 'sale' ? 'Sale' : 'Adjustment';
-                                                                                    const typeColor = t.kind === 'purchase' ? '#10b981' : t.kind === 'sale' ? '#f59e0b' : '#d97706';
-                                                                                    const qtyStr = t.kind === 'purchase' ? `+${fmtNum(t.qty)}`
-                                                                                        : t.kind === 'sale' ? `-${fmtNum(t.qty)}`
-                                                                                        : `${t.qty > 0 ? '+' : ''}${fmtNum(t.qty)}`;
-                                                                                    const qtyColor = t.kind === 'purchase' ? '#10b981' : t.kind === 'sale' ? '#ef4444' : '#d97706';
-                                                                                    return (
-                                                                                        <tr key={t.id} style={{ borderBottom: '1px solid var(--surface-border)' }}>
-                                                                                            <td style={{ padding: '0.35rem 0.6rem', fontWeight: 600, color: typeColor }}>{typeLabel}</td>
-                                                                                            <td style={{ padding: '0.35rem 0.6rem' }}>
-                                                                                                <span style={{ fontSize: '0.66rem', padding: '0.1rem 0.4rem', borderRadius: '999px', fontWeight: 700, background: chip.bg, color: chip.color }}>{chip.label}</span>
-                                                                                            </td>
-                                                                                            <td style={{ padding: '0.35rem 0.6rem', color: 'var(--text-secondary)' }}>{t.party}</td>
-                                                                                            <td style={{ padding: '0.35rem 0.6rem', color: 'var(--text-secondary)', whiteSpace: 'nowrap' }}>{fmtDate(t.date)}</td>
-                                                                                            <td style={{ padding: '0.35rem 0.6rem' }}>
-                                                                                                {t.kind === 'sale' && t.orderId ? (
-                                                                                                    <button onClick={() => openInvoice(t)}
-                                                                                                        style={{ background: 'none', border: 'none', padding: 0, cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: '0.2rem', fontFamily: 'monospace', fontSize: '0.72rem', fontWeight: 600, color: 'var(--primary-light)', textDecoration: 'underline', textUnderlineOffset: '2px' }}>
-                                                                                                        {t.invoiceNumber}
-                                                                                                        <ExternalLink size={10} style={{ opacity: 0.7 }} />
-                                                                                                    </button>
-                                                                                                ) : (
-                                                                                                    <span style={{ fontFamily: 'monospace', fontSize: '0.72rem', color: 'var(--text-secondary)' }}>{t.invoiceNumber}</span>
-                                                                                                )}
-                                                                                            </td>
-                                                                                            <td style={{ padding: '0.35rem 0.6rem', textAlign: 'right', fontWeight: 700, color: qtyColor }}>{qtyStr}</td>
-                                                                                            <td style={{ padding: '0.35rem 0.6rem', textAlign: 'right' }}>{t.value ? fmtInr(t.value) : '—'}</td>
-                                                                                            <td style={{ padding: '0.35rem 0.6rem', textAlign: 'right' }}><StockNum value={t.remaining} /></td>
-                                                                                        </tr>
-                                                                                    );
-                                                                                })}
-                                                                            </tbody>
-                                                                        </table>
-                                                                    </div>
-                                                                )}
-                                                            </td>
-                                                        </tr>,
-                                                    ] : []),
-                                                ];
-                                            })) : []),
-                                        ];
-                                    })}
-                                </tbody>
-                                {productViews.length > 0 && (
-                                    <tfoot>
-                                        <tr style={{ borderTop: '2px solid var(--surface-border)', background: 'var(--surface-raised)', fontWeight: 700 }}>
-                                            <td style={{ padding: '0.65rem 0.85rem', fontSize: '0.82rem' }}>TOTALS ({productViews.length} products)</td>
-                                            <td style={numCell}>{fmtNum(productViews.reduce((s, v) => s + v.openingStock, 0))}</td>
-                                            <td style={{ ...numCell, color: '#10b981' }}>+{fmtNum(productViews.reduce((s, v) => s + v.purchasesQty, 0))}</td>
-                                            <td style={{ ...numCell, color: '#ef4444' }}>-{fmtNum(productViews.reduce((s, v) => s + v.salesQty, 0))}</td>
-                                            <td style={numCell}>{fmtNum(summary.totalCurrentStock)}</td>
-                                            <td />
-                                            <td style={{ ...numCell, color: '#10b981' }}>{fmtInr(summary.totalPurchaseValue)}</td>
-                                            <td style={{ ...numCell, color: '#f59e0b' }}>{fmtInr(summary.totalSalesValue)}</td>
-                                            <td style={numCell}>{fmtInr(summary.totalGst)}</td>
+                                                ) : t && t.invoiceNumber !== '—' ? (
+                                                    <span style={{ fontFamily: 'monospace', fontSize: '0.74rem', color: 'var(--text-secondary)' }}>{t.invoiceNumber}</span>
+                                                ) : <span style={{ color: 'var(--text-tertiary)' }}>—</span>}
+                                            </td>
+                                            <td style={{ ...numCell, color: r.b2bQty ? '#8b5cf6' : 'var(--text-tertiary)', fontWeight: r.b2bQty ? 700 : 400 }}>{r.b2bQty != null ? fmtNum(r.b2bQty) : '—'}</td>
+                                            <td style={{ ...numCell, color: r.b2cQty ? '#3b82f6' : 'var(--text-tertiary)', fontWeight: r.b2cQty ? 700 : 400 }}>{r.b2cQty != null ? fmtNum(r.b2cQty) : '—'}</td>
+                                            {stockCell(r.remaining)}
+                                            <td style={{ ...numCell, color: r.purchaseAmount ? '#10b981' : 'var(--text-tertiary)' }}>{r.purchaseAmount ? fmtInr(r.purchaseAmount) : '—'}</td>
+                                            <td style={{ ...numCell, color: r.salesAmount ? '#f59e0b' : 'var(--text-tertiary)' }}>{r.salesAmount ? fmtInr(r.salesAmount) : '—'}</td>
+                                            <td style={{ ...numCell, color: 'var(--text-secondary)' }}>{r.gst ? fmtInr(r.gst) : '—'}</td>
                                         </tr>
-                                    </tfoot>
-                                )}
-                            </table>
-                        </div>
+                                    );
+                                })}
+                            </tbody>
+                        </table>
                     </div>
-                </>
+                </div>
             )}
         </div>
     );
