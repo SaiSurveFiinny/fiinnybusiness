@@ -2,9 +2,11 @@ import React, { useRef, useState } from 'react';
 import { Link, Navigate } from 'react-router-dom';
 import { RecaptchaVerifier, type ConfirmationResult } from 'firebase/auth';
 import type { FirebaseError } from 'firebase/app';
+import { motion, useReducedMotion } from 'motion/react';
 import { Icons } from '../components/Icons';
 import { useAuth } from '../context/AuthContext';
 import { auth } from '../lib/firebase';
+import { BRAND_NAME } from '../config/navigation';
 
 type AuthMode = 'signin' | 'signup' | 'phone';
 type PhoneStep = 'number' | 'otp';
@@ -51,6 +53,7 @@ function getSafeAuthMessage(error: unknown, context: 'signin' | 'signup' | 'goog
 }
 
 export default function Auth() {
+  const reduceMotion = useReducedMotion();
   const { user, loading, signIn, signUp, signInWithGoogle, signInWithPhone, resetPassword } = useAuth();
 
   const [mode, setMode] = useState<AuthMode>('signin');
@@ -175,30 +178,63 @@ export default function Auth() {
   };
 
   return (
-    <div className="min-h-[calc(100vh-80px)] flex">
-      {/* Left panel */}
-      <div className="hidden lg:flex w-1/2 relative bg-primary-container overflow-hidden items-end p-12">
-        <div className="absolute inset-0 z-0">
-          <img
-            src="https://lh3.googleusercontent.com/aida/ADBb0uiMg-b-JQP8eneEtUBoN3nthy1tdhBSG6_gAOctHTN3w73JYJrce4dcRnzHjlE8MJWXueBD5BFZALu1jxxRhIcfqdsJtctncGh-V-W8VtRZLPLUYkNgXK111GJ9RDa_MiKEpE4s3Jm7NBMflQUjX2UycDh9XjfpJJt1SkFrZ52t95rfWV3vqHG_vIEWadkgoQHiPk8v4sf5p9GAAV0XqfmR4FDO9ckc6UUKKcwdPb0PUBjG4ISlLkmwxMI5tUUVx-mTYWFm_15TH-o"
-            alt="Agri"
-            className="w-full h-full object-cover opacity-60"
-          />
-          <div className="absolute inset-0 bg-gradient-to-t from-primary-container to-transparent" />
-        </div>
-        <div className="relative z-10 text-white max-w-md">
-          <h2 className="font-sans text-4xl font-extrabold mb-6 leading-tight">
+    <div className="min-h-screen flex flex-col lg:flex-row pt-20 2xl:pt-[5.5rem]">
+      {/* Left panel — brand/visual story, hidden below lg where a compact header replaces it */}
+      <div className="hidden lg:flex w-1/2 relative bg-primary overflow-hidden flex-col justify-between p-12 xl:p-16">
+        {/*
+          Interim asset: verified real Unsplash photo of a farmer transplanting
+          rice seedlings in an Indian paddy field — same asset used deliberately
+          on the Who We Are page hero to authentically represent Indian farming.
+        */}
+        <img
+          src="https://images.unsplash.com/photo-1530507629858-e4977d30e9e0?auto=format&fit=crop&w=1600&q=80&fp-y=0.3&crop=focalpoint"
+          alt="Farmer transplanting rice seedlings in an Indian paddy field"
+          className="absolute inset-0 w-full h-full object-cover object-[center_30%]"
+        />
+        <div className="absolute inset-0 bg-gradient-to-b from-primary/95 via-primary/75 to-primary/95" />
+
+        <motion.div
+          className="relative z-10"
+          initial={reduceMotion ? undefined : { opacity: 0, y: 16 }}
+          animate={reduceMotion ? undefined : { opacity: 1, y: 0 }}
+          transition={{ duration: 0.6, ease: 'easeOut' }}
+        >
+          <img src="/brand/karan-arjun-logo.png" alt={BRAND_NAME} className="h-14 w-auto object-contain" />
+        </motion.div>
+
+        <motion.div
+          className="relative z-10 text-white max-w-md"
+          initial={reduceMotion ? undefined : { opacity: 0, y: 16 }}
+          animate={reduceMotion ? undefined : { opacity: 1, y: 0 }}
+          transition={{ duration: 0.6, ease: 'easeOut', delay: 0.15 }}
+        >
+          <h2 className="font-sans text-3xl xl:text-4xl font-extrabold mb-5 leading-tight">
             Trust with tradition, one step toward modernity.
           </h2>
-          <p className="font-serif text-white/80 leading-relaxed text-lg">
-            Sign in to manage orders, tickets, and your Karan Arjun Pvt. Ltd. account from anywhere.
+          <p className="font-serif text-white/80 leading-relaxed text-base xl:text-lg">
+            Precision agriculture solutions built for Indian farmers and sustainable yield. Sign in to manage
+            orders, tickets, and your account from anywhere.
           </p>
-        </div>
+        </motion.div>
       </div>
 
       {/* Right panel */}
-      <div className="w-full lg:w-1/2 flex items-center justify-center p-8 bg-surface">
-        <div className="w-full max-w-md bg-white rounded-3xl shadow-2xl p-10 border border-slate-100">
+      <div className="w-full lg:w-1/2 flex-1 flex flex-col overflow-y-auto">
+        {/* Compact brand header — visible only below lg, replaces the full visual panel */}
+        <div className="lg:hidden flex flex-col items-center gap-3 pt-8 pb-4 px-6 bg-primary">
+          <img src="/brand/karan-arjun-logo.png" alt={BRAND_NAME} className="h-10 w-auto object-contain" />
+          <p className="font-serif text-white/75 text-sm text-center max-w-xs leading-snug">
+            Trust with tradition, one step toward modernity.
+          </p>
+        </div>
+
+        <div className="flex-1 flex items-center justify-center p-6 md:p-8 bg-surface">
+          <motion.div
+            className="w-full max-w-md bg-white rounded-3xl shadow-2xl p-8 md:p-10 border border-slate-100 my-8"
+            initial={reduceMotion ? undefined : { opacity: 0, y: 16 }}
+            animate={reduceMotion ? undefined : { opacity: 1, y: 0 }}
+            transition={{ duration: 0.6, ease: 'easeOut' }}
+          >
 
           {/* Header */}
           <div className="text-center mb-8">
@@ -407,6 +443,7 @@ export default function Auth() {
               Back to home
             </Link>
           </div>
+          </motion.div>
         </div>
       </div>
     </div>

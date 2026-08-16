@@ -1,5 +1,6 @@
 import { GoogleMap, MarkerF, useJsApiLoader } from '@react-google-maps/api';
 import { useEffect, useState } from 'react';
+import { useLanguage } from '../../../context/LanguageContext';
 import type { ManufacturerNetworkInfo, RetailerWithDistance } from '../types';
 
 interface RetailMapProps {
@@ -51,6 +52,7 @@ function pinDataUri(color: string, selected: boolean): string {
  * marker title) and is otherwise unused for marker placement.
  */
 export function RetailMap({ manufacturer, retailers, selectedRetailerId, onSelectRetailer }: RetailMapProps) {
+  const { t } = useLanguage();
   const { isLoaded } = useJsApiLoader({
     id: 'karan-arjun-retail-network-map',
     googleMapsApiKey: import.meta.env.VITE_GOOGLE_MAPS_API_KEY ?? '',
@@ -87,7 +89,7 @@ export function RetailMap({ manufacturer, retailers, selectedRetailerId, onSelec
   if (!isLoaded) {
     return (
       <div className="w-full h-full min-h-[380px] flex items-center justify-center bg-surface-container rounded-lg">
-        <p className="font-sans text-sm text-on-surface-variant">Loading map...</p>
+        <p className="font-sans text-sm text-on-surface-variant">{t.retailnetwork_loading_map}</p>
       </div>
     );
   }
@@ -112,7 +114,7 @@ export function RetailMap({ manufacturer, retailers, selectedRetailerId, onSelec
               url: pinDataUri(isSelected ? '#B48D00' : baseColor, isSelected),
               scaledSize: new google.maps.Size(size, size + 10),
             }}
-            title={entry.isManufacturer ? `${manufacturer.businessName} (Manufacturer)` : entry.shopName}
+            title={entry.isManufacturer ? `${manufacturer.businessName} (${t.retailnetwork_manufacturer_badge})` : entry.shopName}
             zIndex={entry.isManufacturer ? 10 : isSelected ? 9 : 5}
             onClick={() => onSelectRetailer(entry.selectionKey)}
           />

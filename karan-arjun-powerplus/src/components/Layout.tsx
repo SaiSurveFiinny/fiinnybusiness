@@ -18,7 +18,7 @@ function LanguageSwitcher() {
       <button
         onClick={() => setOpen((v) => !v)}
         onBlur={() => setTimeout(() => setOpen(false), 150)}
-        className="flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-white/10 text-white text-xs font-sans font-bold hover:bg-white/20 transition-colors"
+        className="flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-slate-100 text-on-surface text-xs font-sans font-bold hover:bg-slate-200 transition-colors"
         title="Change language"
       >
         <Icons.Globe className="w-3.5 h-3.5" />
@@ -91,10 +91,10 @@ function DesktopNavItem({ item }: { item: NavItem }) {
         <button
           onClick={() => setOpen((v) => !v)}
           aria-expanded={open}
-          className={`flex items-center gap-1 whitespace-nowrap transition-colors duration-300 px-3 2xl:px-4 py-2.5 text-sm 2xl:text-[15px] border-b-2 ${
+          className={`flex items-center gap-1 whitespace-nowrap transition-colors duration-300 px-3 2xl:px-4 py-2.5 text-sm 2xl:text-[15px] border-b-[3px] ${
             active
-              ? 'text-white font-bold border-secondary-container'
-              : 'text-white/80 font-semibold border-transparent hover:text-white'
+              ? 'text-on-surface font-bold border-secondary-container'
+              : 'text-on-surface/70 font-semibold border-transparent hover:text-on-surface'
           }`}
         >
           {t[item.labelKey]}
@@ -126,10 +126,10 @@ function DesktopNavItem({ item }: { item: NavItem }) {
   return (
     <Link
       to={item.href!}
-      className={`whitespace-nowrap transition-colors duration-300 px-3 2xl:px-4 py-2.5 text-sm 2xl:text-[15px] border-b-2 ${
+      className={`whitespace-nowrap transition-colors duration-300 px-3 2xl:px-4 py-2.5 text-sm 2xl:text-[15px] border-b-[3px] ${
         active
-          ? 'text-white font-bold border-secondary-container'
-          : 'text-white/80 font-semibold border-transparent hover:text-white'
+          ? 'text-on-surface font-bold border-secondary-container'
+          : 'text-on-surface/70 font-semibold border-transparent hover:text-on-surface'
       }`}
     >
       {t[item.labelKey]}
@@ -206,11 +206,15 @@ export default function Navbar() {
 
   return (
     <div className="fixed top-0 left-0 right-0 z-50">
-      <nav className="bg-primary/95 backdrop-blur-xl border-b border-white/10 shadow-[0_4px_30px_rgba(10,25,19,0.25)]">
+      <nav className="bg-white/80 backdrop-blur-md border-b border-white/40 shadow-[0_4px_24px_rgba(10,25,19,0.06)]">
         <div className="flex justify-between items-center h-20 2xl:h-[5.5rem] w-full gap-6 px-6 md:px-10 2xl:px-16">
           {/* Left — Brand */}
-          <Link to="/" className="text-lg 2xl:text-xl font-extrabold text-white tracking-tight font-sans shrink-0 whitespace-nowrap">
-            {BRAND_NAME}
+          <Link to="/" className="flex items-center shrink-0 py-3">
+            <img
+              src="/brand/karan-arjun-logo.png"
+              alt={BRAND_NAME}
+              className="h-full w-auto max-w-[9rem] md:max-w-[11rem] object-contain"
+            />
           </Link>
 
           {/* Center-left — Main Navigation. No overflow-x-auto here: it would clip the
@@ -224,7 +228,7 @@ export default function Navbar() {
 
           {/* Right — Cart / Auth / Language */}
           <div className="flex items-center gap-2 2xl:gap-3 shrink-0 ml-auto xl:ml-0">
-            <button onClick={() => setIsCartOpen(true)} className="text-white/80 hover:text-white transition-colors p-2 relative">
+            <button onClick={() => setIsCartOpen(true)} className="text-on-surface/70 hover:text-on-surface transition-colors p-2 relative">
               <Icons.ShoppingCart className="w-5 h-5" />
               {itemCount > 0 && (
                 <span className="absolute -top-1 -right-1 bg-red-500 text-white text-[10px] font-bold w-4 h-4 rounded-full flex items-center justify-center">
@@ -237,19 +241,19 @@ export default function Navbar() {
                 {profile?.role === 'admin' && (
                   <Link
                     to="/admin"
-                    className="hidden xl:flex items-center px-3.5 py-2 rounded-full bg-white/10 text-white text-xs font-sans font-bold hover:bg-white/20 transition-colors whitespace-nowrap"
+                    className="hidden xl:flex items-center px-3.5 py-2 rounded-full bg-slate-100 text-on-surface text-xs font-sans font-bold hover:bg-slate-200 transition-colors whitespace-nowrap"
                   >
                     {t.nav_admin}
                   </Link>
                 )}
                 {user ? (
                   <>
-                    <Link to={profile?.role === 'admin' ? '/admin' : '/profile'} className="text-white/80 hover:text-white hover:bg-white/10 transition-all duration-300 p-2 rounded-full hidden sm:block">
+                    <Link to={profile?.role === 'admin' ? '/admin' : '/profile'} className="text-on-surface/70 hover:text-on-surface hover:bg-slate-100 transition-all duration-300 p-2 rounded-full hidden sm:block">
                       <Icons.User className="w-6 h-6" />
                     </Link>
                     <button
                       onClick={() => void handleSignOut()}
-                      className="text-white/80 hover:text-white hover:bg-white/10 transition-all duration-300 p-2 rounded-full hidden sm:block"
+                      className="text-on-surface/70 hover:text-on-surface hover:bg-slate-100 transition-all duration-300 p-2 rounded-full hidden sm:block"
                       title={t.nav_logout}
                     >
                       <Icons.LogOut className="w-5 h-5" />
@@ -258,7 +262,7 @@ export default function Navbar() {
                 ) : (
                   <Link
                     to="/auth"
-                    className="hidden sm:flex items-center px-4 py-2 rounded-full bg-white/10 text-white text-xs font-sans font-bold hover:bg-white/20 transition-colors whitespace-nowrap"
+                    className="hidden sm:flex items-center px-4 py-2 rounded-full bg-slate-100 text-on-surface text-xs font-sans font-bold hover:bg-slate-200 transition-colors whitespace-nowrap"
                   >
                     {t.nav_login}
                   </Link>
@@ -270,7 +274,7 @@ export default function Navbar() {
             )}
             {/* Mobile / Tablet Menu Toggle */}
             <button
-              className="xl:hidden p-2 text-white/80 hover:text-white transition-colors"
+              className="xl:hidden p-2 text-on-surface/70 hover:text-on-surface transition-colors"
               onClick={() => setIsMenuOpen(!isMenuOpen)}
               aria-label={isMenuOpen ? 'Close menu' : 'Open menu'}
             >
@@ -379,7 +383,7 @@ export function Footer() {
 
   const linkGroups: FooterLinkGroup[] = [
     {
-      heading: 'Company',
+      heading: t.footer_company_heading,
       links: [
         { label: t.nav_who_we_are, href: '/who-we-are' },
         { label: t.nav_what_we_do, href: '/what-we-do' },
@@ -388,7 +392,7 @@ export function Footer() {
       ],
     },
     {
-      heading: 'Solutions',
+      heading: t.footer_solutions_heading,
       links: [
         { label: t.nav_crop_solutions, href: '/crop-solutions' },
         { label: t.nav_research_innovation, href: '/research-innovation' },
@@ -397,36 +401,36 @@ export function Footer() {
       ],
     },
     {
-      heading: 'Resources',
+      heading: t.footer_resources_heading,
       links: [
-        { label: 'Blogs', href: '/resources/blogs' },
-        { label: 'Crop Guides', href: '/resources/guides' },
-        { label: 'FAQs', href: '/resources/faqs' },
-        { label: 'Downloads', href: '/resources/downloads' },
+        { label: t.footer_blogs, href: '/resources/blogs' },
+        { label: t.footer_crop_guides, href: '/resources/guides' },
+        { label: t.footer_faqs, href: '/resources/faqs' },
+        { label: t.footer_downloads, href: '/resources/downloads' },
       ],
     },
     {
-      heading: 'Support',
+      heading: t.footer_support_heading,
       links: [
         { label: t.footer_contact, href: '/contact' },
-        { label: 'Help Center', href: '/support' },
+        { label: t.footer_help_center, href: '/support' },
       ],
     },
   ];
 
-  const legalLinks = [t.footer_privacy, t.footer_terms, 'Cookie Policy', 'Disclaimer'];
+  const legalLinks = [t.footer_privacy, t.footer_terms, t.footer_cookie_policy, t.footer_disclaimer];
 
   return (
     <footer className="bg-primary w-full mt-auto border-t border-white/10">
-      <div className="max-w-7xl mx-auto px-6 md:px-10 py-16 md:py-20">
+      <div className="max-w-7xl mx-auto px-6 md:px-10 py-12 md:py-20">
         {/* Top: brand + description + social */}
-        <div className="flex flex-col md:flex-row md:items-start md:justify-between gap-10 pb-14 border-b border-white/10">
+        <div className="flex flex-col md:flex-row md:items-start md:justify-between gap-6 md:gap-10 pb-10 md:pb-14 border-b border-white/10">
           <div className="max-w-sm">
             <div className="text-2xl font-extrabold text-white font-sans tracking-tight mb-4">
               {BRAND_NAME}
             </div>
             <p className="text-white/60 font-serif text-sm leading-relaxed">
-              Precision agriculture solutions for Indian farmers — grounded in field research and built for sustainable yield.
+              {t.footer_tagline}
             </p>
           </div>
           <a
@@ -436,18 +440,44 @@ export function Footer() {
             className="inline-flex items-center gap-2 text-white/70 hover:text-white text-sm font-sans font-semibold transition-colors w-fit"
           >
             <Icons.Instagram className="w-4 h-4" />
-            Instagram
+            {t.footer_instagram}
           </a>
         </div>
 
-        {/* Middle: link columns + contact */}
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-10 py-14 border-b border-white/10">
+        {/* Company info + support: kept full-width and first on mobile
+            (ahead of the link groups) so contact details stay prominent
+            and easy to find without scrolling past four link lists first —
+            unchanged at sm:/lg: where the 5-column grid already gives it
+            its own column in the natural (last) position. */}
+        <div className="pt-8 pb-8 sm:hidden border-b border-white/10">
+          <h4 className="font-sans text-xs font-bold uppercase tracking-[0.15em] text-white/50 mb-3">
+            {t.footer_hq_title}
+          </h4>
+          <p className="text-white/75 text-sm font-sans leading-relaxed whitespace-pre-line mb-5">
+            {t.footer_hq_address}
+          </p>
+          <h4 className="font-sans text-xs font-bold uppercase tracking-[0.15em] text-white/50 mb-2">
+            {t.footer_sales_title}
+          </h4>
+          <a href="tel:+919307199040" className="text-white text-sm font-sans font-semibold hover:text-secondary-container transition-colors">
+            +91 93071 99040
+          </a>
+        </div>
+
+        {/* Middle: link columns + contact. Two columns from the smallest
+            screen up (grid-cols-2, not grid-cols-1) so the four link
+            groups read as a scannable 2x2 block on mobile instead of one
+            long stacked list — lg: is untouched (lg:grid-cols-5 still
+            applies at desktop; grid-cols-2 now covers what sm:grid-cols-2
+            used to be the first breakpoint to apply, so it's redundant and
+            dropped). */}
+        <div className="grid grid-cols-2 lg:grid-cols-5 gap-x-6 gap-y-8 sm:gap-10 py-8 sm:py-14 border-b border-white/10">
           {linkGroups.map((group) => (
             <nav key={group.heading} aria-label={group.heading}>
-              <h4 className="font-sans text-xs font-bold uppercase tracking-[0.15em] text-white/50 mb-5">
+              <h4 className="font-sans text-xs font-bold uppercase tracking-[0.15em] text-white/50 mb-4 sm:mb-5">
                 {group.heading}
               </h4>
-              <ul className="flex flex-col gap-3">
+              <ul className="flex flex-col gap-2.5 sm:gap-3">
                 {group.links.map((link) => (
                   <li key={link.href}>
                     <Link
@@ -462,7 +492,7 @@ export function Footer() {
             </nav>
           ))}
 
-          <div>
+          <div className="hidden sm:block">
             <h4 className="font-sans text-xs font-bold uppercase tracking-[0.15em] text-white/50 mb-5">
               {t.footer_hq_title}
             </h4>
@@ -479,11 +509,11 @@ export function Footer() {
         </div>
 
         {/* Bottom: legal */}
-        <div className="pt-8 flex flex-col md:flex-row items-center justify-between gap-4">
+        <div className="pt-6 sm:pt-8 flex flex-col md:flex-row items-center justify-between gap-4">
           <p className="text-white/50 text-xs font-sans text-center md:text-left">
             © {new Date().getFullYear()} {BRAND_NAME} {t.footer_copyright}
           </p>
-          <div className="flex flex-wrap items-center justify-center gap-x-6 gap-y-2 text-xs font-sans">
+          <div className="grid grid-cols-2 gap-x-6 gap-y-2 sm:flex sm:flex-wrap items-center justify-items-center sm:justify-center text-xs font-sans">
             {legalLinks.map((link) => (
               <span key={link} className="text-white/40">
                 {link}

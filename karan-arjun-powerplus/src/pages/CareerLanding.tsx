@@ -1,5 +1,6 @@
 import { useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
+import { motion, useReducedMotion } from 'motion/react';
 import { Icons } from '../components/Icons';
 import { usePageSeo } from '../hooks/usePageSeo';
 import { useCareerData } from '../hooks/useCareerData';
@@ -13,6 +14,7 @@ import type { EmploymentType } from '../data/career';
  * No data/filter/routing logic changed from the prior version — presentation only.
  */
 export default function CareerLanding() {
+  const reduceMotion = useReducedMotion();
   const { jobs, departments, isLoading } = useCareerData();
   const [searchTerm, setSearchTerm] = useState('');
   const [locationFilter, setLocationFilter] = useState('all');
@@ -155,51 +157,75 @@ export default function CareerLanding() {
         </div>
       </section>
 
-      {/* Why Join Us — alternating rows, consistent aspect ratio and grid alignment */}
+      {/* Why Join Us — single editorial photo composition: heading introduces the
+          section on white, then Working Culture / Growth / Agriculture Impact sit
+          as three content points over one full-bleed background image, separated
+          by hairline rules rather than rendered as separate image/text cards. */}
       <section className="relative z-10 bg-white py-20 md:py-28 border-t border-primary/5">
-        <div className="max-w-4xl mx-auto px-8 mb-16">
+        <motion.div
+          className="max-w-4xl mx-auto px-8 mb-14 md:mb-16"
+          initial={reduceMotion ? undefined : { opacity: 0, y: 20 }}
+          whileInView={reduceMotion ? undefined : { opacity: 1, y: 0 }}
+          viewport={{ once: true, margin: '-100px' }}
+          transition={{ duration: 0.6, ease: 'easeOut' }}
+        >
           <span className="font-sans text-xs font-bold uppercase tracking-[0.2em] text-secondary mb-3 block">Why Join Us</span>
           <h2 className="font-sans text-2xl md:text-[28px] font-extrabold text-primary tracking-tight max-w-lg">
             What it's like to work at Karan Arjun Pvt. Ltd.
           </h2>
-        </div>
+        </motion.div>
 
-        <div className="max-w-4xl mx-auto px-8 flex flex-col gap-20 md:gap-28">
-          {[
-            {
-              title: 'Working Culture',
-              desc: 'We work closely with the farmers our products serve — decisions are grounded in field reality, not assumptions made from a distance.',
-              image: 'https://images.unsplash.com/photo-1707721690626-10e5f0366bcb?auto=format&fit=crop&w=1200&q=80',
-              alt: 'A group of people working together in a field',
-            },
-            {
-              title: 'Growth',
-              desc: 'As the company grows from a single product into a broader agricultural business, there is real room to grow with it — in scope, responsibility, and impact.',
-              image: 'https://images.unsplash.com/photo-1498408040764-ab6eb772a145?auto=format&fit=crop&w=1200&q=80',
-              alt: 'Vibrant green wheat field in daylight',
-            },
-            {
-              title: 'Agriculture Impact',
-              desc: 'The work we do reaches thousands of farmers across India — every role here, whether in research, sales, or operations, connects back to that impact.',
-              image: 'https://images.unsplash.com/photo-1622383563227-04401ab4e5ea?auto=format&fit=crop&w=1200&q=80',
-              alt: 'Hands planting a seedling into dark soil',
-            },
-          ].map((row, index) => {
-            const isEven = index % 2 === 0;
-            return (
-              <div key={row.title} className={`flex flex-col ${isEven ? 'md:flex-row' : 'md:flex-row-reverse'} items-center gap-10 md:gap-14`}>
-                <div className="w-full md:w-5/12">
-                  <div className="relative rounded-lg overflow-hidden aspect-[4/3]">
-                    <img src={row.image} alt={row.alt} className="absolute inset-0 w-full h-full object-cover" />
-                  </div>
-                </div>
-                <div className="w-full md:w-7/12 flex flex-col">
-                  <h3 className="font-sans text-xl md:text-2xl font-extrabold text-primary mb-3">{row.title}</h3>
-                  <p className="text-on-surface-variant font-serif text-base leading-relaxed max-w-md">{row.desc}</p>
-                </div>
+        <div className="max-w-6xl mx-auto px-6 md:px-8">
+          <div className="relative rounded-2xl overflow-hidden">
+            {/*
+              Interim asset: verified real Unsplash photo of a vibrant green
+              wheat field. Should be replaced with licensed company/team
+              photography before production.
+            */}
+            <motion.img
+              src="https://images.unsplash.com/photo-1498408040764-ab6eb772a145?auto=format&fit=crop&w=1600&q=80"
+              alt="Vibrant green wheat field in daylight"
+              className="absolute inset-0 w-full h-full object-cover object-center md:object-[center_65%]"
+              initial={reduceMotion ? undefined : { opacity: 0, scale: 1.04 }}
+              whileInView={reduceMotion ? undefined : { opacity: 1, scale: 1 }}
+              viewport={{ once: true, margin: '-100px' }}
+              transition={{ duration: 1 }}
+            />
+            <div className="absolute inset-0 bg-gradient-to-t from-primary/90 via-primary/50 to-primary/10" />
+
+            <div className="relative z-10 flex flex-col justify-end min-h-[520px] md:min-h-[460px] px-6 py-10 md:px-14 md:py-14">
+              <div className="flex flex-col md:flex-row md:divide-x md:divide-white/25">
+                {[
+                  {
+                    title: 'Working Culture',
+                    desc: 'We work closely with the farmers our products serve — decisions are grounded in field reality, not assumptions made from a distance.',
+                  },
+                  {
+                    title: 'Growth',
+                    desc: 'As the company grows from a single product into a broader agricultural business, there is real room to grow with it — in scope, responsibility, and impact.',
+                  },
+                  {
+                    title: 'Agriculture Impact',
+                    desc: 'The work we do reaches thousands of farmers across India — every role here, whether in research, sales, or operations, connects back to that impact.',
+                  },
+                ].map((point, i) => (
+                  <motion.div
+                    key={point.title}
+                    className={`flex-1 py-6 md:py-0 md:px-8 lg:px-10 first:pt-0 md:first:pl-0 last:pb-0 md:last:pr-0 ${
+                      i > 0 ? 'border-t border-white/25 md:border-t-0' : ''
+                    }`}
+                    initial={reduceMotion ? undefined : { opacity: 0, y: 20 }}
+                    whileInView={reduceMotion ? undefined : { opacity: 1, y: 0 }}
+                    viewport={{ once: true, margin: '-100px' }}
+                    transition={{ duration: 0.6, ease: 'easeOut', delay: reduceMotion ? 0 : 0.1 * i }}
+                  >
+                    <h3 className="font-sans text-lg md:text-xl font-extrabold text-white mb-2">{point.title}</h3>
+                    <p className="text-white/80 font-serif text-sm leading-relaxed">{point.desc}</p>
+                  </motion.div>
+                ))}
               </div>
-            );
-          })}
+            </div>
+          </div>
         </div>
       </section>
     </div>

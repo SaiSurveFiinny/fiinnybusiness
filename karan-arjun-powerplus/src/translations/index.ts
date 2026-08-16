@@ -287,6 +287,119 @@ export interface Translations {
   wwd_cta_subtitle: string;
   wwd_cta_products: string;
   wwd_cta_contact: string;
+
+  // Homepage — KrishiDukan showcase
+  krishidukan_label: string;
+  krishidukan_body: string;
+  krishidukan_capability1_title: string;
+  krishidukan_capability1_desc: string;
+  krishidukan_capability2_title: string;
+  krishidukan_capability2_desc: string;
+  krishidukan_capability3_title: string;
+  krishidukan_capability3_desc: string;
+  krishidukan_capability4_title: string;
+  krishidukan_capability4_desc: string;
+  krishidukan_cta: string;
+
+  // Homepage — Retail Network section
+  retailnetwork_label: string;
+  retailnetwork_title: string;
+  retailnetwork_subtitle: string;
+  retailnetwork_locations_label: string;
+  retailnetwork_state_label: string;
+  retailnetwork_states_label: string;
+  retailnetwork_loading: string;
+  retailnetwork_loading_map: string;
+  retailnetwork_unavailable: string;
+  retailnetwork_manufacturer_badge: string;
+  retailnetwork_location_unavailable: string;
+  retailnetwork_map_link: string;
+  retailnetwork_no_coordinates: string;
+  retailnetwork_empty: string;
+
+  // Homepage — Why Trust Us section
+  whychooseus_label: string;
+  whychooseus_subtitle: string;
+
+  // Homepage — Featured Products supporting line
+  featured_products_body: string;
+
+  // Footer
+  footer_tagline: string;
+  footer_instagram: string;
+  footer_company_heading: string;
+  footer_solutions_heading: string;
+  footer_resources_heading: string;
+  footer_support_heading: string;
+  footer_blogs: string;
+  footer_crop_guides: string;
+  footer_faqs: string;
+  footer_downloads: string;
+  footer_help_center: string;
+  footer_cookie_policy: string;
+  footer_disclaimer: string;
+
+  // Shop (product listing) page
+  shop_heading: string;
+  shop_subtitle: string;
+  shop_loading: string;
+  shop_empty: string;
+  shop_view_details: string;
+  shop_contact_for_price: string;
+  shop_add_to_cart: string;
+  shop_buy_now: string;
+  shop_unavailable: string;
+  shop_ordering_soon: string;
+  shop_quality_assured: string;
+  shop_verify_title: string;
+  shop_verify_body: string;
+  shop_holographic_title: string;
+  shop_holographic_desc: string;
+  shop_scan_qr_title: string;
+  shop_scan_qr_desc: string;
+  shop_counterfeit_notice: string;
+  shop_scan_to_verify: string;
+  shop_validating_serial: string;
+  shop_genuine_verified: string;
+
+  // Product detail page
+  pdp_breadcrumb_products: string;
+  pdp_loading: string;
+  pdp_contact_for_price: string;
+  pdp_in_stock: string;
+  pdp_out_of_stock: string;
+  pdp_size_label: string;
+  pdp_quantity_label: string;
+  pdp_add_to_cart: string;
+  pdp_buy_now: string;
+  pdp_currently_unavailable: string;
+  pdp_ordering_soon: string;
+  pdp_share: string;
+  pdp_sku_prefix: string;
+  pdp_key_highlights: string;
+  pdp_description: string;
+  pdp_benefits: string;
+  pdp_recommended_crops: string;
+  pdp_dosage_application: string;
+  pdp_table_crop: string;
+  pdp_table_dosage: string;
+  pdp_table_method: string;
+  pdp_table_growth_stage: string;
+  pdp_table_spray_interval: string;
+  pdp_table_remarks: string;
+  pdp_composition: string;
+  pdp_technical_specifications: string;
+  pdp_how_to_use: string;
+  pdp_safety_information: string;
+  pdp_storage_instructions: string;
+  pdp_product_videos: string;
+  pdp_expected_results: string;
+  pdp_gallery: string;
+  pdp_faq: string;
+  pdp_certifications: string;
+  pdp_cert_number_prefix: string;
+  pdp_download_resources: string;
+  pdp_related_products: string;
 }
 
 const en: Translations = {
@@ -565,6 +678,112 @@ const en: Translations = {
   wwd_cta_subtitle: 'Explore our products or get in touch with our team directly.',
   wwd_cta_products: 'Explore Products',
   wwd_cta_contact: 'Contact Us',
+
+  krishidukan_label: 'Digital Agriculture Platform',
+  krishidukan_body: 'Karan Arjun Pvt. Ltd.\'s digital agriculture platform, connecting farmers, verified retailers, and manufacturers through a single ecosystem.',
+  krishidukan_capability1_title: 'Verified Agriculture Marketplace',
+  krishidukan_capability1_desc: 'Seeds, fertilizers, pesticides, herbicides, bio-stimulants, and sprayers listed directly by manufacturers and retailers.',
+  krishidukan_capability2_title: 'Crop Hub',
+  krishidukan_capability2_desc: 'Per-crop guidance covering seed selection, nutrition, irrigation, growth stages, and common mistakes to avoid.',
+  krishidukan_capability3_title: 'Store Locator',
+  krishidukan_capability3_desc: 'Find which stores near you stock the product you need, with real store locations on a map.',
+  krishidukan_capability4_title: 'Verified Manufacturer Profiles',
+  krishidukan_capability4_desc: 'Every manufacturer, including Karan Arjun Pvt. Ltd., has a verified brand page with genuine contact and product information.',
+  krishidukan_cta: 'Explore KrishiDukan',
+
+  retailnetwork_label: 'Where to Find Us',
+  retailnetwork_title: 'Our Retail Network',
+  retailnetwork_subtitle: 'Available through verified retail partners across Maharashtra.',
+  retailnetwork_locations_label: 'Locations',
+  retailnetwork_state_label: 'State',
+  retailnetwork_states_label: 'States',
+  retailnetwork_loading: 'Loading retail network...',
+  retailnetwork_loading_map: 'Loading map...',
+  retailnetwork_unavailable: 'Retail network is temporarily unavailable.',
+  retailnetwork_manufacturer_badge: 'Manufacturer',
+  retailnetwork_location_unavailable: 'Location unavailable',
+  retailnetwork_map_link: 'Map',
+  retailnetwork_no_coordinates: 'No coordinates available for this location',
+  retailnetwork_empty: 'No retail partners to display right now.',
+
+  whychooseus_label: 'Proven Results',
+  whychooseus_subtitle: 'Field-tested outcomes farmers rely on season after season.',
+
+  featured_products_body: '22% Humates & Fulvates liquid biostimulant — one of the products behind our commitment to Indian agriculture.',
+
+  footer_tagline: 'Precision agriculture solutions for Indian farmers — grounded in field research and built for sustainable yield.',
+  footer_instagram: 'Instagram',
+  footer_company_heading: 'Company',
+  footer_solutions_heading: 'Solutions',
+  footer_resources_heading: 'Resources',
+  footer_support_heading: 'Support',
+  footer_blogs: 'Blogs',
+  footer_crop_guides: 'Crop Guides',
+  footer_faqs: 'FAQs',
+  footer_downloads: 'Downloads',
+  footer_help_center: 'Help Center',
+  footer_cookie_policy: 'Cookie Policy',
+  footer_disclaimer: 'Disclaimer',
+
+  shop_heading: 'Premium Crop Nutrition',
+  shop_subtitle: 'Choose the perfect size for your agricultural needs. Formulated with scientifically balanced micro-nutrients for optimal yield.',
+  shop_loading: 'Loading products...',
+  shop_empty: 'No products are published yet.',
+  shop_view_details: 'View Details',
+  shop_contact_for_price: 'Contact for Price',
+  shop_add_to_cart: 'Add to Cart',
+  shop_buy_now: 'Buy Now',
+  shop_unavailable: 'Unavailable',
+  shop_ordering_soon: 'Online ordering coming soon.',
+  shop_quality_assured: 'Quality Assured',
+  shop_verify_title: 'Verify Authenticity Instantly',
+  shop_verify_body: 'Every bottle of Power Plus™ comes with advanced security features to ensure you receive only the genuine formulation.',
+  shop_holographic_title: 'Holographic Logo',
+  shop_holographic_desc: 'Check for the official 3D holographic seal on every bottle.',
+  shop_scan_qr_title: 'Scan QR Code',
+  shop_scan_qr_desc: 'Use your smartphone to scan the unique code on the cap.',
+  shop_counterfeit_notice: 'Suspect a counterfeit? Report it immediately to our official WhatsApp support channel.',
+  shop_scan_to_verify: 'Scan to Verify',
+  shop_validating_serial: 'Validating product serial...',
+  shop_genuine_verified: 'Genuine Product Verified',
+
+  pdp_breadcrumb_products: 'Products',
+  pdp_loading: 'Loading...',
+  pdp_contact_for_price: 'Contact for Price',
+  pdp_in_stock: 'In Stock',
+  pdp_out_of_stock: 'Out of Stock',
+  pdp_size_label: 'Size',
+  pdp_quantity_label: 'Quantity',
+  pdp_add_to_cart: 'Add to Cart',
+  pdp_buy_now: 'Buy Now',
+  pdp_currently_unavailable: 'Currently Unavailable',
+  pdp_ordering_soon: 'Online ordering coming soon.',
+  pdp_share: 'Share',
+  pdp_sku_prefix: 'SKU:',
+  pdp_key_highlights: 'Key Highlights',
+  pdp_description: 'Product Description',
+  pdp_benefits: 'Benefits',
+  pdp_recommended_crops: 'Recommended Crops',
+  pdp_dosage_application: 'Dosage & Application',
+  pdp_table_crop: 'Crop',
+  pdp_table_dosage: 'Dosage',
+  pdp_table_method: 'Method',
+  pdp_table_growth_stage: 'Growth Stage',
+  pdp_table_spray_interval: 'Spray Interval',
+  pdp_table_remarks: 'Remarks',
+  pdp_composition: 'Composition',
+  pdp_technical_specifications: 'Technical Specifications',
+  pdp_how_to_use: 'How To Use',
+  pdp_safety_information: 'Safety Information',
+  pdp_storage_instructions: 'Storage Instructions',
+  pdp_product_videos: 'Product Videos',
+  pdp_expected_results: 'Expected Results',
+  pdp_gallery: 'Gallery',
+  pdp_faq: 'Frequently Asked Questions',
+  pdp_certifications: 'Certifications',
+  pdp_cert_number_prefix: 'Cert. No:',
+  pdp_download_resources: 'Download Resources',
+  pdp_related_products: 'Related Products',
 };
 
 const mr: Translations = {
@@ -843,6 +1062,112 @@ const mr: Translations = {
   wwd_cta_subtitle: 'आमची उत्पादने पहा किंवा थेट आमच्या टीमशी संपर्क साधा.',
   wwd_cta_products: 'उत्पादने पहा',
   wwd_cta_contact: 'आमच्याशी संपर्क साधा',
+
+  krishidukan_label: 'डिजिटल कृषी प्लॅटफॉर्म',
+  krishidukan_body: 'करण अर्जुन प्रा. लि.चे डिजिटल कृषी प्लॅटफॉर्म, जे शेतकरी, प्रमाणित विक्रेते आणि उत्पादकांना एका व्यासपीठावर जोडते.',
+  krishidukan_capability1_title: 'प्रमाणित कृषी बाजारपेठ',
+  krishidukan_capability1_desc: 'बियाणे, खते, कीटकनाशके, तणनाशके, जैव-उत्तेजक आणि फवारणी यंत्रे थेट उत्पादक व विक्रेत्यांकडून सूचीबद्ध.',
+  krishidukan_capability2_title: 'क्रॉप हब',
+  krishidukan_capability2_desc: 'बियाणे निवड, पोषण, सिंचन, वाढीचे टप्पे आणि टाळावयाच्या सामान्य चुका यांबाबत प्रत्येक पिकासाठी मार्गदर्शन.',
+  krishidukan_capability3_title: 'स्टोअर लोकेटर',
+  krishidukan_capability3_desc: 'तुमच्या जवळील कोणत्या दुकानांमध्ये हवे असलेले उत्पादन उपलब्ध आहे ते नकाशावरील प्रत्यक्ष स्टोअर स्थानांसह शोधा.',
+  krishidukan_capability4_title: 'प्रमाणित उत्पादक प्रोफाइल',
+  krishidukan_capability4_desc: 'करण अर्जुन प्रा. लि.सह प्रत्येक उत्पादकाचे खरे संपर्क व उत्पादन माहिती असलेले प्रमाणित ब्रँड पेज आहे.',
+  krishidukan_cta: 'KrishiDukan पहा',
+
+  retailnetwork_label: 'आम्हाला कुठे शोधाल',
+  retailnetwork_title: 'आमचे किरकोळ विक्री नेटवर्क',
+  retailnetwork_subtitle: 'महाराष्ट्रभरातील प्रमाणित किरकोळ विक्री भागीदारांमार्फत उपलब्ध.',
+  retailnetwork_locations_label: 'ठिकाणे',
+  retailnetwork_state_label: 'राज्य',
+  retailnetwork_states_label: 'राज्ये',
+  retailnetwork_loading: 'किरकोळ नेटवर्क लोड होत आहे...',
+  retailnetwork_loading_map: 'नकाशा लोड होत आहे...',
+  retailnetwork_unavailable: 'किरकोळ नेटवर्क सध्या उपलब्ध नाही.',
+  retailnetwork_manufacturer_badge: 'उत्पादक',
+  retailnetwork_location_unavailable: 'स्थान उपलब्ध नाही',
+  retailnetwork_map_link: 'नकाशा',
+  retailnetwork_no_coordinates: 'या ठिकाणासाठी निर्देशांक उपलब्ध नाहीत',
+  retailnetwork_empty: 'सध्या दाखवण्यासाठी कोणतेही किरकोळ विक्री भागीदार नाहीत.',
+
+  whychooseus_label: 'सिद्ध परिणाम',
+  whychooseus_subtitle: 'प्रत्येक हंगामात शेतकरी ज्यावर विश्वास ठेवतात असे शेतात सिद्ध झालेले परिणाम.',
+
+  featured_products_body: '२२% ह्युमेट्स आणि फुल्वेट्स द्रव बायोस्टिम्युलंट — भारतीय शेतीप्रती आमच्या बांधिलकीमागील एक उत्पादन.',
+
+  footer_tagline: 'भारतीय शेतकऱ्यांसाठी अचूक शेती उपाय — शेतातील संशोधनावर आधारित आणि शाश्वत उत्पन्नासाठी तयार केलेले.',
+  footer_instagram: 'इंस्टाग्राम',
+  footer_company_heading: 'कंपनी',
+  footer_solutions_heading: 'उपाय',
+  footer_resources_heading: 'संसाधने',
+  footer_support_heading: 'सहाय्य',
+  footer_blogs: 'ब्लॉग्स',
+  footer_crop_guides: 'पीक मार्गदर्शक',
+  footer_faqs: 'सामान्य प्रश्न',
+  footer_downloads: 'डाउनलोड्स',
+  footer_help_center: 'मदत केंद्र',
+  footer_cookie_policy: 'कुकी धोरण',
+  footer_disclaimer: 'अस्वीकरण',
+
+  shop_heading: 'प्रीमियम पीक पोषण',
+  shop_subtitle: 'तुमच्या शेतीच्या गरजेनुसार योग्य आकार निवडा. उत्तम उत्पन्नासाठी वैज्ञानिकदृष्ट्या संतुलित सूक्ष्म-पोषकतत्त्वांनी तयार केलेले.',
+  shop_loading: 'उत्पादने लोड होत आहेत...',
+  shop_empty: 'सध्या कोणतीही उत्पादने प्रकाशित केलेली नाहीत.',
+  shop_view_details: 'तपशील पहा',
+  shop_contact_for_price: 'किमतीसाठी संपर्क करा',
+  shop_add_to_cart: 'कार्टमध्ये टाका',
+  shop_buy_now: 'आता खरेदी करा',
+  shop_unavailable: 'अनुपलब्ध',
+  shop_ordering_soon: 'ऑनलाइन ऑर्डरिंग लवकरच सुरू होईल.',
+  shop_quality_assured: 'गुणवत्ता हमी',
+  shop_verify_title: 'सत्यता त्वरित तपासा',
+  shop_verify_body: 'तुम्हाला खरे फॉर्म्युलेशनच मिळावे यासाठी Power Plus™ च्या प्रत्येक बाटलीत प्रगत सुरक्षा वैशिष्ट्ये आहेत.',
+  shop_holographic_title: 'होलोग्राफिक लोगो',
+  shop_holographic_desc: 'प्रत्येक बाटलीवरील अधिकृत 3D होलोग्राफिक सील तपासा.',
+  shop_scan_qr_title: 'QR कोड स्कॅन करा',
+  shop_scan_qr_desc: 'झाकणावरील युनिक कोड स्कॅन करण्यासाठी तुमचा स्मार्टफोन वापरा.',
+  shop_counterfeit_notice: 'बनावट उत्पादनाचा संशय आहे? कृपया लगेच आमच्या अधिकृत व्हॉट्सअॅप सहाय्य चॅनेलवर कळवा.',
+  shop_scan_to_verify: 'पडताळणीसाठी स्कॅन करा',
+  shop_validating_serial: 'उत्पादन सीरियल तपासले जात आहे...',
+  shop_genuine_verified: 'अस्सल उत्पादन सत्यापित',
+
+  pdp_breadcrumb_products: 'उत्पादने',
+  pdp_loading: 'लोड होत आहे...',
+  pdp_contact_for_price: 'किमतीसाठी संपर्क करा',
+  pdp_in_stock: 'स्टॉकमध्ये उपलब्ध',
+  pdp_out_of_stock: 'स्टॉक संपला',
+  pdp_size_label: 'आकार',
+  pdp_quantity_label: 'प्रमाण',
+  pdp_add_to_cart: 'कार्टमध्ये टाका',
+  pdp_buy_now: 'आता खरेदी करा',
+  pdp_currently_unavailable: 'सध्या अनुपलब्ध',
+  pdp_ordering_soon: 'ऑनलाइन ऑर्डरिंग लवकरच सुरू होईल.',
+  pdp_share: 'शेअर करा',
+  pdp_sku_prefix: 'SKU:',
+  pdp_key_highlights: 'ठळक वैशिष्ट्ये',
+  pdp_description: 'उत्पादन वर्णन',
+  pdp_benefits: 'फायदे',
+  pdp_recommended_crops: 'शिफारस केलेली पिके',
+  pdp_dosage_application: 'मात्रा आणि वापर',
+  pdp_table_crop: 'पीक',
+  pdp_table_dosage: 'मात्रा',
+  pdp_table_method: 'पद्धत',
+  pdp_table_growth_stage: 'वाढीचा टप्पा',
+  pdp_table_spray_interval: 'फवारणी अंतराल',
+  pdp_table_remarks: 'शेरा',
+  pdp_composition: 'घटक',
+  pdp_technical_specifications: 'तांत्रिक वैशिष्ट्ये',
+  pdp_how_to_use: 'वापरण्याची पद्धत',
+  pdp_safety_information: 'सुरक्षा माहिती',
+  pdp_storage_instructions: 'साठवण सूचना',
+  pdp_product_videos: 'उत्पादन व्हिडिओ',
+  pdp_expected_results: 'अपेक्षित परिणाम',
+  pdp_gallery: 'गॅलरी',
+  pdp_faq: 'सामान्य प्रश्न',
+  pdp_certifications: 'प्रमाणपत्रे',
+  pdp_cert_number_prefix: 'प्रमाणपत्र क्र.:',
+  pdp_download_resources: 'डाउनलोड संसाधने',
+  pdp_related_products: 'संबंधित उत्पादने',
 };
 
 const kn: Translations = {
@@ -1121,6 +1446,112 @@ const kn: Translations = {
   wwd_cta_subtitle: 'ನಮ್ಮ ಉತ್ಪನ್ನಗಳನ್ನು ಅನ್ವೇಷಿಸಿ ಅಥವಾ ನೇರವಾಗಿ ನಮ್ಮ ತಂಡವನ್ನು ಸಂಪರ್ಕಿಸಿ.',
   wwd_cta_products: 'ಉತ್ಪನ್ನಗಳನ್ನು ಅನ್ವೇಷಿಸಿ',
   wwd_cta_contact: 'ನಮ್ಮನ್ನು ಸಂಪರ್ಕಿಸಿ',
+
+  krishidukan_label: 'ಡಿಜಿಟಲ್ ಕೃಷಿ ವೇದಿಕೆ',
+  krishidukan_body: 'ಕರಣ್ ಅರ್ಜುನ್ ಪ್ರೈ. ಲಿ.ನ ಡಿಜಿಟಲ್ ಕೃಷಿ ವೇದಿಕೆ, ರೈತರು, ಪ್ರಮಾಣೀಕೃತ ಚಿಲ್ಲರೆ ವ್ಯಾಪಾರಿಗಳು ಮತ್ತು ತಯಾರಕರನ್ನು ಒಂದೇ ವ್ಯವಸ್ಥೆಯಲ್ಲಿ ಸಂಪರ್ಕಿಸುತ್ತದೆ.',
+  krishidukan_capability1_title: 'ಪ್ರಮಾಣೀಕೃತ ಕೃಷಿ ಮಾರುಕಟ್ಟೆ',
+  krishidukan_capability1_desc: 'ಬೀಜಗಳು, ರಸಗೊಬ್ಬರಗಳು, ಕೀಟನಾಶಕಗಳು, ಕಳೆನಾಶಕಗಳು, ಜೈವಿಕ-ಉತ್ತೇಜಕಗಳು ಮತ್ತು ಸಿಂಪಡಣಾ ಸಾಧನಗಳು ತಯಾರಕರು ಮತ್ತು ಚಿಲ್ಲರೆ ವ್ಯಾಪಾರಿಗಳಿಂದ ನೇರವಾಗಿ ಪಟ್ಟಿಮಾಡಲ್ಪಟ್ಟಿವೆ.',
+  krishidukan_capability2_title: 'ಕ್ರಾಪ್ ಹಬ್',
+  krishidukan_capability2_desc: 'ಬೀಜ ಆಯ್ಕೆ, ಪೋಷಣೆ, ನೀರಾವರಿ, ಬೆಳವಣಿಗೆಯ ಹಂತಗಳು ಮತ್ತು ತಪ್ಪಿಸಬೇಕಾದ ಸಾಮಾನ್ಯ ತಪ್ಪುಗಳ ಬಗ್ಗೆ ಪ್ರತಿ ಬೆಳೆಗೆ ಮಾರ್ಗದರ್ಶನ.',
+  krishidukan_capability3_title: 'ಸ್ಟೋರ್ ಲೊಕೇಟರ್',
+  krishidukan_capability3_desc: 'ನಿಮಗೆ ಬೇಕಾದ ಉತ್ಪನ್ನ ಯಾವ ಅಂಗಡಿಗಳಲ್ಲಿ ಲಭ್ಯವಿದೆ ಎಂಬುದನ್ನು ನಕ್ಷೆಯಲ್ಲಿನ ನೈಜ ಅಂಗಡಿ ಸ್ಥಳಗಳೊಂದಿಗೆ ಪತ್ತೆಹಚ್ಚಿ.',
+  krishidukan_capability4_title: 'ಪ್ರಮಾಣೀಕೃತ ತಯಾರಕ ಪ್ರೊಫೈಲ್‌ಗಳು',
+  krishidukan_capability4_desc: 'ಕರಣ್ ಅರ್ಜುನ್ ಪ್ರೈ. ಲಿ. ಸೇರಿದಂತೆ ಪ್ರತಿಯೊಬ್ಬ ತಯಾರಕರೂ ನೈಜ ಸಂಪರ್ಕ ಮತ್ತು ಉತ್ಪನ್ನ ಮಾಹಿತಿಯುಳ್ಳ ಪ್ರಮಾಣೀಕೃತ ಬ್ರ್ಯಾಂಡ್ ಪುಟವನ್ನು ಹೊಂದಿದ್ದಾರೆ.',
+  krishidukan_cta: 'KrishiDukan ಅನ್ವೇಷಿಸಿ',
+
+  retailnetwork_label: 'ನಮ್ಮನ್ನು ಎಲ್ಲಿ ಹುಡುಕುವುದು',
+  retailnetwork_title: 'ನಮ್ಮ ಚಿಲ್ಲರೆ ಮಾರಾಟ ಜಾಲ',
+  retailnetwork_subtitle: 'ಮಹಾರಾಷ್ಟ್ರದಾದ್ಯಂತ ಪ್ರಮಾಣೀಕೃತ ಚಿಲ್ಲರೆ ವ್ಯಾಪಾರ ಪಾಲುದಾರರ ಮೂಲಕ ಲಭ್ಯ.',
+  retailnetwork_locations_label: 'ಸ್ಥಳಗಳು',
+  retailnetwork_state_label: 'ರಾಜ್ಯ',
+  retailnetwork_states_label: 'ರಾಜ್ಯಗಳು',
+  retailnetwork_loading: 'ಚಿಲ್ಲರೆ ಜಾಲ ಲೋಡ್ ಆಗುತ್ತಿದೆ...',
+  retailnetwork_loading_map: 'ನಕ್ಷೆ ಲೋಡ್ ಆಗುತ್ತಿದೆ...',
+  retailnetwork_unavailable: 'ಚಿಲ್ಲರೆ ಜಾಲ ತಾತ್ಕಾಲಿಕವಾಗಿ ಲಭ್ಯವಿಲ್ಲ.',
+  retailnetwork_manufacturer_badge: 'ತಯಾರಕರು',
+  retailnetwork_location_unavailable: 'ಸ್ಥಳ ಲಭ್ಯವಿಲ್ಲ',
+  retailnetwork_map_link: 'ನಕ್ಷೆ',
+  retailnetwork_no_coordinates: 'ಈ ಸ್ಥಳಕ್ಕೆ ನಿರ್ದೇಶಾಂಕಗಳು ಲಭ್ಯವಿಲ್ಲ',
+  retailnetwork_empty: 'ಪ್ರಸ್ತುತ ತೋರಿಸಲು ಯಾವುದೇ ಚಿಲ್ಲರೆ ವ್ಯಾಪಾರ ಪಾಲುದಾರರಿಲ್ಲ.',
+
+  whychooseus_label: 'ಸಾಬೀತಾದ ಫಲಿತಾಂಶಗಳು',
+  whychooseus_subtitle: 'ಪ್ರತಿ ಋತುವಿನಲ್ಲಿ ರೈತರು ಅವಲಂಬಿಸುವ ಹೊಲದಲ್ಲಿ ಪರೀಕ್ಷಿಸಲ್ಪಟ್ಟ ಫಲಿತಾಂಶಗಳು.',
+
+  featured_products_body: '೨೨% ಹ್ಯೂಮೇಟ್ಸ್ ಮತ್ತು ಫಲ್ವೇಟ್ಸ್ ದ್ರವ ಬಯೋಸ್ಟಿಮ್ಯುಲಂಟ್ — ಭಾರತೀಯ ಕೃಷಿಗೆ ನಮ್ಮ ಬದ್ಧತೆಯ ಹಿಂದಿನ ಉತ್ಪನ್ನಗಳಲ್ಲಿ ಒಂದು.',
+
+  footer_tagline: 'ಭಾರತೀಯ ರೈತರಿಗಾಗಿ ನಿಖರ ಕೃಷಿ ಪರಿಹಾರಗಳು — ಕ್ಷೇತ್ರ ಸಂಶೋಧನೆಯ ಆಧಾರದ ಮೇಲೆ ಮತ್ತು ಸುಸ್ಥಿರ ಇಳುವರಿಗಾಗಿ ನಿರ್ಮಿಸಲಾಗಿದೆ.',
+  footer_instagram: 'ಇನ್‌ಸ್ಟಾಗ್ರಾಮ್',
+  footer_company_heading: 'ಕಂಪನಿ',
+  footer_solutions_heading: 'ಪರಿಹಾರಗಳು',
+  footer_resources_heading: 'ಸಂಪನ್ಮೂಲಗಳು',
+  footer_support_heading: 'ಬೆಂಬಲ',
+  footer_blogs: 'ಬ್ಲಾಗ್‌ಗಳು',
+  footer_crop_guides: 'ಬೆಳೆ ಮಾರ್ಗದರ್ಶಿಗಳು',
+  footer_faqs: 'ಪದೇ ಪದೇ ಕೇಳಲಾಗುವ ಪ್ರಶ್ನೆಗಳು',
+  footer_downloads: 'ಡೌನ್‌ಲೋಡ್‌ಗಳು',
+  footer_help_center: 'ಸಹಾಯ ಕೇಂದ್ರ',
+  footer_cookie_policy: 'ಕುಕೀ ನೀತಿ',
+  footer_disclaimer: 'ಹಕ್ಕುತ್ಯಾಗ',
+
+  shop_heading: 'ಪ್ರೀಮಿಯಂ ಬೆಳೆ ಪೋಷಣೆ',
+  shop_subtitle: 'ನಿಮ್ಮ ಕೃಷಿ ಅಗತ್ಯಗಳಿಗೆ ಸೂಕ್ತವಾದ ಗಾತ್ರವನ್ನು ಆಯ್ಕೆಮಾಡಿ. ಅತ್ಯುತ್ತಮ ಇಳುವರಿಗಾಗಿ ವೈಜ್ಞಾನಿಕವಾಗಿ ಸಮತೋಲಿತ ಸೂಕ್ಷ್ಮ ಪೋಷಕಾಂಶಗಳೊಂದಿಗೆ ತಯಾರಿಸಲಾಗಿದೆ.',
+  shop_loading: 'ಉತ್ಪನ್ನಗಳು ಲೋಡ್ ಆಗುತ್ತಿವೆ...',
+  shop_empty: 'ಪ್ರಸ್ತುತ ಯಾವುದೇ ಉತ್ಪನ್ನಗಳನ್ನು ಪ್ರಕಟಿಸಲಾಗಿಲ್ಲ.',
+  shop_view_details: 'ವಿವರಗಳನ್ನು ವೀಕ್ಷಿಸಿ',
+  shop_contact_for_price: 'ಬೆಲೆಗಾಗಿ ಸಂಪರ್ಕಿಸಿ',
+  shop_add_to_cart: 'ಕಾರ್ಟ್‌ಗೆ ಸೇರಿಸಿ',
+  shop_buy_now: 'ಈಗ ಖರೀದಿಸಿ',
+  shop_unavailable: 'ಲಭ್ಯವಿಲ್ಲ',
+  shop_ordering_soon: 'ಆನ್‌ಲೈನ್ ಆರ್ಡರಿಂಗ್ ಶೀಘ್ರದಲ್ಲೇ ಬರಲಿದೆ.',
+  shop_quality_assured: 'ಗುಣಮಟ್ಟ ಖಾತ್ರಿ',
+  shop_verify_title: 'ಸತ್ಯಾಸತ್ಯತೆಯನ್ನು ತಕ್ಷಣ ಪರಿಶೀಲಿಸಿ',
+  shop_verify_body: 'ನಿಮಗೆ ನೈಜ ಫಾರ್ಮುಲೇಶನ್ ಮಾತ್ರ ಸಿಗುವಂತೆ Power Plus™ ನ ಪ್ರತಿ ಬಾಟಲಿಯು ಸುಧಾರಿತ ಸುರಕ್ಷತಾ ವೈಶಿಷ್ಟ್ಯಗಳೊಂದಿಗೆ ಬರುತ್ತದೆ.',
+  shop_holographic_title: 'ಹೊಲೊಗ್ರಾಫಿಕ್ ಲೋಗೋ',
+  shop_holographic_desc: 'ಪ್ರತಿ ಬಾಟಲಿಯ ಮೇಲಿನ ಅಧಿಕೃತ 3D ಹೊಲೊಗ್ರಾಫಿಕ್ ಸೀಲ್ ಅನ್ನು ಪರಿಶೀಲಿಸಿ.',
+  shop_scan_qr_title: 'QR ಕೋಡ್ ಸ್ಕ್ಯಾನ್ ಮಾಡಿ',
+  shop_scan_qr_desc: 'ಕ್ಯಾಪ್ ಮೇಲಿನ ವಿಶಿಷ್ಟ ಕೋಡ್ ಸ್ಕ್ಯಾನ್ ಮಾಡಲು ನಿಮ್ಮ ಸ್ಮಾರ್ಟ್‌ಫೋನ್ ಬಳಸಿ.',
+  shop_counterfeit_notice: 'ನಕಲಿ ಉತ್ಪನ್ನದ ಅನುಮಾನವಿದೆಯೇ? ದಯವಿಟ್ಟು ತಕ್ಷಣ ನಮ್ಮ ಅಧಿಕೃತ WhatsApp ಬೆಂಬಲ ಚಾನಲ್‌ಗೆ ವರದಿ ಮಾಡಿ.',
+  shop_scan_to_verify: 'ಪರಿಶೀಲಿಸಲು ಸ್ಕ್ಯಾನ್ ಮಾಡಿ',
+  shop_validating_serial: 'ಉತ್ಪನ್ನ ಸೀರಿಯಲ್ ಪರಿಶೀಲಿಸಲಾಗುತ್ತಿದೆ...',
+  shop_genuine_verified: 'ನೈಜ ಉತ್ಪನ್ನ ಪರಿಶೀಲಿಸಲಾಗಿದೆ',
+
+  pdp_breadcrumb_products: 'ಉತ್ಪನ್ನಗಳು',
+  pdp_loading: 'ಲೋಡ್ ಆಗುತ್ತಿದೆ...',
+  pdp_contact_for_price: 'ಬೆಲೆಗಾಗಿ ಸಂಪರ್ಕಿಸಿ',
+  pdp_in_stock: 'ಸ್ಟಾಕ್‌ನಲ್ಲಿದೆ',
+  pdp_out_of_stock: 'ಸ್ಟಾಕ್ ಇಲ್ಲ',
+  pdp_size_label: 'ಗಾತ್ರ',
+  pdp_quantity_label: 'ಪ್ರಮಾಣ',
+  pdp_add_to_cart: 'ಕಾರ್ಟ್‌ಗೆ ಸೇರಿಸಿ',
+  pdp_buy_now: 'ಈಗ ಖರೀದಿಸಿ',
+  pdp_currently_unavailable: 'ಪ್ರಸ್ತುತ ಲಭ್ಯವಿಲ್ಲ',
+  pdp_ordering_soon: 'ಆನ್‌ಲೈನ್ ಆರ್ಡರಿಂಗ್ ಶೀಘ್ರದಲ್ಲೇ ಬರಲಿದೆ.',
+  pdp_share: 'ಹಂಚಿಕೊಳ್ಳಿ',
+  pdp_sku_prefix: 'SKU:',
+  pdp_key_highlights: 'ಪ್ರಮುಖ ಮುಖ್ಯಾಂಶಗಳು',
+  pdp_description: 'ಉತ್ಪನ್ನ ವಿವರಣೆ',
+  pdp_benefits: 'ಪ್ರಯೋಜನಗಳು',
+  pdp_recommended_crops: 'ಶಿಫಾರಸು ಮಾಡಿದ ಬೆಳೆಗಳು',
+  pdp_dosage_application: 'ಪ್ರಮಾಣ ಮತ್ತು ಬಳಕೆ',
+  pdp_table_crop: 'ಬೆಳೆ',
+  pdp_table_dosage: 'ಪ್ರಮಾಣ',
+  pdp_table_method: 'ವಿಧಾನ',
+  pdp_table_growth_stage: 'ಬೆಳವಣಿಗೆಯ ಹಂತ',
+  pdp_table_spray_interval: 'ಸಿಂಪಡಣೆ ಅಂತರ',
+  pdp_table_remarks: 'ಟಿಪ್ಪಣಿಗಳು',
+  pdp_composition: 'ಸಂಯೋಜನೆ',
+  pdp_technical_specifications: 'ತಾಂತ್ರಿಕ ವಿಶೇಷಣಗಳು',
+  pdp_how_to_use: 'ಬಳಸುವ ವಿಧಾನ',
+  pdp_safety_information: 'ಸುರಕ್ಷತಾ ಮಾಹಿತಿ',
+  pdp_storage_instructions: 'ಸಂಗ್ರಹಣಾ ಸೂಚನೆಗಳು',
+  pdp_product_videos: 'ಉತ್ಪನ್ನ ವೀಡಿಯೊಗಳು',
+  pdp_expected_results: 'ನಿರೀಕ್ಷಿತ ಫಲಿತಾಂಶಗಳು',
+  pdp_gallery: 'ಗ್ಯಾಲರಿ',
+  pdp_faq: 'ಪದೇ ಪದೇ ಕೇಳಲಾಗುವ ಪ್ರಶ್ನೆಗಳು',
+  pdp_certifications: 'ಪ್ರಮಾಣೀಕರಣಗಳು',
+  pdp_cert_number_prefix: 'ಪ್ರಮಾಣಪತ್ರ ಸಂಖ್ಯೆ:',
+  pdp_download_resources: 'ಡೌನ್‌ಲೋಡ್ ಸಂಪನ್ಮೂಲಗಳು',
+  pdp_related_products: 'ಸಂಬಂಧಿತ ಉತ್ಪನ್ನಗಳು',
 };
 
 const gu: Translations = {
@@ -1399,6 +1830,112 @@ const gu: Translations = {
   wwd_cta_subtitle: 'અમારા ઉત્પાદનો શોધો અથવા સીધા અમારી ટીમનો સંપર્ક કરો.',
   wwd_cta_products: 'ઉત્પાદનો શોધો',
   wwd_cta_contact: 'અમારો સંપર્ક કરો',
+
+  krishidukan_label: 'ડિજિટલ કૃષિ પ્લેટફોર્મ',
+  krishidukan_body: 'કરણ અર્જુન પ્રા. લિ.નું ડિજિટલ કૃષિ પ્લેટફોર્મ, જે ખેડૂતો, પ્રમાણિત વિક્રેતાઓ અને ઉત્પાદકોને એક જ ઇકોસિસ્ટમમાં જોડે છે.',
+  krishidukan_capability1_title: 'પ્રમાણિત કૃષિ બજાર',
+  krishidukan_capability1_desc: 'બીજ, ખાતર, જંતુનાશકો, નીંદણનાશકો, બાયો-સ્ટિમ્યુલન્ટ્સ અને છંટકાવના સાધનો સીધા ઉત્પાદકો અને વિક્રેતાઓ દ્વારા સૂચિબદ્ધ.',
+  krishidukan_capability2_title: 'ક્રોપ હબ',
+  krishidukan_capability2_desc: 'બીજ પસંદગી, પોષણ, સિંચાઈ, વૃદ્ધિના તબક્કા અને ટાળવા જેવી સામાન્ય ભૂલો અંગે દરેક પાક માટે માર્ગદર્શન.',
+  krishidukan_capability3_title: 'સ્ટોર લોકેટર',
+  krishidukan_capability3_desc: 'તમારી નજીક કયા સ્ટોર્સમાં જોઈતું ઉત્પાદન ઉપલબ્ધ છે તે નકશા પરના વાસ્તવિક સ્ટોર સ્થાનો સાથે શોધો.',
+  krishidukan_capability4_title: 'પ્રમાણિત ઉત્પાદક પ્રોફાઇલ',
+  krishidukan_capability4_desc: 'કરણ અર્જુન પ્રા. લિ. સહિત દરેક ઉત્પાદકનું સાચી સંપર્ક અને ઉત્પાદન માહિતી ધરાવતું પ્રમાણિત બ્રાન્ડ પેજ છે.',
+  krishidukan_cta: 'KrishiDukan જુઓ',
+
+  retailnetwork_label: 'અમને ક્યાં શોધશો',
+  retailnetwork_title: 'અમારું રિટેલ નેટવર્ક',
+  retailnetwork_subtitle: 'મહારાષ્ટ્રભરમાં પ્રમાણિત રિટેલ ભાગીદારો મારફતે ઉપલબ્ધ.',
+  retailnetwork_locations_label: 'સ્થળો',
+  retailnetwork_state_label: 'રાજ્ય',
+  retailnetwork_states_label: 'રાજ્યો',
+  retailnetwork_loading: 'રિટેલ નેટવર્ક લોડ થઈ રહ્યું છે...',
+  retailnetwork_loading_map: 'નકશો લોડ થઈ રહ્યો છે...',
+  retailnetwork_unavailable: 'રિટેલ નેટવર્ક હાલમાં ઉપલબ્ધ નથી.',
+  retailnetwork_manufacturer_badge: 'ઉત્પાદક',
+  retailnetwork_location_unavailable: 'સ્થાન ઉપલબ્ધ નથી',
+  retailnetwork_map_link: 'નકશો',
+  retailnetwork_no_coordinates: 'આ સ્થાન માટે કોઓર્ડિનેટ્સ ઉપલબ્ધ નથી',
+  retailnetwork_empty: 'હાલમાં બતાવવા માટે કોઈ રિટેલ ભાગીદારો નથી.',
+
+  whychooseus_label: 'સાબિત પરિણામો',
+  whychooseus_subtitle: 'દરેક ઋતુમાં ખેડૂતો જેના પર ભરોસો રાખે છે તેવા ખેતરમાં ચકાસાયેલા પરિણામો.',
+
+  featured_products_body: '૨૨% હ્યુમેટ્સ અને ફલ્વેટ્સ લિક્વિડ બાયોસ્ટિમ્યુલન્ટ — ભારતીય કૃષિ પ્રત્યેની અમારી પ્રતિબદ્ધતા પાછળના ઉત્પાદનોમાંનું એક.',
+
+  footer_tagline: 'ભારતીય ખેડૂતો માટે ચોકસાઈભર્યા કૃષિ ઉકેલો — ક્ષેત્ર સંશોધન પર આધારિત અને ટકાઉ ઉપજ માટે બનાવેલા.',
+  footer_instagram: 'ઇન્સ્ટાગ્રામ',
+  footer_company_heading: 'કંપની',
+  footer_solutions_heading: 'ઉકેલો',
+  footer_resources_heading: 'સંસાધનો',
+  footer_support_heading: 'સહાય',
+  footer_blogs: 'બ્લોગ્સ',
+  footer_crop_guides: 'પાક માર્ગદર્શિકાઓ',
+  footer_faqs: 'વારંવાર પુછાતા પ્રશ્નો',
+  footer_downloads: 'ડાઉનલોડ્સ',
+  footer_help_center: 'સહાય કેન્દ્ર',
+  footer_cookie_policy: 'કૂકી નીતિ',
+  footer_disclaimer: 'અસ્વીકરણ',
+
+  shop_heading: 'પ્રીમિયમ પાક પોષણ',
+  shop_subtitle: 'તમારી ખેતીની જરૂરિયાતો માટે યોગ્ય કદ પસંદ કરો. શ્રેષ્ઠ ઉપજ માટે વૈજ્ઞાનિક રીતે સંતુલિત સૂક્ષ્મ-પોષકતત્ત્વોથી બનાવેલ.',
+  shop_loading: 'ઉત્પાદનો લોડ થઈ રહ્યા છે...',
+  shop_empty: 'હાલમાં કોઈ ઉત્પાદનો પ્રકાશિત થયા નથી.',
+  shop_view_details: 'વિગતો જુઓ',
+  shop_contact_for_price: 'ભાવ માટે સંપર્ક કરો',
+  shop_add_to_cart: 'કાર્ટમાં ઉમેરો',
+  shop_buy_now: 'હમણાં ખરીદો',
+  shop_unavailable: 'અનુપલબ્ધ',
+  shop_ordering_soon: 'ઓનલાઈન ઓર્ડરિંગ ટૂંક સમયમાં આવી રહ્યું છે.',
+  shop_quality_assured: 'ગુણવત્તા ખાતરી',
+  shop_verify_title: 'સત્યતા તરત ચકાસો',
+  shop_verify_body: 'તમને ફક્ત અસલી ફોર્મ્યુલેશન જ મળે તેની ખાતરી કરવા Power Plus™ ની દરેક બોટલમાં અદ્યતન સુરક્ષા સુવિધાઓ છે.',
+  shop_holographic_title: 'હોલોગ્રાફિક લોગો',
+  shop_holographic_desc: 'દરેક બોટલ પર સત્તાવાર 3D હોલોગ્રાફિક સીલ તપાસો.',
+  shop_scan_qr_title: 'QR કોડ સ્કેન કરો',
+  shop_scan_qr_desc: 'કેપ પરનો અનન્ય કોડ સ્કેન કરવા તમારો સ્માર્ટફોન વાપરો.',
+  shop_counterfeit_notice: 'નકલી ઉત્પાદનની શંકા છે? કૃપા કરી તરત જ અમારા સત્તાવાર WhatsApp સહાય ચેનલ પર જાણ કરો.',
+  shop_scan_to_verify: 'ચકાસવા સ્કેન કરો',
+  shop_validating_serial: 'ઉત્પાદન સિરિયલ ચકાસાઈ રહ્યું છે...',
+  shop_genuine_verified: 'અસલી ઉત્પાદન ચકાસાયેલ',
+
+  pdp_breadcrumb_products: 'ઉત્પાદનો',
+  pdp_loading: 'લોડ થઈ રહ્યું છે...',
+  pdp_contact_for_price: 'ભાવ માટે સંપર્ક કરો',
+  pdp_in_stock: 'સ્ટોકમાં ઉપલબ્ધ',
+  pdp_out_of_stock: 'સ્ટોક સમાપ્ત',
+  pdp_size_label: 'કદ',
+  pdp_quantity_label: 'જથ્થો',
+  pdp_add_to_cart: 'કાર્ટમાં ઉમેરો',
+  pdp_buy_now: 'હમણાં ખરીદો',
+  pdp_currently_unavailable: 'હાલમાં અનુપલબ્ધ',
+  pdp_ordering_soon: 'ઓનલાઈન ઓર્ડરિંગ ટૂંક સમયમાં આવી રહ્યું છે.',
+  pdp_share: 'શેર કરો',
+  pdp_sku_prefix: 'SKU:',
+  pdp_key_highlights: 'મુખ્ય વિશેષતાઓ',
+  pdp_description: 'ઉત્પાદન વર્ણન',
+  pdp_benefits: 'ફાયદા',
+  pdp_recommended_crops: 'ભલામણ કરેલ પાકો',
+  pdp_dosage_application: 'માત્રા અને ઉપયોગ',
+  pdp_table_crop: 'પાક',
+  pdp_table_dosage: 'માત્રા',
+  pdp_table_method: 'પદ્ધતિ',
+  pdp_table_growth_stage: 'વૃદ્ધિનો તબક્કો',
+  pdp_table_spray_interval: 'છંટકાવ અંતરાલ',
+  pdp_table_remarks: 'ટિપ્પણીઓ',
+  pdp_composition: 'ઘટકો',
+  pdp_technical_specifications: 'તકનીકી વિશિષ્ટતાઓ',
+  pdp_how_to_use: 'ઉપયોગ કરવાની રીત',
+  pdp_safety_information: 'સલામતી માહિતી',
+  pdp_storage_instructions: 'સંગ્રહ સૂચનાઓ',
+  pdp_product_videos: 'ઉત્પાદન વિડિઓઝ',
+  pdp_expected_results: 'અપેક્ષિત પરિણામો',
+  pdp_gallery: 'ગેલેરી',
+  pdp_faq: 'વારંવાર પુછાતા પ્રશ્નો',
+  pdp_certifications: 'પ્રમાણપત્રો',
+  pdp_cert_number_prefix: 'પ્રમાણપત્ર નં.:',
+  pdp_download_resources: 'ડાઉનલોડ સંસાધનો',
+  pdp_related_products: 'સંબંધિત ઉત્પાદનો',
 };
 
 const hi: Translations = {
@@ -1677,6 +2214,112 @@ const hi: Translations = {
   wwd_cta_subtitle: 'हमारे उत्पाद देखें या सीधे हमारी टीम से संपर्क करें।',
   wwd_cta_products: 'उत्पाद देखें',
   wwd_cta_contact: 'हमसे संपर्क करें',
+
+  krishidukan_label: 'डिजिटल कृषि प्लेटफ़ॉर्म',
+  krishidukan_body: 'करण अर्जुन प्रा. लि. का डिजिटल कृषि प्लेटफ़ॉर्म, जो किसानों, प्रमाणित विक्रेताओं और निर्माताओं को एक ही मंच पर जोड़ता है।',
+  krishidukan_capability1_title: 'प्रमाणित कृषि बाज़ार',
+  krishidukan_capability1_desc: 'बीज, उर्वरक, कीटनाशक, खरपतवारनाशक, बायो-स्टिमुलेंट और स्प्रेयर सीधे निर्माताओं और विक्रेताओं द्वारा सूचीबद्ध।',
+  krishidukan_capability2_title: 'क्रॉप हब',
+  krishidukan_capability2_desc: 'बीज चयन, पोषण, सिंचाई, वृद्धि के चरण और बचने योग्य सामान्य गलतियों पर हर फ़सल के लिए मार्गदर्शन।',
+  krishidukan_capability3_title: 'स्टोर लोकेटर',
+  krishidukan_capability3_desc: 'आपके नज़दीक कौन-से स्टोर में ज़रूरी उत्पाद उपलब्ध है, यह मानचित्र पर वास्तविक स्टोर स्थानों के साथ पता करें।',
+  krishidukan_capability4_title: 'प्रमाणित निर्माता प्रोफ़ाइल',
+  krishidukan_capability4_desc: 'करण अर्जुन प्रा. लि. सहित हर निर्माता का सही संपर्क व उत्पाद जानकारी वाला प्रमाणित ब्रांड पेज है।',
+  krishidukan_cta: 'KrishiDukan देखें',
+
+  retailnetwork_label: 'हमें कहाँ खोजें',
+  retailnetwork_title: 'हमारा रिटेल नेटवर्क',
+  retailnetwork_subtitle: 'महाराष्ट्र भर में प्रमाणित रिटेल भागीदारों के माध्यम से उपलब्ध।',
+  retailnetwork_locations_label: 'स्थान',
+  retailnetwork_state_label: 'राज्य',
+  retailnetwork_states_label: 'राज्य',
+  retailnetwork_loading: 'रिटेल नेटवर्क लोड हो रहा है...',
+  retailnetwork_loading_map: 'मानचित्र लोड हो रहा है...',
+  retailnetwork_unavailable: 'रिटेल नेटवर्क अस्थायी रूप से अनुपलब्ध है।',
+  retailnetwork_manufacturer_badge: 'निर्माता',
+  retailnetwork_location_unavailable: 'स्थान उपलब्ध नहीं है',
+  retailnetwork_map_link: 'मानचित्र',
+  retailnetwork_no_coordinates: 'इस स्थान के लिए निर्देशांक उपलब्ध नहीं हैं',
+  retailnetwork_empty: 'फ़िलहाल दिखाने के लिए कोई रिटेल भागीदार नहीं है।',
+
+  whychooseus_label: 'सिद्ध परिणाम',
+  whychooseus_subtitle: 'हर मौसम में किसानों द्वारा भरोसा किए जाने वाले खेत में परखे गए परिणाम।',
+
+  featured_products_body: '22% ह्यूमेट्स और फल्वेट्स लिक्विड बायोस्टिमुलेंट — भारतीय कृषि के प्रति हमारी प्रतिबद्धता के पीछे के उत्पादों में से एक।',
+
+  footer_tagline: 'भारतीय किसानों के लिए सटीक कृषि समाधान — खेत के शोध पर आधारित और टिकाऊ उपज के लिए बनाए गए।',
+  footer_instagram: 'इंस्टाग्राम',
+  footer_company_heading: 'कंपनी',
+  footer_solutions_heading: 'समाधान',
+  footer_resources_heading: 'संसाधन',
+  footer_support_heading: 'सहायता',
+  footer_blogs: 'ब्लॉग्स',
+  footer_crop_guides: 'फ़सल मार्गदर्शिकाएँ',
+  footer_faqs: 'सामान्य प्रश्न',
+  footer_downloads: 'डाउनलोड्स',
+  footer_help_center: 'सहायता केंद्र',
+  footer_cookie_policy: 'कुकी नीति',
+  footer_disclaimer: 'अस्वीकरण',
+
+  shop_heading: 'प्रीमियम फ़सल पोषण',
+  shop_subtitle: 'अपनी कृषि आवश्यकताओं के लिए सही आकार चुनें। बेहतर उपज के लिए वैज्ञानिक रूप से संतुलित सूक्ष्म-पोषक तत्वों से तैयार।',
+  shop_loading: 'उत्पाद लोड हो रहे हैं...',
+  shop_empty: 'फ़िलहाल कोई उत्पाद प्रकाशित नहीं किया गया है।',
+  shop_view_details: 'विवरण देखें',
+  shop_contact_for_price: 'मूल्य के लिए संपर्क करें',
+  shop_add_to_cart: 'कार्ट में डालें',
+  shop_buy_now: 'अभी खरीदें',
+  shop_unavailable: 'अनुपलब्ध',
+  shop_ordering_soon: 'ऑनलाइन ऑर्डरिंग जल्द ही शुरू होगी।',
+  shop_quality_assured: 'गुणवत्ता सुनिश्चित',
+  shop_verify_title: 'प्रामाणिकता तुरंत जाँचें',
+  shop_verify_body: 'आपको केवल असली फॉर्मूलेशन ही मिले, इसके लिए Power Plus™ की हर बोतल उन्नत सुरक्षा सुविधाओं के साथ आती है।',
+  shop_holographic_title: 'होलोग्राफिक लोगो',
+  shop_holographic_desc: 'हर बोतल पर आधिकारिक 3D होलोग्राफिक सील जाँचें।',
+  shop_scan_qr_title: 'QR कोड स्कैन करें',
+  shop_scan_qr_desc: 'ढक्कन पर मौजूद यूनीक कोड स्कैन करने के लिए अपने स्मार्टफोन का उपयोग करें।',
+  shop_counterfeit_notice: 'नकली उत्पाद का संदेह है? कृपया तुरंत हमारे आधिकारिक व्हाट्सएप सहायता चैनल पर सूचित करें।',
+  shop_scan_to_verify: 'सत्यापित करने के लिए स्कैन करें',
+  shop_validating_serial: 'उत्पाद सीरियल सत्यापित किया जा रहा है...',
+  shop_genuine_verified: 'असली उत्पाद सत्यापित',
+
+  pdp_breadcrumb_products: 'उत्पाद',
+  pdp_loading: 'लोड हो रहा है...',
+  pdp_contact_for_price: 'मूल्य के लिए संपर्क करें',
+  pdp_in_stock: 'स्टॉक में उपलब्ध',
+  pdp_out_of_stock: 'स्टॉक समाप्त',
+  pdp_size_label: 'आकार',
+  pdp_quantity_label: 'मात्रा',
+  pdp_add_to_cart: 'कार्ट में डालें',
+  pdp_buy_now: 'अभी खरीदें',
+  pdp_currently_unavailable: 'फ़िलहाल अनुपलब्ध',
+  pdp_ordering_soon: 'ऑनलाइन ऑर्डरिंग जल्द ही शुरू होगी।',
+  pdp_share: 'शेयर करें',
+  pdp_sku_prefix: 'SKU:',
+  pdp_key_highlights: 'मुख्य विशेषताएँ',
+  pdp_description: 'उत्पाद विवरण',
+  pdp_benefits: 'लाभ',
+  pdp_recommended_crops: 'अनुशंसित फ़सलें',
+  pdp_dosage_application: 'मात्रा और उपयोग',
+  pdp_table_crop: 'फ़सल',
+  pdp_table_dosage: 'मात्रा',
+  pdp_table_method: 'विधि',
+  pdp_table_growth_stage: 'वृद्धि चरण',
+  pdp_table_spray_interval: 'छिड़काव अंतराल',
+  pdp_table_remarks: 'टिप्पणी',
+  pdp_composition: 'संरचना',
+  pdp_technical_specifications: 'तकनीकी विवरण',
+  pdp_how_to_use: 'उपयोग विधि',
+  pdp_safety_information: 'सुरक्षा जानकारी',
+  pdp_storage_instructions: 'भंडारण निर्देश',
+  pdp_product_videos: 'उत्पाद वीडियो',
+  pdp_expected_results: 'अपेक्षित परिणाम',
+  pdp_gallery: 'गैलरी',
+  pdp_faq: 'सामान्य प्रश्न',
+  pdp_certifications: 'प्रमाणपत्र',
+  pdp_cert_number_prefix: 'प्रमाणपत्र क्र.:',
+  pdp_download_resources: 'डाउनलोड संसाधन',
+  pdp_related_products: 'संबंधित उत्पाद',
 };
 
 export const translations: Record<Language, Translations> = { en, mr, kn, gu, hi };

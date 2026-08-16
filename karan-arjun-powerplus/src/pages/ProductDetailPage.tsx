@@ -4,6 +4,7 @@ import { Link, Navigate, useParams } from 'react-router-dom';
 import { Icons } from '../components/Icons';
 import { usePageSeo } from '../hooks/usePageSeo';
 import { useCart } from '../context/CartContext';
+import { useLanguage } from '../context/LanguageContext';
 import { db } from '../lib/firebase';
 import {
   autoRelatedProducts,
@@ -50,6 +51,7 @@ function SectionHeading({ children }: { children: React.ReactNode }) {
  * variant-driven pricing/cart flow Shop.tsx already established via useCart().
  */
 export default function ProductDetailPage() {
+  const { t } = useLanguage();
   const { productSlug } = useParams<{ productSlug: string }>();
   const { addToCart } = useCart();
   const [products, setProducts] = useState<ProductDetail[]>([]);
@@ -164,7 +166,7 @@ export default function ProductDetailPage() {
   }
 
   if (!product) {
-    return <div className="min-h-screen flex items-center justify-center font-sans text-primary/60">Loading...</div>;
+    return <div className="min-h-screen flex items-center justify-center font-sans text-primary/60">{t.pdp_loading}</div>;
   }
 
   const cartPrice = selectedVariant?.price ?? (product.price > 0 ? product.price : undefined);
@@ -193,7 +195,7 @@ export default function ProductDetailPage() {
       <section className="relative pt-28 pb-16 md:pt-36 md:pb-20 bg-surface">
         <div className="max-w-7xl mx-auto px-8">
           <nav className="flex items-center gap-2 mb-8 text-xs font-sans font-bold text-primary/50 uppercase tracking-widest">
-            <Link to="/products" className="hover:text-primary transition-colors">Products</Link>
+            <Link to="/products" className="hover:text-primary transition-colors">{t.pdp_breadcrumb_products}</Link>
             <Icons.ChevronRight className="w-3 h-3" />
             <span className="text-primary">{product.name}</span>
           </nav>
@@ -238,7 +240,7 @@ export default function ProductDetailPage() {
                 const price = selectedVariant?.price ?? displayPrice(product);
                 const mrp = selectedVariant?.mrp ?? displayMrp(product);
                 if (price === undefined) {
-                  return <p className="text-2xl font-extrabold text-primary mb-6">Contact for Price</p>;
+                  return <p className="text-2xl font-extrabold text-primary mb-6">{t.pdp_contact_for_price}</p>;
                 }
                 return (
                   <div className="flex items-baseline gap-3 mb-6">
@@ -248,7 +250,7 @@ export default function ProductDetailPage() {
                     )}
                     {selectedVariant && (
                       <span className={`text-xs font-sans font-bold uppercase ${selectedVariant.stock > 0 ? 'text-emerald-600' : 'text-red-500'}`}>
-                        {selectedVariant.stock > 0 ? 'In Stock' : 'Out of Stock'}
+                        {selectedVariant.stock > 0 ? t.pdp_in_stock : t.pdp_out_of_stock}
                       </span>
                     )}
                   </div>
@@ -257,7 +259,7 @@ export default function ProductDetailPage() {
 
               {product.variants.length > 1 && (
                 <div className="mb-6">
-                  <span className="block font-sans text-xs font-bold text-primary/50 uppercase tracking-widest mb-3">Size</span>
+                  <span className="block font-sans text-xs font-bold text-primary/50 uppercase tracking-widest mb-3">{t.pdp_size_label}</span>
                   <div className="flex flex-wrap gap-2">
                     {product.variants.map((variant) => (
                       <button
@@ -275,7 +277,7 @@ export default function ProductDetailPage() {
               )}
 
               <div className="flex items-center gap-4 mb-6">
-                <span className="block font-sans text-xs font-bold text-primary/50 uppercase tracking-widest">Quantity</span>
+                <span className="block font-sans text-xs font-bold text-primary/50 uppercase tracking-widest">{t.pdp_quantity_label}</span>
                 <div className="flex items-center border border-slate-200 rounded-xl">
                   <button onClick={() => setQuantity((q) => Math.max(1, q - 1))} className="px-3 py-2 text-primary font-bold">−</button>
                   <span className="px-4 font-sans font-bold text-primary">{quantity}</span>
@@ -289,29 +291,29 @@ export default function ProductDetailPage() {
                   disabled={cartPrice === undefined || (selectedVariant ? selectedVariant.stock === 0 : false)}
                   className="w-full px-4 py-4 rounded-xl font-sans font-bold border border-primary/20 text-primary hover:bg-primary/5 transition-colors text-sm flex items-center justify-center gap-2 disabled:opacity-40"
                 >
-                  <Icons.ShoppingCart className="w-4 h-4" /> Add to Cart
+                  <Icons.ShoppingCart className="w-4 h-4" /> {t.pdp_add_to_cart}
                 </button>
                 <button
                   onClick={handleBuyNow}
                   disabled={!purchaseUrl}
-                  title={purchaseUrl ? undefined : 'Online ordering coming soon.'}
+                  title={purchaseUrl ? undefined : t.pdp_ordering_soon}
                   className="w-full px-4 py-4 rounded-xl font-sans font-bold shadow-md bg-primary text-secondary-container hover:bg-primary-container transition-colors text-sm flex items-center justify-center gap-1 disabled:opacity-40"
                 >
-                  {purchaseUrl ? <>Buy Now <Icons.ChevronRight className="w-4 h-4" /></> : 'Currently Unavailable'}
+                  {purchaseUrl ? <>{t.pdp_buy_now} <Icons.ChevronRight className="w-4 h-4" /></> : t.pdp_currently_unavailable}
                 </button>
               </div>
-              {!purchaseUrl && <p className="text-xs text-slate-400 font-sans -mt-3 mb-6">Online ordering coming soon.</p>}
+              {!purchaseUrl && <p className="text-xs text-slate-400 font-sans -mt-3 mb-6">{t.pdp_ordering_soon}</p>}
 
               <div className="flex items-center gap-4 mb-6">
                 <button
                   onClick={() => { if (navigator.share) void navigator.share({ title: product.name, url: window.location.href }); else void navigator.clipboard.writeText(window.location.href); }}
                   className="flex items-center gap-2 text-sm font-sans font-semibold text-primary/70 hover:text-primary transition-colors"
                 >
-                  <Icons.ArrowLeftRight className="w-4 h-4" /> Share
+                  <Icons.ArrowLeftRight className="w-4 h-4" /> {t.pdp_share}
                 </button>
               </div>
 
-              {hasText(product.sku) && <p className="text-xs text-slate-400 font-sans">SKU: {product.sku}</p>}
+              {hasText(product.sku) && <p className="text-xs text-slate-400 font-sans">{t.pdp_sku_prefix} {product.sku}</p>}
             </div>
           </div>
         </div>
@@ -322,7 +324,7 @@ export default function ProductDetailPage() {
           {/* Highlights */}
           {hasTextItems(product.highlights) && (
             <div>
-              <SectionHeading>Key Highlights</SectionHeading>
+              <SectionHeading>{t.pdp_key_highlights}</SectionHeading>
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 {product.highlights.filter(hasText).map((highlight, idx) => (
                   <div key={idx} className="flex items-start gap-3 p-4 rounded-xl bg-surface">
@@ -337,7 +339,7 @@ export default function ProductDetailPage() {
           {/* Description */}
           {hasText(product.description) && (
             <div>
-              <SectionHeading>Product Description</SectionHeading>
+              <SectionHeading>{t.pdp_description}</SectionHeading>
               <p className="font-serif text-base md:text-lg text-primary/80 leading-relaxed whitespace-pre-line">{product.description}</p>
             </div>
           )}
@@ -345,7 +347,7 @@ export default function ProductDetailPage() {
           {/* Benefits */}
           {benefits.length > 0 && (
             <div>
-              <SectionHeading>Benefits</SectionHeading>
+              <SectionHeading>{t.pdp_benefits}</SectionHeading>
               <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
                 {[...benefits].sort((a, b) => a.order - b.order).map((benefit) => (
                   <div key={benefit.id} className="p-6 rounded-2xl bg-surface border border-slate-100">
@@ -361,7 +363,7 @@ export default function ProductDetailPage() {
           {/* Recommended Crops */}
           {crops.length > 0 && (
             <div>
-              <SectionHeading>Recommended Crops</SectionHeading>
+              <SectionHeading>{t.pdp_recommended_crops}</SectionHeading>
               <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-4">
                 {[...crops].sort((a, b) => a.order - b.order).map((crop) => (
                   <div key={crop.id} className="text-center">
@@ -378,17 +380,17 @@ export default function ProductDetailPage() {
           {/* Dosage & Application */}
           {dosageRows.length > 0 && (
             <div>
-              <SectionHeading>Dosage & Application</SectionHeading>
+              <SectionHeading>{t.pdp_dosage_application}</SectionHeading>
               <div className="overflow-x-auto rounded-2xl border border-slate-100">
                 <table className="w-full text-left font-sans text-sm min-w-[600px]">
                   <thead>
                     <tr className="bg-surface border-b border-slate-100">
-                      <th className="py-3 px-4 text-primary/60 font-semibold uppercase tracking-wider text-xs">Crop</th>
-                      <th className="py-3 px-4 text-primary/60 font-semibold uppercase tracking-wider text-xs">Dosage</th>
-                      <th className="py-3 px-4 text-primary/60 font-semibold uppercase tracking-wider text-xs">Method</th>
-                      <th className="py-3 px-4 text-primary/60 font-semibold uppercase tracking-wider text-xs">Growth Stage</th>
-                      <th className="py-3 px-4 text-primary/60 font-semibold uppercase tracking-wider text-xs">Spray Interval</th>
-                      <th className="py-3 px-4 text-primary/60 font-semibold uppercase tracking-wider text-xs">Remarks</th>
+                      <th className="py-3 px-4 text-primary/60 font-semibold uppercase tracking-wider text-xs">{t.pdp_table_crop}</th>
+                      <th className="py-3 px-4 text-primary/60 font-semibold uppercase tracking-wider text-xs">{t.pdp_table_dosage}</th>
+                      <th className="py-3 px-4 text-primary/60 font-semibold uppercase tracking-wider text-xs">{t.pdp_table_method}</th>
+                      <th className="py-3 px-4 text-primary/60 font-semibold uppercase tracking-wider text-xs">{t.pdp_table_growth_stage}</th>
+                      <th className="py-3 px-4 text-primary/60 font-semibold uppercase tracking-wider text-xs">{t.pdp_table_spray_interval}</th>
+                      <th className="py-3 px-4 text-primary/60 font-semibold uppercase tracking-wider text-xs">{t.pdp_table_remarks}</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -411,7 +413,7 @@ export default function ProductDetailPage() {
           {/* Composition */}
           {compositionRows.length > 0 && (
             <div>
-              <SectionHeading>Composition</SectionHeading>
+              <SectionHeading>{t.pdp_composition}</SectionHeading>
               <div className="overflow-x-auto rounded-2xl border border-slate-100">
                 <table className="w-full text-left font-sans text-sm">
                   <tbody>
@@ -430,7 +432,7 @@ export default function ProductDetailPage() {
           {/* Technical Specifications */}
           {specRows.length > 0 && (
             <div>
-              <SectionHeading>Technical Specifications</SectionHeading>
+              <SectionHeading>{t.pdp_technical_specifications}</SectionHeading>
               <div className="overflow-x-auto rounded-2xl border border-slate-100">
                 <table className="w-full text-left font-sans text-sm">
                   <tbody>
@@ -449,7 +451,7 @@ export default function ProductDetailPage() {
           {/* How To Use */}
           {steps.length > 0 && (
             <div>
-              <SectionHeading>How To Use</SectionHeading>
+              <SectionHeading>{t.pdp_how_to_use}</SectionHeading>
               <div className="flex flex-col gap-8">
                 {[...steps].sort((a, b) => a.stepNumber - b.stepNumber).map((step) => (
                   <div key={step.id} className="flex gap-5 items-start">
@@ -470,7 +472,7 @@ export default function ProductDetailPage() {
             <div className="grid grid-cols-1 md:grid-cols-2 gap-10">
               {hasTextItems(product.safetyChecklist) && (
                 <div>
-                  <SectionHeading>Safety Information</SectionHeading>
+                  <SectionHeading>{t.pdp_safety_information}</SectionHeading>
                   <ul className="space-y-2">
                     {product.safetyChecklist.filter(hasText).map((item, idx) => (
                       <li key={idx} className="flex items-start gap-2 text-sm font-sans text-primary/80">
@@ -482,7 +484,7 @@ export default function ProductDetailPage() {
               )}
               {hasTextItems(product.storageChecklist) && (
                 <div>
-                  <SectionHeading>Storage Instructions</SectionHeading>
+                  <SectionHeading>{t.pdp_storage_instructions}</SectionHeading>
                   <ul className="space-y-2">
                     {product.storageChecklist.filter(hasText).map((item, idx) => (
                       <li key={idx} className="flex items-start gap-2 text-sm font-sans text-primary/80">
@@ -498,7 +500,7 @@ export default function ProductDetailPage() {
           {/* Videos */}
           {videos.length > 0 && (
             <div>
-              <SectionHeading>Product Videos</SectionHeading>
+              <SectionHeading>{t.pdp_product_videos}</SectionHeading>
               <div className="grid grid-cols-1 md:grid-cols-2 gap-6 items-start">
                 {videos.map((video) => {
                   if (video.provider === 'youtubeShort') {
@@ -533,7 +535,7 @@ export default function ProductDetailPage() {
           {/* Expected Results */}
           {expectedResults.length > 0 && (
             <div>
-              <SectionHeading>Expected Results</SectionHeading>
+              <SectionHeading>{t.pdp_expected_results}</SectionHeading>
               <div className="flex flex-col gap-4">
                 {expectedResults.map((result) => (
                   <div key={result.id} className="flex gap-5 items-start p-4 rounded-xl bg-surface">
@@ -548,7 +550,7 @@ export default function ProductDetailPage() {
           {/* Product Gallery — the full Product Images set (same source as the hero, shown again as a browsable gallery per-spec). Skipped when there's only the one primary image already shown in the hero. */}
           {galleryImages.length > 1 && (
             <div>
-              <SectionHeading>Gallery</SectionHeading>
+              <SectionHeading>{t.pdp_gallery}</SectionHeading>
               <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
                 {galleryImages.map((image) => (
                   <button key={image.id} onClick={() => setLightboxImage(image.url)} className="aspect-[4/3] rounded-xl overflow-hidden bg-surface border border-slate-100">
@@ -562,7 +564,7 @@ export default function ProductDetailPage() {
           {/* FAQ */}
           {faqs.length > 0 && (
             <div>
-              <SectionHeading>Frequently Asked Questions</SectionHeading>
+              <SectionHeading>{t.pdp_faq}</SectionHeading>
               <div className="flex flex-col gap-3">
                 {[...faqs].sort((a, b) => a.order - b.order).map((faq) => (
                   <div key={faq.id} className="border border-slate-100 rounded-xl overflow-hidden">
@@ -583,14 +585,14 @@ export default function ProductDetailPage() {
           {/* Certifications */}
           {certifications.length > 0 && (
             <div>
-              <SectionHeading>Certifications</SectionHeading>
+              <SectionHeading>{t.pdp_certifications}</SectionHeading>
               <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-6">
                 {certifications.map((cert) => (
                   <div key={cert.id} className="p-5 rounded-2xl bg-surface border border-slate-100 text-center">
                     {cert.image && <img src={cert.image} alt={cert.title} className="w-20 h-20 object-contain mx-auto mb-3" />}
                     {hasText(cert.title) && <h3 className="font-sans font-bold text-primary text-sm mb-1">{cert.title}</h3>}
                     {cert.description && <p className="text-xs text-on-surface-variant font-serif">{cert.description}</p>}
-                    {cert.certificateNumber && <p className="text-[10px] text-slate-400 font-sans mt-2">Cert. No: {cert.certificateNumber}</p>}
+                    {cert.certificateNumber && <p className="text-[10px] text-slate-400 font-sans mt-2">{t.pdp_cert_number_prefix} {cert.certificateNumber}</p>}
                   </div>
                 ))}
               </div>
@@ -600,7 +602,7 @@ export default function ProductDetailPage() {
           {/* Downloads */}
           {downloads.length > 0 && (
             <div>
-              <SectionHeading>Download Resources</SectionHeading>
+              <SectionHeading>{t.pdp_download_resources}</SectionHeading>
               <div className="flex flex-col gap-3">
                 {downloads.map((download) => (
                   <a key={download.id} href={download.url} target="_blank" rel="noopener noreferrer" className="flex items-center gap-4 p-4 rounded-xl bg-surface border border-slate-100 hover:border-primary/30 transition-colors">
@@ -631,7 +633,7 @@ export default function ProductDetailPage() {
       {relatedProducts.length > 0 && (
         <section className="relative z-10 bg-surface py-16 md:py-24 border-t border-primary/5">
           <div className="max-w-6xl mx-auto px-8">
-            <h2 className="font-sans text-2xl md:text-[28px] font-extrabold text-primary mb-10 tracking-tight text-center">Related Products</h2>
+            <h2 className="font-sans text-2xl md:text-[28px] font-extrabold text-primary mb-10 tracking-tight text-center">{t.pdp_related_products}</h2>
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">
               {relatedProducts.map((related) => (
                 <Link key={related.id} to={`/products/${related.slug}`} className="group bg-white rounded-2xl overflow-hidden border border-slate-100 hover:shadow-md transition-shadow">

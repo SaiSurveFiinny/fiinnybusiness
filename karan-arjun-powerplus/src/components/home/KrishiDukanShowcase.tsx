@@ -1,23 +1,5 @@
 import { Icons } from '../Icons';
-
-const CAPABILITIES = [
-  {
-    title: 'Verified Agriculture Marketplace',
-    description: 'Seeds, fertilizers, pesticides, herbicides, bio-stimulants, and sprayers listed directly by manufacturers and retailers.',
-  },
-  {
-    title: 'Crop Hub',
-    description: 'Per-crop guidance covering seed selection, nutrition, irrigation, growth stages, and common mistakes to avoid.',
-  },
-  {
-    title: 'Store Locator',
-    description: 'Find which stores near you stock the product you need, with real store locations on a map.',
-  },
-  {
-    title: 'Verified Manufacturer Profiles',
-    description: 'Every manufacturer, including Karan Arjun Pvt. Ltd., has a verified brand page with genuine contact and product information.',
-  },
-];
+import { useLanguage } from '../../context/LanguageContext';
 
 /**
  * "Digital Agriculture Platform" — positions KrishiDukan as a Karan Arjun
@@ -31,6 +13,15 @@ const CAPABILITIES = [
  * awards).
  */
 export function KrishiDukanShowcase() {
+  const { t } = useLanguage();
+
+  const capabilities = [
+    { title: t.krishidukan_capability1_title, description: t.krishidukan_capability1_desc },
+    { title: t.krishidukan_capability2_title, description: t.krishidukan_capability2_desc },
+    { title: t.krishidukan_capability3_title, description: t.krishidukan_capability3_desc },
+    { title: t.krishidukan_capability4_title, description: t.krishidukan_capability4_desc },
+  ];
+
   return (
     <section className="relative z-10 bg-surface py-16 md:py-24 border-t border-primary/5">
       <div className="max-w-6xl mx-auto px-6 md:px-8">
@@ -50,18 +41,17 @@ export function KrishiDukanShowcase() {
           {/* Copy + capabilities */}
           <div className="order-1 lg:order-2">
             <span className="font-sans text-xs font-bold uppercase tracking-[0.2em] text-secondary mb-4 block">
-              Digital Agriculture Platform
+              {t.krishidukan_label}
             </span>
             <h2 className="font-sans text-3xl md:text-[40px] font-extrabold text-primary tracking-tight leading-[1.1] mb-5">
               KrishiDukan
             </h2>
             <p className="font-serif text-base md:text-lg text-on-surface-variant leading-relaxed mb-8 max-w-lg">
-              Karan Arjun Pvt. Ltd.'s digital agriculture platform, connecting farmers, verified retailers, and
-              manufacturers through a single ecosystem.
+              {t.krishidukan_body}
             </p>
 
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-8 gap-y-6 mb-8">
-              {CAPABILITIES.map((capability) => (
+              {capabilities.map((capability) => (
                 <div key={capability.title} className="border-l-2 border-primary/10 pl-4">
                   <h3 className="font-sans font-bold text-primary text-sm mb-1.5">{capability.title}</h3>
                   <p className="text-on-surface-variant text-sm font-serif leading-relaxed">{capability.description}</p>
@@ -75,7 +65,7 @@ export function KrishiDukanShowcase() {
               rel="noopener noreferrer"
               className="inline-flex items-center gap-2 font-sans font-bold text-primary text-sm hover:underline underline-offset-4"
             >
-              Explore KrishiDukan <Icons.ArrowRight className="w-4 h-4" />
+              {t.krishidukan_cta} <Icons.ArrowRight className="w-4 h-4" />
             </a>
           </div>
         </div>
