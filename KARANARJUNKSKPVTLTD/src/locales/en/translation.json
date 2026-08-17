@@ -1,4 +1,9 @@
 ﻿{
+    "handoff":  {
+                   "signingIn": "Signing you in…",
+                   "failedTitle": "Could not open billing",
+                   "failedBody": "This link has expired or was already used. Open Billing again from KrishiDukan."
+               },
     "common":  {
                    "help_center": "Help Center",
                    "dashboard":  "Dashboard",
@@ -16,6 +21,7 @@
                    "cancel":  "Cancel",
                    "admin_tools":  "Admin Tools",
                    "pos_billing":  "POS Billing",
+                   "khata":  "Khata (Udhari)",
                    "onboard_retailer":  "Onboard Retailer",
                    "manage_retailers":  "Manage Retailers",
                    "manage_users":  "Manage Users",

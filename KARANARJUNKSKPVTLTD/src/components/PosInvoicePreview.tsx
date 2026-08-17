@@ -284,7 +284,7 @@ export function PosInvoicePreview({
                                     ['GST%', 'center', '2px 1px'],
                                     ['Amount', 'right', '2px 3px'],
                                 ] as const).map(([label, align, pad]) => (
-                                    <th key={label} style={{ border: '1px solid #ccc', padding: pad, textAlign: align as const, fontWeight: 700, fontSize: '0.60rem', overflow: 'hidden', whiteSpace: 'nowrap' }}>
+                                    <th key={label} style={{ border: '1px solid #ccc', padding: pad, textAlign: align, fontWeight: 700, fontSize: '0.60rem', overflow: 'hidden', whiteSpace: 'nowrap' }}>
                                         {label}
                                     </th>
                                 ))}

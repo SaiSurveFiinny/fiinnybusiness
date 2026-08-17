@@ -21,7 +21,7 @@ export default function ManageRolesPage() {
         }
     }, [activePermissions]);
 
-    const roles: UserRole[] = ['admin', 'analyst', 'retailer', 'manufacturer', 'customer'];
+    const roles: UserRole[] = ['admin', 'analyst', 'retailer', 'shopkeeper', 'manufacturer', 'customer'];
 
         const screens: { key: AppScreen, label: string }[] = [
             { key: 'dashboard', label: 'B2B Dashboard' },
