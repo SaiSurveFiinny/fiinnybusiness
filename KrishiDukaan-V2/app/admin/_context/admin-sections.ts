@@ -8,7 +8,7 @@
  */
 
 export const ADMIN_SECTIONS = [
-  "overview", "analytics", "users", "subscriptions", "products", "reels",
+  "overview", "analytics", "orders", "users", "subscriptions", "products", "reels",
   "discounts", "inventory", "companies", "hubs", "reports", "messages",
   "whatsapp", "blog", "team",
 ] as const;

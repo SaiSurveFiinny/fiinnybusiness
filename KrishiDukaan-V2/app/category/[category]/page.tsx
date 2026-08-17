@@ -28,23 +28,27 @@ export function generateStaticParams() {
 export async function generateMetadata({ params }: PageProps): Promise<Metadata> {
   const { category } = await params;
   const meta = getCategoryBySlug(category);
-  if (!meta) return { title: "Category Not Found | KrishiDukan" };
+  if (!meta) return { title: "Category Not Found" };
 
-  const title = `Buy ${meta.heading} Online — Best Prices in India | KrishiDukan`;
+  // Brand omitted — app/layout.tsx's "%s | KrishiDukan" template appends it.
+  // shareTitle keeps it explicitly for openGraph/twitter, which the template
+  // does not apply to.
+  const title = `Buy ${meta.heading} Online — Best Prices in India`;
+  const shareTitle = `${title} | KrishiDukan`;
   return {
     title,
     description: meta.metaDescription,
     alternates: { canonical: `/category/${meta.slug}` },
     openGraph: {
       type: "website",
-      title,
+      title: shareTitle,
       description: meta.metaDescription,
       url: `${SITE_URL}/category/${meta.slug}`,
       images: [{ url: "/images/og-default.png", width: 1200, height: 630 }],
     },
     twitter: {
       card: "summary_large_image",
-      title,
+      title: shareTitle,
       description: meta.metaDescription,
       images: ["/images/og-default.png"],
     },

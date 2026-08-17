@@ -211,7 +211,7 @@ export default function AppDownloadPage() {
             all from the same app.
           </p>
           <Link
-            href="/?view=about"
+            href="/sell"
             className="inline-flex items-center justify-center rounded-2xl bg-primary px-6 py-3 font-bold text-white hover:opacity-90 transition-opacity text-sm"
           >
             Learn more about selling on KrishiDukan →

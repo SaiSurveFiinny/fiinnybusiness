@@ -58,7 +58,7 @@ function priceValue(p: SeoProduct): number {
 export async function generateMetadata({ params }: PageProps): Promise<Metadata> {
   const { slug } = await params;
   const product = await getProductById(extractIdFromSlug(slug));
-  if (!product) return { title: "Product Not Found | KrishiDukan" };
+  if (!product) return { title: "Product Not Found" };
 
   const crops = [
     ...(Array.isArray(product.categoryInfo.bestForCrops)
@@ -69,7 +69,11 @@ export async function generateMetadata({ params }: PageProps): Promise<Metadata>
     ? `Dosage: ${product.categoryInfo.dosage}. `
     : "";
 
-  const title = `${product.name} — Price, Uses & Buy Online | KrishiDukan`;
+  // `title` omits the brand — the "%s | KrishiDukan" template in app/layout.tsx
+  // appends it. `shareTitle` carries it explicitly because the template does not
+  // apply to openGraph/twitter, and those titles appear standalone when shared.
+  const title = `${product.name} — Price, Uses & Buy Online`;
+  const shareTitle = `${title} | KrishiDukan`;
   const description =
     `Buy ${product.name} (${product.category}) online at KrishiDukan. ${dosage}` +
     `${crops ? `Best for ${crops}. ` : ""}` +
@@ -86,14 +90,14 @@ export async function generateMetadata({ params }: PageProps): Promise<Metadata>
     alternates: { canonical: canonicalPath },
     openGraph: {
       type: "website",
-      title,
+      title: shareTitle,
       description: description.slice(0, 320),
       url: `${SITE_URL}${canonicalPath}`,
       images: images.map((url) => ({ url })),
     },
     twitter: {
       card: "summary_large_image",
-      title,
+      title: shareTitle,
       description: description.slice(0, 200),
       images,
     },

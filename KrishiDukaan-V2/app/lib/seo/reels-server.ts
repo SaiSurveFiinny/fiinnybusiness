@@ -127,23 +127,22 @@ export function extractReelIdFromSlug(slug: string): string {
   return idx === -1 ? decoded : decoded.slice(idx + 1);
 }
 
-/** Canonical (indexable) URL path for a reel's linked product, if any. */
+/**
+ * Canonical (indexable) URL path for a reel's linked product, if any.
+ *
+ * This is the ONLY product link reel surfaces should use. A sibling helper used
+ * to return the "/?view=product&…" SPA deep link, and because both the feed and
+ * the reel detail page reached for it, every reel page shipped zero crawlable
+ * product links — the reel → product → seller chain dead-ended. The canonical
+ * product page already carries its own Buy CTA into the store view, so linking
+ * here costs nothing for humans and restores the internal link graph.
+ */
 export function linkedProductPath(reel: SeoReel): string | null {
   if (!reel.linkedProductId) return null;
   return `/products/${buildProductSlug(
     reel.linkedProductName ?? "",
     reel.linkedProductId,
   )}`;
-}
-
-/**
- * Shopping deep link for a reel's linked product: opens the interactive
- * store product view (sellers, cart, Buy Now) — the page humans buy on.
- * SEO surfaces (JSON-LD, sitemap) keep using linkedProductPath instead.
- */
-export function linkedProductStorePath(reel: SeoReel): string | null {
-  if (!reel.linkedProductId) return null;
-  return `/?view=product&product=${encodeURIComponent(reel.linkedProductId)}`;
 }
 
 // ─── Fetchers ────────────────────────────────────────────────────────────────

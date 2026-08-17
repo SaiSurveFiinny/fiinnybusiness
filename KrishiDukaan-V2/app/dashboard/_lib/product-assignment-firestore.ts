@@ -498,8 +498,19 @@ export async function bulkAssignProductsToRetailer(
       store: retailerStoreName,
       stock: "In Stock",
       distance: "Nearby",
-      sellMode: src.sellMode === "online_delivery" ? "online_delivery" : "offline_store_only",
-      isOnline: src.isOnline === true || src.sellMode === "online_delivery",
+      // Assigned copies start OFFLINE regardless of the manufacturer's setting.
+      //
+      // These used to inherit sellMode/isOnline from the manufacturer's source
+      // product, so a manufacturer switching their own product to online
+      // delivery silently made it "online" at every retailer they had ever
+      // assigned it to — including retailers still on a Pending invite who had
+      // never enabled delivery and could not ship anything. Buyers were being
+      // handed those shops at checkout.
+      //
+      // Online delivery is a per-shop decision, so the retailer turns it on
+      // themselves from Inventory → Online Delivery.
+      sellMode: "offline_store_only",
+      isOnline: false,
 
       createdAt: now,
       updatedAt: now,
@@ -551,6 +562,11 @@ export async function bulkAssignProductsToRetailer(
         storePhone: retailerPhone ?? null,
         storeName: retailerStoreName || null,
         stockLevel: "In Stock",
+        // Explicitly false, matching the copy's sellMode above. Readers treat a
+        // MISSING isOnline as "not blocked" (legacy entries predate the field),
+        // so leaving it off would let a brand-new assignment advertise online
+        // delivery for a shop that has not enabled it.
+        isOnline: false,
       }),
     });
 

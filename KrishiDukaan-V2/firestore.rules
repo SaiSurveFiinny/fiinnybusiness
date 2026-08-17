@@ -154,6 +154,21 @@ service cloud.firestore {
       allow delete: if isAdmin();
     }
 
+    // ─── payoutAccounts ──────────────────────────────────────────────────────
+    // Seller bank details for order payouts. The ONLY collection in this file
+    // that is neither public nor role-readable, and it must stay that way:
+    //   - profiles/{phone} is `allow read: if true`
+    //   - users/{phone} is readable by any retailer or manufacturer
+    // so bank details in either of those would be visible platform-wide.
+    // Owner and admin only — no teamHas(), no role checks, no exceptions.
+    match /payoutAccounts/{phone} {
+      allow read:   if isAuthed() && (isAdmin() || myPhone() == phone);
+      allow create: if isAuthed() && myPhone() == phone;
+      allow update: if isAuthed() && myPhone() == phone;
+      // Never client-deletable — payout history must stay auditable.
+      allow delete: if false;
+    }
+
     // ─── catalog ─────────────────────────────────────────────────────────────
     // Master product catalog (new schema). Public read.
     match /catalog/{catalogId} {
@@ -254,6 +269,34 @@ service cloud.firestore {
       allow write: if false;
     }
 
+    // ─── settings ────────────────────────────────────────────────────────────
+    // Public, non-secret configuration. settings/pricing holds the self-serve
+    // subscription ladder that the checkout, SubscriptionView and /sell all read,
+    // so it must be world-readable — the prices are on a public marketing page
+    // anyway. Writes go through /api/admin/pricing (Admin SDK, requireAdmin,
+    // adminLogs), never from a client, because this document decides what a
+    // seller is charged.
+    match /settings/{settingId} {
+      allow read: if true;
+      allow write: if false;
+    }
+
+    // ─── promoCodes ──────────────────────────────────────────────────────────
+    // Subscription discount codes. These had NO rule at all, and with no
+    // catch-all match Firestore denied every read — so SubscriptionView's
+    // client-side lookup always failed and every seller saw "Could not validate
+    // promo code", making the feature entirely non-functional.
+    //
+    // Read is public because the seller must be able to validate a code before
+    // paying, and a discount percentage is not a secret. It is NOT the authority
+    // on the charge: api/payment/create-order re-reads this collection with the
+    // Admin SDK and recomputes the amount, so a tampered client read cannot
+    // change what is billed. Writes are admin-only via /api/admin/promo-codes.
+    match /promoCodes/{codeId} {
+      allow read: if true;
+      allow write: if false;
+    }
+
     // ─── payments ────────────────────────────────────────────────────────────
     // Accepts both new (userPhone) and legacy (userId) field names.
     match /payments/{paymentId} {
@@ -291,7 +334,7 @@ service cloud.firestore {
         && request.resource.data.sellerType in ['retailer', 'manufacturer'];
 
       // teamHas('users') covers the admin "view seller's dashboard" link.
-      allow read: if isAdmin() || teamHas('users') || (isAuthed() && (
+      allow read: if isAdmin() || teamHas('users') || teamHas('orders') || (isAuthed() && (
         resource.data.customerPhone == myPhone() ||
         resource.data.sellerPhone == myPhone() ||
         resource.data.customerId == request.auth.uid ||
@@ -863,6 +906,15 @@ service cloud.firestore {
       allow update: if isAuthed()
                        && resource.data.salesExecutiveId == request.auth.uid;
       allow delete: if isAdmin();
+    }
+
+    // ─── erpHandoffCodes ──────────────────────────────────────────────────────
+    // Single-use codes that are exchanged for an ERP sign-in token. Each document
+    // is a bearer credential, so no client may read, list or write one — reading a
+    // code would be enough to take over the matching ERP session. Both sides of the
+    // exchange run in Cloud Functions, and the Admin SDK bypasses these rules.
+    match /erpHandoffCodes/{codeHash} {
+      allow read, write: if false;
     }
   }
 }

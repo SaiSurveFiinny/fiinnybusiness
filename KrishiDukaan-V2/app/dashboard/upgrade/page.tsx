@@ -26,7 +26,19 @@ export default function UpgradePage() {
     router.push('/');
   };
 
-  if (loading || !effectiveUid) {
+  const role = effectiveProfile?.role;
+  const canSubscribe = role === 'retailer' || role === 'manufacturer';
+
+  // Only retailers and manufacturers have a plan to buy. The old `role || 'retailer'`
+  // fallback meant a farmer — or a profile whose role had not loaded — was shown the
+  // retailer pitch, because SubscriptionView reads any non-manufacturer role as retailer.
+  useEffect(() => {
+    if (!loading && effectiveUid && !canSubscribe) {
+      router.replace('/dashboard');
+    }
+  }, [loading, effectiveUid, canSubscribe, router]);
+
+  if (loading || !effectiveUid || !canSubscribe) {
     return (
       <div className="flex h-[400px] items-center justify-center">
         <div className="animate-spin w-8 h-8 border-4 border-primary border-t-transparent rounded-full" />
@@ -38,7 +50,7 @@ export default function UpgradePage() {
     <div className="py-8">
       <SubscriptionView
         user={{ uid: effectiveUid }}
-        role={effectiveProfile?.role || 'retailer'}
+        role={role}
         onSuccess={handleSuccess}
         onLogout={handleLogout}
       />

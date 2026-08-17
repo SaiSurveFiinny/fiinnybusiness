@@ -131,6 +131,9 @@ export default function App() {
   /** True while auth state + Firestore cart are being resolved — blocks CartView render */
   const [cartHydrating, setCartHydrating] = useState(true);
   const firestoreSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  /** True once a signed-in user has been observed, so the auth listener can tell a
+   *  real sign-out from the null it emits on every logged-out cold load. */
+  const hadUserRef = useRef(false);
   const [checkoutLoading, setCheckoutLoading] = useState(false);
   const [checkoutMessage, setCheckoutMessage] = useState<string | null>(null);
   const [storePickerProduct, setStorePickerProduct] = useState<MarketplaceProduct | null>(null);
@@ -169,6 +172,13 @@ export default function App() {
       view !== 'help'
     ) {
       return 'subscription';
+    }
+    // The paid plans are for retailers and manufacturers only. Farmers never reach
+    // this view through navigation, but 'subscription' is in VALID_VIEWS, so
+    // ?view=subscription would render the retailer pitch to them — SubscriptionView
+    // treats every non-manufacturer role as a retailer.
+    if (view === 'subscription' && userRole !== 'retailer' && userRole !== 'manufacturer') {
+      return 'home';
     }
     if (userRole === 'retailer' && view === 'become-retailer') {
       return 'home';
@@ -541,6 +551,7 @@ export default function App() {
     const unsubscribe = onAuthStateChanged(auth, async (firebaseUser) => {
       if (firebaseUser) {
         setUser(firebaseUser);
+        hadUserRef.current = true;
         const profileData = await getUserProfile(firebaseUser.uid);
         if (profileData) {
           setUserRole(profileData.role as UserRole);
@@ -611,8 +622,15 @@ export default function App() {
         setUserRole('customer');
         setUserProfile({ name: '', phone: '', email: '', isPaid: false });
         // Clear cart on logout — Firestore copy is preserved for next login.
-        setCartItems([]);
-        window.localStorage.removeItem("krishidukan_cart_v1");
+        // Only on an ACTUAL sign-out: this callback also fires with null on every
+        // cold load for a logged-out visitor, and clearing there wiped the guest
+        // cart that the localStorage effect had just hydrated — so nothing a guest
+        // added ever survived a page load.
+        if (hadUserRef.current) {
+          setCartItems([]);
+          window.localStorage.removeItem("krishidukan_cart_v1");
+        }
+        hadUserRef.current = false;
         setCheckoutInfo({
           customerName: '',
           customerPhone: '',
@@ -1253,20 +1271,36 @@ export default function App() {
       setToastType("error");
       return;
     }
-    // Find first online-delivery store for this product
+    // Find the first store that stocks this product AND can actually deliver it.
+    //
+    // This used to return the first entry in the product's availability array
+    // with no delivery check whatsoever, despite the comment claiming otherwise.
+    // Assignment pushes a retailer into that array the moment a manufacturer
+    // assigns them stock — before the retailer has accepted their invite, and
+    // regardless of whether they ever switched on online delivery. So Buy Now
+    // could hand the buyer a shop that never joined KrishiDukan and cannot ship.
+    //
+    // Two independent switches must both be on:
+    //   store.onlineDelivery      — THIS shop turned on online delivery
+    //   availability[].isOnline   — this shop's listing of THIS product is online
+    // The listing flag only blocks when explicitly false, so entries written
+    // before it existed still behave as before and rely on the account switch.
     const onlineStore = storesWithDistance.find((store) => {
       const storePhone = (store as any).phone as string | undefined;
       const storeUserId = (store as any).userId as string | undefined;
       const storeRetailerId = (store as any).retailerId as string | undefined;
 
-      const inAvailability = product.availability?.some(
+      const availEntry = product.availability?.find(
         (a) =>
           a.storeId === store.id ||
           (a.storePhone && storePhone && a.storePhone === storePhone) ||
           (a.storeId && storeUserId && a.storeId === storeUserId) ||
           (a.storeId && storeRetailerId && a.storeId === storeRetailerId)
       );
-      return inAvailability;
+      if (!availEntry) return false;
+      if ((store as any).onlineDelivery !== true) return false;
+      if ((availEntry as any).isOnline === false) return false;
+      return true;
     });
 
     if (onlineStore) {

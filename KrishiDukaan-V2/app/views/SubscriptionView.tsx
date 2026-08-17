@@ -1,12 +1,18 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { motion } from 'framer-motion';
 import { ICONS } from '../constants';
 import { getUserProfile, updateSubscriptionStatus, logFailedPayment } from '../firebase';
 import { useI18n } from '../i18n/I18nContext';
-import { collection, query, where, getDocs } from 'firebase/firestore';
+import { collection, query, where, getDocs, doc, getDoc } from 'firebase/firestore';
 import { db } from '../firebase';
+import {
+  DEFAULT_DURATIONS,
+  PRICING_DOC_PATH,
+  parseDurations,
+  type DurationPrice,
+} from '../lib/pricing';
 
 interface SubscriptionViewProps {
   user: any;
@@ -28,12 +34,28 @@ type DurationOption = {
   badge?: string;
 };
 
-const DURATION_OPTIONS: DurationOption[] = [
-  { months: 1,  label: '1 Month',   pricePerSeat: 21 },
-  { months: 3,  label: '3 Months',  pricePerSeat: 54,  badge: 'Save 14%' },
-  { months: 6,  label: '6 Months',  pricePerSeat: 90,  badge: 'Save 29%' },
-  { months: 12, label: '1 Year',    pricePerSeat: 144, badge: 'Best Value' },
-];
+/** "1 Month" / "3 Months" / "1 Year" from a month count. */
+function durationLabel(months: number): string {
+  if (months === 12) return '1 Year';
+  if (months % 12 === 0) return `${months / 12} Years`;
+  return months === 1 ? '1 Month' : `${months} Months`;
+}
+
+const toOption = (d: DurationPrice): DurationOption => ({
+  months: d.months,
+  label: durationLabel(d.months),
+  pricePerSeat: d.pricePerSeat,
+  ...(d.badge ? { badge: d.badge } : {}),
+});
+
+/**
+ * Fallback only. The live ladder comes from settings/pricing (see
+ * app/lib/pricing.ts) — the same document api/payment/create-order prices the
+ * charge from, so what is displayed here and what Razorpay bills cannot drift.
+ * These values match DEFAULT_DURATIONS, so a failed read behaves like the old
+ * hardcoded table rather than showing nothing.
+ */
+const DURATION_OPTIONS: DurationOption[] = DEFAULT_DURATIONS.map(toOption);
 
 export default function SubscriptionView({ user, role, onSuccess, onLogout }: SubscriptionViewProps) {
   const { t } = useI18n();
@@ -41,12 +63,38 @@ export default function SubscriptionView({ user, role, onSuccess, onLogout }: Su
   const [verifying,    setVerifying]    = useState(false);
   const [seatCount,    setSeatCount]    = useState(1);
   const [seatInput,    setSeatInput]    = useState('1');
+  const [options,      setOptions]      = useState<DurationOption[]>(DURATION_OPTIONS);
   const [duration,     setDuration]     = useState<DurationOption>(DURATION_OPTIONS[0]!);
   const [promoCode,    setPromoCode]    = useState('');
   const [promoApplied, setPromoApplied] = useState<{ code: string; discountPct: number } | null>(null);
   const [promoLoading, setPromoLoading] = useState(false);
   const [promoError,   setPromoError]   = useState<string | null>(null);
   const [error,        setError]        = useState<string | null>(null);
+
+  // Load the live pricing ladder. Falls back silently to DURATION_OPTIONS on
+  // any failure — an unreachable settings doc must not block a seller from
+  // subscribing, and create-order applies the same fallback when pricing the
+  // charge, so the two stay consistent either way.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const snap = await getDoc(
+          doc(db, PRICING_DOC_PATH.collection, PRICING_DOC_PATH.doc),
+        );
+        if (cancelled || !snap.exists()) return;
+        const parsed = parseDurations(snap.data());
+        if (!parsed?.length) return;
+        const next = parsed.map(toOption);
+        setOptions(next);
+        // Keep the selection valid if the admin removed the chosen period.
+        setDuration((cur) => next.find((o) => o.months === cur.months) ?? next[0]!);
+      } catch {
+        /* keep the defaults */
+      }
+    })();
+    return () => { cancelled = true; };
+  }, []);
 
   const premiumRole: PremiumRole = role === 'manufacturer' ? 'manufacturer' : 'retailer';
   const isRetailer = premiumRole === 'retailer';
@@ -370,7 +418,7 @@ export default function SubscriptionView({ user, role, onSuccess, onLogout }: Su
                 <div>
                   <p className="text-[10px] font-black uppercase tracking-widest text-on-surface-variant mb-2.5">Duration</p>
                   <div className="grid grid-cols-2 gap-2">
-                    {DURATION_OPTIONS.map((opt) => (
+                    {options.map((opt) => (
                       <button
                         key={opt.months}
                         type="button"
