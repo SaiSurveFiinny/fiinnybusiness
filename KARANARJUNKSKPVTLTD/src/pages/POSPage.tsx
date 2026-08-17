@@ -533,12 +533,16 @@ export default function POSPage() {
                 });
                 setModeOfPayment(order.paymentMethod === 'Khata' ? 'Credit' : 'Cash');
                 setEditingOrder(order);
+                // Edit mode displays and saves under the ORIGINAL invoice number —
+                // no new number is generated/consumed until this edit is saved or
+                // cancelled (see handleCheckout's editingOrder branch and cancelEdit).
+                if (order.orderNumber) setNextBillNumber(order.orderNumber);
                 // Khata and Order History are tabs of THIS page, so their Edit
                 // buttons only change the query string — without this the bill
                 // loads into the billing tab while the user keeps staring at the
                 // tab they clicked from, and Edit looks like a dead button.
                 setPosModuleTab('billing');
-                showToast(`Editing ${order.orderNumber || 'bill'} — saving issues a corrected bill.`, 'success');
+                showToast(`Editing ${order.orderNumber || 'bill'} — saving updates this bill.`, 'success');
             } catch (err) {
                 console.error('Failed to load bill from Khata:', err);
                 showToast('Could not open that bill.', 'error');
@@ -872,7 +876,9 @@ export default function POSPage() {
         setIsProcessing(true);
 
         try {
-            const billNumber = await generateBillNumber();
+            // Editing an existing bill reuses its original invoice number and
+            // never touches the counter — only a genuinely new bill consumes one.
+            const billNumber = editingOrder ? (editingOrder.orderNumber || editingOrder.id) : await generateBillNumber();
             const orderData: any = {
                 orderNumber: billNumber,
                 retailerName: customer.name || 'Walk-in Customer',
@@ -915,7 +921,9 @@ export default function POSPage() {
                 previousBalance: customerOutstanding,
                 netBalance: grandTotal + customerOutstanding,
                 status: 'delivered',
-                createdAt: serverTimestamp(),
+                // Preserve the original creation time when editing; only a truly
+                // new bill gets a fresh createdAt. updatedAt marks the edit itself.
+                ...(editingOrder ? { updatedAt: serverTimestamp() } : { createdAt: serverTimestamp() }),
                 invoiceDate: new Date().toISOString().split('T')[0],
             };
 
@@ -943,9 +951,14 @@ export default function POSPage() {
 
             // Persist the bill and deduct stock atomically in one batch — a
             // half-saved sale can never leave inventory inconsistent.
+            // Editing updates the ORIGINAL salesOrders document in place (same
+            // doc id, same orderNumber) — no replacement document is created.
             const batch = writeBatch(db);
-            const soRef = doc(getTenantCollection(db, tenantId, 'salesOrders'));
-            batch.set(soRef, orderData);
+            const soRef = editingOrder
+                ? getTenantDoc(db, tenantId, 'salesOrders', editingOrder.id)
+                : doc(getTenantCollection(db, tenantId, 'salesOrders'));
+            if (editingOrder) batch.update(soRef, orderData);
+            else batch.set(soRef, orderData);
 
             if (!editingOrder) {
                 // Apply FIFO batch deductions
@@ -991,15 +1004,6 @@ export default function POSPage() {
                         quantity: Math.max(0, boxes), loosePieces: Math.max(0, loose), updatedAt: serverTimestamp(),
                     });
                 }
-            }
-
-            // Retire the bill being corrected, pointing at its replacement.
-            if (editingOrder) {
-                batch.update(getTenantDoc(db, tenantId, 'salesOrders', editingOrder.id), {
-                    status: 'cancelled',
-                    cancelledAt: serverTimestamp(),
-                    supersededBy: soRef.id,
-                });
             }
 
             await batch.commit();
@@ -1161,7 +1165,7 @@ export default function POSPage() {
                     entityName: customer.name || 'Walk-in Customer',
                     entityId: billNumber,
                     description: editingOrder
-                        ? `POS bill corrected · old: ${editingOrder.orderNumber || editingOrder.id} → new: ${billNumber}`
+                        ? `POS bill ${billNumber} updated`
                         : `POS bill created · ${billNumber}${modeOfPayment === 'Khata' ? ' · Khata/Credit' : ''}`,
                     remarks: `₹${Math.round(grandTotal).toLocaleString('en-IN')} · ${modeOfPayment}`,
                 });
@@ -1187,12 +1191,25 @@ export default function POSPage() {
                 setLaborCharges(0);
                 setCreditPaidNow(0);
                 setKhataNote('');
-                // Correction complete — drop edit mode so the next bill is a fresh one.
+                const wasEditing = !!editingOrder;
+                // Edit complete — drop edit mode so the next bill is a fresh one.
                 setEditingOrder(null);
-                // Advance the displayed bill number. generateBillNumber() already
-                // consumed this one from the counter, so without this the next bill
-                // kept showing the number just used until the page was reloaded.
-                setNextBillNumber(`KA-${(Number(billNumber.replace(/\D/g, '')) + 1).toString().padStart(4, '0')}`);
+                if (wasEditing) {
+                    // The edit reused its original number and never touched the
+                    // counter, so the next-bill display must be re-read from it
+                    // rather than incremented off the (unrelated) number just
+                    // saved — incrementing here could regress it if newer bills
+                    // were created elsewhere while this one was being edited.
+                    getDoc(getTenantDoc(db, tenantId, 'counters', 'posBillCounter')).then(snap => {
+                        const seq = snap.exists() ? (snap.data().lastBillNumber || 0) : 0;
+                        setNextBillNumber(`KA-${(seq + 1).toString().padStart(4, '0')}`);
+                    }).catch(() => {});
+                } else {
+                    // Advance the displayed bill number. generateBillNumber() already
+                    // consumed this one from the counter, so without this the next bill
+                    // kept showing the number just used until the page was reloaded.
+                    setNextBillNumber(`KA-${(Number(billNumber.replace(/\D/g, '')) + 1).toString().padStart(4, '0')}`);
+                }
                 setIsProcessing(false);
             }, 300);
 
@@ -1402,6 +1419,35 @@ export default function POSPage() {
         };
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [reprintOrder, loading]);
+
+    // Discards the in-progress edit and returns this tab to a genuinely fresh
+    // bill — mirrors the post-checkout reset exactly (same fields cleared),
+    // but nothing is saved and no salesOrders document is touched.
+    const cancelEdit = () => {
+        if (!editingOrder || !tenantId) return;
+        try { localStorage.removeItem(`pos_draft_${tenantId}`); } catch {}
+        setBillTabs(prev => prev.map(t =>
+            t.id === activeTabId
+                ? { ...t, cart: [], customer: defaultCustomer(), customerOutstanding: 0 }
+                : t,
+        ));
+        setModeOfPayment('Cash');
+        setRedeemPoints(0);
+        setInvoiceCategories(null);
+        setRowMeta({});
+        autoFilledBatchesRef.current.clear();
+        setTransportCharges(0);
+        setLaborCharges(0);
+        setCreditPaidNow(0);
+        setKhataNote('');
+        setEditingOrder(null);
+        // Not consumed while editing — restore the real next-in-sequence number.
+        getDoc(getTenantDoc(db, tenantId, 'counters', 'posBillCounter')).then(snap => {
+            const seq = snap.exists() ? (snap.data().lastBillNumber || 0) : 0;
+            setNextBillNumber(`KA-${(seq + 1).toString().padStart(4, '0')}`);
+        }).catch(() => {});
+        showToast('Edit cancelled', 'success');
+    };
 
     const duplicateBill = (order: any) => {
         if (billTabs.length >= 5) { showToast('Close a bill tab first — max 5 open at once.', 'error'); return; }
@@ -1652,16 +1698,22 @@ export default function POSPage() {
                         .pinv-fmt-btn.active { background: var(--primary); color: #fff; border-color: var(--primary); }
                     `}</style>
 
-                    {/* Correction banner — this bill replaces an existing one */}
+                    {/* Edit banner — saving updates this exact bill in place */}
                     {editingOrder && (
                         <div style={{ maxWidth: billFormat === 'A5' ? '960px' : '1040px', margin: '0 auto 0.9rem', padding: '0.7rem 1rem', borderRadius: '10px', background: 'hsla(220,70%,55%,0.1)', border: '1px solid hsla(220,70%,55%,0.3)', display: 'flex', alignItems: 'center', gap: '0.6rem', flexWrap: 'wrap' }}>
                             <Pencil size={15} color="#3b82f6" />
                             <span style={{ fontSize: '0.85rem', fontWeight: 600, color: 'var(--text-primary)' }}>
-                                Correcting bill {editingOrder.orderNumber || editingOrder.id?.slice(-6)?.toUpperCase()}
+                                Editing bill {editingOrder.orderNumber || editingOrder.id?.slice(-6)?.toUpperCase()}
                             </span>
                             <span style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>
-                                — saving issues a new bill, cancels this one, and returns its stock.
+                                — saving updates this bill; the invoice number stays the same.
                             </span>
+                            <button
+                                onClick={cancelEdit}
+                                style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: '0.3rem', padding: '0.3rem 0.7rem', borderRadius: '8px', border: '1px solid hsla(220,70%,55%,0.4)', background: 'transparent', color: '#3b82f6', fontSize: '0.78rem', fontWeight: 700, cursor: 'pointer', fontFamily: 'inherit' }}
+                            >
+                                <X size={13} /> Cancel Edit
+                            </button>
                         </div>
                     )}
 
