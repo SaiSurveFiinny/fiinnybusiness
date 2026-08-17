@@ -4,12 +4,15 @@ import { useMemo, useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { GoogleMap, useJsApiLoader, MarkerF } from '@react-google-maps/api';
 import {
-  MapPin, ShoppingBag, ArrowRight, Store,
+  MapPin, ShoppingBag, ArrowRight, Store, Tag,
   Leaf, ExternalLink, Package, BadgeCheck, Phone, Mail, ChevronRight, Navigation, Building2,
 } from 'lucide-react';
 import { ReviewSection } from '../../components/shared/ReviewSection';
 import type { ManufacturerBrandData, BrandProductSummary, BrandRetailerSummary } from '../dashboard/_lib/brand-page-types';
 import { haversineDistance, formatDistance } from '../utils/haversine';
+import { fetchMarketplaceProducts } from '../firebase';
+import { useSharedCart } from '../lib/useSharedCart';
+import type { MarketplaceProduct } from '../../types/product';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -327,6 +330,74 @@ export default function BrandView({
 }: BrandViewProps) {
   const [expandedStoreId, setExpandedStoreId] = useState<string | null>(null);
   const [userLocation, setUserLocation] = useState<{ lat: number; lng: number } | null>(null);
+  const { addToCart, isInCart } = useSharedCart();
+  const [toast, setToast] = useState<string | null>(null);
+
+  // Seller pricing lives on retailer product copies, not on the manufacturer's
+  // catalog doc — so the server-rendered summaries carry no discount or sellMode.
+  // Pull the marketplace's merged view (same source the Market grid renders from)
+  // and key it by name, which is how that pipeline dedupes across sellers.
+  const [marketByName, setMarketByName] = useState<Map<string, MarketplaceProduct>>(new Map());
+  useEffect(() => {
+    let cancelled = false;
+    fetchMarketplaceProducts()
+      .then((all) => {
+        if (cancelled) return;
+        setMarketByName(new Map(all.map((p) => [p.name.toLowerCase().trim(), p])));
+      })
+      .catch(() => { /* pricing stays at the catalog price; cards still render */ });
+    return () => { cancelled = true; };
+  }, []);
+
+  useEffect(() => {
+    if (!toast) return;
+    const id = setTimeout(() => setToast(null), 2500);
+    return () => clearTimeout(id);
+  }, [toast]);
+
+  /** Adds to the shared cart. Returns false when the product isn't orderable. */
+  const addProductToCart = (product: BrandProductSummary): boolean => {
+    const market = marketByName.get(product.name.toLowerCase().trim());
+    return addToCart(
+      market ?? ({
+        id: product.id,
+        name: product.name,
+        image: product.image,
+        price: product.price,
+        category: product.category,
+      } as MarketplaceProduct),
+    );
+  };
+
+  const handleAddToCart = (product: BrandProductSummary) => {
+    const added = addProductToCart(product);
+    setToast(
+      added
+        ? `${product.name} added to cart.`
+        : 'This product is not available for online ordering.',
+    );
+  };
+
+  /**
+   * Buy Now — add to cart, then go straight to the cart.
+   *
+   * MarketView's card takes an onBuyNow from the SPA page, whose handler needs
+   * storesWithDistance and the toast/navigate context that only page.tsx has.
+   * /brand/[slug] is a standalone route with none of that, so this uses the
+   * exact fallback MarketView itself declares when no onBuyNow is supplied:
+   * add to cart, then send the buyer to the cart. Same destination, no
+   * dependency on SPA state.
+   */
+  const handleBuyNow = (product: BrandProductSummary) => {
+    if (!isInCart(marketByName.get(product.name.toLowerCase().trim())?.id ?? product.id)) {
+      const added = addProductToCart(product);
+      if (!added) {
+        setToast('This product is not available for online ordering.');
+        return;
+      }
+    }
+    window.location.href = '/?view=cart';
+  };
 
   // Request user location once (for distance sorting)
   useEffect(() => {
@@ -639,7 +710,17 @@ export default function BrandView({
             </div>
             <div className={`grid gap-3 md:gap-5 ${products.length <= 3 ? 'grid-cols-3' : 'grid-cols-2 md:grid-cols-3'}`}>
               {products.map((p) => (
-                <ProductCard key={p.id} product={p} onProductClick={onProductClick} />
+                <ProductCard
+                  key={p.id}
+                  product={p}
+                  market={marketByName.get(p.name.toLowerCase().trim())}
+                  // The cart stores the merged marketplace product's id, which is
+                  // not always the manufacturer catalog doc id this page renders.
+                  inCart={isInCart(marketByName.get(p.name.toLowerCase().trim())?.id ?? p.id)}
+                  onAddToCart={() => handleAddToCart(p)}
+                  onBuyNow={() => handleBuyNow(p)}
+                  onProductClick={onProductClick}
+                />
               ))}
             </div>
           </div>
@@ -705,6 +786,18 @@ export default function BrandView({
         </div>
       </section>
 
+      <AnimatePresence>
+        {toast && (
+          <motion.div
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: 20 }}
+            className="fixed bottom-6 left-1/2 -translate-x-1/2 z-[200] bg-on-surface text-white text-sm font-semibold px-5 py-3 rounded-xl shadow-lg"
+          >
+            {toast}
+          </motion.div>
+        )}
+      </AnimatePresence>
     </div>
   );
 }
@@ -713,44 +806,161 @@ export default function BrandView({
 
 function ProductCard({
   product,
+  market,
+  inCart,
+  onAddToCart,
+  onBuyNow,
   onProductClick,
 }: {
   product: BrandProductSummary;
+  /** Merged marketplace record for this product, when one exists — carries the
+   *  cross-seller pricing the brand page's own catalog summary doesn't have. */
+  market?: MarketplaceProduct;
+  inCart: boolean;
+  onAddToCart: () => void;
+  onBuyNow: () => void;
   onProductClick?: (id: string) => void;
 }) {
-  const inner = (
-    <>
-      <div className="aspect-square bg-[#f7f5f0] flex items-center justify-center overflow-hidden p-2">
+  // Same derivation the Market grid uses: "X% OFF" only for a genuine
+  // seller-configured discount (lowestFinalPrice below that seller's own
+  // lowestPrice), never for ordinary price variance between sellers.
+  const sellerBasePrice = market?.lowestPrice ?? market?.price ?? product.price;
+  const discountedPrice = market?.lowestFinalPrice ?? sellerBasePrice;
+  const showsDiscount = discountedPrice < sellerBasePrice;
+  const savingsPct = showsDiscount && sellerBasePrice > 0
+    ? Math.round((1 - discountedPrice / sellerBasePrice) * 100)
+    : 0;
+  // Absent marketplace data we can't prove it's offline-only, so keep the CTA.
+  const orderable = market ? market.sellMode !== 'offline_store_only' : true;
+
+  const openProduct = () => {
+    if (onProductClick) { onProductClick(product.id); return; }
+    // Standalone /brand route — hand off to the SPA's product view.
+    window.location.href = `/?view=product&product=${product.id}`;
+  };
+
+  return (
+    <motion.article
+      whileTap={{ scale: 0.97 }}
+      onClick={openProduct}
+      className={`flex flex-col bg-white rounded-2xl border shadow-sm overflow-hidden text-left hover:shadow-md transition-all group cursor-pointer ${
+        showsDiscount
+          ? 'border-green-400 shadow-green-100 hover:shadow-green-200'
+          : 'border-surface-container hover:border-primary/40'
+      }`}
+    >
+      <div className="aspect-square bg-[#f7f5f0] flex items-center justify-center overflow-hidden p-2 relative">
         {product.image ? (
           <img src={product.image} alt={product.name}
             className="w-full h-full object-contain group-hover:scale-105 transition-transform duration-300" />
         ) : (
           <span className="text-4xl opacity-20">🌿</span>
         )}
+
+        {/* Corner offer ribbon — mirrors the Market card */}
+        {showsDiscount && savingsPct > 0 && (
+          <div className="absolute top-0 left-0 w-24 h-24 overflow-hidden pointer-events-none">
+            <div
+              className="absolute bg-green-500 shadow-md text-white text-center"
+              style={{ width: 130, top: 20, left: -32, transform: 'rotate(-45deg)', padding: '5px 0' }}
+            >
+              <span className="flex items-center justify-center gap-0.5 text-[10px] font-black tracking-wide">
+                <Tag className="h-2.5 w-2.5 shrink-0" />
+                {savingsPct}% OFF
+              </span>
+            </div>
+          </div>
+        )}
       </div>
-      <div className="p-2.5 md:p-4 flex flex-col gap-0.5">
+
+      <div className={`p-2.5 md:p-4 flex flex-col gap-0.5 flex-1 ${showsDiscount ? 'bg-gradient-to-b from-green-50/30 to-white' : ''}`}>
         <p className="text-[10px] font-black uppercase tracking-wide text-primary">{product.category}</p>
         <p className="text-xs md:text-sm font-bold text-on-surface leading-tight line-clamp-2">{product.name}</p>
-        <div className="flex items-center justify-between mt-1.5">
-          <span className="text-sm md:text-base font-extrabold text-secondary">₹{product.price}</span>
+
+        <div className="mt-1.5">
+          {showsDiscount ? (
+            <div className="flex items-baseline gap-1.5 flex-wrap">
+              <span className="text-[9px] font-bold text-outline uppercase tracking-wide">From</span>
+              <span className="text-base md:text-lg font-black text-green-700 leading-none">
+                ₹{discountedPrice.toLocaleString('en-IN')}
+              </span>
+              <span className="text-xs font-semibold text-outline line-through leading-none">
+                ₹{sellerBasePrice.toLocaleString('en-IN')}
+              </span>
+            </div>
+          ) : (
+            <span className="text-sm md:text-base font-extrabold text-secondary">
+              ₹{sellerBasePrice.toLocaleString('en-IN')}
+            </span>
+          )}
         </div>
+
+        {/* CTA block mirrors the Market grid card exactly: one compact button on
+            mobile, Add to Cart + Buy Now side by side on desktop. Keeping the two
+            in step matters — a buyer who learns the controls on Market should not
+            meet a different layout on a brand page. */}
+        {orderable && (
+          <div onClick={(e) => e.stopPropagation()} className="mt-2">
+            {inCart ? (
+              <>
+                {/* Mobile: single compact in-cart button */}
+                <a
+                  href="/?view=cart"
+                  onClick={(e) => e.stopPropagation()}
+                  className="md:hidden block w-full text-center border-2 border-green-600 text-green-700 text-xs font-bold py-1.5 rounded-lg hover:bg-green-600 hover:text-white transition-colors"
+                >
+                  ✓ In Cart
+                </a>
+                {/* Desktop: Go to Cart + Buy Now */}
+                <div className="hidden md:flex gap-1">
+                  <a
+                    href="/?view=cart"
+                    onClick={(e) => e.stopPropagation()}
+                    className="flex-1 text-center border-2 border-green-600 text-green-700 text-xs font-bold py-1.5 rounded-lg hover:bg-green-600 hover:text-white transition-colors"
+                  >
+                    Go to Cart
+                  </a>
+                  <button
+                    type="button"
+                    onClick={(e) => { e.stopPropagation(); onBuyNow(); }}
+                    className="flex-1 bg-primary text-white text-xs font-bold py-1.5 rounded-lg hover:bg-primary/90 transition-colors"
+                  >
+                    Buy Now
+                  </button>
+                </div>
+              </>
+            ) : (
+              <>
+                {/* Mobile: single + Add button */}
+                <button
+                  type="button"
+                  onClick={(e) => { e.stopPropagation(); onAddToCart(); }}
+                  className="md:hidden w-full bg-primary text-white text-xs font-bold py-1.5 rounded-lg hover:bg-primary/90 transition-colors flex items-center justify-center gap-1"
+                >
+                  <span className="text-sm font-black leading-none">+</span> Add
+                </button>
+                {/* Desktop: Add to Cart + Buy Now */}
+                <div className="hidden md:flex gap-1">
+                  <button
+                    type="button"
+                    onClick={(e) => { e.stopPropagation(); onAddToCart(); }}
+                    className="flex-1 border-2 border-primary text-primary text-xs font-bold py-1.5 rounded-lg hover:bg-primary hover:text-white transition-colors"
+                  >
+                    Add to Cart
+                  </button>
+                  <button
+                    type="button"
+                    onClick={(e) => { e.stopPropagation(); onBuyNow(); }}
+                    className="flex-1 bg-primary text-white text-xs font-bold py-1.5 rounded-lg hover:bg-primary/90 transition-colors"
+                  >
+                    Buy Now
+                  </button>
+                </div>
+              </>
+            )}
+          </div>
+        )}
       </div>
-    </>
-  );
-
-  const cls = "flex flex-col bg-white rounded-2xl border border-surface-container shadow-sm overflow-hidden text-left hover:border-primary/40 hover:shadow-md transition-all group";
-
-  if (onProductClick) {
-    return (
-      <motion.button whileTap={{ scale: 0.97 }} onClick={() => onProductClick(product.id)} className={cls}>
-        {inner}
-      </motion.button>
-    );
-  }
-
-  return (
-    <motion.a whileTap={{ scale: 0.97 }} href={`/?view=product&product=${product.id}`} className={cls}>
-      {inner}
-    </motion.a>
+    </motion.article>
   );
 }

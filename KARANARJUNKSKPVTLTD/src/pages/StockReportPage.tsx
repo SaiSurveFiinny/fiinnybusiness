@@ -204,7 +204,12 @@ export default function StockReportPage() {
             )).catch(() => ({ docs: [] as any[] })),
             fetchSalesOrders,
         ]).then(([pSnap, bSnap, mSnap, sSnap]) => {
-            const prods = (pSnap.docs.map(d => ({ id: d.id, ...d.data() })) as Product[]);
+            // `name` coerced at the boundary — the search filters below call
+            // .toLowerCase() on it, and a doc missing it crashes the report.
+            const prods = (pSnap.docs.map(d => {
+                const raw = d.data();
+                return { id: d.id, ...raw, name: String(raw.name ?? '') };
+            }) as Product[]);
             setProducts(prods);
             setBatches(bSnap.docs.map(d => ({ id: d.id, ...d.data() } as BatchDoc)));
             setMovements((mSnap as any).docs.map((d: any) => ({ id: d.id, ...d.data() } as Movement)));

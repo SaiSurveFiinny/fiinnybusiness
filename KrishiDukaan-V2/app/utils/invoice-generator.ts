@@ -1,5 +1,6 @@
 import jsPDF from "jspdf";
 import autoTable from "jspdf-autotable";
+import { formatCustomerAddress, normalizeOrderItems } from "../../types/order";
 import type { OrderDoc } from "../../types/order";
 
 // Brand colours
@@ -144,7 +145,7 @@ function buildInvoicePDF(order: OrderDoc, seller?: InvoiceSellerInfo): jsPDF {
   // Customer box
   const customerLines = [
     order.customerName,
-    order.customerAddress,
+    formatCustomerAddress(order.customerAddress),
     order.customerPhone ? `Ph: ${order.customerPhone}` : "",
   ];
   drawInfoBox(M + colW + 6, y, "BILL TO", customerLines, SECONDARY);
@@ -153,7 +154,7 @@ function buildInvoicePDF(order: OrderDoc, seller?: InvoiceSellerInfo): jsPDF {
 
   // ── Items table ──────────────────────────────────────────────────────────
   const tableHead = [["#", "Product", "Package", "Qty", "Unit Price", "Total"]];
-  const tableBody = (order.items ?? []).map((item, i) => [
+  const tableBody = normalizeOrderItems(order.items as any).map((item, i) => [
     String(i + 1),
     item.name,
     item.variantUnit ?? "—",

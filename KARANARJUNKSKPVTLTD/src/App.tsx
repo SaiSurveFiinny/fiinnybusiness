@@ -23,6 +23,7 @@ const B2CDashboardPage       = lazy(() => import('./pages/B2CDashboardPage'));
 const LoginPage              = lazy(() => import('./pages/LoginPage'));
 const AdminHubPage           = lazy(() => import('./pages/AdminHubPage'));
 const StorefrontPage         = lazy(() => import('./pages/StorefrontPage'));
+const ErpHandoffPage         = lazy(() => import('./pages/ErpHandoffPage'));
 const RateSheetPage          = lazy(() => import('./pages/RateSheetPage'));
 const POSPage                = lazy(() => import('./pages/POSPage'));
 const SettingsPage           = lazy(() => import('./pages/SettingsPage'));
@@ -145,6 +146,7 @@ function Layout({ children, currentTheme, toggleTheme }: { children: React.React
 
   const isOwner = userRole === 'admin' || userRole === 'analyst';
   const isSalesUser = userRole === 'sales';
+  const isShopkeeper = userRole === 'shopkeeper';
 
   // Paths sales role is allowed to see in the sidebar nav
   const SALES_NAV_PATHS = ['/sales-targets', '/worklist'];
@@ -158,6 +160,9 @@ function Layout({ children, currentTheme, toggleTheme }: { children: React.React
     { path: '/worklist', icon: <ReceiptText size={19} />, label: t('common.worklist'), screenKey: 'worklist' },
     { path: '/dispatch', icon: <Truck size={19} />, label: 'Dispatch Board', screenKey: 'dispatch' },
     { path: '/pos', icon: <Calculator size={19} />, label: t('common.pos_billing'), screenKey: 'pos' },
+    // The /digital-khata route existed but was never linked from the drawer, so
+    // udhaari tracking was reachable only by typing the URL.
+    { path: '/digital-khata', icon: <ReceiptText size={19} />, label: t('common.khata'), screenKey: 'khata' },
     { path: '/customers', icon: <Users size={19} />, label: 'Customer Profiles', screenKey: 'customers' },
     { path: '/b2b-invoice', icon: <ReceiptText size={19} />, label: 'B2B GST Invoice', screenKey: 'worklist' },
     { path: '/quotations', icon: <ClipboardList size={19} />, label: 'Quotations', screenKey: 'worklist' },
@@ -192,9 +197,16 @@ function Layout({ children, currentTheme, toggleTheme }: { children: React.React
     { path: '/online-orders', icon: <ShoppingCart size={19} />, label: 'Online Orders', screenKey: 'online_orders' },
   ];
 
+  // 'worklist' and 'analytics' each cover several screens, so the basic plan cannot be
+  // expressed by the permission row alone — these paths come along with the screenKey a
+  // shopkeeper does need. Hiding them here avoids a menu entry that only 403s. Splitting
+  // those two screenKeys would let this list go away.
+  const BASIC_PLAN_HIDDEN_PATHS = ['/ai-advisor', '/quotations', '/delivery-challans', '/warehouses', '/manage-transport'];
+
   const navItems = mainNavItems.filter(item => {
     if (isSalesUser) return SALES_NAV_PATHS.includes(item.path);
-    if (!isOwner) return false;
+    if (!isOwner && !isShopkeeper) return false;
+    if (isShopkeeper && BASIC_PLAN_HIDDEN_PATHS.includes(item.path)) return false;
     if (userRole && permissions && !permissions[userRole]?.[item.screenKey as AppScreen]) return false;
     return true;
   });
@@ -298,8 +310,8 @@ function Layout({ children, currentTheme, toggleTheme }: { children: React.React
           </button>
         </div>
 
-        {/* Main Nav (owner only — sales users get their own nav below) */}
-        {isOwner && (
+        {/* Main Nav (owner + shopkeeper — sales users get their own nav below) */}
+        {(isOwner || isShopkeeper) && (
           <div style={{ display: 'flex', flexDirection: 'column', gap: '0.2rem', marginBottom: '0.5rem' }}>
             <div style={{ fontSize: '0.68rem', fontWeight: 700, color: 'var(--text-tertiary)', textTransform: 'uppercase', letterSpacing: '0.08em', padding: '0.25rem 1rem', marginBottom: '0.2rem' }}>Main</div>
             {navItems.map(item => (
@@ -311,8 +323,9 @@ function Layout({ children, currentTheme, toggleTheme }: { children: React.React
           </div>
         )}
 
-        {/* Administration Section (admin only) */}
-        {userRole === 'admin' && (
+        {/* Administration Section (admin, plus shopkeepers for Settings + KrishiDukan —
+            adminItems is permission-filtered, so 'Admin' itself stays hidden for them) */}
+        {(userRole === 'admin' || isShopkeeper) && (
           <div style={{ marginTop: '0.5rem' }}>
             <button
               onClick={() => setAdminExpanded(e => !e)}
@@ -432,6 +445,18 @@ function AppRoutes() {
     );
   }
 
+  // The KrishiDukan handoff signs the user in mid-render. Between that and the
+  // page's own redirect there is a moment where currentUser exists but tenantId
+  // has not resolved — the onboarding guard below would hijack it. Short-circuit
+  // so the handoff always gets to finish.
+  if (locationHook.pathname === '/auth/handoff') {
+    return (
+      <Routes>
+        <Route path="/auth/handoff" element={<ErpHandoffPage />} />
+      </Routes>
+    );
+  }
+
   // Role-based auto-redirect after login
   const RETAILER_ALLOWED_PATHS = ['/worklist', '/settings', '/help'];
   if (currentUser && tenantId) {
@@ -444,6 +469,11 @@ function AppRoutes() {
     // If Admin/Analyst visits landing page but is already logged in, go to dashboard
     if ((userRole === 'admin' || userRole === 'analyst') && (locationHook.pathname === '/' || locationHook.pathname === '/login')) {
       return <Navigate to="/dashboard" replace />;
+    }
+    // Shopkeepers open on the till, not the distributor dashboard. They are not confined
+    // to a path list like retailers/sales — tenantId already isolates them to their own shop.
+    if (userRole === 'shopkeeper' && (locationHook.pathname === '/' || locationHook.pathname === '/login')) {
+      return <Navigate to="/pos" replace />;
     }
     // Sales users are confined to /sales-targets and /worklist
     if (userRole === 'sales' && !locationHook.pathname.startsWith('/sales-targets') && !locationHook.pathname.startsWith('/worklist') && !locationHook.pathname.startsWith('/help')) {
@@ -465,6 +495,7 @@ function AppRoutes() {
         {/* Public */}
         <Route path="/" element={<LandingPage />} />
         <Route path="/store" element={<StorefrontPage />} />
+        <Route path="/auth/handoff" element={<ErpHandoffPage />} />
         <Route path="/login" element={<LoginPage />} />
         <Route path="/about" element={<AboutPage />} />
         <Route path="/privacy" element={<PrivacyPage />} />
@@ -484,46 +515,46 @@ function AppRoutes() {
 
       {/* Owner / Analyst Routes */}
       <Route path="/dashboard" element={<ProtectedRoute requireRole={['admin', 'analyst']} appScreen="dashboard"><DashboardPage /></ProtectedRoute>} />
-      <Route path="/b2c-dashboard" element={<ProtectedRoute requireRole={['admin', 'analyst']} appScreen="b2c_dashboard"><B2CDashboardPage /></ProtectedRoute>} />
-      <Route path="/online-dashboard" element={<ProtectedRoute requireRole={['admin', 'analyst']} appScreen="online_dashboard"><OnlineDashboardPage /></ProtectedRoute>} />
-      <Route path="/analytics" element={<ProtectedRoute requireRole={['admin', 'analyst']} appScreen="analytics"><AnalyticsPage /></ProtectedRoute>} />
+      <Route path="/b2c-dashboard" element={<ProtectedRoute requireRole={['admin', 'analyst', 'shopkeeper']} appScreen="b2c_dashboard"><B2CDashboardPage /></ProtectedRoute>} />
+      <Route path="/online-dashboard" element={<ProtectedRoute requireRole={['admin', 'analyst', 'shopkeeper']} appScreen="online_dashboard"><OnlineDashboardPage /></ProtectedRoute>} />
+      <Route path="/analytics" element={<ProtectedRoute requireRole={['admin', 'analyst', 'shopkeeper']} appScreen="analytics"><AnalyticsPage /></ProtectedRoute>} />
       <Route path="/admin/manage-store" element={<Navigate to="/admin#manage-store" replace />} />
       <Route path="/onboarding" element={<ProtectedRoute requireRole={['admin', 'analyst']} appScreen="retailers"><OnboardingPage /></ProtectedRoute>} />
       <Route path="/sales-targets" element={<ProtectedRoute requireRole={['admin', 'sales']} appScreen="worklist"><SalesTargetsPage /></ProtectedRoute>} />
-      <Route path="/worklist" element={<ProtectedRoute requireRole={['admin', 'analyst', 'sales', 'retailer']} appScreen="worklist"><WorklistPage /></ProtectedRoute>} />
-      <Route path="/worklist/:id" element={<ProtectedRoute requireRole={['admin', 'analyst', 'sales', 'retailer']} appScreen="worklist"><WorklistDetailsPage /></ProtectedRoute>} />
-      <Route path="/inventory" element={<ProtectedRoute requireRole={['admin', 'analyst']} appScreen="inventory"><InventoryPage /></ProtectedRoute>} />
+      <Route path="/worklist" element={<ProtectedRoute requireRole={['admin', 'analyst', 'sales', 'retailer', 'shopkeeper']} appScreen="worklist"><WorklistPage /></ProtectedRoute>} />
+      <Route path="/worklist/:id" element={<ProtectedRoute requireRole={['admin', 'analyst', 'sales', 'retailer', 'shopkeeper']} appScreen="worklist"><WorklistDetailsPage /></ProtectedRoute>} />
+      <Route path="/inventory" element={<ProtectedRoute requireRole={['admin', 'analyst', 'shopkeeper']} appScreen="inventory"><InventoryPage /></ProtectedRoute>} />
       <Route path="/administration" element={<ProtectedRoute requireRole={['admin']} appScreen="admin"><AdministrationPage /></ProtectedRoute>} />
-      <Route path="/digital-khata" element={<ProtectedRoute requireRole={['admin', 'analyst']} appScreen="khata"><DigitalKhataPage /></ProtectedRoute>} />
+      <Route path="/digital-khata" element={<ProtectedRoute requireRole={['admin', 'analyst', 'shopkeeper']} appScreen="khata"><DigitalKhataPage /></ProtectedRoute>} />
       <Route path="/sales-order/new" element={<ProtectedRoute requireRole={['admin', 'analyst']} appScreen="worklist"><SalesOrderPage /></ProtectedRoute>} />
       <Route path="/sales-order/:id" element={<ProtectedRoute requireRole={['admin', 'analyst']} appScreen="worklist"><SalesOrderPage /></ProtectedRoute>} />
       <Route path="/dispatch" element={<ProtectedRoute requireRole={['admin', 'analyst']} appScreen="dispatch"><DispatchBoardPage /></ProtectedRoute>} />
-      <Route path="/pos" element={<ProtectedRoute requireRole={['admin', 'analyst']} appScreen="pos"><POSPage /></ProtectedRoute>} />
-      <Route path="/b2b-invoice" element={<ProtectedRoute requireRole={['admin', 'analyst']} appScreen="worklist"><B2BInvoicePage /></ProtectedRoute>} />
+      <Route path="/pos" element={<ProtectedRoute requireRole={['admin', 'analyst', 'shopkeeper']} appScreen="pos"><POSPage /></ProtectedRoute>} />
+      <Route path="/b2b-invoice" element={<ProtectedRoute requireRole={['admin', 'analyst', 'shopkeeper']} appScreen="worklist"><B2BInvoicePage /></ProtectedRoute>} />
       <Route path="/quotations" element={<ProtectedRoute requireRole={['admin', 'analyst']} appScreen="worklist"><QuotationsPage /></ProtectedRoute>} />
-      <Route path="/payment-reminders" element={<ProtectedRoute requireRole={['admin', 'analyst']} appScreen="worklist"><PaymentRemindersPage /></ProtectedRoute>} />
+      <Route path="/payment-reminders" element={<ProtectedRoute requireRole={['admin', 'analyst', 'shopkeeper']} appScreen="worklist"><PaymentRemindersPage /></ProtectedRoute>} />
       {/* TEMPORARILY DISABLED (2026-07-03): Worklist Purchase Orders is incomplete/broken —
           route hidden until rebuilt. Do not delete. Supplier Ledger → Purchase Orders is a
           separate implementation (PurchaseOrderModal) and is unaffected. */}
       {/* <Route path="/purchase-orders" element={<ProtectedRoute requireRole={['admin', 'analyst']} appScreen="worklist"><PurchaseOrdersPage /></ProtectedRoute>} /> */}
-      <Route path="/supplier-ledger" element={<ProtectedRoute requireRole={['admin', 'analyst']} appScreen="worklist"><SupplierLedgerPage /></ProtectedRoute>} />
-      <Route path="/supplier-ledger/:id" element={<ProtectedRoute requireRole={['admin', 'analyst']} appScreen="worklist"><SupplierLedgerDetailPage /></ProtectedRoute>} />
+      <Route path="/supplier-ledger" element={<ProtectedRoute requireRole={['admin', 'analyst', 'shopkeeper']} appScreen="worklist"><SupplierLedgerPage /></ProtectedRoute>} />
+      <Route path="/supplier-ledger/:id" element={<ProtectedRoute requireRole={['admin', 'analyst', 'shopkeeper']} appScreen="worklist"><SupplierLedgerDetailPage /></ProtectedRoute>} />
       <Route path="/expenses" element={<ProtectedRoute requireRole={['admin', 'analyst']} appScreen="expenses"><ExpensePage /></ProtectedRoute>} />
       <Route path="/careoff-sync" element={<ProtectedRoute requireRole={['admin', 'analyst']} appScreen="accounts"><CareOffReconcilePage /></ProtectedRoute>} />
-      <Route path="/supplier-invoice" element={<ProtectedRoute requireRole={['admin', 'analyst']} appScreen="worklist"><SupplierInvoicePage /></ProtectedRoute>} />
+      <Route path="/supplier-invoice" element={<ProtectedRoute requireRole={['admin', 'analyst', 'shopkeeper']} appScreen="worklist"><SupplierInvoicePage /></ProtectedRoute>} />
       <Route path="/delivery-challans" element={<ProtectedRoute requireRole={['admin', 'analyst']} appScreen="worklist"><DeliveryChallansPage /></ProtectedRoute>} />
-      <Route path="/reports" element={<ProtectedRoute requireRole={['admin', 'analyst']} appScreen="analytics"><ReportsPage /></ProtectedRoute>} />
-      <Route path="/gst-reports" element={<ProtectedRoute requireRole={['admin', 'analyst']} appScreen="analytics"><GSTReportsPage /></ProtectedRoute>} />
-      <Route path="/financial-reports" element={<ProtectedRoute requireRole={['admin', 'analyst']} appScreen="analytics"><FinancialReportsPage /></ProtectedRoute>} />
+      <Route path="/reports" element={<ProtectedRoute requireRole={['admin', 'analyst', 'shopkeeper']} appScreen="analytics"><ReportsPage /></ProtectedRoute>} />
+      <Route path="/gst-reports" element={<ProtectedRoute requireRole={['admin', 'analyst', 'shopkeeper']} appScreen="analytics"><GSTReportsPage /></ProtectedRoute>} />
+      <Route path="/financial-reports" element={<ProtectedRoute requireRole={['admin', 'analyst', 'shopkeeper']} appScreen="analytics"><FinancialReportsPage /></ProtectedRoute>} />
       <Route path="/warehouses" element={<ProtectedRoute requireRole={['admin', 'analyst']} appScreen="inventory"><WarehousePage /></ProtectedRoute>} />
-      <Route path="/inventory-batches" element={<ProtectedRoute requireRole={['admin', 'analyst']} appScreen="inventory"><InventoryBatchPage /></ProtectedRoute>} />
-      <Route path="/barcode" element={<ProtectedRoute requireRole={['admin', 'analyst']} appScreen="inventory"><BarcodePage /></ProtectedRoute>} />
+      <Route path="/inventory-batches" element={<ProtectedRoute requireRole={['admin', 'analyst', 'shopkeeper']} appScreen="inventory"><InventoryBatchPage /></ProtectedRoute>} />
+      <Route path="/barcode" element={<ProtectedRoute requireRole={['admin', 'analyst', 'shopkeeper']} appScreen="inventory"><BarcodePage /></ProtectedRoute>} />
       <Route path="/manage-transport" element={<ProtectedRoute requireRole={['admin', 'analyst']} appScreen="inventory"><ManageTransportPage /></ProtectedRoute>} />
-      <Route path="/pricing" element={<ProtectedRoute requireRole={['admin', 'analyst']} appScreen="analytics"><PricingPage /></ProtectedRoute>} />
-      <Route path="/payment-links" element={<ProtectedRoute requireRole={['admin', 'analyst']} appScreen="worklist"><PaymentLinkPage /></ProtectedRoute>} />
+      <Route path="/pricing" element={<ProtectedRoute requireRole={['admin', 'analyst', 'shopkeeper']} appScreen="analytics"><PricingPage /></ProtectedRoute>} />
+      <Route path="/payment-links" element={<ProtectedRoute requireRole={['admin', 'analyst', 'shopkeeper']} appScreen="worklist"><PaymentLinkPage /></ProtectedRoute>} />
       <Route path="/ai-advisor" element={<ProtectedRoute requireRole={['admin', 'analyst']} appScreen="analytics"><AIAdvisorPage /></ProtectedRoute>} />
       {/* Module system */}
-      <Route path="/modules" element={<ProtectedRoute requireRole={['admin', 'analyst']} appScreen="analytics"><ModuleMarketplacePage /></ProtectedRoute>} />
+      <Route path="/modules" element={<ProtectedRoute requireRole={['admin', 'analyst', 'shopkeeper']} appScreen="analytics"><ModuleMarketplacePage /></ProtectedRoute>} />
 
       {/* POS add-on pages */}
       {/* TEMPORARILY DISABLED (2026-07-03)
@@ -542,19 +573,19 @@ function AppRoutes() {
       <Route path="/pay/:token" element={<PaymentLandingPage />} />
       <Route path="/receipt/:tenantId/:receiptId" element={<DigitalReceiptPage />} />
       
-      <Route path="/rates" element={<ProtectedRoute requireRole={['admin', 'analyst']} appScreen="inventory"><RateSheetPage /></ProtectedRoute>} />
-      <Route path="/order-history" element={<ProtectedRoute requireRole={['admin', 'analyst']} appScreen="order_history"><OrderHistoryPage /></ProtectedRoute>} />
-      <Route path="/online-orders" element={<ProtectedRoute requireRole={['admin', 'analyst']} appScreen="online_orders"><OnlineOrdersPage /></ProtectedRoute>} />
+      <Route path="/rates" element={<ProtectedRoute requireRole={['admin', 'analyst', 'shopkeeper']} appScreen="inventory"><RateSheetPage /></ProtectedRoute>} />
+      <Route path="/order-history" element={<ProtectedRoute requireRole={['admin', 'analyst', 'shopkeeper']} appScreen="order_history"><OrderHistoryPage /></ProtectedRoute>} />
+      <Route path="/online-orders" element={<ProtectedRoute requireRole={['admin', 'analyst', 'shopkeeper']} appScreen="online_orders"><OnlineOrdersPage /></ProtectedRoute>} />
       <Route path="/settings" element={<ProtectedRoute appScreen="settings"><SettingsPage /></ProtectedRoute>} />
 
       {/* KrishiDukan marketplace module */}
-      <Route path="/krishidukan" element={<ProtectedRoute requireRole={['admin']} appScreen="krishidukan"><KrishiDukanPage /></ProtectedRoute>} />
+      <Route path="/krishidukan" element={<ProtectedRoute requireRole={['admin', 'shopkeeper']} appScreen="krishidukan"><KrishiDukanPage /></ProtectedRoute>} />
 
       {/* Admin — single hash-based hub. Sub-tabs live at /admin#<tab>; each
           tab's own role/permission gate is enforced inside AdminHubPage. */}
       <Route path="/admin" element={<ProtectedRoute requireRole={['admin', 'analyst']}><AdminHubPage /></ProtectedRoute>} />
-      <Route path="/customers" element={<ProtectedRoute requireRole={['admin', 'analyst']} appScreen="customers"><CustomersPage /></ProtectedRoute>} />
-      <Route path="/customers/:id" element={<ProtectedRoute requireRole={['admin', 'analyst']} appScreen="customers"><CustomerProfilePage /></ProtectedRoute>} />
+      <Route path="/customers" element={<ProtectedRoute requireRole={['admin', 'analyst', 'shopkeeper']} appScreen="customers"><CustomersPage /></ProtectedRoute>} />
+      <Route path="/customers/:id" element={<ProtectedRoute requireRole={['admin', 'analyst', 'shopkeeper']} appScreen="customers"><CustomerProfilePage /></ProtectedRoute>} />
       {/* Legacy /admin/* deep links → hash equivalents (bookmarks stay working) */}
       <Route path="/admin/manage-roles" element={<Navigate to="/admin#role-matrix" replace />} />
       <Route path="/admin/data-security" element={<Navigate to="/admin#data-security" replace />} />

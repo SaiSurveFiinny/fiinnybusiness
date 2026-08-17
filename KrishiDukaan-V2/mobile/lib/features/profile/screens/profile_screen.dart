@@ -5,13 +5,14 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import '../../../core/constants/app_colors.dart';
 import '../../../core/constants/app_text_styles.dart';
-import '../../../core/models/listing_model.dart';
 import '../../../core/providers/app_info_provider.dart';
 import '../../../core/providers/locale_provider.dart';
 import '../../../core/providers/user_provider.dart';
 import '../../../core/widgets/app_brand_icon.dart';
 import '../../../core/widgets/app_top_bar.dart';
 import '../../dashboard/providers/dashboard_provider.dart';
+import '../../dashboard/widgets/dashboard_drawer.dart';
+import '../../dashboard/widgets/dashboard_overview_widgets.dart';
 import '../../manufacturer/providers/manufacturer_provider.dart';
 import '../../marketplace/providers/marketplace_provider.dart';
 
@@ -23,9 +24,17 @@ class ProfileScreen extends ConsumerWidget {
     final userAsync = ref.watch(currentUserProvider);
     final locale = ref.watch(localeProvider);
     final isHindi = locale.languageCode == 'hi';
+    // isSeller is only known once userAsync resolves; the hamburger/drawer
+    // simply don't render on the first loading frame, same as every other
+    // seller-only section on this screen.
+    final isSeller = userAsync.value?.isSeller ?? false;
 
     return Scaffold(
       backgroundColor: AppColors.background,
+      // Navigate section (see DashboardDrawer) — same 11 destinations as
+      // web's persistent dashboard sidebar, opened via the menu icon below
+      // instead of requiring a separate trip to the standalone Dashboard.
+      drawer: isSeller ? const DashboardDrawer() : null,
       appBar: AppBar(
         elevation: 0,
         backgroundColor: Colors.transparent,
@@ -56,6 +65,16 @@ class ProfileScreen extends ConsumerWidget {
           icon: const Icon(Icons.arrow_back),
           onPressed: () => context.go('/'),
         ),
+        actions: [
+          if (isSeller)
+            Builder(
+              builder: (context) => IconButton(
+                icon: const Icon(Icons.menu),
+                tooltip: isHindi ? 'डैशबोर्ड मेनू' : 'Dashboard menu',
+                onPressed: () => Scaffold.of(context).openDrawer(),
+              ),
+            ),
+        ],
       ),
       body: userAsync.when(
         loading: () => const Center(child: CircularProgressIndicator()),
@@ -71,16 +90,11 @@ class ProfileScreen extends ConsumerWidget {
   }
 }
 
-/// "Add Product" quick action, shown next to "Add Reel" right under the
-/// avatar — one of the most frequent actions for manufacturers, so it's
-/// surfaced on Profile itself rather than requiring a detour through the
-/// dashboard first. Paid sellers go straight to their add-product form
-/// (auto-opened via ?autoAdd=1 — see app_router.dart); farmers/consumers and
-/// unpaid sellers are nudged to subscribe, landing on the same
-/// /subscription?reason=paywall destination the rest of the app's paywall
-/// already uses (the router-level dashboard guard, and the "Dashboard" quick
-/// link below), so this doesn't introduce a second paywall flow with
-/// different copy/behavior.
+/// "Add Product" quick action, next to "Add Reel" — one of the most frequent
+/// actions for manufacturers, so it's surfaced on Profile itself rather than
+/// requiring a detour through the dashboard first. Reuses the exact same
+/// gating logic as the Quick Actions card's "Add product" row
+/// (`goToAddProduct`), so there's only one paywall flow/copy in the app.
 class _AddProductButton extends StatelessWidget {
   final dynamic user;
   const _AddProductButton({required this.user});
@@ -91,25 +105,12 @@ class _AddProductButton extends StatelessWidget {
       icon: Icons.add_box_outlined,
       label: 'Add Product',
       filled: true,
-      onTap: () => _onTap(context),
+      onTap: () => goToAddProduct(
+        context,
+        canAccessDashboard: user.canAccessDashboard == true,
+        isManufacturer: user.isManufacturer == true,
+      ),
     );
-  }
-
-  void _onTap(BuildContext context) {
-    final bool canAccess = user.canAccessDashboard == true;
-    if (canAccess) {
-      final bool isManufacturer = user.isManufacturer == true;
-      context.push(
-        isManufacturer
-            ? '/dashboard/manufacturer/catalog?autoAdd=1'
-            : '/dashboard/inventory?autoAdd=1',
-      );
-      return;
-    }
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('Upgrade to add products')),
-    );
-    context.push('/subscription?reason=paywall');
   }
 }
 
@@ -192,6 +193,22 @@ class _ProfileBody extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
+    final String phone = user.phone as String;
+    final bool isManufacturer = user.isSeller
+        ? ref.watch(isManufacturerProvider)
+        : false;
+    // Only fetched for sellers — these streams/futures are cheap no-ops for
+    // everyone else since the providers are never watched in that case.
+    final listingsAsync =
+        user.isSeller ? ref.watch(myListingsProvider(phone)) : null;
+    final seatsAsync =
+        user.isSeller ? ref.watch(seatStatsProvider(phone)) : null;
+    final analyticsAsync = user.isSeller && isManufacturer
+        ? ref.watch(manufacturerAnalyticsProvider(phone))
+        : null;
+    final reviewsAsync =
+        user.isSeller ? ref.watch(storeReviewsProvider(phone)) : null;
+
     return ListView(
       padding: const EdgeInsets.all(16),
       children: [
@@ -229,9 +246,7 @@ class _ProfileBody extends ConsumerWidget {
         ),
         const SizedBox(height: 16),
 
-        // Add Product / Add Reel — right under the avatar rather than the
-        // AppBar, where two labeled buttons plus the brand icon and title
-        // had no room to breathe.
+        // Add Product / Add Reel — right under the avatar/logo.
         if (user.isSeller) ...[
           Row(
             children: [
@@ -239,6 +254,36 @@ class _ProfileBody extends ConsumerWidget {
               const SizedBox(width: 10),
               const _AddReelButton(),
             ],
+          ),
+          const SizedBox(height: 10),
+          // My Shop — the public storefront preview (reels + listed
+          // products), previously buried two taps deep inside Business
+          // Settings. Important enough to surface right here instead.
+          InkWell(
+            onTap: () => context.push('/shop/${user.phone}'),
+            borderRadius: BorderRadius.circular(14),
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+              decoration: BoxDecoration(
+                color: AppColors.primary.withValues(alpha: 0.06),
+                borderRadius: BorderRadius.circular(14),
+                border: Border.all(color: AppColors.primary.withValues(alpha: 0.15)),
+              ),
+              child: Row(
+                children: [
+                  const Icon(Icons.storefront_outlined,
+                      size: 20, color: AppColors.primary),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Text('My Shop',
+                        style: AppTextStyles.bodyMedium
+                            .copyWith(fontWeight: FontWeight.w700, color: AppColors.primary)),
+                  ),
+                  const Icon(Icons.chevron_right,
+                      size: 18, color: AppColors.primary),
+                ],
+              ),
+            ),
           ),
           const SizedBox(height: 24),
         ] else
@@ -279,60 +324,69 @@ class _ProfileBody extends ConsumerWidget {
           const SizedBox(height: 12),
         ],
 
-        // Real, live mini-dashboard — sellers can glance at their basic
-        // numbers without leaving Profile for the full Dashboard.
+        // Everything below mirrors web's dashboard overview
+        // (krishidukan.com/dashboard) card-for-card, shown directly on
+        // Profile so sellers never have to leave this tab to check their
+        // numbers or act on them. Read-only stats are shown for paid and
+        // unpaid sellers alike; the full nav hub lives in the drawer (tap
+        // the menu icon in the AppBar) instead of an inline link list.
         if (user.isSeller) ...[
-          _MiniDashboardCard(user: user),
+          QuickActionsCard(
+            isManufacturer: isManufacturer,
+            canAccessDashboard: user.canAccessDashboard == true,
+          ),
+          const SizedBox(height: 16),
+
+          Text('Overview', style: AppTextStyles.heading3),
+          Text('Performance snapshot for your storefront and operations.',
+              style: AppTextStyles.caption),
           const SizedBox(height: 12),
+          OverviewGrid(
+            listingsAsync: listingsAsync!,
+            analyticsAsync: analyticsAsync,
+            isManufacturer: isManufacturer,
+          ),
+          const SizedBox(height: 16),
+
+          listingsAsync.when(
+            loading: () => const CardShimmer(height: 160),
+            error: (_, _) => const SizedBox.shrink(),
+            data: (listings) => InventoryHealthCard(
+              listings: listings.cast(),
+              onManageInventory: () => context.push(isManufacturer
+                  ? '/dashboard/manufacturer/catalog'
+                  : '/dashboard/inventory'),
+            ),
+          ),
+          const SizedBox(height: 12),
+
+          seatsAsync!.when(
+            loading: () => const CardShimmer(height: 90),
+            error: (_, _) => const SizedBox.shrink(),
+            data: (seats) => SeatsCard(seats: seats),
+          ),
+          const SizedBox(height: 12),
+
+          reviewsAsync!.when(
+            loading: () => const CardShimmer(height: 140),
+            error: (_, _) => const SizedBox.shrink(),
+            data: (reviews) => RecentReviewsCard(
+              reviews: reviews,
+              onViewAll: () => context.push('/dashboard/reviews'),
+            ),
+          ),
+          const SizedBox(height: 20),
         ],
 
-        // Account info card
+        // Account menu — mirrors web's Account dropdown. "My Orders" is the
+        // buyer-side order history (everyone, incl. sellers who also buy),
+        // distinct from the seller "Orders" entry in the dashboard drawer.
         _Card(
-          title: isHindi ? 'खाता जानकारी' : 'Account Info',
+          title: isHindi ? 'खाता' : 'Account',
           children: [
-            _InfoRow(
-              icon: Icons.phone_outlined,
-              label: isHindi ? 'फ़ोन' : 'Phone',
-              value: user.phone,
-            ),
-            _InfoRow(
-              icon: Icons.badge_outlined,
-              label: isHindi ? 'भूमिका' : 'Role',
-              value: _roleLabel(user.role, isHindi),
-            ),
-          ],
-        ),
-        const SizedBox(height: 12),
-
-        // Account menu — mirrors web's Account dropdown (Dashboard / My
-        // Orders / Settings / Logout). Language now lives in Settings along
-        // with any future non-essential options, keeping this list lean.
-        _Card(
-          title: isHindi ? 'त्वरित लिंक' : 'Quick Links',
-          children: [
-            if (user.isSeller)
-              _LinkRow(
-                icon: Icons.dashboard_outlined,
-                label: isHindi ? 'डैशबोर्ड' : 'Dashboard',
-                // Unpaid sellers are redirected to the paywall by the router
-                // guard on /dashboard, so they can purchase a subscription.
-                onTap: () => context.push('/dashboard'),
-              ),
-            if (user.isSeller)
-              _LinkRow(
-                icon: Icons.star_outline,
-                label: isHindi ? 'सदस्यता' : 'Subscription',
-                onTap: () => context.push('/subscription'),
-              ),
-            if (user.isSeller)
-              _LinkRow(
-                icon: Icons.video_collection_outlined,
-                label: isHindi ? 'रील्स' : 'Reels',
-                onTap: () => context.push('/dashboard/reels'),
-              ),
             _LinkRow(
               icon: Icons.receipt_long_outlined,
-              label: isHindi ? 'ऑर्डर' : 'Orders',
+              label: isHindi ? 'मेरे ऑर्डर' : 'My Orders',
               onTap: () => context.push('/orders'),
             ),
             _LinkRow(
@@ -451,9 +505,9 @@ class _GuestView extends StatelessWidget {
 }
 
 class _Card extends StatelessWidget {
-  final String title;
+  final String? title;
   final List<Widget> children;
-  const _Card({required this.title, required this.children});
+  const _Card({this.title, required this.children});
 
   @override
   Widget build(BuildContext context) {
@@ -473,47 +527,11 @@ class _Card extends StatelessWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text(title, style: AppTextStyles.heading3),
-          const SizedBox(height: 8),
+          if (title != null && title!.isNotEmpty) ...[
+            Text(title!, style: AppTextStyles.heading3),
+            const SizedBox(height: 8),
+          ],
           ...children,
-        ],
-      ),
-    );
-  }
-}
-
-class _InfoRow extends StatelessWidget {
-  final IconData icon;
-  final String label;
-  final String value;
-  const _InfoRow({
-    required this.icon,
-    required this.label,
-    required this.value,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 6),
-      child: Row(
-        children: [
-          Icon(icon, size: 18, color: AppColors.onSurfaceVariant),
-          const SizedBox(width: 10),
-          Text(
-            label,
-            style: AppTextStyles.caption.copyWith(
-              color: AppColors.onSurfaceVariant,
-            ),
-          ),
-          const SizedBox(width: 6),
-          Expanded(
-            child: Text(
-              value,
-              style: AppTextStyles.bodyMedium,
-              textAlign: TextAlign.end,
-            ),
-          ),
         ],
       ),
     );
@@ -554,198 +572,3 @@ class _LinkRow extends StatelessWidget {
   }
 }
 
-/// Real, live stats summary for sellers — reuses the exact same providers
-/// `DashboardHomeScreen`'s `_OverviewGrid` and `storeReviewsProvider`
-/// (`marketplace_provider.dart`, already used by `brand_screen.dart`) rely
-/// on, just rendered compactly, so numbers here always match elsewhere in
-/// the app. Shown for paid and unpaid sellers alike since it's read-only.
-class _MiniDashboardCard extends ConsumerWidget {
-  final dynamic user;
-  const _MiniDashboardCard({required this.user});
-
-  @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    final String phone = user.phone as String;
-    final isManufacturer = ref.watch(isManufacturerProvider);
-    final listingsAsync = ref.watch(myListingsProvider(phone));
-    final reviewsAsync = ref.watch(storeReviewsProvider(phone));
-    final analyticsAsync =
-        isManufacturer ? ref.watch(manufacturerAnalyticsProvider(phone)) : null;
-    // networkStatsProvider's 'total' counts every non-revoked retailer
-    // (active AND still-invited/pending) — manufacturerAnalyticsProvider's
-    // 'activeRetailers' only counts active ones, which is why this tile
-    // read 0 for a manufacturer who had only invited retailers so far.
-    final networkStatsAsync =
-        isManufacturer ? ref.watch(networkStatsProvider(phone)) : null;
-
-    final loading = listingsAsync.isLoading || reviewsAsync.isLoading;
-
-    return Container(
-      padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(12),
-        boxShadow: [
-          BoxShadow(
-            color: AppColors.cardShadow,
-            blurRadius: 4,
-            offset: const Offset(0, 2),
-          ),
-        ],
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text('My Business', style: AppTextStyles.heading3),
-          const SizedBox(height: 12),
-          if (loading)
-            const SizedBox(
-              height: 60,
-              child: Center(
-                  child: CircularProgressIndicator(strokeWidth: 2)),
-            )
-          else
-            _statsGrid(
-              context,
-              listingsAsync.value ?? const [],
-              reviewsAsync.value ?? const [],
-              analyticsAsync?.value,
-              networkStatsAsync?.value,
-              isManufacturer,
-            ),
-          Align(
-            alignment: Alignment.centerRight,
-            child: TextButton(
-              onPressed: () => context.push('/dashboard'),
-              child: const Text('View Full Dashboard'),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _statsGrid(
-    BuildContext context,
-    List<ListingModel> listings,
-    List<dynamic> reviews,
-    Map<String, int>? analytics,
-    Map<String, int>? networkStats,
-    bool isManufacturer,
-  ) {
-    final products = isManufacturer
-        ? (analytics?['catalogProducts'] ?? listings.length)
-        : listings.length;
-    final views = listings.fold<int>(0, (sum, l) => sum + l.clicks);
-
-    final tiles = <Widget>[
-      _MiniStat(
-        icon: Icons.inventory_2_outlined,
-        label: 'Products',
-        value: '$products',
-        color: AppColors.primary,
-        onTap: () => context.push(isManufacturer
-            ? '/dashboard/manufacturer/catalog'
-            : '/dashboard/inventory'),
-      ),
-      if (isManufacturer)
-        _MiniStat(
-          icon: Icons.store_outlined,
-          label: 'Retailers',
-          // Total (active + still-invited), not just active — a
-          // manufacturer who's only invited retailers so far should still
-          // see that count here, not 0. Tapping through to the Retailer
-          // Network screen shows which ones are pending vs active.
-          value: '${networkStats?['total'] ?? 0}',
-          color: AppColors.success,
-          onTap: () => context.push('/dashboard/manufacturer/retailers'),
-        ),
-      _MiniStat(
-        icon: Icons.star_outline,
-        label: 'Reviews',
-        value: '${reviews.length}',
-        color: AppColors.secondary,
-        onTap: () => context.push('/dashboard/reviews'),
-      ),
-      _MiniStat(
-        icon: Icons.visibility_outlined,
-        label: 'Views',
-        value: '$views',
-        color: AppColors.info,
-        onTap: () => context.push('/dashboard/analytics'),
-      ),
-    ];
-
-    return GridView.count(
-      crossAxisCount: 2,
-      shrinkWrap: true,
-      physics: const NeverScrollableScrollPhysics(),
-      crossAxisSpacing: 10,
-      mainAxisSpacing: 10,
-      childAspectRatio: 2.4,
-      children: tiles,
-    );
-  }
-}
-
-class _MiniStat extends StatelessWidget {
-  final IconData icon;
-  final String label;
-  final String value;
-  final Color color;
-  final VoidCallback? onTap;
-  const _MiniStat({
-    required this.icon,
-    required this.label,
-    required this.value,
-    required this.color,
-    this.onTap,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    final content = Container(
-      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
-      decoration: BoxDecoration(
-        color: color.withValues(alpha: 0.08),
-        borderRadius: BorderRadius.circular(10),
-      ),
-      child: Row(
-        children: [
-          Icon(icon, color: color, size: 18),
-          const SizedBox(width: 8),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                FittedBox(
-                  fit: BoxFit.scaleDown,
-                  alignment: Alignment.centerLeft,
-                  child: Text(
-                    value,
-                    style: AppTextStyles.bodyMedium
-                        .copyWith(fontWeight: FontWeight.w800, color: color),
-                  ),
-                ),
-                Text(
-                  label,
-                  style: AppTextStyles.caption,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                ),
-              ],
-            ),
-          ),
-        ],
-      ),
-    );
-
-    if (onTap == null) return content;
-    return InkWell(
-      onTap: onTap,
-      borderRadius: BorderRadius.circular(10),
-      child: content,
-    );
-  }
-}

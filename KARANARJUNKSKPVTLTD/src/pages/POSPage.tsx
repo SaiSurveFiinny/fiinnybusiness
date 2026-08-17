@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { createPortal } from 'react-dom';
-import { useSearchParams, Link } from 'react-router-dom';
+import { useSearchParams, useLocation, Link } from 'react-router-dom';
 import { useHashTab } from '../hooks/useHashTab';
 import DigitalKhataPage from './DigitalKhataPage';
 import CustomersPage from './CustomersPage';
@@ -211,6 +211,7 @@ export default function POSPage() {
     const [posModuleTab, setPosModuleTab] = useHashTab<PosModuleTab>(VALID_POS_TABS, 'billing', 'fiinny-tab-pos');
     const { t, i18n } = useTranslation();
     const [searchParams] = useSearchParams();
+    const location = useLocation();
     const { tenantId, hasModule, currentUser, userName, userRole } = useAuth();
     const { showToast } = useToast();
     const [products, setProducts] = useState<Product[]>([]);
@@ -383,6 +384,9 @@ export default function POSPage() {
                 return {
                     id: doc.id,
                     ...data,
+                    // Same reason as B2BInvoicePage: filteredProducts runs on every
+                    // render, so a doc with no `name` would crash the POS screen.
+                    name: String(data.name ?? ''),
                     quantity: data.quantity ?? (data as any).stock ?? 0,
                     baseUnit: data.baseUnit ?? data.unit ?? 'pcs',
                     loosePieces: data.loosePieces ?? 0,
@@ -460,9 +464,15 @@ export default function POSPage() {
     // ?reprintOrderId=<id>     → reprint an existing bill
     // ?orderId=<id>            → load a bill for correction
     // Runs once products have loaded so line items can resolve to real products.
-    const handledParamsRef = useRef(false);
+    //
+    // Keyed on the history entry, NOT a one-shot boolean. The Khata tab renders
+    // inside this page, so its Print/Edit buttons only push a new query string —
+    // POSPage never remounts. A boolean latched true after the first hand-off and
+    // silently swallowed every print after it. location.key is fresh for every
+    // navigation, including re-printing the same bill twice.
+    const handledParamsRef = useRef<string | null>(null);
     useEffect(() => {
-        if (!tenantId || handledParamsRef.current) return;
+        if (!tenantId || handledParamsRef.current === location.key) return;
 
         const name = searchParams.get('name');
         const phone = searchParams.get('phone');
@@ -471,7 +481,7 @@ export default function POSPage() {
 
         // Buyer prefill needs nothing else loaded.
         if (!reprintId && !editId && (name || phone)) {
-            handledParamsRef.current = true;
+            handledParamsRef.current = location.key;
             setCustomer({
                 name: name || '',
                 phone: phone || '',
@@ -481,13 +491,15 @@ export default function POSPage() {
                 district: searchParams.get('district') || '',
                 retailerId: searchParams.get('retailerId') || undefined,
             });
+            // New Bill from Khata prefills the buyer — show the form it filled.
+            setPosModuleTab('billing');
             return;
         }
 
         if (!reprintId && !editId) return;
         // Editing needs the catalog so saved line items map back onto products.
         if (editId && products.length === 0) return;
-        handledParamsRef.current = true;
+        handledParamsRef.current = location.key;
 
         (async () => {
             try {
@@ -521,13 +533,19 @@ export default function POSPage() {
                 });
                 setModeOfPayment(order.paymentMethod === 'Khata' ? 'Credit' : 'Cash');
                 setEditingOrder(order);
+                // Khata and Order History are tabs of THIS page, so their Edit
+                // buttons only change the query string — without this the bill
+                // loads into the billing tab while the user keeps staring at the
+                // tab they clicked from, and Edit looks like a dead button.
+                setPosModuleTab('billing');
+                showToast(`Editing ${order.orderNumber || 'bill'} — saving issues a corrected bill.`, 'success');
             } catch (err) {
                 console.error('Failed to load bill from Khata:', err);
                 showToast('Could not open that bill.', 'error');
             }
         })();
         // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [tenantId, products, searchParams]);
+    }, [tenantId, products, searchParams, location.key]);
 
     // Keyboard shortcuts
     useEffect(() => {
@@ -1338,16 +1356,52 @@ export default function POSPage() {
     })();
 
     // Isolate print to the bill portal so the app sidebar/nav never appears.
-    const triggerPrint = () => {
+    //
+    // The teardown MUST wait for 'afterprint'. Browsers render the print
+    // preview asynchronously, so removing the class on the line after
+    // window.print() let the preview capture a page that no longer had the
+    // isolation applied — printing the entire app instead of just the bill.
+    // A lingering class is harmless if 'afterprint' never fires: every rule
+    // that uses it lives inside @media print, so it has no on-screen effect.
+    const triggerPrint = (onDone?: () => void) => {
         document.body.classList.add('pos-printing');
+        const cleanup = () => {
+            window.removeEventListener('afterprint', cleanup);
+            document.body.classList.remove('pos-printing');
+            onDone?.();
+        };
+        window.addEventListener('afterprint', cleanup);
         window.print();
-        document.body.classList.remove('pos-printing');
     };
 
-    const openReprint = (order: any) => {
-        setReprintOrder(order);
-        setTimeout(() => { triggerPrint(); setReprintOrder(null); }, 100);
-    };
+    const openReprint = (order: any) => setReprintOrder(order);
+
+    // Print a reprint only once the bill has actually painted into the portal,
+    // and clear it only once printing is done.
+    //
+    // `loading` is the critical gate. While it is true this component returns
+    // only a spinner, so the #pos-print-root portal below is never rendered —
+    // and body.pos-printing then hides every child of <body> with no print
+    // root to reveal, printing a completely blank page. Arriving from Khata
+    // (/pos?reprintOrderId=…) always hit that window, because the old code
+    // printed on a fixed 100ms timer while the page was still fetching.
+    useEffect(() => {
+        if (!reprintOrder || loading) return;
+        let cancelled = false;
+        let inner = 0;
+        // Two frames: one to commit the portal, one to let it paint.
+        const outer = requestAnimationFrame(() => {
+            inner = requestAnimationFrame(() => {
+                if (!cancelled) triggerPrint(() => setReprintOrder(null));
+            });
+        });
+        return () => {
+            cancelled = true;
+            cancelAnimationFrame(outer);
+            cancelAnimationFrame(inner);
+        };
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [reprintOrder, loading]);
 
     const duplicateBill = (order: any) => {
         if (billTabs.length >= 5) { showToast('Close a bill tab first — max 5 open at once.', 'error'); return; }
@@ -1415,6 +1469,60 @@ export default function POSPage() {
         {posModuleTab === 'khata'         && <DigitalKhataPage />}
         {posModuleTab === 'customers'     && <CustomersPage />}
         {posModuleTab === 'order-history' && <OrderHistoryPage />}
+
+        {/* Bill print portal — rendered directly on <body> so body.pos-printing CSS
+            can hide everything else (sidebar, nav, app wrapper) without any className
+            gymnastics on the surrounding layout. Both Print and Reprint share this portal;
+            reprintOrder controls which content is active at print time.
+
+            Deliberately OUTSIDE the posModuleTab === 'billing' branch. Printing a bill
+            from the Khata tab (its Print button routes to /pos?reprintOrderId=…) left
+            posModuleTab on 'khata', so this portal was never mounted — and
+            body.pos-printing hid every child of <body> with no print root to reveal,
+            producing a blank page. It costs nothing to always render: #pos-print-root
+            is display:none under @media screen. */}
+        {createPortal(
+            <div id="pos-print-root">
+                {reprintOrder ? (
+                    <PosInvoicePreview
+                        cart={(reprintOrder.lineItems || []).map((li: any) => ({
+                            name: li.productName, cartQuantity: li.quantity, baseUnit: li.unit,
+                            sellingPrice: li.mrp, maxRetailPrice: li.mrp, cartTotal: li.amount, gstPct: li.gstPct,
+                            mfgCompany: li.mfgCompany, batchNo: li.batchNo, expDate: li.expDate,
+                        }))}
+                        customer={{ name: reprintOrder.retailerName, phone: reprintOrder.phoneNumber, address: reprintOrder.address, pin: reprintOrder.pin, taluka: reprintOrder.taluka, district: reprintOrder.district }}
+                        branding={branding}
+                        billNumber={reprintOrder.orderNumber}
+                        discount={reprintOrder.discount || 0}
+                        grandTotal={reprintOrder.grandTotal || 0}
+                        billFormat={billFormat}
+                        invoiceDate={reprintOrder.invoiceDate || ''}
+                        modeOfPayment={reprintOrder.paymentMethod || 'Cash'}
+                        L={L}
+                    />
+                ) : (
+                    <PosInvoicePreview
+                        cart={cart.map(c => ({ ...c, batchNo: rowMeta[c.id]?.batchNo ?? c.batchNumber, expDate: rowMeta[c.id]?.expDate ?? c.expiryDate }))}
+                        customer={customer}
+                        branding={branding}
+                        billNumber={nextBillNumber}
+                        transportCharges={transportCharges}
+                        laborCharges={laborCharges}
+                        discount={loyaltyDiscount}
+                        grandTotal={grandTotal}
+                        creditPaidNow={effectiveCreditPaidNow}
+                        creditAmount={effectiveCreditAmount}
+                        billFormat={billFormat}
+                        invoiceDate={invoiceDate}
+                        modeOfPayment={modeOfPayment}
+                        previousOutstanding={customerOutstanding}
+                        activeCats={invoiceCategories ?? getInvoiceProductCategories(cart)}
+                        L={L}
+                    />
+                )}
+            </div>,
+            document.body
+        )}
 
         {/* ── POS Billing (existing content) ── */}
         {posModuleTab === 'billing' && <div style={{ background: 'var(--bg-color)', minHeight: '100vh', display: 'flex', flexDirection: 'column' }}>
@@ -1761,7 +1869,7 @@ export default function POSPage() {
                                                     ['GST%', 'center', '3px 1px'],
                                                     ['Amount', 'right', '3px 3px'],
                                                 ] as const).map(([label, align, pad]) => (
-                                                    <th key={label} style={{ border: '1px solid #ccc', padding: pad, textAlign: align as const, fontWeight: 700, fontSize: '0.74rem', overflow: 'hidden', whiteSpace: 'nowrap' }}>
+                                                    <th key={label} style={{ border: '1px solid #ccc', padding: pad, textAlign: align, fontWeight: 700, fontSize: '0.74rem', overflow: 'hidden', whiteSpace: 'nowrap' }}>
                                                         {label}
                                                     </th>
                                                 ))}
@@ -2658,53 +2766,6 @@ export default function POSPage() {
                         )}
                     </div>
                 </div>
-            )}
-
-            {/* Bill print portal — rendered directly on <body> so body.pos-printing CSS
-                can hide everything else (sidebar, nav, app wrapper) without any className
-                gymnastics on the surrounding layout. Both Print and Reprint share this portal;
-                reprintOrder controls which content is active at print time. */}
-            {createPortal(
-                <div id="pos-print-root">
-                    {reprintOrder ? (
-                        <PosInvoicePreview
-                            cart={(reprintOrder.lineItems || []).map((li: any) => ({
-                                name: li.productName, cartQuantity: li.quantity, baseUnit: li.unit,
-                                sellingPrice: li.mrp, maxRetailPrice: li.mrp, cartTotal: li.amount, gstPct: li.gstPct,
-                                mfgCompany: li.mfgCompany, batchNo: li.batchNo, expDate: li.expDate,
-                            }))}
-                            customer={{ name: reprintOrder.retailerName, phone: reprintOrder.phoneNumber, address: reprintOrder.address, pin: reprintOrder.pin, taluka: reprintOrder.taluka, district: reprintOrder.district }}
-                            branding={branding}
-                            billNumber={reprintOrder.orderNumber}
-                            discount={reprintOrder.discount || 0}
-                            grandTotal={reprintOrder.grandTotal || 0}
-                            billFormat={billFormat}
-                            invoiceDate={reprintOrder.invoiceDate || ''}
-                            modeOfPayment={reprintOrder.paymentMethod || 'Cash'}
-                            L={L}
-                        />
-                    ) : (
-                        <PosInvoicePreview
-                            cart={cart.map(c => ({ ...c, batchNo: rowMeta[c.id]?.batchNo ?? c.batchNumber, expDate: rowMeta[c.id]?.expDate ?? c.expiryDate }))}
-                            customer={customer}
-                            branding={branding}
-                            billNumber={nextBillNumber}
-                            transportCharges={transportCharges}
-                            laborCharges={laborCharges}
-                            discount={loyaltyDiscount}
-                            grandTotal={grandTotal}
-                            creditPaidNow={effectiveCreditPaidNow}
-                            creditAmount={effectiveCreditAmount}
-                            billFormat={billFormat}
-                            invoiceDate={invoiceDate}
-                            modeOfPayment={modeOfPayment}
-                            previousOutstanding={customerOutstanding}
-                            activeCats={invoiceCategories ?? getInvoiceProductCategories(cart)}
-                            L={L}
-                        />
-                    )}
-                </div>,
-                document.body
             )}
 
             {/* ── V-Pay Dialog ──────────────────────────────────────────────────────── */}

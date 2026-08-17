@@ -42,7 +42,7 @@ function relatedFor(post: SeoBlogPost, all: SeoBlogPost[]): SeoBlogPost[] {
 export async function generateMetadata({ params }: PageProps): Promise<Metadata> {
   const { slug } = await params;
   const post = await getPublishedPostBySlug(slug);
-  if (!post) return { title: "Post Not Found | KrishiDukan Blog" };
+  if (!post) return { title: "Post Not Found" };
 
   const description = (post.excerpt || post.title).slice(0, 300);
   const canonicalPath = `/blog/${encodeURIComponent(post.slug || slug)}`;
@@ -51,7 +51,8 @@ export async function generateMetadata({ params }: PageProps): Promise<Metadata>
   const modified = toIso(post.updatedAt) ?? published;
 
   return {
-    title: `${post.title} | KrishiDukan Blog`,
+    // "%s | KrishiDukan" is appended by the template in app/layout.tsx.
+    title: post.title,
     description,
     alternates: { canonical: canonicalPath },
     openGraph: {

@@ -650,6 +650,20 @@ class DashboardRepository {
     return await task.ref.getDownloadURL();
   }
 
+  /// Uploads a seller's profile/shop logo and returns its public download URL.
+  ///
+  /// Path MUST live under `profile-images/**` — same storage.rules-allowed
+  /// prefix web's `uploadImageToStorage(file, "profile-images/logos")` uses
+  /// for the exact same purpose (see app/dashboard/page.tsx handleLogoFile);
+  /// any other prefix falls through to the default-deny rule.
+  Future<String> uploadProfileLogo(File imageFile, String phone) async {
+    final ref = _storage.ref().child(
+      'profile-images/logos/${DateTime.now().millisecondsSinceEpoch}-$phone.jpg',
+    );
+    final task = await ref.putFile(imageFile);
+    return await task.ref.getDownloadURL();
+  }
+
   // ── Seat stats ────────────────────────────────────────────────────────────
 
   /// Computes real seat stats from `subscriptions` + `retailerSeatListings`,

@@ -6,7 +6,7 @@ import {
   getAllReels,
   buildReelSlug,
   extractReelIdFromSlug,
-  linkedProductStorePath,
+  linkedProductPath,
   reelCssFilter,
 } from "../../lib/seo/reels-server";
 import ReelOverlay from "../components/ReelOverlay";
@@ -25,11 +25,14 @@ interface PageProps {
 export async function generateMetadata({ params }: PageProps): Promise<Metadata> {
   const { slug } = await params;
   const reel = await getReelById(extractReelIdFromSlug(slug));
-  if (!reel) return { title: "Reel not found | KrishiDukan" };
+  if (!reel) return { title: "Reel not found" };
 
+  // Brand omitted — the "%s | KrishiDukan" template in app/layout.tsx appends it.
+  // shareTitle keeps it for openGraph/twitter, which the template skips.
   const title = reel.title
-    ? `${reel.title} | AgriReels — KrishiDukan`
-    : `${reel.shopName} on AgriReels | KrishiDukan`;
+    ? `${reel.title} — AgriReels`
+    : `${reel.shopName} on AgriReels`;
+  const shareTitle = `${title} | KrishiDukan`;
   const description =
     reel.caption ||
     reel.title ||
@@ -41,7 +44,7 @@ export async function generateMetadata({ params }: PageProps): Promise<Metadata>
     description,
     alternates: { canonical },
     openGraph: {
-      title,
+      title: shareTitle,
       description,
       url: canonical,
       type: "video.other",
@@ -50,7 +53,7 @@ export async function generateMetadata({ params }: PageProps): Promise<Metadata>
     },
     twitter: {
       card: "player",
-      title,
+      title: shareTitle,
       description,
       ...(reel.thumbnailUrl ? { images: [reel.thumbnailUrl] } : {}),
     },
@@ -64,7 +67,12 @@ export default async function ReelPage({ params }: PageProps) {
   const reel = await getReelById(extractReelIdFromSlug(slug));
   if (!reel) notFound();
 
-  const productPath = linkedProductStorePath(reel);
+  // Canonical /products/[slug], NOT the "/?view=product&…" SPA deep link this
+  // used to point at. That deep link is client-rendered, so crawlers saw a reel
+  // page with zero outbound product links and the reel → product → seller chain
+  // was a dead end. The canonical product page carries the price, sellers and
+  // its own Buy CTA into the store view, so humans lose nothing.
+  const productPath = linkedProductPath(reel);
   const canonical = `${SITE_URL}/reels/${buildReelSlug(reel.title, reel.id)}`;
 
   // More reels for the "watch next" rail (excluding this one).

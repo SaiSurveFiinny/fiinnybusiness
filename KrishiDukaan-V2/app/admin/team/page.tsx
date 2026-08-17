@@ -26,6 +26,7 @@ type TeamMember = {
 const SECTION_LABELS: Record<AdminSection, string> = {
   overview: "Overview",
   analytics: "Analytics",
+  orders: "Orders",
   users: "Users & Roles",
   subscriptions: "Subscriptions",
   products: "Products",

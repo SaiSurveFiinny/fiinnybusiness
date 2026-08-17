@@ -31,6 +31,16 @@ class ListingModel {
   /// Profile mini-dashboard's "Views" stat.
   final int clicks;
 
+  /// Marketplace card impression count and "get directions" tap count — same
+  /// fields web's `fetchRetailerAnalytics` sums into "Total Views" and
+  /// "Directions" on the dashboard Overview cards. Mobile doesn't write
+  /// `impressions` itself yet (only `clicks`/`directionRequests`, via
+  /// ProductDetailScreen), but both fields live on the same shared `products`
+  /// doc web writes to, so reading them here keeps mobile's Overview numbers
+  /// identical to web's rather than silently zero.
+  final int impressions;
+  final int directionRequests;
+
   final String collectionPath;
 
   // Set client-side after Haversine calculation
@@ -62,6 +72,8 @@ class ListingModel {
     this.updatedAt,
     this.distanceKm,
     this.clicks = 0,
+    this.impressions = 0,
+    this.directionRequests = 0,
     this.collectionPath = 'products',
   });
 
@@ -135,6 +147,8 @@ class ListingModel {
       gstRate: (d['gstRate'] as num?)?.toDouble(),
       updatedAt: updatedAt,
       clicks: (d['clicks'] as num?)?.toInt() ?? 0,
+      impressions: (d['impressions'] as num?)?.toInt() ?? 0,
+      directionRequests: (d['directionRequests'] as num?)?.toInt() ?? 0,
     );
   }
 

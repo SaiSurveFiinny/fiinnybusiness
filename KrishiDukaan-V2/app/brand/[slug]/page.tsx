@@ -247,7 +247,7 @@ async function fetchPageData(manufacturerPhone: string): Promise<{
 export async function generateMetadata({ params }: PageProps): Promise<Metadata> {
   const { slug } = await params;
   const phone = await resolveSlugToPhone(slug);
-  if (!phone) return { title: "Brand Not Found | KrishiDukan" };
+  if (!phone) return { title: "Brand Not Found" };
 
   const db = getClientDb();
   const [snap, brandSnap] = await Promise.all([
@@ -255,13 +255,17 @@ export async function generateMetadata({ params }: PageProps): Promise<Metadata>
     getDoc(doc(db, "brandPages", phone)),
   ]);
 
-  if (!snap.exists()) return { title: "Brand Not Found | KrishiDukan" };
+  if (!snap.exists()) return { title: "Brand Not Found" };
 
   const d = snap.data() as Record<string, unknown>;
   const name = String(d.businessName ?? d.ownerName ?? "Brand");
   const tagline = brandSnap.exists() ? String(brandSnap.data()?.tagline ?? "") : "";
 
-  const brandTitle = `${name} | KrishiDukan`;
+  // Bare name — the "%s | KrishiDukan" template in app/layout.tsx appends the
+  // brand. shareTitle carries it explicitly for openGraph/twitter, which the
+  // template does not apply to.
+  const brandTitle = name;
+  const shareTitle = `${name} | KrishiDukan`;
   const brandDescription =
     tagline ||
     `${name} — verified manufacturer on KrishiDukan. View products and find nearby stores.`;
@@ -270,13 +274,13 @@ export async function generateMetadata({ params }: PageProps): Promise<Metadata>
     description: brandDescription,
     alternates: { canonical: `${SITE_URL}/brand/${slug}` },
     openGraph: {
-      title: brandTitle,
+      title: shareTitle,
       description: tagline || `${name} — verified manufacturer on KrishiDukan.`,
       images: [{ url: "/images/og-default.png", width: 1200, height: 630 }],
     },
     twitter: {
       card: "summary_large_image",
-      title: brandTitle,
+      title: shareTitle,
       description: brandDescription,
       images: ["/images/og-default.png"],
     },

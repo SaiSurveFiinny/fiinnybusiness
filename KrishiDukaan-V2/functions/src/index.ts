@@ -7,6 +7,12 @@ import { queueWaNotification } from "./wa-notify";
 
 export { sendWaNotification, retryWaNotifications, webhookReceiver } from "./wa-dispatch";
 export { transcodeReel } from "./reels/media/transcodeReel";
+export {
+  provisionErpTenantOnSubscription,
+  provisionErpTenantByAdmin,
+  createErpHandoffCode,
+  redeemErpHandoffCode,
+} from "./erp-bridge";
 
 admin.initializeApp();
 const db = admin.firestore();
@@ -310,11 +316,57 @@ export const decrementStockOnOrder = onDocumentCreated(
  * Runs daily. Finds users whose subscription has expired (expiryDate < now)
  * and flips isPaid=false so canAccessDashboard correctly returns false.
  * Also marks the subscription doc as expired.
+ *
+ * Also promotes future-dated admin-assigned subscriptions (subscriptionStatus
+ * "scheduled", written by /api/admin/subscriptions/assign when the admin
+ * picks a future start date) to "active" once startDate has arrived, and
+ * flips isPaid=true at that point — access is intentionally NOT granted at
+ * creation time for a scheduled subscription, only once it actually starts.
  */
 export const expireSubscriptions = onSchedule(
   { schedule: "every 24 hours", timeZone: "Asia/Kolkata" },
   async () => {
     const now = admin.firestore.Timestamp.now();
+
+    // ── Promote scheduled subscriptions whose start date has arrived ───────
+    // Single-field equality query (no composite index needed — scheduled
+    // subscriptions are rare, admin-assigned only, so filtering startDate
+    // in code instead of a second range clause is cheap and avoids needing
+    // a new Firestore composite index deploy for this one query).
+    const scheduledSnap = await db
+      .collection("subscriptions")
+      .where("subscriptionStatus", "==", "scheduled")
+      .get();
+    const dueDocs = scheduledSnap.docs.filter((d) => {
+      const startDate = d.data().startDate as FirebaseFirestore.Timestamp | undefined;
+      return !!startDate && startDate.toMillis() <= now.toMillis();
+    });
+
+    if (dueDocs.length > 0) {
+      const promoteBatch = db.batch();
+      for (const subDoc of dueDocs) {
+        const d = subDoc.data() as Record<string, unknown>;
+        promoteBatch.update(subDoc.ref, {
+          subscriptionStatus: "active",
+          updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+        });
+        const ownerPhone = String(d.ownerPhone ?? "");
+        const seats = Number(d.seatsPurchased) || 0;
+        if (ownerPhone) {
+          const userRef = db.collection("users").doc(ownerPhone);
+          const userSnap = await userRef.get();
+          const currentSeats = Number(userSnap.data()?.totalSeats) || 0;
+          promoteBatch.update(userRef, {
+            isPaid: true,
+            subscriptionStatus: "paid",
+            totalSeats: currentSeats + seats,
+            updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+          });
+        }
+      }
+      await promoteBatch.commit();
+      console.log(`[expireSubscriptions] promoted ${dueDocs.length} scheduled subscriptions to active`);
+    }
 
     // Find active subscriptions that have passed their expiry date
     const expiredSnap = await db
@@ -527,6 +579,158 @@ async function manufacturerDisplayName(phone: string, uid: string, fallback: str
 }
 
 /** New order placed → notify the seller (store owner / manufacturer). */
+/** Product-doc fields that can carry a seller identity, phone-first. */
+const OWNER_FIELDS = ["retailerPhone", "ownerPhone", "retailerId", "ownerId"] as const;
+
+/**
+ * Sources marking a doc as a seller's copy of a canonical catalog product.
+ * Kept in sync with CatalogRepository.fetchAllMergedProducts (mobile) and the
+ * merge in app/firebase.ts — the marketplace joins these to the canonical doc
+ * by product name, which is why the name lookup below is the right join key.
+ */
+const COPY_SOURCES = new Set([
+  "admin_assigned",
+  "manufacturer_assigned",
+  "retailer_inventory_copy",
+]);
+
+/** First non-empty OWNER_FIELDS value on a product doc, or "". */
+function ownerOf(d: Record<string, unknown> | undefined): string {
+  for (const f of OWNER_FIELDS) {
+    const v = String(d?.[f] ?? "").trim();
+    if (v) return v;
+  }
+  return "";
+}
+
+type ResolvedSeller = {
+  sellerId: string;
+  sellerPhone: string;
+  sellerName: string;
+  via: string;
+};
+
+/**
+ * Recovers the seller for an order whose client wrote none.
+ *
+ * Two shapes produce an unkeyed order:
+ *   1. The ordered product owns itself (ownerPhone / retailerId / …).
+ *   2. The ordered product is a CANONICAL catalog doc (source: "admin") with
+ *      no ownership fields at all but flagged online_delivery. The real seller
+ *      lives on a separate copy doc that the marketplace merges in by name.
+ *
+ * Case 2 is only resolved when it is UNAMBIGUOUS — if two retailers stock the
+ * same catalog product the order genuinely cannot be attributed automatically,
+ * and guessing would hand one seller another's money. Those return null and
+ * are left for `scripts/repair-orphan-order-sellers.js` to report.
+ */
+async function resolveSellerForOrder(
+  items: Record<string, unknown>[]
+): Promise<ResolvedSeller | null> {
+  const productId = String(
+    items[0]?.catalogId ?? items[0]?.listingId ?? items[0]?.productId ?? ""
+  ).trim();
+  if (!productId) return null;
+
+  const prodSnap = await db.collection("products").doc(productId).get();
+  if (!prodSnap.exists) return null;
+  const prod = prodSnap.data() as Record<string, unknown>;
+
+  // 1. The ordered doc owns itself.
+  const direct = ownerOf(prod);
+  if (direct) {
+    return {
+      sellerId: direct,
+      sellerPhone: firstPhone(...OWNER_FIELDS.map((f) => prod[f])),
+      sellerName: String(prod.store ?? prod.storeName ?? "").trim(),
+      via: `products/${productId}`,
+    };
+  }
+
+  // 2. Ownerless canonical doc — join to its seller copies by name.
+  const name = String(prod.name ?? "").trim();
+  if (!name) return null;
+
+  const siblings = await db.collection("products").where("name", "==", name).get();
+  const copies = siblings.docs
+    .map((d) => ({ id: d.id, data: d.data() as Record<string, unknown> }))
+    .filter((c) => COPY_SOURCES.has(String(c.data.source ?? "")) && ownerOf(c.data));
+
+  const distinctOwners = Array.from(new Set(copies.map((c) => ownerOf(c.data))));
+  if (distinctOwners.length !== 1) return null;
+
+  const copy = copies.find((c) => ownerOf(c.data))!;
+  return {
+    sellerId: distinctOwners[0],
+    sellerPhone: firstPhone(...OWNER_FIELDS.map((f) => copy.data[f])),
+    sellerName: String(copy.data.store ?? copy.data.storeName ?? "").trim(),
+    via: `products/${copy.id} (source: ${copy.data.source}, matched by name)`,
+  };
+}
+
+/**
+ * backfillOrderSeller
+ *
+ * Server-side backstop for orders written with no seller key at all. A paid
+ * order with `sellerId: ""` matches no seller-dashboard query on web or
+ * mobile, so the retailer never sees it and never fulfils it — the money
+ * lands and the order silently vanishes.
+ *
+ * The client-side guards live in the Flutter checkout, but old installs stay
+ * in the field for months after a release, so the fix cannot be client-only.
+ * This runs regardless of which client wrote the order, or how old it is.
+ *
+ * Updating the doc does not re-fire this trigger (onDocumentCreated only fires
+ * on create), so there is no write loop.
+ */
+export const backfillOrderSeller = onDocumentCreated(
+  "orders/{orderId}",
+  async (event) => {
+    const snap = event.data;
+    const d = snap?.data() as Record<string, unknown> | undefined;
+    if (!snap || !d) return;
+
+    if (String(d.sellerId ?? "").trim()) return; // already keyed — nothing to do
+
+    const orderId = event.params.orderId;
+    const items = Array.isArray(d.items) ? (d.items as Record<string, unknown>[]) : [];
+
+    logger.warn("[backfillOrderSeller] order written with no seller key", {
+      orderId,
+      customerPhone: d.customerPhone ?? null,
+      itemCount: items.length,
+    });
+
+    let resolved: ResolvedSeller | null = null;
+    try {
+      resolved = await resolveSellerForOrder(items);
+    } catch (err) {
+      logger.error("[backfillOrderSeller] resolution threw", { orderId, err: String(err) });
+      return;
+    }
+
+    if (!resolved) {
+      logger.error("[backfillOrderSeller] could not attribute order — needs manual repair", {
+        orderId,
+        productId: items[0]?.catalogId ?? items[0]?.listingId ?? null,
+      });
+      return;
+    }
+
+    const update: Record<string, string> = {
+      sellerId: resolved.sellerId,
+      sellerPhone: resolved.sellerPhone,
+    };
+    // Only fill a blank name — never overwrite one the client already wrote.
+    if (resolved.sellerName && !String(d.sellerName ?? "").trim()) {
+      update.sellerName = resolved.sellerName;
+    }
+
+    await snap.ref.update(update);
+    logger.info("[backfillOrderSeller] repaired", { orderId, ...update, via: resolved.via });
+  }
+);
+
 export const notifySellerOnOrder = onDocumentCreated(
   "orders/{orderId}",
   async (event) => {
@@ -587,6 +791,29 @@ export const notifySellerOnOrder = onDocumentCreated(
       } catch (lookupErr) {
         logger.error("[notifySellerOnOrder] UID→phone lookup threw", {
           orderId, sellerId, err: String(lookupErr),
+        });
+      }
+    }
+
+    // Last resort: the order carries no seller key at all, so the lookups above
+    // were skipped entirely (they need a sellerId to start from). Recover the
+    // owner from the ordered product the same way backfillOrderSeller does —
+    // that trigger repairs the doc, but it races this one, so resolving here
+    // too is what actually gets the alert out on an orphaned order.
+    if (!sellerPhone) {
+      try {
+        const resolved = await resolveSellerForOrder(
+          Array.isArray(d.items) ? (d.items as Record<string, unknown>[]) : []
+        );
+        if (resolved?.sellerPhone) {
+          sellerPhone = resolved.sellerPhone;
+          logger.info("[notifySellerOnOrder] resolved phone from the ordered product", {
+            orderId, sellerPhone, via: resolved.via,
+          });
+        }
+      } catch (err) {
+        logger.error("[notifySellerOnOrder] product-based resolution threw", {
+          orderId, err: String(err),
         });
       }
     }

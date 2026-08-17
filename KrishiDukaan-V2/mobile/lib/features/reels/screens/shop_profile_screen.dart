@@ -33,6 +33,14 @@ class ShopProfileScreen extends ConsumerWidget {
     final productsAsync = ref.watch(shopListingsProvider(shopPhone));
     final currentUser = ref.watch(currentUserProvider).value;
     final isOwnShop = currentUser?.phone == shopPhone;
+    // Editing a listed product isn't done here — Inventory (or the
+    // manufacturer catalog) already owns all of that logic, so both the
+    // Products stat and the "Manage" link below just route there rather
+    // than duplicating add/edit/stock UI on the storefront preview.
+    final isManufacturer = ref.watch(isManufacturerProvider);
+    final inventoryRoute = isManufacturer
+        ? '/dashboard/manufacturer/catalog'
+        : '/dashboard/inventory';
 
     return Scaffold(
       backgroundColor: AppColors.background,
@@ -269,6 +277,9 @@ class ShopProfileScreen extends ConsumerWidget {
                           loading: () => '—',
                           error: (_, _) => '—',
                         ),
+                        onTap: isOwnShop
+                            ? () => context.push(inventoryRoute)
+                            : null,
                       ),
                     ],
                   ),
@@ -383,7 +394,23 @@ class ShopProfileScreen extends ConsumerWidget {
           SliverToBoxAdapter(
             child: Padding(
               padding: const EdgeInsets.fromLTRB(16, 4, 16, 6),
-              child: Text('Products', style: AppTextStyles.heading3),
+              child: Row(
+                children: [
+                  Text('Products', style: AppTextStyles.heading3),
+                  const Spacer(),
+                  if (isOwnShop)
+                    TextButton.icon(
+                      onPressed: () => context.push(inventoryRoute),
+                      icon: const Icon(Icons.edit_outlined, size: 16),
+                      label: const Text('Manage'),
+                      style: TextButton.styleFrom(
+                        padding: EdgeInsets.zero,
+                        minimumSize: const Size(0, 24),
+                        tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                      ),
+                    ),
+                ],
+              ),
             ),
           ),
           SliverToBoxAdapter(
@@ -401,11 +428,25 @@ class ShopProfileScreen extends ConsumerWidget {
                   return Padding(
                     padding: const EdgeInsets.all(24),
                     child: Center(
-                      child: Text(
-                        'No products listed.',
-                        style: AppTextStyles.body.copyWith(
-                          color: Colors.black45,
-                        ),
+                      child: Column(
+                        children: [
+                          Text(
+                            isOwnShop
+                                ? "You haven't listed any products yet."
+                                : 'No products listed.',
+                            style: AppTextStyles.body.copyWith(
+                              color: Colors.black45,
+                            ),
+                          ),
+                          if (isOwnShop) ...[
+                            const SizedBox(height: 12),
+                            FilledButton.icon(
+                              onPressed: () => context.push(inventoryRoute),
+                              icon: const Icon(Icons.add_box_outlined),
+                              label: const Text('Add Your First Product'),
+                            ),
+                          ],
+                        ],
                       ),
                     ),
                   );
@@ -446,11 +487,12 @@ class ShopProfileScreen extends ConsumerWidget {
 class _StatColumn extends StatelessWidget {
   final String label;
   final String valueAsync;
-  const _StatColumn({required this.label, required this.valueAsync});
+  final VoidCallback? onTap;
+  const _StatColumn({required this.label, required this.valueAsync, this.onTap});
 
   @override
   Widget build(BuildContext context) {
-    return Column(
+    final column = Column(
       mainAxisSize: MainAxisSize.min,
       children: [
         Text(
@@ -465,6 +507,15 @@ class _StatColumn extends StatelessWidget {
           ),
         ),
       ],
+    );
+    if (onTap == null) return column;
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(8),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
+        child: column,
+      ),
     );
   }
 }

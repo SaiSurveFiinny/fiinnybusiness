@@ -7,6 +7,7 @@ import {
   deleteDoc,
   doc,
   getDoc,
+  getCountFromServer,
   getDocs,
   getFirestore,
   increment,
@@ -15,11 +16,14 @@ import {
   orderBy,
   serverTimestamp,
   setDoc,
+  startAfter,
   Timestamp,
   updateDoc,
   where,
   writeBatch,
   GeoPoint,
+  type QueryDocumentSnapshot,
+  type DocumentData,
 } from 'firebase/firestore';
 import { getAuth } from 'firebase/auth';
 import { getStorage } from 'firebase/storage';
@@ -670,15 +674,30 @@ export type Store = {
   location: { lat: number; lng: number };
   averageRating?: number;
   totalReviews?: number;
+  /** Manufacturer brand-page slug (manufacturers/{phone}.slug). Present only for
+   *  manufacturers that have set up a brand page — retailers never have one.
+   *  Search results use it to link to /brand/{slug} instead of the map. */
+  slug?: string;
+  /** Whether THIS store has switched on online delivery for itself.
+   *
+   *  Carried on the Store so callers can filter synchronously. Buy Now used to
+   *  pick the first store in a product's availability array without checking
+   *  this at all — which handed the buyer a store that had never enabled online
+   *  delivery, and in some cases had not even accepted its invite. */
+  onlineDelivery?: boolean;
 };
 
 export async function fetchStores(): Promise<Store[]> {
   try {
-    const [storesSnapshot, retailersSnapshot, manufacturersSnapshot, storeReviewsSnap] = await Promise.all([
+    const [storesSnapshot, retailersSnapshot, manufacturersSnapshot, storeReviewsSnap, profilesSnap] = await Promise.all([
       getDocs(collection(db, 'stores')),
       getDocs(collection(db, 'retailers')),
       getDocs(collection(db, 'manufacturers')),
       getDocs(collection(db, 'storeReviews')).catch(() => null),
+      // profiles/{phone} is the unified new-schema profile and the mobile app's
+      // primary store source. The web read every OTHER collection but this one,
+      // so profile-only sellers never appeared in the locator.
+      getDocs(collection(db, 'profiles')).catch(() => null),
     ]);
 
     // Aggregate store ratings straight from review docs (source of truth), keyed by storePhone.
@@ -696,6 +715,18 @@ export async function fetchStores(): Promise<Store[]> {
       }
     }
 
+    // Brand-page slugs, keyed by manufacturer phone. Collected before the
+    // cross-collection dedup below so the slug survives even when a profiles/
+    // or stores/ entry outscores the manufacturers/ one for the same phone.
+    const manufacturerSlugByPhone = new Map<string, string>();
+    for (const d of manufacturersSnapshot.docs) {
+      const md = d.data();
+      const slug = typeof md.slug === 'string' ? md.slug.trim() : '';
+      if (!slug) continue;
+      const phone = String(md.phone || (/^\+?\d{10,13}$/.test(d.id) ? d.id : ''));
+      if (phone) manufacturerSlugByPhone.set(phone, slug);
+    }
+
     const stores = storesSnapshot.docs.map((doc) => ({
       id: doc.id,
       ...doc.data()
@@ -704,17 +735,20 @@ export async function fetchStores(): Promise<Store[]> {
     const retailers = retailersSnapshot.docs
       .filter((doc) => {
         const data = doc.data();
-        // Exclude retailers that have been removed or deactivated from a manufacturer network
+        // Explicit deactivation by an admin/manufacturer is the ONLY reason to
+        // hide a store from search and the locator.
         const os = String(data.onboardingStatus ?? '');
         if (os === 'removed' || os === 'inactive') return false;
-        // Network retailers (created via bulk upload or manufacturer invite) must have
-        // an active storefront AND an assigned seat — otherwise they have no products
-        // and should not appear in store search or the store locator.
-        if (data.onboardingType === 'manufacturer-network') {
-          return data.active === true && data.assignedSeat === true;
-        }
-        // Standalone / legacy retailers: only exclude if explicitly deactivated
-        return data.active !== false;
+
+        // Deliberately NOT gating on `active`/`assignedSeat` for
+        // manufacturer-network retailers. That gate was justified as "otherwise
+        // they have no products", but the data says otherwise: it rejected 294
+        // of 423 retailers and 293 of those DO have sellable products. On these
+        // docs `active: false` is the un-activated DEFAULT (291 of 423, tracking
+        // onboardingStatus: 'pending') — not a deactivation signal — so reading
+        // it as one hid most of the network from the web while the mobile app,
+        // which applies no such filter, showed them.
+        return true;
       })
       .map((doc) => {
       const data = doc.data();
@@ -731,6 +765,7 @@ export async function fetchStores(): Promise<Store[]> {
         city: data.city,
         state: data.state,
         pincode: data.pincode,
+        onlineDelivery: data.onlineDelivery === true,
         distance: 'Nearby',
         status: data.status || 'Active',
         stock: Array.isArray(data.products) ? data.products.map((p: any) => p.name || p) : [],
@@ -791,6 +826,7 @@ export async function fetchStores(): Promise<Store[]> {
           city: data.address?.city || data.city,
           state: data.address?.state || data.state,
           pincode: data.address?.pincode || data.pincode,
+          onlineDelivery: data.onlineDelivery === true,
           distance: 'Nearby',
           status: 'Active',
           stock: [],
@@ -800,6 +836,41 @@ export async function fetchStores(): Promise<Store[]> {
             lng: data.geo?.longitude ?? data.location?.longitude ?? data.location?.lng ?? 0,
           },
         } as Store & { userId?: string };
+      });
+
+    // profiles/{phone} — unified new-schema profile. Address and geo are stored
+    // as nested maps here, unlike the flat legacy shapes above.
+    const profileStores = (profilesSnap?.docs ?? [])
+      .filter((doc) => {
+        const data = doc.data();
+        const role = String(data.role ?? '');
+        if (role !== 'retailer' && role !== 'manufacturer') return false;
+        return !!(data.shopName || data.businessName || data.ownerName || data.name);
+      })
+      .map((doc) => {
+        const data = doc.data();
+        const addr = data.address;
+        const addrIsMap = addr && typeof addr === 'object';
+        return {
+          id: doc.id,
+          userId: data.uid || undefined,
+          name: data.shopName || data.businessName || data.ownerName || data.name,
+          ownerName: data.ownerName,
+          phone: data.phone || (/^\+?\d{10,13}$/.test(doc.id) ? doc.id : undefined),
+          logo: data.logo || undefined,
+          address: addrIsMap ? (addr.line1 ?? addr.address) : addr,
+          city: (addrIsMap ? addr.city : undefined) ?? data.city,
+          state: (addrIsMap ? addr.state : undefined) ?? data.state,
+          pincode: (addrIsMap ? addr.pincode : undefined) ?? data.pincode,
+          onlineDelivery: data.onlineDelivery === true,
+          distance: 'Nearby',
+          status: data.status || 'Active',
+          stock: [],
+          location: {
+            lat: data.geo?.latitude ?? data.geo?.lat ?? data.location?.latitude ?? data.location?.lat ?? 0,
+            lng: data.geo?.longitude ?? data.geo?.lng ?? data.location?.longitude ?? data.location?.lng ?? 0,
+          },
+        } as Store & { userId?: string; city?: string; state?: string; pincode?: string };
       });
 
     // Final cross-collection deduplication: retailers/ and manufacturers/ entries take priority
@@ -812,7 +883,7 @@ export async function fetchStores(): Promise<Store[]> {
       ((s.location?.lat || s.location?.lng) ? 1 : 0);
 
     const globalMap = new Map<string, AnyStore>();
-    for (const entry of [...stores, ...dedupedRetailers, ...manufacturers] as AnyStore[]) {
+    for (const entry of [...stores, ...profileStores, ...dedupedRetailers, ...manufacturers] as AnyStore[]) {
       const phone = entry.phone || (/^\+?\d{10,13}$/.test(entry.id) ? entry.id : undefined);
       // Key by phone if available, otherwise fall back to id (non-phone doc IDs won't collide)
       const key = phone || entry.id;
@@ -825,11 +896,13 @@ export async function fetchStores(): Promise<Store[]> {
     // Attach ratings computed from storeReviews, keyed by the store's phone
     return Array.from(globalMap.values()).map((entry) => {
       const phone = entry.phone || (/^\+?\d{10,13}$/.test(entry.id) ? entry.id : '');
+      const slug = phone ? manufacturerSlugByPhone.get(phone) : undefined;
       const agg = phone ? storeRatingAgg.get(phone) : undefined;
+      const withSlug = slug ? { ...entry, slug } : entry;
       if (agg && agg.count > 0) {
-        return { ...entry, averageRating: agg.sum / agg.count, totalReviews: agg.count };
+        return { ...withSlug, averageRating: agg.sum / agg.count, totalReviews: agg.count };
       }
-      return entry;
+      return withSlug;
     });
   } catch (error) {
     console.error('Error fetching stores from Firestore:', error);
@@ -1539,16 +1612,142 @@ export async function createOrdersFromCart(params: {
   return createdOrderIds;
 }
 
+/**
+ * Every identifier an order might carry for one seller.
+ *
+ * Seller identity is written three different ways across the codebase:
+ *   - web checkout    → sellerId = Firebase UID
+ *   - Flutter checkout→ sellerId = phone, plus sellerPhone = phone
+ *   - phone formats   → "+919876543210" and bare "9876543210" both occur
+ *
+ * Mirrors the resolver in dashboard/_lib/analytics-firestore.ts, which hit
+ * this same problem (seller totals silently reading zero).
+ */
+/** Adds a phone in every format that occurs in this database. */
+function addPhoneForms(set: Set<string>, raw: unknown): void {
+  const phone = String(raw ?? "").trim();
+  if (!phone) return;
+  set.add(phone);
+  const digits = phone.replace(/\D/g, "");
+  if (digits.length === 10) { set.add(digits); set.add(`+91${digits}`); }
+  if (digits.length === 12 && digits.startsWith("91")) {
+    set.add(`+${digits}`);
+    set.add(digits.slice(2));
+  }
+}
+
+function sellerIdentityCandidates(sellerId: string, profile?: any): string[] {
+  const out = new Set<string>();
+  if (sellerId) out.add(sellerId);
+  if (profile?.uid) out.add(String(profile.uid));
+  if (profile?.id) out.add(String(profile.id));
+  addPhoneForms(out, profile?.phone);
+  addPhoneForms(out, profile?.ownerPhone);
+  addPhoneForms(out, profile?.retailerPhone);
+  return Array.from(out).filter(Boolean);
+}
+
+/**
+ * Incoming orders for one seller, across every identity keying.
+ *
+ * Querying `sellerId == uid` alone hides every mobile-placed order from the
+ * seller dashboard — paid for, visible in Razorpay, never surfaced to the
+ * retailer. Cross both seller fields with every identifier variant and
+ * dedupe; a wrong-shaped value against a field just returns empty, never
+ * errors, so over-querying is safe.
+ *
+ * sellerType is deliberately NOT filtered: sellerId/sellerPhone already
+ * identify the account uniquely, and mobile orders hardcode
+ * sellerType: 'retailer' regardless of the account's actual role.
+ */
 export async function fetchIncomingOrdersForSeller(
   sellerId: string,
-  sellerType: SellerType
+  _sellerType: SellerType,
+  profile?: any
 ): Promise<OrderDoc[]> {
-  const q = query(
-    collection(db, "orders"),
-    where("sellerId", "==", sellerId),
-    where("sellerType", "==", sellerType)
+  const seed = new Set(sellerIdentityCandidates(sellerId, profile));
+
+  // getUserProfile() returns snap.data() and drops the doc ID — but users are
+  // keyed users/{phone}, so the phone can be missing from the profile object
+  // entirely. uidIndex/{uid} is the canonical uid→phone map. Always consulted,
+  // not just when the profile looks phone-less: the profile's phone and the
+  // indexed one can differ in format, and either may be the one on the order.
+  try {
+    const idxSnap = await getDoc(doc(db, "uidIndex", sellerId));
+    addPhoneForms(seed, idxSnap.data()?.phone);
+  } catch {
+    // Non-fatal: fall through with the identifiers we already have.
+  }
+
+  // sellerId may itself already be a phone (retailers keyed by phone).
+  if (/^(\+91)?[6-9]\d{9}$/.test(sellerId.replace(/\s/g, ""))) {
+    addPhoneForms(seed, sellerId);
+  }
+
+  const candidates = Array.from(seed).filter(Boolean);
+  if (candidates.length === 0) return [];
+
+  const byId = new Map<string, OrderDoc>();
+  let succeeded = 0;
+
+  const collect = (snap: Awaited<ReturnType<typeof getDocs>>) => {
+    succeeded++;
+    for (const d of snap.docs) {
+      byId.set(d.id, { id: d.id, ...(d.data() as Omit<OrderDoc, "id">) });
+    }
+  };
+
+  // Firestore caps `in` at 30 values — chunk so identity expansion can grow
+  // without becoming one round-trip per candidate.
+  const chunks: string[][] = [];
+  for (let i = 0; i < candidates.length; i += 30) chunks.push(candidates.slice(i, i + 30));
+
+  await Promise.all(
+    ["sellerId", "sellerPhone"].flatMap((field) =>
+      chunks.map(async (chunk) => {
+        try {
+          collect(await getDocs(query(collection(db, "orders"), where(field, "in", chunk))));
+        } catch (err) {
+          // Security rules reject a LIST if any matched doc is unreadable, so a
+          // single foreign candidate would blank out its whole chunk. Retry
+          // one value at a time so the seller's real orders still come back.
+          console.warn(`[orders] ${field} chunk failed, retrying individually:`, err);
+          await Promise.all(
+            chunk.map((value) =>
+              getDocs(query(collection(db, "orders"), where(field, "==", value)))
+                .then(collect)
+                .catch(() => {}),
+            ),
+          );
+        }
+      }),
+    ),
   );
-  const snapshot = await getDocs(q);
+
+  // Every permutation failing means a real problem (rules/network), not
+  // "this seller has no orders" — surface it instead of showing an empty list.
+  if (succeeded === 0) {
+    throw new Error("Could not read orders — all seller-identity queries failed.");
+  }
+
+  return Array.from(byId.values()).sort((a, b) => {
+    const ta = (a.createdAt as any)?.toMillis?.() ?? 0;
+    const tb = (b.createdAt as any)?.toMillis?.() ?? 0;
+    return tb - ta;
+  });
+}
+
+/**
+ * Every order on the platform, newest first — backs the admin Orders tab.
+ *
+ * Deliberately NOT using orderBy("createdAt"): Firestore silently drops
+ * documents missing the ordered field, which would hide any legacy order
+ * written before createdAt existed — exactly the orders an admin chasing an
+ * unexplained Razorpay payment is most likely looking for. Sorting client-side
+ * keeps them visible (they sink to the bottom instead of disappearing).
+ */
+export async function fetchAllOrdersForAdmin(): Promise<OrderDoc[]> {
+  const snapshot = await getDocs(collection(db, "orders"));
   const docs = snapshot.docs.map((d) => ({ id: d.id, ...(d.data() as Omit<OrderDoc, "id">) }));
   return docs.sort((a, b) => {
     const ta = (a.createdAt as any)?.toMillis?.() ?? 0;
@@ -1860,6 +2059,91 @@ export async function fetchAllUsers(): Promise<any[]> {
   return snapshot.docs.map(d => ({ id: d.id, ...d.data() }));
 }
 
+/** One page of the users list, newest first — for admin "browse mode" instead of a full collection scan. */
+export async function fetchUsersPage(
+  pageSize: number,
+  cursor?: QueryDocumentSnapshot<DocumentData> | null,
+): Promise<{ users: any[]; lastDoc: QueryDocumentSnapshot<DocumentData> | null; hasMore: boolean }> {
+  const base = query(collection(db, 'users'), orderBy('createdAt', 'desc'), limit(pageSize));
+  const q = cursor ? query(collection(db, 'users'), orderBy('createdAt', 'desc'), startAfter(cursor), limit(pageSize)) : base;
+  const snap = await getDocs(q);
+  return {
+    users: snap.docs.map(d => ({ id: d.id, ...d.data() })),
+    lastDoc: snap.docs.length ? snap.docs[snap.docs.length - 1] : null,
+    hasMore: snap.docs.length === pageSize,
+  };
+}
+
+/** Cheap server-side aggregate counts for the role chips — avoids pulling every user doc just to count them. */
+export async function fetchUserRoleCounts(): Promise<{
+  all: number; retailer: number; manufacturer: number; admin: number; customer: number;
+}> {
+  const usersCol = collection(db, 'users');
+  const [all, retailer, manufacturer, admin] = await Promise.all([
+    getCountFromServer(usersCol),
+    getCountFromServer(query(usersCol, where('role', '==', 'retailer'))),
+    getCountFromServer(query(usersCol, where('role', '==', 'manufacturer'))),
+    getCountFromServer(query(usersCol, where('role', '==', 'admin'))),
+  ]);
+  const allCount = all.data().count;
+  const retailerCount = retailer.data().count;
+  const manufacturerCount = manufacturer.data().count;
+  const adminCount = admin.data().count;
+  // "Customer" has no dedicated role value (missing role field OR role === 'customer'),
+  // which Firestore can't count directly — derive it as the remainder. This slightly
+  // over-counts if internal-staff roles (team/salesExecutive) exist, an accepted
+  // approximation since those accounts are few and the chip is informational.
+  const customerCount = Math.max(0, allCount - retailerCount - manufacturerCount - adminCount);
+  return { all: allCount, retailer: retailerCount, manufacturer: manufacturerCount, admin: adminCount, customer: customerCount };
+}
+
+/** Splits an array into chunks of at most `size` — Firestore 'in' queries cap at 30 values. */
+function chunk<T>(arr: T[], size: number): T[][] {
+  const out: T[][] = [];
+  for (let i = 0; i < arr.length; i += size) out.push(arr.slice(i, i + size));
+  return out;
+}
+
+/**
+ * Fetches only the product docs owned (by any of the 6 legacy/current owner fields — see
+ * productOwnerKeys below) by the given set of uid/phone/id keys, instead of the full
+ * `products` collection. Used to scope per-row product counts to whatever page of users
+ * is currently loaded in the admin Users & Roles browse mode.
+ */
+export async function fetchProductsForUserKeys(keys: string[]): Promise<RawProductDoc[]> {
+  const uniqueKeys = Array.from(new Set(keys.filter(Boolean).map(String)));
+  if (uniqueKeys.length === 0) return [];
+  const fields = ['ownerId', 'retailerId', 'manufacturerId', 'ownerPhone', 'retailerPhone', 'manufacturerPhone'] as const;
+  const productsCol = collection(db, 'products');
+  const queries: Promise<any>[] = [];
+  for (const field of fields) {
+    for (const batch of chunk(uniqueKeys, 30)) {
+      queries.push(getDocs(query(productsCol, where(field, 'in', batch))));
+    }
+  }
+  const snaps = await Promise.all(queries);
+  const byId = new Map<string, RawProductDoc>();
+  for (const snap of snaps) {
+    for (const d of snap.docs) byId.set(d.id, { id: d.id, ...(d.data() as Record<string, unknown>) });
+  }
+  return Array.from(byId.values());
+}
+
+/** Fetches only the subscription docs for the given owner phones — scoped equivalent of fetchAllSubscriptions. */
+export async function fetchSubscriptionsForPhones(phones: string[]): Promise<any[]> {
+  const uniquePhones = Array.from(new Set(phones.filter(Boolean).map(String)));
+  if (uniquePhones.length === 0) return [];
+  const subsCol = collection(db, 'subscriptions');
+  const snaps = await Promise.all(
+    chunk(uniquePhones, 30).map(batch => getDocs(query(subsCol, where('ownerPhone', 'in', batch)))),
+  );
+  const byId = new Map<string, any>();
+  for (const snap of snaps) {
+    for (const d of snap.docs) byId.set(d.id, { id: d.id, ...d.data() });
+  }
+  return Array.from(byId.values());
+}
+
 export type StoreAutocompleteOption = {
   phone: string;
   shopName: string;
@@ -2049,6 +2333,13 @@ export async function adminUpdateUser(uid: string, updates: {
 
 export async function fetchAllSubscriptions(): Promise<any[]> {
   const snapshot = await getDocs(collection(db, 'subscriptions'));
+  return snapshot.docs.map(d => ({ id: d.id, ...d.data() }));
+}
+
+// `plans` has a public read rule (see firestore.rules) — writes all go through
+// app/api/admin/plans/* (Admin SDK), so this is read-only client access.
+export async function fetchAllPlans(): Promise<any[]> {
+  const snapshot = await getDocs(collection(db, 'plans'));
   return snapshot.docs.map(d => ({ id: d.id, ...d.data() }));
 }
 
@@ -2732,6 +3023,18 @@ function productOwnerKeys(d: RawProductDoc): string[] {
 /** Fetches every product doc once (raw, with ownership fields) for client-side indexing. */
 export async function fetchAllSellerProducts(): Promise<RawProductDoc[]> {
   const snap = await getDocs(collection(db, 'products'));
+  return snap.docs.map(d => ({ id: d.id, ...(d.data() as Record<string, unknown>) }));
+}
+
+/**
+ * Fetches only the admin-assigned copy docs (source === 'admin_assigned') — the small
+ * subset of the `products` collection the admin Products tab needs to compute "N sellers
+ * assigned" badges and to deactivate stale duplicates on edit. A single-equality query,
+ * so it stays cheap even though `products` itself is dominated by manufacturer_assigned
+ * inventory copies (~95% of the collection) that this tab never needs to read.
+ */
+export async function fetchAdminAssignedCopies(): Promise<RawProductDoc[]> {
+  const snap = await getDocs(query(collection(db, 'products'), where('source', '==', 'admin_assigned')));
   return snap.docs.map(d => ({ id: d.id, ...(d.data() as Record<string, unknown>) }));
 }
 
@@ -3566,14 +3869,24 @@ export async function adminConvertRetailerToManufacturer(
   }, { merge: true });
 
   // 2. Update users/{phone}
+  // Timestamp.now(), not serverTimestamp() — Firestore rejects sentinels inside
+  // arrayUnion(). See adminConvertManufacturerToRetailer for the failure this
+  // caused in the other direction.
   batch.set(doc(db, "users", phone), {
     role: "manufacturer",
-    roleUpgradeHistory: arrayUnion({ from: "retailer", to: "manufacturer", at: now, byAdmin: callerUid }),
+    roleUpgradeHistory: arrayUnion({
+      from: "retailer",
+      to: "manufacturer",
+      at: Timestamp.now(),
+      byAdmin: callerUid,
+    }),
     updatedAt: now,
   }, { merge: true });
 
   // 3. Update profiles/{phone}
+  // `role` is the field readers use; `type` kept for back-compat.
   batch.set(doc(db, "profiles", phone), {
+    role: "manufacturer",
     type: "manufacturer",
     updatedAt: now,
   }, { merge: true });
@@ -3613,14 +3926,31 @@ export async function adminConvertManufacturerToRetailer(
   }, { merge: true });
 
   // 2. Update users/{phone}
+  //
+  // `at` uses Timestamp.now(), NOT serverTimestamp(). Firestore rejects sentinel
+  // values inside arrayUnion() — passing serverTimestamp() here failed the whole
+  // batch with "Function arrayUnion() called with invalid data", so the
+  // conversion silently never happened. A client timestamp is fine for an audit
+  // trail entry; only the top-level updatedAt needs server time.
   batch.set(doc(db, "users", phone), {
     role: "retailer",
-    roleUpgradeHistory: arrayUnion({ from: "manufacturer", to: "retailer", at: now, byAdmin: callerUid }),
+    roleUpgradeHistory: arrayUnion({
+      from: "manufacturer",
+      to: "retailer",
+      at: Timestamp.now(),
+      byAdmin: callerUid,
+    }),
     updatedAt: now,
   }, { merge: true });
 
   // 3. Update profiles/{phone}
+  //
+  // The profile's role field is `role` — that is what fetchStores() and the
+  // store pages read. Writing only `type` left profiles.role saying
+  // "manufacturer" after a conversion, so the locator kept classifying the
+  // account as a manufacturer. `type` is still written for back-compat.
   batch.set(doc(db, "profiles", phone), {
+    role: "retailer",
     type: "retailer",
     updatedAt: now,
   }, { merge: true });

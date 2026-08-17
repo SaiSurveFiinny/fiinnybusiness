@@ -235,7 +235,28 @@ export default function InventoryPage() {
 
       // Fetch inventory based on role — both produce the unified InventoryRow[]
       if (resolvedRole === "manufacturer") {
-        setRows(await fetchManufacturerCatalogueRows(uid, rPhone));
+        // A manufacturer can ALSO receive assignments. Krushi Seva Kendras are
+        // routinely registered as manufacturers (own catalogue + seats) while
+        // other manufacturers assign stock to them as a retailer — the assigned
+        // copies are written with ownerType "retailer", which
+        // fetchManufacturerCatalogueRows does not query. Branching on role alone
+        // meant those products existed, consumed a seat, and were invisible to
+        // the person they were assigned to.
+        //
+        // So fetch both and merge. The retailer lookup is keyed by phone because
+        // an assignment to a manufacturer-role account keys ownership off the
+        // phone/doc id, not their uid.
+        const [own, assigned] = await Promise.all([
+          fetchManufacturerCatalogueRows(uid, rPhone),
+          rPhone
+            ? fetchRetailerInventoryRows(uid, rPhone, rPhone).catch(() => [])
+            : Promise.resolve([] as InventoryRow[]),
+        ]);
+        const seen = new Set(own.map((r) => r.productId));
+        setRows([
+          ...own,
+          ...assigned.filter((r) => !seen.has(r.productId)),
+        ]);
       } else {
         // Find ALL linked retailerDocIds to be safe (if backfill failed but invite is active)
         const linkedIds = await fetchLinkedRetailerDocIds(uid);

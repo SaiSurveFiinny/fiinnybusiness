@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { Box, Plus, Pencil, Trash2, Search, X, ImageIcon, Link2, Loader2, Check, Store, Users } from "lucide-react";
-import { auth, fetchAllProductsForAdmin, fetchAllSellerProducts, fetchInventoryForProducts, adminCreateProduct, adminUpdateProduct, adminDeleteProduct, adminAssignProductToSeller, adminRemoveAssignment, adminUpdateAssignmentPricing, fetchAllUsers } from "../../firebase";
+import { auth, fetchAllProductsForAdmin, fetchAdminAssignedCopies, fetchInventoryForProducts, adminCreateProduct, adminUpdateProduct, adminDeleteProduct, adminAssignProductToSeller, adminRemoveAssignment, adminUpdateAssignmentPricing, fetchAllUsers } from "../../firebase";
 import type { MarketplaceProduct } from "../../../types/product";
 import { cn } from "../../dashboard/_lib/cn";
 import { AddProductInventoryForm } from "../../dashboard/_components/add-product-inventory-form";
@@ -16,6 +16,11 @@ export default function AdminProductsPage() {
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
   const [catFilter, setCatFilter] = useState("all");
+  // Renders only a window of the (already-fetched) product list at a time — the admin
+  // catalog table is heavy per-row (images, badges, several buttons), so painting all
+  // of it at once was the dominant slowness, separate from the network fetch itself.
+  const PAGE_SIZE = 30;
+  const [visibleCount, setVisibleCount] = useState(PAGE_SIZE);
   const [showForm, setShowForm] = useState(false);
   const [editProduct, setEditProduct] = useState<MarketplaceProduct | null>(null);
   const [deleting, setDeleting] = useState<string | null>(null);
@@ -70,7 +75,11 @@ export default function AdminProductsPage() {
 
   const load = () => {
     setLoading(true);
-    Promise.all([fetchAllProductsForAdmin(), fetchAllSellerProducts().catch(() => [])])
+    // rawProducts only needs admin_assigned copies (~50 docs) — fetching the whole
+    // `products` collection a second time here used to double the read for no reason,
+    // since ~95% of that collection is manufacturer_assigned inventory copies this
+    // tab never reads.
+    Promise.all([fetchAllProductsForAdmin(), fetchAdminAssignedCopies().catch(() => [])])
       .then(([prods, raw]) => { setProducts(prods); setRawProducts(raw); })
       .finally(() => setLoading(false));
   };
@@ -250,6 +259,11 @@ export default function AdminProductsPage() {
     });
   }, [groupedProducts, search, catFilter]);
 
+  // Reset the visible window whenever the result set changes underneath it.
+  useEffect(() => { setVisibleCount(PAGE_SIZE); }, [search, catFilter]);
+
+  const visibleProducts = filtered.slice(0, visibleCount);
+
   const openAdd  = () => { setEditProduct(null); setShowForm(true); };
   const openEdit = (p: MarketplaceProduct) => { setEditProduct(p); setShowForm(true); };
 
@@ -353,7 +367,9 @@ export default function AdminProductsPage() {
       ) : (
         <div className="rounded-2xl border border-outline-variant/30 bg-surface-container-lowest overflow-hidden">
           <div className="px-5 py-3 border-b border-outline-variant/20 bg-surface-container-low">
-            <span className="text-xs font-bold text-on-surface-variant">{filtered.length} product{filtered.length !== 1 ? "s" : ""}</span>
+            <span className="text-xs font-bold text-on-surface-variant">
+              Showing {visibleProducts.length} of {filtered.length} product{filtered.length !== 1 ? "s" : ""}
+            </span>
           </div>
           <div className="hidden md:block overflow-x-auto">
             <table className="w-full text-sm">
@@ -370,7 +386,7 @@ export default function AdminProductsPage() {
                 </tr>
               </thead>
               <tbody>
-                {filtered.map(p => {
+                {visibleProducts.map(p => {
                   const imgs: string[] = (p as any).images?.length ? (p as any).images : (p.image ? [p.image] : []);
                   return (
                     <tr key={p.id} className="border-b border-outline-variant/10 hover:bg-surface-container-low transition-colors">
@@ -451,7 +467,7 @@ export default function AdminProductsPage() {
             </table>
           </div>
           <div className="divide-y divide-outline-variant/10 md:hidden">
-            {filtered.map(p => {
+            {visibleProducts.map(p => {
               const imgs: string[] = (p as any).images?.length ? (p as any).images : (p.image ? [p.image] : []);
               return (
                 <div key={p.id} className="space-y-3 px-4 py-3">
@@ -510,6 +526,18 @@ export default function AdminProductsPage() {
               <div className="px-5 py-10 text-center text-sm text-on-surface-variant">No products found.</div>
             )}
           </div>
+
+          {visibleCount < filtered.length && (
+            <div className="flex justify-center border-t border-outline-variant/20 py-3">
+              <button
+                type="button"
+                onClick={() => setVisibleCount(c => c + PAGE_SIZE)}
+                className="rounded-xl border border-outline-variant/40 bg-surface-container-low px-5 py-2 text-sm font-bold text-on-surface hover:bg-surface-container"
+              >
+                See More
+              </button>
+            </div>
+          )}
         </div>
       )}
 

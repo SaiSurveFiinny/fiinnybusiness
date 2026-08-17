@@ -2,13 +2,14 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { Box, LayoutDashboard, Layers, Users, X, Mail, MessageSquare, Building2, BarChart3, CreditCard, BookOpen, Tag, Package, MessageCircle, Video, UserCog } from "lucide-react";
+import { Box, LayoutDashboard, Layers, Users, X, Mail, MessageSquare, Building2, BarChart3, CreditCard, BookOpen, Tag, Package, MessageCircle, Video, UserCog, ShoppingCart } from "lucide-react";
 import { cn } from "../../dashboard/_lib/cn";
 import { useAdminAuth, hasSection, type AdminSection } from "../_context/admin-auth-context";
 
 const navItems = [
   { href: "/admin", label: "Overview", icon: LayoutDashboard, section: "overview" as AdminSection },
   { href: "/admin/analytics", label: "Analytics", icon: BarChart3, section: "analytics" as AdminSection },
+  { href: "/admin/orders", label: "Orders", icon: ShoppingCart, section: "orders" as AdminSection },
   { href: "/admin/users", label: "Users & Roles", icon: Users, section: "users" as AdminSection },
   { href: "/admin/subscriptions", label: "Subscriptions", icon: CreditCard, section: "subscriptions" as AdminSection },
   { href: "/admin/products", label: "Products", icon: Box, section: "products" as AdminSection },

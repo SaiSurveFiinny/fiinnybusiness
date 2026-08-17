@@ -157,12 +157,23 @@ export default function RateSheetPage() {
     const unsub1 = onSnapshot(
       query(getTenantCollection(db, tenantId, 'products')),
       snap => {
-        const data = snap.docs
-            .map(d => ({ id: d.id, ...d.data() } as Product))
-            .filter((p: any) => !p.deleted);
-        data.sort((a, b) => a.name.localeCompare(b.name));
-        setProducts(data);
-        setLoading(false);
+        try {
+          // `name` is coerced here because a doc missing it made the sort below
+          // throw *inside this listener* — async, so no error boundary catches
+          // it — leaving the page on "Loading…" forever.
+          const data = snap.docs
+              .map(d => {
+                const raw = d.data();
+                return { id: d.id, ...raw, name: String(raw.name ?? '') } as Product;
+              })
+              .filter((p: any) => !p.deleted);
+          data.sort((a, b) => a.name.localeCompare(b.name));
+          setProducts(data);
+        } finally {
+          // Always clear the spinner: a stuck loader hides the problem, an
+          // empty list at least shows the page.
+          setLoading(false);
+        }
       },
     );
     const unsub2 = onSnapshot(

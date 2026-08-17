@@ -13,6 +13,13 @@ import {
   buildProductSlug,
 } from "./lib/seo/products-server";
 import { getReelsForSitemap, buildReelSlug } from "./lib/seo/reels-server";
+import {
+  getAllStores,
+  getStoreGeography,
+  buildStoreSlug,
+  slugifyGeo,
+} from "./lib/seo/stores-server";
+import { HELP_SECTIONS } from "./views/helpContent";
 
 // Canonical public origin (kept in sync with app/layout.tsx and app/robots.ts).
 const SITE_URL =
@@ -44,6 +51,18 @@ function toDate(value: unknown): Date {
 function staticEntries(now: Date): MetadataRoute.Sitemap {
   return [
     { url: `${SITE_URL}/`, lastModified: now, changeFrequency: "daily", priority: 1.0 },
+    { url: `${SITE_URL}/sell`, lastModified: now, changeFrequency: "monthly", priority: 0.9 },
+    { url: `${SITE_URL}/stores`, lastModified: now, changeFrequency: "weekly", priority: 0.9 },
+    { url: `${SITE_URL}/help`, lastModified: now, changeFrequency: "monthly", priority: 0.8 },
+    // The 21 documentation sections. Same content the SPA has always rendered at
+    // /?view=help — which is the homepage shell to a crawler and canonicalises to
+    // "/", so none of it could be indexed until these routes existed.
+    ...HELP_SECTIONS.map((s) => ({
+      url: `${SITE_URL}/help/${s.id}`,
+      lastModified: now,
+      changeFrequency: "monthly" as const,
+      priority: 0.7,
+    })),
     { url: `${SITE_URL}/blog`, lastModified: now, changeFrequency: "weekly", priority: 0.8 },
     { url: `${SITE_URL}/app`, lastModified: now, changeFrequency: "monthly", priority: 0.8 },
     { url: `${SITE_URL}/privacy`, lastModified: now, changeFrequency: "yearly", priority: 0.3 },
@@ -112,6 +131,47 @@ async function reelEntries(): Promise<MetadataRoute.Sitemap> {
   }));
 }
 
+// ─── Store entries (dynamic, safe-fallback) ─────────────────────────────────
+// State → city → store, built only from sellers that have a real city and state
+// on file (see the hard constraint in stores-server.getAllStores). Cities with
+// no store never get a URL, so this cannot emit doorway pages.
+async function storeEntries(now: Date): Promise<MetadataRoute.Sitemap> {
+  try {
+    const [geo, stores] = await Promise.all([getStoreGeography(), getAllStores()]);
+
+    const stateUrls = geo.map((s) => ({
+      url: `${SITE_URL}/stores/${s.stateSlug}`,
+      lastModified: now,
+      changeFrequency: "weekly" as const,
+      priority: 0.7,
+    }));
+
+    const cityUrls = geo.flatMap((s) =>
+      s.cities.map((c) => ({
+        url: `${SITE_URL}/stores/${c.stateSlug}/${c.citySlug}`,
+        lastModified: now,
+        // The "<product> dealer in <city>" target — highest-intent local query.
+        changeFrequency: "weekly" as const,
+        priority: 0.8,
+      })),
+    );
+
+    const storeUrls = stores.map((s) => ({
+      url: `${SITE_URL}/stores/${slugifyGeo(s.state)}/${slugifyGeo(
+        s.city,
+      )}/${buildStoreSlug(s.name, s.id)}`,
+      lastModified: now,
+      changeFrequency: "weekly" as const,
+      priority: 0.7,
+    }));
+
+    return [...stateUrls, ...cityUrls, ...storeUrls];
+  } catch (err) {
+    console.warn("[sitemap] store entries unavailable:", err);
+    return [];
+  }
+}
+
 // ─── Blog entries (dynamic, safe-fallback) ──────────────────────────────────
 async function blogEntries(): Promise<MetadataRoute.Sitemap> {
   try {
@@ -147,17 +207,19 @@ export default async function sitemap(): Promise<MetadataRoute.Sitemap> {
 
   // Dynamic sections fetched in parallel; each resolves to [] on failure so the
   // sitemap always renders the static + category baseline.
-  const [brands, posts, products, reels] = await Promise.all([
+  const [brands, posts, products, reels, storeUrls] = await Promise.all([
     brandEntries(),
     blogEntries(),
     productEntries(),
     reelEntries(),
+    storeEntries(now),
   ]);
 
   return [
     { url: `${SITE_URL}/reels`, lastModified: now, changeFrequency: "daily" as const, priority: 0.8 },
     ...staticEntries(now),
     ...categoryEntries(now),
+    ...storeUrls,
     ...products,
     ...reels,
     ...brands,

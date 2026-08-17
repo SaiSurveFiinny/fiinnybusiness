@@ -6,7 +6,9 @@ const SITE_URL =
 
 // Paths that must never be indexed: authenticated/admin areas, APIs, and the
 // SPA's internal query-based views / cart states. Public marketplace content
-// (home, brand pages, blog) stays crawlable.
+// (home, brand pages, blog) stays crawlable — as does /sell, the seller-facing
+// pricing page, which is deliberately public so seller-intent searches ("where
+// can I sell agri products online", "agri marketplace commission") can find it.
 const DISALLOW = [
   "/admin",
   "/admin-login",

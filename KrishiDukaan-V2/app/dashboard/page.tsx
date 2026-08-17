@@ -8,6 +8,7 @@ import { useEffectiveUser } from "./_context/effective-user-context";
 import { PageHeader } from "./_components/page-header";
 import { StatCard } from "./_components/stat-card";
 import { QuickActions } from "./_components/quick-actions";
+import { OpenBillingCard } from "./_components/open-billing-card";
 import { RecentReviews } from "./_components/recent-reviews";
 import { DashboardInventoryHealth } from "./_components/dashboard-inventory-health";
 import { fetchRetailerAnalytics } from "./_lib/analytics-firestore";
@@ -206,6 +207,14 @@ export default function DashboardPage() {
       <div className="mb-4">
         <QuickActions />
       </div>
+
+      {/* Billing/ERP launcher — subscribed retailers only. Manufacturers keep the
+          KrishiDukan-only plan and have no tenant provisioned in the ERP. */}
+      {profileSummary.role === "retailer" && effectiveProfile?.isPaid && (
+        <div className="mb-4">
+          <OpenBillingCard />
+        </div>
+      )}
 
       <PageHeader
         title={t('overviewTitle')}

@@ -1,4 +1,9 @@
 {
+    "handoff": {
+        "signingIn": "साइन इन करत आहे…",
+        "failedTitle": "बिलिंग उघडता आले नाही",
+        "failedBody": "ही लिंक कालबाह्य झाली आहे किंवा आधीच वापरली गेली आहे. KrishiDukan मधून पुन्हा बिलिंग उघडा."
+    },
     "common": {
         "help_center": "मदत केंद्र",
         "dashboard": "डॅशबोर्ड",
@@ -16,6 +21,7 @@
         "cancel": "रद्द करा",
         "admin_tools": "प्रशासन साधने",
         "pos_billing": "POS बिलिंग",
+        "khata": "खाते (उधारी)",
         "onboard_retailer": "ऑनबोर्ड किरकोळ विक्रेता",
         "manage_retailers": "किरकोळ विक्रेते व्यवस्थापित करा",
         "manage_users": "वापरकर्ते व्यवस्थापित करा",

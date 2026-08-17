@@ -19,8 +19,9 @@ import {
   Download,
   Lock,
 } from "lucide-react";
-import { fetchIncomingOrdersForSeller, updateOrderStatus } from "../../firebase";
+import { auth, fetchIncomingOrdersForSeller, updateOrderStatus } from "../../firebase";
 import { PageHeader } from "../_components/page-header";
+import { formatCustomerAddress, normalizeOrderItems } from "../../../types/order";
 import type { OrderDoc, OrderStatus } from "../../../types/order";
 import { useI18n } from "../../i18n/I18nContext";
 import { openInvoice } from "../../utils/invoice-generator";
@@ -73,6 +74,95 @@ function formatDateStr(iso: string | undefined): string {
   } catch {
     return iso;
   }
+}
+
+/**
+ * Payout breakdown for one order.
+ *
+ * KrishiDukan's commission is ₹0 by policy, so the only deduction between the
+ * order total and the seller's money is the payment gateway's own fee. That
+ * fee is not in the client-side payment payload — it appears on Razorpay's
+ * payment entity after capture — so it is fetched once via /api/payment/fee
+ * and cached onto the order doc. Orders that predate the fee capture, or whose
+ * payment never captured, render an honest "—" rather than a guessed number.
+ */
+function PayoutBreakdown({ order }: { order: OrderDoc }) {
+  // undefined = still resolving, null = genuinely unavailable
+  const [gatewayFee, setGatewayFee] = useState<number | null | undefined>(undefined);
+  const payment = (order as any).payment as
+    | { razorpayPaymentId?: string; gatewayFee?: number }
+    | undefined;
+  const gross = Number(order.grandTotal ?? order.subtotal ?? 0);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      if (typeof payment?.gatewayFee === "number") {
+        setGatewayFee(payment.gatewayFee);
+        return;
+      }
+      if (!payment?.razorpayPaymentId) {
+        setGatewayFee(null);
+        return;
+      }
+      try {
+        const token = await auth.currentUser?.getIdToken();
+        if (!token) { if (!cancelled) setGatewayFee(null); return; }
+        const res = await fetch("/api/payment/fee", {
+          method: "POST",
+          headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+          body: JSON.stringify({ orderId: order.id }),
+        });
+        const json = await res.json();
+        if (cancelled) return;
+        setGatewayFee(typeof json.gatewayFee === "number" ? json.gatewayFee : null);
+      } catch {
+        if (!cancelled) setGatewayFee(null);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [order.id, payment?.gatewayFee, payment?.razorpayPaymentId]);
+
+  const net = typeof gatewayFee === "number" ? gross - gatewayFee : null;
+
+  return (
+    <div className="rounded-xl border border-surface-container bg-surface-container-lowest p-4">
+      <p className="mb-2.5 text-[10px] font-black uppercase tracking-widest text-on-surface-variant">
+        Your payout
+      </p>
+      <div className="space-y-1.5 text-sm">
+        <div className="flex justify-between">
+          <span className="text-on-surface-variant">Order amount</span>
+          <span className="font-semibold text-on-surface">₹{gross.toFixed(2)}</span>
+        </div>
+        <div className="flex justify-between">
+          <span className="text-on-surface-variant">Payment gateway charge</span>
+          <span className="font-semibold text-on-surface">
+            {gatewayFee === undefined
+              ? "…"
+              : gatewayFee === null
+                ? "—"
+                : `− ₹${gatewayFee.toFixed(2)}`}
+          </span>
+        </div>
+        <div className="flex justify-between">
+          <span className="text-on-surface-variant">KrishiDukan charge</span>
+          <span className="font-semibold text-green-700">₹0.00</span>
+        </div>
+        <div className="mt-1 flex justify-between border-t border-surface-container pt-2">
+          <span className="font-bold text-on-surface">You receive</span>
+          <span className="text-base font-black text-secondary">
+            {net === null ? "—" : `₹${net.toFixed(2)}`}
+          </span>
+        </div>
+      </div>
+      <p className="mt-2.5 text-[10px] text-on-surface-variant">
+        {order.status === "delivered"
+          ? "Transferred to your registered bank account."
+          : "Transferred to your bank account once you mark this order delivered."}
+      </p>
+    </div>
+  );
 }
 
 function OrderProgressBar({ status }: { status: OrderStatus }) {
@@ -184,7 +274,7 @@ function PaymentCard({ order }: { order: OrderDoc }) {
           </div>
           <div className="text-right shrink-0">
             <p className="font-black text-secondary text-xl">₹{Number(order.subtotal || 0).toFixed(0)}</p>
-            <p className="text-[10px] text-on-surface-variant">{(order.items || []).length} item(s)</p>
+            <p className="text-[10px] text-on-surface-variant">{normalizeOrderItems(order.items as any).length} item(s)</p>
           </div>
         </div>
 
@@ -249,12 +339,17 @@ export default function OrdersPage() {
   const [activeFilter, setActiveFilter] = useState<FilterTab>("all");
   const [activeViewTab, setActiveViewTab] = useState<ViewTab>("orders");
   const [sellerInfo, setSellerInfo] = useState<{ name: string; phone: string; gstin: string } | null>(null);
+  const [sellerProfile, setSellerProfile] = useState<any>(null);
 
-  const load = async (nextUid: string, nextSellerType: "retailer" | "manufacturer") => {
+  const load = async (
+    nextUid: string,
+    nextSellerType: "retailer" | "manufacturer",
+    nextProfile?: any,
+  ) => {
     setLoading(true);
     setError(null);
     try {
-      const rows = await fetchIncomingOrdersForSeller(nextUid, nextSellerType);
+      const rows = await fetchIncomingOrdersForSeller(nextUid, nextSellerType, nextProfile);
       setOrders(rows);
     } catch (e) {
       const msg = e instanceof Error ? e.message : "Failed to load orders.";
@@ -272,15 +367,17 @@ export default function OrdersPage() {
     const hasOnlineDelivery = !!(profile as any)?.onlineDelivery;
     setOnlineDelivery(hasOnlineDelivery);
     if (role === "retailer" || role === "manufacturer") {
+      const phone = String((profile as any)?.phone ?? "");
       setUid(effectiveUid);
       setSellerType(role);
+      setSellerProfile(profile);
       setSellerInfo({
         name:  String((profile as any)?.businessName ?? (profile as any)?.shopName ?? (profile as any)?.name ?? ""),
-        phone: String((profile as any)?.phone ?? ""),
+        phone,
         gstin: String((profile as any)?.gstin ?? ""),
       });
       if (hasOnlineDelivery) {
-        load(effectiveUid, role);
+        load(effectiveUid, role, profile);
       } else {
         setLoading(false);
       }
@@ -296,7 +393,7 @@ export default function OrdersPage() {
     setUpdatingId(orderId);
     try {
       await updateOrderStatus(orderId, status);
-      if (uid && sellerType) await load(uid, sellerType);
+      if (uid && sellerType) await load(uid, sellerType, sellerProfile);
     } finally {
       setUpdatingId(null);
     }
@@ -493,10 +590,10 @@ export default function OrdersPage() {
                                 </a>
                               )}
                             </div>
-                            {order.customerAddress && (
+                            {formatCustomerAddress(order.customerAddress) && (
                               <p className="flex items-start gap-1 mt-1 text-xs text-on-surface-variant">
                                 <MapPin className="w-3 h-3 mt-0.5 shrink-0" />
-                                {order.customerAddress}
+                                {formatCustomerAddress(order.customerAddress)}
                               </p>
                             )}
                           </div>
@@ -506,7 +603,7 @@ export default function OrdersPage() {
                               <p className="text-[10px] text-on-surface-variant">incl. ₹{order.deliveryCharge} delivery</p>
                             )}
                             <p className="text-[10px] text-on-surface-variant">
-                              {(order.items || []).length} item{(order.items || []).length !== 1 ? "s" : ""}
+                              {normalizeOrderItems(order.items as any).length} item{normalizeOrderItems(order.items as any).length !== 1 ? "s" : ""}
                               {order.invoiceNumber ? ` · ${order.invoiceNumber}` : ""}
                             </p>
                           </div>
@@ -514,7 +611,7 @@ export default function OrdersPage() {
 
                         {/* Items */}
                         <div className="border rounded-xl border-surface-container overflow-hidden">
-                          {(order.items || []).map((item, idx) => (
+                          {normalizeOrderItems(order.items as any).map((item, idx) => (
                             <div
                               key={`${order.id}-${item.productId}`}
                               className={`flex justify-between px-4 py-2.5 text-sm ${idx > 0 ? "border-t border-surface-container" : ""}`}
@@ -532,6 +629,9 @@ export default function OrdersPage() {
                             </div>
                           ))}
                         </div>
+
+                        {/* What the seller actually receives */}
+                        <PayoutBreakdown order={order} />
 
                         {/* Progress bar */}
                         <OrderProgressBar status={order.status} />

@@ -97,6 +97,32 @@ export default function Footer({ onNavigate, onCategoryClick, userRole, onUpgrad
               {t('footerCompany')}
             </h4>
             <ul className="space-y-2 text-sm">
+              {/* Real anchor, not an onNavigate button — /sell is an SSR page and
+                  this is the site-wide internal link that lets crawlers reach it. */}
+              <li>
+                <Link
+                  href="/sell"
+                  className="text-on-surface-variant hover:text-primary transition-colors font-medium"
+                >
+                  Sell on KrishiDukan
+                </Link>
+              </li>
+              <li>
+                <Link
+                  href="/stores"
+                  className="text-on-surface-variant hover:text-primary transition-colors font-medium"
+                >
+                  Store directory
+                </Link>
+              </li>
+              <li>
+                <Link
+                  href="/help"
+                  className="text-on-surface-variant hover:text-primary transition-colors font-medium"
+                >
+                  How to use KrishiDukan
+                </Link>
+              </li>
               {companyLinks.map((l) => (
                 <li key={l.label}>
                   <button
