@@ -32,6 +32,20 @@ import B2BInvoiceWorklistPage from './B2BInvoiceWorklistPage';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
+/**
+ * A salesOrder that should still count toward a retailer's figures.
+ *
+ * Bills can be soft-deleted (`deleted: true`) or cancelled (`status:
+ * 'cancelled'`) from Digital Khata. Both of those pages already exclude them —
+ * DigitalKhataPage when it builds its entry list, and POSPage in
+ * fetchLiveOutstanding — but this page did not, so a cancelled bill kept
+ * inflating Total Sales, Total Invoice Value and outstanding here while
+ * disappearing everywhere else. POS's own comment promises the invoice figure
+ * cannot diverge from the Khata worklist balance; this keeps that true.
+ */
+const isLiveSalesOrder = (so: { status?: string; deleted?: boolean }): boolean =>
+    !so.deleted && String(so.status ?? '').toLowerCase() !== 'cancelled';
+
 interface Retailer {
     id: string;
     name?: string;
@@ -228,7 +242,10 @@ function PartnersTab() {
                     );
                     const snap = await getDocs(q);
                     const pendingOrderCount = snap.docs
-                        .filter(d => d.data().paymentStatus?.toLowerCase() !== 'paid')
+                        .filter(d => {
+                            const so = d.data() as { paymentStatus?: string; status?: string; deleted?: boolean };
+                            return isLiveSalesOrder(so) && so.paymentStatus?.toLowerCase() !== 'paid';
+                        })
                         .length;
                     // Use total outstanding (Total Sales − Total Payments Received).
                     // r.computedOutstanding already reflects all received payments,
@@ -329,11 +346,15 @@ function PartnersTab() {
                 });
 
                 // Group salesOrders by retailerId (include financial fields for outstanding calc).
-                type SOEntry = { invoiceDate?: string; status?: string; paymentStatus?: string; dueDate?: string; grandTotal?: number; netAmount?: number; totalAmount?: number; amountPaid?: number };
+                type SOEntry = { invoiceDate?: string; status?: string; paymentStatus?: string; dueDate?: string; grandTotal?: number; netAmount?: number; totalAmount?: number; amountPaid?: number; deleted?: boolean };
                 const salesByRetailer = new Map<string, SOEntry[]>();
                 salesOrdersSnap.docs.forEach(doc => {
                     const so = doc.data() as { retailerId?: string } & SOEntry;
                     if (!so.retailerId) return;
+                    // Filtered at the grouping step so every downstream figure —
+                    // total sales, outstanding, due dates, invoice value — sees the
+                    // same set of bills.
+                    if (!isLiveSalesOrder(so)) return;
                     const arr = salesByRetailer.get(so.retailerId);
                     if (arr) arr.push(so); else salesByRetailer.set(so.retailerId, [so]);
                 });
