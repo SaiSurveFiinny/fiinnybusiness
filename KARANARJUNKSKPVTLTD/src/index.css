@@ -294,6 +294,12 @@ select.input-field option {
   width: 100%;
 }
 
+/* Full-width layout (e.g. Reports / Stock Report) — spans the whole viewport
+   width instead of the centered 1200px column. */
+.main-content--full {
+  max-width: none;
+}
+
 /* Animations */
 @keyframes fadeIn {
   from {
