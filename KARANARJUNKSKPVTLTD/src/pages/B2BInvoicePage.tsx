@@ -509,9 +509,9 @@ ${styles}
         // Resolve productId by exact name match when the row was typed but the
         // autocomplete suggestion was never clicked — otherwise stock deduction
         // and stock movement recording silently skip that line entirely.
-        const productIdByName = new Map(products.map(p => [p.name.trim().toLowerCase(), p.id]));
+        const productIdByName = new Map(products.map(p => [(p.name || '').trim().toLowerCase(), p.id]));
         const resolveProductId = (r: { productId: string; itemDescription: string }) =>
-            r.productId || productIdByName.get(r.itemDescription.trim().toLowerCase()) || '';
+            r.productId || productIdByName.get((r.itemDescription || '').trim().toLowerCase()) || '';
 
         // ── Stock validation (new sales only, not edits) ──────────────────
         // Negative stock is allowed: selling beyond recorded inventory is a
@@ -1062,7 +1062,7 @@ ${styles}
                                     {(() => {
                                         const searchText = activeRowIndex === idx ? (rowSearch[idx] ?? row.itemDescription) : row.itemDescription;
                                         const filtered = products.filter(p =>
-                                            p.name.toLowerCase().includes((rowSearch[idx] || '').toLowerCase()) ||
+                                            (p.name || '').toLowerCase().includes((rowSearch[idx] || '').toLowerCase()) ||
                                             (p.barcode && p.barcode === rowSearch[idx])
                                         ).slice(0, 50);
                                         return (<>
@@ -1460,7 +1460,7 @@ ${styles}
                                     <td style={{ position: 'relative' }}>
                                         {(() => {
                                             const searchText = activeRowIndex === idx ? (rowSearch[idx] ?? row.itemDescription) : row.itemDescription;
-                                            const filtered = products.filter(p => p.name.toLowerCase().includes((rowSearch[idx] || '').toLowerCase()) || (p.barcode && p.barcode === rowSearch[idx])).slice(0, 50);
+                                            const filtered = products.filter(p => (p.name || '').toLowerCase().includes((rowSearch[idx] || '').toLowerCase()) || (p.barcode && p.barcode === rowSearch[idx])).slice(0, 50);
                                             return (<>
                                                 <input className="b2b-input no-print" style={{ fontWeight: row.productId ? 600 : 400 }} placeholder="Search product…" value={searchText}
                                                     onChange={e => { setRowSearch(s => ({ ...s, [idx]: e.target.value })); setActiveRowIndex(e.target.value.length > 0 ? idx : null); setHighlightedProductIdx(-1); if (!e.target.value) handleRowChange(idx, 'itemDescription', ''); }}

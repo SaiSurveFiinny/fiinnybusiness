@@ -12,6 +12,7 @@ type NavItem = { path: string; label: string; icon: React.ReactNode; screenKey: 
 
 // ── Main business nav ─────────────────────────────────────────────────────────
 const PRIORITY_NAV: NavItem[] = [
+  { path: '/reports',         label: 'Reports',           icon: <FileText size={15} />,      screenKey: 'analytics' },
   { path: '/dashboard',       label: 'B2B Dashboard',   icon: <Home size={15} />,          screenKey: 'dashboard' },
   { path: '/b2c-dashboard',   label: 'B2C Dashboard',   icon: <BarChart3 size={15} />,     screenKey: 'b2c_dashboard' },
   { path: '/analytics',       label: 'Analytics',        icon: <Layers size={15} />,        screenKey: 'analytics' },
@@ -22,7 +23,6 @@ const PRIORITY_NAV: NavItem[] = [
   { path: '/digital-khata',   label: 'Khata (Udhari)',   icon: <BookOpen size={15} />,      screenKey: 'khata' },
   { path: '/supplier-ledger', label: 'Supplier Ledger',  icon: <ClipboardList size={15} />, screenKey: 'worklist' },
   { path: '/inventory',       label: 'Inventory',         icon: <Package size={15} />,       screenKey: 'inventory' },
-  { path: '/reports',         label: 'Reports',           icon: <FileText size={15} />,      screenKey: 'analytics' },
   { path: '/b2b-invoice',     label: 'B2B GST Invoice',  icon: <ReceiptText size={15} />,   screenKey: 'worklist' },
   { path: '/sales-targets',   label: 'Sales Targets',    icon: <Target size={15} />,        screenKey: 'worklist' },
   { path: '/expenses',        label: 'Expenses',          icon: <Receipt size={15} />,       screenKey: 'expenses' },
