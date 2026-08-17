@@ -197,6 +197,15 @@ h3 {
   background: var(--input-bg);
 }
 
+/* Compact modifier for dense ERP-style forms (e.g. Product Master modal).
+   Additive to .input-field — does not alter the base class used elsewhere. */
+.input-field.field-sm {
+  width: 100%;
+  padding: 0.5rem 0.65rem;
+  font-size: 0.85rem;
+  border-radius: 8px;
+}
+
 /* Select dropdowns — must also follow the theme for both the control and option list */
 select.input-field,
 select.input-field option {

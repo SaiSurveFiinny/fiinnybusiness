@@ -20,6 +20,7 @@ import {
     query, onSnapshot, addDoc, doc, writeBatch,
     serverTimestamp, updateDoc,
     runTransaction, getDoc, getDocs, limit, orderBy, where, collection, increment,
+    type Firestore,
 } from 'firebase/firestore';
 import { db } from '../firebase';
 import { useAuth } from '../contexts/AuthContext';
@@ -75,9 +76,12 @@ interface CustomerState {
 
 interface BillTab {
     id: string;
-    label: string;
     cart: CartItem[];
     customer: CustomerState;
+    // Khata balance the tab's current customer carries in — kept per-tab (like
+    // cart/customer) so switching or creating a tab can never leak one
+    // customer's outstanding onto another, blank, tab.
+    customerOutstanding: number;
 }
 
 interface PaymentSplit {
@@ -124,6 +128,46 @@ function getTierMultiplier(points: number, tiers: { name: string; minPoints: num
 // already-existing signal for "this salesOrders doc came from POS Billing."
 function isPosOrder(order: any): boolean {
     return typeof order?.orderNumber === 'string' && /^KA-\d+$/i.test(order.orderNumber.trim());
+}
+
+// Live outstanding lookup — mirrors Digital Khata's own calculation exactly
+// (same salesOrders filter, same per-bill total/paid fallback chain, same
+// "match by name first, else phone" identity) so "Previous Outstanding (Dr)"
+// on the invoice can never diverge from the Khata worklist balance. Reads
+// salesOrders directly rather than the cached retailers.outstandingAmount
+// counter, which — unlike this — misses manual Khata entries and Khata-
+// recorded payments (neither writes back to `retailers`).
+async function fetchLiveOutstanding(
+    db: Firestore, tenantId: string, name: string, phone: string,
+): Promise<number> {
+    const nameKey = name.trim().toLowerCase();
+    const phoneDigits = phoneKey(phone);
+    if (!nameKey && !phoneDigits) return 0;
+    try {
+        const snap = await getDocs(query(getTenantCollection(db, tenantId, 'salesOrders'), orderBy('createdAt', 'desc'), limit(500)));
+        let total = 0;
+        for (const d of snap.docs) {
+            const e: any = d.data();
+            if (e.invoiceType === 'B2B_GST' || e.deleted) continue;
+            if (String(e.status || '').toLowerCase() === 'cancelled') continue;
+            const eName = String(e.customerName || e.retailerName || '').trim().toLowerCase();
+            const ePhone = phoneKey(e.customerPhone || e.phoneNumber);
+            // Same identity priority as customerKeyOf in Digital Khata: match by
+            // name when this customer has one, else fall back to phone.
+            const isMatch = nameKey ? eName === nameKey : ePhone.slice(-10) === phoneDigits.slice(-10);
+            if (!isMatch) continue;
+            const grand = Number(e.grandTotal ?? e.netAmount ?? e.totalAmount ?? e.amount ?? 0);
+            const rawPaid = e.amountPaid ?? e.paidAmount;
+            const paid = rawPaid !== undefined && rawPaid !== null
+                ? Number(rawPaid) || 0
+                : (String(e.paymentStatus || '').toLowerCase() === 'paid' ? grand : 0);
+            total += Math.max(0, grand - paid);
+        }
+        return total;
+    } catch (err) {
+        console.error('Live outstanding lookup failed:', err);
+        return 0;
+    }
 }
 
 // Bill paper formats offered at the top of the billing screen. A5 was added on
@@ -197,16 +241,23 @@ export default function POSPage() {
     const openEditProduct = (product: Product) => { setEditingProduct(product); setShowProductModal(true); };
 
     // ── Multi-bill tabs ─────────────────────────────────────────────────────
+    // Tab labels ("Bill 1", "Bill 2", …) are never stored — they're derived
+    // live from each tab's position in billTabs at render time (see
+    // billTabLabel below). Storing a label as data let it go stale after a
+    // deletion (closeTab never renumbered survivors), producing duplicate
+    // labels like "Bill 2" + "Bill 2". Position-derived labels can't drift.
     const [billTabs, setBillTabs] = useState<BillTab[]>([{
-        id: 'tab1', label: 'Bill 1', cart: [], customer: defaultCustomer(),
+        id: 'tab1', cart: [], customer: defaultCustomer(), customerOutstanding: 0,
     }]);
     const [activeTabId, setActiveTabId] = useState('tab1');
 
     const activeTab = billTabs.find(t => t.id === activeTabId) ?? billTabs[0];
     const cart = activeTab.cart;
     const customer = activeTab.customer;
+    const customerOutstanding = activeTab.customerOutstanding;
+    const billTabLabel = (tabId: string) => `Bill ${Math.max(1, billTabs.findIndex(t => t.id === tabId) + 1)}`;
 
-    const updateActiveTab = useCallback((patch: Partial<Pick<BillTab, 'cart' | 'customer'>>) => {
+    const updateActiveTab = useCallback((patch: Partial<Pick<BillTab, 'cart' | 'customer' | 'customerOutstanding'>>) => {
         setBillTabs(prev => prev.map(t => t.id === activeTabId ? { ...t, ...patch } : t));
     }, [activeTabId]);
 
@@ -219,11 +270,18 @@ export default function POSPage() {
     };
 
     const setCustomer = (c: CustomerState) => updateActiveTab({ customer: c });
+    const setCustomerOutstanding = (amount: number) => updateActiveTab({ customerOutstanding: amount });
+    // For async lookups (fetchLiveOutstanding): writes into the tab that was
+    // active when the lookup *started*, not whichever tab is active once the
+    // promise resolves — so a fast tab-switch mid-lookup can't leak one
+    // customer's balance onto a different tab the cashier has since opened.
+    const setOutstandingForTab = (tabId: string, amount: number) =>
+        setBillTabs(prev => prev.map(t => t.id === tabId ? { ...t, customerOutstanding: amount } : t));
 
     const addTab = () => {
         if (billTabs.length >= 5) return;
         const newId = `tab${Date.now()}`;
-        setBillTabs(prev => [...prev, { id: newId, label: `Bill ${prev.length + 1}`, cart: [], customer: defaultCustomer() }]);
+        setBillTabs(prev => [...prev, { id: newId, cart: [], customer: defaultCustomer(), customerOutstanding: 0 }]);
         setActiveTabId(newId);
     };
 
@@ -271,9 +329,9 @@ export default function POSPage() {
     // Optional per-line batch / expiry (display + print only; not persisted so the
     // checkout schema stays untouched). Keyed by cart item id.
     const [rowMeta, setRowMeta] = useState<Record<string, { batchNo?: string; expDate?: string }>>({});
-    // Khata (credit) balance carried by the matched farmer, so this bill can show
-    // what they already owe. Populated by the phone lookup / name dropdown.
-    const [customerOutstanding, setCustomerOutstanding] = useState(0);
+    // customerOutstanding lives per-tab now (see billTabs/activeTab above) —
+    // Khata (credit) balance carried by the matched farmer, populated by the
+    // phone lookup / name dropdown, isolated per bill tab.
     // Set when the Khata screen sent us here to correct a bill. Saving then issues
     // a replacement bill and cancels this one (POS has no true in-place edit —
     // checkout always consumes a new number and re-decrements stock).
@@ -550,7 +608,26 @@ export default function POSPage() {
             const raw = localStorage.getItem(`pos_draft_${tenantId}`);
             if (!raw) return;
             const draft = JSON.parse(raw);
-            if (Array.isArray(draft.billTabs) && draft.billTabs.length > 0) setBillTabs(draft.billTabs);
+            if (Array.isArray(draft.billTabs) && draft.billTabs.length > 0) {
+                // Normalize for drafts saved by an older build (customerOutstanding
+                // didn't exist on BillTab yet; label did but is no longer used).
+                const restoredTabs: BillTab[] = draft.billTabs.map((t: any) => ({
+                    id: t.id, cart: Array.isArray(t.cart) ? t.cart : [],
+                    customer: t.customer ?? defaultCustomer(),
+                    customerOutstanding: 0, // re-fetched live below, never trusted from a stale draft
+                }));
+                setBillTabs(restoredTabs);
+                // The outstanding balance is a point-in-time snapshot, not
+                // authoritative data — refresh it live per tab so a payment or
+                // Khata entry recorded since this draft was saved isn't missed.
+                if (tenantId) {
+                    for (const t of restoredTabs) {
+                        if (t.customer.name.trim() || t.customer.phone.trim().length >= 5) {
+                            fetchLiveOutstanding(db, tenantId, t.customer.name, t.customer.phone).then(amt => setOutstandingForTab(t.id, amt));
+                        }
+                    }
+                }
+            }
             if (draft.activeTabId) setActiveTabId(draft.activeTabId);
             if (draft.modeOfPayment) setModeOfPayment(draft.modeOfPayment);
             // invoiceDate intentionally NOT restored — always defaults to today for new sessions
@@ -687,7 +764,13 @@ export default function POSPage() {
                 district: match.district ?? customer.district ?? '',
                 retailerId: match.id,
             });
-            setCustomerOutstanding(Number(match.outstandingAmount) || 0);
+            // Live-computed so this can never diverge from the Digital Khata balance
+            // (manual Khata entries / Khata-recorded payments never touch the
+            // cached retailers.outstandingAmount counter, so that field alone
+            // would understate or misstate what the customer actually owes).
+            // Written by tab id, not the (possibly since-switched) active tab.
+            const lookupTabId = activeTabId;
+            fetchLiveOutstanding(db, tenantId, match.name ?? customer.name, customer.phone).then(amt => setOutstandingForTab(lookupTabId, amt));
         } else if (lastMatchedPhoneRef.current !== null && lastMatchedPhoneRef.current !== customer.phone) {
             // The number that produced this auto-fill no longer matches (edited/changed) —
             // revert to a clean walk-in state instead of leaving the stale match displayed.
@@ -924,11 +1007,39 @@ export default function POSPage() {
             // so B2C counter customers don't pollute the B2B Partner Worklist.
             // A Khata (credit) sale also accrues to their outstanding balance, so the
             // next bill for this phone can show what they already owe.
-            if (customer.phone.length >= 5) {
-                const q = query(getTenantCollection(db, tenantId, 'retailers'), where('number', '==', customer.phone), limit(1));
-                const snap = await getDocs(q);
+            //
+            // Identity resolution priority (name is the primary key, phone optional):
+            //   1. customer.retailerId — already resolved by dropdown selection or the
+            //      phone auto-lookup; trust it directly rather than re-searching.
+            //   2. Phone match — unchanged behavior for known phone-bearing customers.
+            //   3. Normalized-name match (trim + lowercase) against the farmer list
+            //      already streamed in for the dropdown — catches a customer created
+            //      name-only earlier who's now being billed with a phone added, so
+            //      that phone lands on their existing record instead of forking a
+            //      second one with a split outstanding balance.
+            // A new record is only created when none of the above resolve.
+            const customerName = customer.name.trim();
+            const customerPhone = customer.phone.trim();
+            if (customerPhone.length >= 5 || customerName) {
+                let existingDoc: { ref: any; data: any } | null = null;
+
+                if (customer.retailerId) {
+                    const snap = await getDoc(getTenantDoc(db, tenantId, 'retailers', customer.retailerId));
+                    if (snap.exists()) existingDoc = { ref: snap.ref, data: snap.data() };
+                }
+                if (!existingDoc && customerPhone.length >= 5) {
+                    const q = query(getTenantCollection(db, tenantId, 'retailers'), where('number', '==', customer.phone), limit(1));
+                    const snap = await getDocs(q);
+                    if (!snap.empty) existingDoc = { ref: snap.docs[0].ref, data: snap.docs[0].data() };
+                }
+                if (!existingDoc && customerName) {
+                    const nameKey = customerName.toLowerCase();
+                    const match = farmers.find(f => (f.name || '').trim().toLowerCase() === nameKey);
+                    if (match) existingDoc = { ref: getTenantDoc(db, tenantId, 'retailers', match.id), data: match };
+                }
+
                 const isCredit = paymentMethod === 'Khata';
-                if (snap.empty) {
+                if (!existingDoc) {
                     await addDoc(getTenantCollection(db, tenantId, 'retailers'), {
                         name: customer.name, number: customer.phone, atPost: customer.address,
                         pin: customer.pin, taluka: customer.taluka || '', district: customer.district || '',
@@ -940,17 +1051,19 @@ export default function POSPage() {
                         lastOrderedAt: serverTimestamp(),
                     });
                 } else {
-                    const rDoc = snap.docs[0];
-                    const rData = rDoc.data() as any;
+                    const rData = existingDoc.data;
                     // When correcting a bill, back out the original's contribution
                     // first so the balance reflects the delta, not a double count.
                     const prevTotal = editingOrder ? Number(editingOrder.grandTotal || 0) : 0;
                     const prevWasCredit = editingOrder ? editingOrder.paymentMethod === 'Khata' : false;
                     const prevCreditAmt = editingOrder ? Number(editingOrder.creditAmount || (prevWasCredit ? prevTotal : 0)) : 0;
                     const prevPaidAmt = editingOrder ? Number(editingOrder.amountPaid ?? (prevWasCredit ? 0 : prevTotal)) : 0;
-                    await updateDoc(rDoc.ref, {
+                    await updateDoc(existingDoc.ref, {
                         // Sync any edits the cashier made to the customer's master record.
+                        // A phone typed on this bill fills in a previously phone-less
+                        // record (or corrects an existing one) rather than being dropped.
                         ...(customer.name ? { name: customer.name } : {}),
+                        ...(customerPhone.length >= 5 ? { number: customer.phone } : {}),
                         ...(customer.address ? { atPost: customer.address } : {}),
                         ...(customer.pin ? { pin: customer.pin } : {}),
                         ...(customer.taluka !== undefined ? { taluka: customer.taluka } : {}),
@@ -1043,14 +1156,13 @@ export default function POSPage() {
                 // Reset the active tab
                 setBillTabs(prev => prev.map(t =>
                     t.id === activeTabId
-                        ? { ...t, cart: [], customer: defaultCustomer() }
+                        // Clear the carried balance with the bill — re-entering the
+                        // phone re-fetches the (now updated) outstanding for the next sale.
+                        ? { ...t, cart: [], customer: defaultCustomer(), customerOutstanding: 0 }
                         : t,
                 ));
                 setRedeemPoints(0);
                 setInvoiceCategories(null);
-                // Clear the carried balance with the bill — re-entering the phone
-                // re-fetches the (now updated) outstanding for the next sale.
-                setCustomerOutstanding(0);
                 setRowMeta({});
                 autoFilledBatchesRef.current.clear();
                 setTransportCharges(0);
@@ -1248,13 +1360,15 @@ export default function POSPage() {
         }).filter(Boolean) as CartItem[];
         if (items.length === 0) { showToast('Could not duplicate — none of these products are in inventory anymore.', 'error'); return; }
         const newId = `tab${Date.now()}`;
+        const duplicatedCustomer = { name: order.retailerName || 'Walk-in Customer', phone: order.phoneNumber || '', address: order.address || '', pin: order.pin || '' };
         setBillTabs(prev => [...prev, {
-            id: newId, label: `Bill ${prev.length + 1}`, cart: items,
-            customer: { name: order.retailerName || 'Walk-in Customer', phone: order.phoneNumber || '', address: order.address || '', pin: order.pin || '' },
+            id: newId, cart: items, customer: duplicatedCustomer, customerOutstanding: 0,
         }]);
         setActiveTabId(newId);
         setShowInsightsPanel(false);
         showToast('Bill duplicated into a new tab', 'success');
+        // Fetch this specific customer's live balance into the new tab only.
+        if (tenantId) fetchLiveOutstanding(db, tenantId, duplicatedCustomer.name, duplicatedCustomer.phone).then(amt => setOutstandingForTab(newId, amt));
     };
 
     if (loading) return <div className="h-screen flex items-center justify-center"><Loader2 className="animate-spin text-emerald-600" size={48} /></div>;
@@ -1397,7 +1511,7 @@ export default function POSPage() {
                                     cursor: 'pointer',
                                     transition: 'all var(--transition-fast)',
                                 }}>
-                                {tab.label} {tab.cart.length > 0 && <span style={{ opacity: 0.7 }}>({tab.cart.length})</span>}
+                                {billTabLabel(tab.id)} {tab.cart.length > 0 && <span style={{ opacity: 0.7 }}>({tab.cart.length})</span>}
                             </button>
                             {billTabs.length > 1 && (
                                 <button onClick={() => closeTab(tab.id)} style={{ background: 'none', border: 'none', cursor: 'pointer', padding: '2px', color: 'var(--text-tertiary)', borderRadius: '4px' }}>
@@ -1561,10 +1675,18 @@ export default function POSPage() {
                                                         <div key={r.id} className="pinv-dropdown-item" onMouseDown={() => {
                                                             lastMatchedPhoneRef.current = r.number || null;
                                                             setCustomer({ name: r.name || '', phone: r.number || '', address: r.atPost || '', pin: r.pin || '', taluka: r.taluka || '', district: r.district || '', retailerId: r.id });
-                                                            setCustomerOutstanding(Number(r.outstandingAmount) || 0); setShowFarmerDropdown(false);
+                                                            // Live-computed to match Digital Khata exactly — see fetchLiveOutstanding.
+                                                            // Written by tab id so a fast tab-switch mid-lookup can't leak in.
+                                                            const lookupTabId = activeTabId;
+                                                            if (tenantId) fetchLiveOutstanding(db, tenantId, r.name || '', r.number || '').then(amt => setOutstandingForTab(lookupTabId, amt));
+                                                            setShowFarmerDropdown(false);
                                                         }}>
                                                             <div style={{ fontWeight: 600 }}>{r.name}</div>
-                                                            <div style={{ fontSize: '0.75rem', color: '#666' }}>{r.number} {r.atPost ? `• ${r.atPost}` : ''}</div>
+                                                            <div style={{ fontSize: '0.75rem', color: '#666' }}>
+                                                                {r.number
+                                                                    ? <>{r.number}{r.atPost ? ` • ${r.atPost}` : ''}</>
+                                                                    : <>{r.atPost ? `${r.atPost} • ` : ''}<span style={{ fontStyle: 'italic' }}>No phone number</span></>}
+                                                            </div>
                                                         </div>
                                                     ))}
                                             </div>
@@ -1574,7 +1696,8 @@ export default function POSPage() {
                                     <div style={{ borderRight: '1px solid #ccc', padding: '4px 8px', display: 'flex', gap: '5px', alignItems: 'center' }}>
                                         <span style={{ fontWeight: 700, color: '#555', whiteSpace: 'nowrap', flexShrink: 0, fontSize: '0.72rem' }}>Ph:</span>
                                         <input ref={customerPhoneRef} className="pinv-input" style={{ flex: 1, fontSize: '0.8rem', minWidth: 0 }} placeholder="Phone" value={customer.phone}
-                                            onChange={e => setCustomer({ ...customer, phone: e.target.value })} onBlur={handlePhoneLookup}
+                                            inputMode="numeric" maxLength={10}
+                                            onChange={e => setCustomer({ ...customer, phone: e.target.value.replace(/\D/g, '').slice(0, 10) })} onBlur={handlePhoneLookup}
                                             onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); customerAddressRef.current?.focus(); } }} />
                                     </div>
                                     {/* Village */}
@@ -1889,11 +2012,18 @@ export default function POSPage() {
                                                                 onMouseDown={() => {
                                                                     lastMatchedPhoneRef.current = r.number || null;
                                                                     setCustomer({ name: r.name || '', phone: r.number || '', address: r.atPost || '', pin: r.pin || '', taluka: r.taluka || '', district: r.district || '', retailerId: r.id });
-                                                                    setCustomerOutstanding(Number(r.outstandingAmount) || 0);
+                                                                    // Live-computed to match Digital Khata exactly — see fetchLiveOutstanding.
+                                                                    // Written by tab id so a fast tab-switch mid-lookup can't leak in.
+                                                                    const lookupTabId = activeTabId;
+                                                                    if (tenantId) fetchLiveOutstanding(db, tenantId, r.name || '', r.number || '').then(amt => setOutstandingForTab(lookupTabId, amt));
                                                                     setShowFarmerDropdown(false);
                                                                 }}>
                                                                 <div style={{ fontWeight: 600 }}>{r.name}</div>
-                                                                <div style={{ fontSize: '0.75rem', color: '#666' }}>{r.number} {r.atPost ? `• ${r.atPost}` : ''}</div>
+                                                                <div style={{ fontSize: '0.75rem', color: '#666' }}>
+                                                                    {r.number
+                                                                        ? <>{r.number}{r.atPost ? ` • ${r.atPost}` : ''}</>
+                                                                        : <>{r.atPost ? `${r.atPost} • ` : ''}<span style={{ fontStyle: 'italic' }}>No phone number</span></>}
+                                                                </div>
                                                             </div>
                                                         ))}
                                                 </div>
@@ -1902,7 +2032,8 @@ export default function POSPage() {
                                         <div style={{ display: 'flex', gap: '8px', marginTop: '4px' }}>
                                             <span className="pinv-label">{L('contact')} :</span>
                                             <input ref={customerPhoneRef} className="pinv-input" style={{ flexGrow: 1 }} placeholder="Phone No" value={customer.phone}
-                                                onChange={e => setCustomer({ ...customer, phone: e.target.value })} onBlur={handlePhoneLookup}
+                                                inputMode="numeric" maxLength={10}
+                                                onChange={e => setCustomer({ ...customer, phone: e.target.value.replace(/\D/g, '').slice(0, 10) })} onBlur={handlePhoneLookup}
                                                 onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); customerAddressRef.current?.focus(); } }} />
                                         </div>
                                         <div style={{ display: 'flex', gap: '8px', marginTop: '4px' }}>

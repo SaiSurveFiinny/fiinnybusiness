@@ -2,6 +2,7 @@ import { useState, useEffect, useMemo, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import {
     query, onSnapshot, orderBy, addDoc, updateDoc, setDoc, serverTimestamp, Timestamp, writeBatch,
+    where, limit, getDocs,
 } from 'firebase/firestore';
 import * as XLSX from 'xlsx';
 import { db } from '../firebase';
@@ -59,14 +60,19 @@ const billNo = (e: KhataEntry) => e.invoiceNumber || e.orderNumber || e.id.slice
 // Digits-only phone, matching the normaliser used in POS and the B2B invoice.
 const phoneKey = (v: unknown): string => String(v ?? '').replace(/\D/g, '');
 
-// A customer is identified by phone where we have one; otherwise by name, so a
-// named walk-in like "Surve Agro" keeps its own ledger instead of collapsing
-// into a single anonymous bucket.
+// A customer is identified primarily by normalized name — matches the POS
+// identity-resolution priority (name is the primary key, phone optional), so
+// a person billed once without a phone and again with one still rolls up to
+// a single Khata row instead of splitting into "sai · 98…" and "sai · —".
+// Only a genuinely anonymous entry (no name at all) falls back to phone, and
+// a phone-only entry with neither falls back to a shared walk-in bucket —
+// both exactly as before.
 const customerKeyOf = (e: KhataEntry): string => {
+    const nm = entryName(e).trim().toLowerCase();
+    if (nm) return `n:${nm}`;
     const ph = phoneKey(entryPhone(e));
     if (ph) return `p:${ph.slice(-10)}`;
-    const nm = entryName(e).trim().toLowerCase();
-    return nm ? `n:${nm}` : 'n:walk-in';
+    return 'n:walk-in';
 };
 
 const fmtINR = (n: number) => `₹${Math.round(n).toLocaleString('en-IN')}`;
@@ -316,6 +322,53 @@ export default function DigitalKhataPage() {
                 await setDoc(getTenantDoc(db, tenantId, 'loyalty', phone), {
                     name, phone, updatedAt: serverTimestamp(),
                 }, { merge: true });
+            }
+            // Also upsert into `retailers` — the collection POS Billing's buyer
+            // suggestion dropdown queries. Without this, a customer added only via
+            // Khata (never billed through POS) would never appear there. Same
+            // identity priority POS itself uses when saving a walk-in: match by
+            // phone first, else by normalized name, else create a new record —
+            // so this never forks a duplicate for a customer who already has one.
+            try {
+                let existingRef: ReturnType<typeof getTenantDoc> | null = null;
+                if (phone) {
+                    const snap = await getDocs(query(getTenantCollection(db, tenantId, 'retailers'), where('number', '==', phone), limit(1)));
+                    if (!snap.empty) existingRef = snap.docs[0].ref;
+                }
+                if (!existingRef) {
+                    const nameKey = name.toLowerCase();
+                    const allSnap = await getDocs(getTenantCollection(db, tenantId, 'retailers'));
+                    const match = allSnap.docs.find(d => (d.data().name || '').trim().toLowerCase() === nameKey);
+                    if (match) existingRef = match.ref;
+                }
+                if (existingRef) {
+                    await updateDoc(existingRef, {
+                        ...(name ? { name } : {}),
+                        ...(phone ? { number: phone } : {}),
+                        ...(addForm.address.trim() ? { atPost: addForm.address.trim() } : {}),
+                        ...(addForm.pin.trim() ? { pin: addForm.pin.trim() } : {}),
+                        lastOrderedAt: serverTimestamp(),
+                    });
+                } else {
+                    // totalSales/outstandingAmount/totalPaid seed at 0, not the bill's
+                    // amount — this doc exists purely so the customer is findable in
+                    // POS suggestions. The actual balance the invoice shows is always
+                    // computed live from salesOrders (see POSPage.fetchLiveOutstanding),
+                    // so this cached counter is informational only and never read for
+                    // that calculation — keeping it at 0 avoids a second, divergent
+                    // source of truth for the same figure.
+                    await addDoc(getTenantCollection(db, tenantId, 'retailers'), {
+                        name, number: phone, atPost: addForm.address.trim(), pin: addForm.pin.trim(),
+                        taluka: '', district: '',
+                        status: 'active', channel: 'pos',
+                        totalSales: 0, outstandingAmount: 0, totalPaid: 0,
+                        createdAt: serverTimestamp(),
+                        lastOrderedAt: serverTimestamp(),
+                    });
+                }
+            } catch (err) {
+                // Never block the udhari entry itself on this best-effort sync.
+                console.error('Khata → retailers sync failed:', err);
             }
             showToast('Udhari entry added.', 'success');
             setAddOpen(false);
