@@ -1,29 +1,48 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, Fragment } from 'react';
 import { createPortal } from 'react-dom';
 import { updateDoc, deleteDoc, onSnapshot, orderBy, query, serverTimestamp } from 'firebase/firestore';
 import { db } from '../firebase';
 import { useAuth } from '../contexts/AuthContext';
 import { getTenantCollection, getTenantDoc } from '../utils/tenantPath';
 import { useToast } from '../contexts/ToastContext';
-import { Truck, Plus, Pencil, Trash2, X, Phone, User, AlertTriangle, Search } from 'lucide-react';
-import AddTransporterModal from '../components/AddTransporterModal';
+import { Truck, Plus, Pencil, Trash2, X, Phone, User, AlertTriangle, Search, ChevronDown, ChevronRight } from 'lucide-react';
+import AddTransporterModal, { VEHICLE_TYPES, checkOptionalMobile } from '../components/AddTransporterModal';
 
 interface Transporter {
     id: string;
     name: string;
     contactPerson?: string;
     mobile?: string;
+    altMobile?: string;
+    vehicleType?: string;
+    area?: string;
     vehicleRoute?: string;
     notes?: string;
     createdAt?: any;
 }
 
-const emptyEditForm = () => ({ name: '', contactPerson: '', mobile: '', vehicleRoute: '', notes: '' });
+const emptyEditForm = () => ({
+    name: '', contactPerson: '', mobile: '', altMobile: '',
+    vehicleType: '', otherVehicleType: '', area: '', vehicleRoute: '', notes: '',
+});
 
 const labelStyle: React.CSSProperties = {
     display: 'block', fontSize: '0.8rem', fontWeight: 600,
     color: 'var(--text-secondary)', marginBottom: '0.3rem',
 };
+
+function DetailField({ label, value }: { label: string; value: string }) {
+    return (
+        <div>
+            <div style={{ color: 'var(--text-tertiary)', fontSize: '0.65rem', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: '2px' }}>
+                {label}
+            </div>
+            <div style={{ fontSize: '0.82rem', color: 'var(--text-primary)', fontWeight: 500, wordBreak: 'break-word' }}>
+                {value || '—'}
+            </div>
+        </div>
+    );
+}
 
 function useScrollLock(active: boolean) {
     useEffect(() => {
@@ -41,6 +60,8 @@ export default function ManageTransportPage() {
     const [transporters, setTransporters] = useState<Transporter[]>([]);
     const [loading, setLoading] = useState(true);
     const [search, setSearch] = useState('');
+    const [expandedId, setExpandedId] = useState<string | null>(null);
+    const toggleExpand = (id: string) => setExpandedId(prev => (prev === id ? null : id));
 
     // Add modal — delegated to AddTransporterModal (portal + scroll lock built-in)
     const [addOpen, setAddOpen] = useState(false);
@@ -75,7 +96,18 @@ export default function ManageTransportPage() {
 
     const openEdit = (t: Transporter) => {
         setEditing(t);
-        setEditForm({ name: t.name, contactPerson: t.contactPerson || '', mobile: t.mobile || '', vehicleRoute: t.vehicleRoute || '', notes: t.notes || '' });
+        const isKnownVehicleType = !t.vehicleType || VEHICLE_TYPES.includes(t.vehicleType);
+        setEditForm({
+            name: t.name,
+            contactPerson: t.contactPerson || '',
+            mobile: t.mobile || '',
+            altMobile: t.altMobile || '',
+            vehicleType: isKnownVehicleType ? (t.vehicleType || '') : 'Other',
+            otherVehicleType: isKnownVehicleType ? '' : (t.vehicleType || ''),
+            area: t.area || '',
+            vehicleRoute: t.vehicleRoute || '',
+            notes: t.notes || '',
+        });
         setEditError(null);
     };
 
@@ -83,12 +115,25 @@ export default function ManageTransportPage() {
         if (!tenantId || !editing) return;
         const name = editForm.name.trim();
         if (!name) { setEditError('Transporter name is required.'); return; }
+        if (editForm.vehicleType === 'Other' && !editForm.otherVehicleType.trim()) {
+            setEditError('Please enter the vehicle type.'); return;
+        }
+        const mobileCheck = checkOptionalMobile(editForm.mobile);
+        if (!mobileCheck.valid) { setEditError(mobileCheck.error!); return; }
+        const altMobileCheck = checkOptionalMobile(editForm.altMobile);
+        if (!altMobileCheck.valid) { setEditError('Alternate: ' + altMobileCheck.error!); return; }
+
+        const resolvedVehicleType = editForm.vehicleType === 'Other' ? editForm.otherVehicleType.trim() : editForm.vehicleType;
+
         setEditSaving(true); setEditError(null);
         try {
             await updateDoc(getTenantDoc(db, tenantId, 'transporters', editing.id), {
                 name,
                 contactPerson: editForm.contactPerson.trim() || null,
                 mobile: editForm.mobile.trim() || null,
+                altMobile: editForm.altMobile.trim() || null,
+                vehicleType: resolvedVehicleType || null,
+                area: editForm.area.trim() || null,
                 vehicleRoute: editForm.vehicleRoute.trim() || null,
                 notes: editForm.notes.trim() || null,
                 updatedAt: serverTimestamp(),
@@ -124,6 +169,9 @@ export default function ManageTransportPage() {
             t.name.toLowerCase().includes(q) ||
             (t.contactPerson || '').toLowerCase().includes(q) ||
             (t.mobile || '').includes(search) ||
+            (t.altMobile || '').includes(search) ||
+            (t.vehicleType || '').toLowerCase().includes(q) ||
+            (t.area || '').toLowerCase().includes(q) ||
             (t.vehicleRoute || '').toLowerCase().includes(q)
         );
     });
@@ -139,21 +187,23 @@ export default function ManageTransportPage() {
     const editModal = editing && createPortal(
         <div style={overlayStyle} role="dialog" aria-modal="true" aria-label="Edit Transporter"
             onMouseDown={e => { if (e.target === e.currentTarget && !editSaving) setEditing(null); }}>
-            <div className="glass-panel" style={{ width: '100%', maxWidth: '480px', padding: '1.75rem', borderRadius: '16px', position: 'relative' }}>
+            <div className="glass-panel" style={{ width: '100%', maxWidth: '560px', padding: '1.4rem', borderRadius: '16px', position: 'relative' }}>
                 <button onClick={() => !editSaving && setEditing(null)} aria-label="Close"
-                    style={{ position: 'absolute', top: '1rem', right: '1rem', background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-tertiary)' }}>
+                    style={{ position: 'absolute', top: '0.9rem', right: '0.9rem', background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-tertiary)' }}>
                     <X size={20} />
                 </button>
-                <h2 style={{ fontSize: '1.2rem', fontWeight: 800, marginBottom: '1.25rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                <h2 style={{ fontSize: '1.1rem', fontWeight: 800, marginBottom: '1rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
                     <Truck size={18} className="primary-gradient-text" /> Edit Transporter
                 </h2>
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '0.85rem' }}>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '0.7rem' }}>
+                    {/* Row 1: Transporter / Company Name */}
                     <div>
                         <label style={labelStyle}>Transporter / Company Name *</label>
                         <input className="input-field" style={{ width: '100%', margin: 0 }} value={editForm.name}
                             onChange={e => setEditForm(f => ({ ...f, name: e.target.value }))} autoFocus />
                     </div>
-                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.75rem' }}>
+                    {/* Row 2: Contact Person | Mobile Number | Alternate Mobile Number */}
+                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '0.6rem' }}>
                         <div>
                             <label style={labelStyle}>Contact Person</label>
                             <input className="input-field" style={{ width: '100%', margin: 0 }} value={editForm.contactPerson}
@@ -164,7 +214,36 @@ export default function ManageTransportPage() {
                             <input className="input-field" style={{ width: '100%', margin: 0 }} value={editForm.mobile}
                                 onChange={e => setEditForm(f => ({ ...f, mobile: e.target.value }))} />
                         </div>
+                        <div>
+                            <label style={labelStyle}>Alternate Mobile Number</label>
+                            <input className="input-field" style={{ width: '100%', margin: 0 }} value={editForm.altMobile}
+                                onChange={e => setEditForm(f => ({ ...f, altMobile: e.target.value }))} placeholder="Optional" />
+                        </div>
                     </div>
+                    {/* Row 3: Vehicle Type | Area */}
+                    <div style={{ display: 'grid', gridTemplateColumns: editForm.vehicleType === 'Other' ? '1fr 1fr 1fr' : '1fr 1fr', gap: '0.6rem' }}>
+                        <div>
+                            <label style={labelStyle}>Vehicle Type</label>
+                            <select className="input-field" style={{ width: '100%', margin: 0 }} value={editForm.vehicleType}
+                                onChange={e => setEditForm(f => ({ ...f, vehicleType: e.target.value }))}>
+                                <option value="">— Select —</option>
+                                {VEHICLE_TYPES.map(v => <option key={v} value={v}>{v}</option>)}
+                            </select>
+                        </div>
+                        {editForm.vehicleType === 'Other' && (
+                            <div>
+                                <label style={labelStyle}>Other Vehicle Type</label>
+                                <input className="input-field" style={{ width: '100%', margin: 0 }} value={editForm.otherVehicleType}
+                                    onChange={e => setEditForm(f => ({ ...f, otherVehicleType: e.target.value }))} placeholder="Enter vehicle type" />
+                            </div>
+                        )}
+                        <div>
+                            <label style={labelStyle}>Area (Optional)</label>
+                            <input className="input-field" style={{ width: '100%', margin: 0 }} value={editForm.area}
+                                onChange={e => setEditForm(f => ({ ...f, area: e.target.value }))} placeholder="e.g. Shirpur, Dhule" />
+                        </div>
+                    </div>
+                    {/* Row 4: Vehicle / Route */}
                     <div>
                         <label style={labelStyle}>Vehicle / Route</label>
                         <input className="input-field" style={{ width: '100%', margin: 0 }} value={editForm.vehicleRoute}
@@ -236,7 +315,7 @@ export default function ManageTransportPage() {
                 <Search size={16} style={{ position: 'absolute', left: '0.85rem', top: '50%', transform: 'translateY(-50%)', color: 'var(--text-tertiary)' }} />
                 <input
                     type="text"
-                    placeholder="Search by name, contact, phone or route..."
+                    placeholder="Search by name, contact, phone, vehicle type, area or route..."
                     className="input-field"
                     style={{ paddingLeft: '2.2rem', margin: 0 }}
                     value={search}
@@ -266,54 +345,82 @@ export default function ManageTransportPage() {
                         <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.875rem' }}>
                             <thead>
                                 <tr style={{ borderBottom: '1px solid var(--surface-border)', background: 'var(--surface-raised)' }}>
-                                    {['Transporter / Company', 'Contact Person', 'Mobile', 'Vehicle / Route', 'Notes', ''].map(h => (
-                                        <th key={h} style={{ padding: '0.8rem 1rem', fontWeight: 600, color: 'var(--text-secondary)', fontSize: '0.72rem', textTransform: 'uppercase', letterSpacing: '0.05em', textAlign: h === '' ? 'right' : 'left', whiteSpace: 'nowrap' }}>{h}</th>
+                                    {['', 'Transporter / Company', 'Contact Person', 'Mobile', 'Vehicle / Route', ''].map((h, i) => (
+                                        <th key={i} style={{ padding: '0.8rem 1rem', fontWeight: 600, color: 'var(--text-secondary)', fontSize: '0.72rem', textTransform: 'uppercase', letterSpacing: '0.05em', textAlign: h === '' ? (i === 0 ? 'center' : 'right') : 'left', whiteSpace: 'nowrap' }}>{h}</th>
                                     ))}
                                 </tr>
                             </thead>
                             <tbody>
-                                {filtered.map(t => (
-                                    <tr key={t.id} style={{ borderBottom: '1px solid var(--surface-border)', transition: 'background 0.12s' }}
-                                        onMouseEnter={e => (e.currentTarget.style.background = 'var(--surface-raised)')}
-                                        onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}>
-                                        <td style={{ padding: '0.85rem 1rem' }}>
-                                            <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                                                <div style={{ width: 32, height: 32, borderRadius: '50%', background: 'var(--primary)22', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
-                                                    <Truck size={14} color="var(--primary-light)" />
-                                                </div>
-                                                <span style={{ fontWeight: 700 }}>{t.name}</span>
-                                            </div>
-                                        </td>
-                                        <td style={{ padding: '0.85rem 1rem', color: 'var(--text-secondary)' }}>
-                                            {t.contactPerson
-                                                ? <span style={{ display: 'flex', alignItems: 'center', gap: '0.3rem' }}><User size={12} /> {t.contactPerson}</span>
-                                                : <span style={{ color: 'var(--text-tertiary)' }}>—</span>}
-                                        </td>
-                                        <td style={{ padding: '0.85rem 1rem' }}>
-                                            {t.mobile
-                                                ? <a href={`tel:${t.mobile}`} onClick={e => e.stopPropagation()} style={{ display: 'flex', alignItems: 'center', gap: '0.3rem', color: 'var(--primary-light)', textDecoration: 'none', fontSize: '0.83rem' }}>
-                                                    <Phone size={12} /> {t.mobile}
-                                                  </a>
-                                                : <span style={{ color: 'var(--text-tertiary)' }}>—</span>}
-                                        </td>
-                                        <td style={{ padding: '0.85rem 1rem', color: 'var(--text-secondary)' }}>{t.vehicleRoute || '—'}</td>
-                                        <td style={{ padding: '0.85rem 1rem', color: 'var(--text-tertiary)', fontSize: '0.8rem', maxWidth: '200px' }}>
-                                            <span style={{ display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>{t.notes || '—'}</span>
-                                        </td>
-                                        <td style={{ padding: '0.85rem 1rem', textAlign: 'right' }}>
-                                            <div style={{ display: 'inline-flex', gap: '0.4rem' }}>
-                                                <button onClick={() => openEdit(t)} title="Edit"
-                                                    style={{ display: 'flex', alignItems: 'center', gap: '0.25rem', padding: '0.3rem 0.6rem', background: 'hsla(220,70%,55%,0.12)', color: '#3b82f6', border: '1px solid hsla(220,70%,55%,0.25)', borderRadius: '8px', cursor: 'pointer', fontSize: '0.75rem', fontWeight: 600, fontFamily: 'inherit' }}>
-                                                    <Pencil size={12} /> Edit
-                                                </button>
-                                                <button onClick={() => setDeleteTarget(t)} title="Delete"
-                                                    style={{ display: 'flex', alignItems: 'center', gap: '0.25rem', padding: '0.3rem 0.6rem', background: 'hsla(0,84%,60%,0.12)', color: '#ef4444', border: '1px solid hsla(0,84%,60%,0.25)', borderRadius: '8px', cursor: 'pointer', fontSize: '0.75rem', fontWeight: 600, fontFamily: 'inherit' }}>
-                                                    <Trash2 size={12} /> Delete
-                                                </button>
-                                            </div>
-                                        </td>
-                                    </tr>
-                                ))}
+                                {filtered.map(t => {
+                                    const isOpen = expandedId === t.id;
+                                    return (
+                                        <Fragment key={t.id}>
+                                            <tr
+                                                onClick={() => toggleExpand(t.id)}
+                                                style={{
+                                                    borderBottom: isOpen ? '1px solid var(--primary-light)' : '1px solid var(--surface-border)',
+                                                    background: isOpen ? 'hsla(220,80%,60%,0.05)' : 'transparent',
+                                                    cursor: 'pointer',
+                                                    transition: 'background 0.12s',
+                                                }}
+                                                onMouseEnter={e => (e.currentTarget.style.background = isOpen ? 'hsla(220,80%,60%,0.07)' : 'var(--surface-raised)')}
+                                                onMouseLeave={e => (e.currentTarget.style.background = isOpen ? 'hsla(220,80%,60%,0.05)' : 'transparent')}
+                                            >
+                                                <td style={{ padding: '0.85rem 0.5rem', textAlign: 'center' }}>
+                                                    {isOpen
+                                                        ? <ChevronDown size={14} color="var(--primary-light)" />
+                                                        : <ChevronRight size={14} color="var(--text-tertiary)" />}
+                                                </td>
+                                                <td style={{ padding: '0.85rem 1rem' }}>
+                                                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                                                        <div style={{ width: 32, height: 32, borderRadius: '50%', background: 'var(--primary)22', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+                                                            <Truck size={14} color="var(--primary-light)" />
+                                                        </div>
+                                                        <span style={{ fontWeight: 700 }}>{t.name}</span>
+                                                    </div>
+                                                </td>
+                                                <td style={{ padding: '0.85rem 1rem', color: 'var(--text-secondary)' }}>
+                                                    {t.contactPerson
+                                                        ? <span style={{ display: 'flex', alignItems: 'center', gap: '0.3rem' }}><User size={12} /> {t.contactPerson}</span>
+                                                        : <span style={{ color: 'var(--text-tertiary)' }}>—</span>}
+                                                </td>
+                                                <td style={{ padding: '0.85rem 1rem' }}>
+                                                    {t.mobile
+                                                        ? <a href={`tel:${t.mobile}`} onClick={e => e.stopPropagation()} style={{ display: 'flex', alignItems: 'center', gap: '0.3rem', color: 'var(--primary-light)', textDecoration: 'none', fontSize: '0.83rem' }}>
+                                                            <Phone size={12} /> {t.mobile}
+                                                          </a>
+                                                        : <span style={{ color: 'var(--text-tertiary)' }}>—</span>}
+                                                </td>
+                                                <td style={{ padding: '0.85rem 1rem', color: 'var(--text-secondary)' }}>{t.vehicleRoute || '—'}</td>
+                                                <td style={{ padding: '0.85rem 1rem', textAlign: 'right' }}>
+                                                    <div style={{ display: 'inline-flex', gap: '0.4rem' }} onClick={e => e.stopPropagation()}>
+                                                        <button onClick={() => openEdit(t)} title="Edit"
+                                                            style={{ display: 'flex', alignItems: 'center', gap: '0.25rem', padding: '0.3rem 0.6rem', background: 'hsla(220,70%,55%,0.12)', color: '#3b82f6', border: '1px solid hsla(220,70%,55%,0.25)', borderRadius: '8px', cursor: 'pointer', fontSize: '0.75rem', fontWeight: 600, fontFamily: 'inherit' }}>
+                                                            <Pencil size={12} /> Edit
+                                                        </button>
+                                                        <button onClick={() => setDeleteTarget(t)} title="Delete"
+                                                            style={{ display: 'flex', alignItems: 'center', gap: '0.25rem', padding: '0.3rem 0.6rem', background: 'hsla(0,84%,60%,0.12)', color: '#ef4444', border: '1px solid hsla(0,84%,60%,0.25)', borderRadius: '8px', cursor: 'pointer', fontSize: '0.75rem', fontWeight: 600, fontFamily: 'inherit' }}>
+                                                            <Trash2 size={12} /> Delete
+                                                        </button>
+                                                    </div>
+                                                </td>
+                                            </tr>
+
+                                            {isOpen && (
+                                                <tr style={{ background: 'hsla(220,80%,60%,0.04)', borderBottom: '2px solid var(--primary-light)' }}>
+                                                    <td colSpan={6} style={{ padding: '10px 20px 14px 44px' }}>
+                                                        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(160px, 1fr))', gap: '8px 20px' }}>
+                                                            <DetailField label="Alternate Mobile" value={t.altMobile || ''} />
+                                                            <DetailField label="Vehicle Type" value={t.vehicleType || ''} />
+                                                            <DetailField label="Area" value={t.area || ''} />
+                                                            <DetailField label="Notes" value={t.notes || ''} />
+                                                        </div>
+                                                    </td>
+                                                </tr>
+                                            )}
+                                        </Fragment>
+                                    );
+                                })}
                             </tbody>
                         </table>
                     </div>

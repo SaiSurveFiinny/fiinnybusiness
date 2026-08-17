@@ -2,6 +2,7 @@ import { useState, useEffect, useMemo, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import {
     query, onSnapshot, orderBy, addDoc, updateDoc, setDoc, serverTimestamp, Timestamp, writeBatch,
+    where, limit, getDocs,
 } from 'firebase/firestore';
 import * as XLSX from 'xlsx';
 import { db } from '../firebase';
@@ -59,14 +60,19 @@ const billNo = (e: KhataEntry) => e.invoiceNumber || e.orderNumber || e.id.slice
 // Digits-only phone, matching the normaliser used in POS and the B2B invoice.
 const phoneKey = (v: unknown): string => String(v ?? '').replace(/\D/g, '');
 
-// A customer is identified by phone where we have one; otherwise by name, so a
-// named walk-in like "Surve Agro" keeps its own ledger instead of collapsing
-// into a single anonymous bucket.
+// A customer is identified primarily by normalized name — matches the POS
+// identity-resolution priority (name is the primary key, phone optional), so
+// a person billed once without a phone and again with one still rolls up to
+// a single Khata row instead of splitting into "sai · 98…" and "sai · —".
+// Only a genuinely anonymous entry (no name at all) falls back to phone, and
+// a phone-only entry with neither falls back to a shared walk-in bucket —
+// both exactly as before.
 const customerKeyOf = (e: KhataEntry): string => {
+    const nm = entryName(e).trim().toLowerCase();
+    if (nm) return `n:${nm}`;
     const ph = phoneKey(entryPhone(e));
     if (ph) return `p:${ph.slice(-10)}`;
-    const nm = entryName(e).trim().toLowerCase();
-    return nm ? `n:${nm}` : 'n:walk-in';
+    return 'n:walk-in';
 };
 
 const fmtINR = (n: number) => `₹${Math.round(n).toLocaleString('en-IN')}`;
@@ -233,7 +239,10 @@ export default function DigitalKhataPage() {
     const [editError, setEditError] = useState<string | null>(null);
 
     const [paymentFor, setPaymentFor] = useState<CustomerRow | null>(null);
-    const emptyPaymentForm = () => ({ amount: '', method: 'Cash', date: new Date().toISOString().slice(0, 10), ref: '', notes: '' });
+    // linkedBillId: '' = unallocated, falls back to the original FIFO-across-all-
+    // bills behavior (oldest outstanding first) for backward compatibility. A
+    // specific bill id restricts the payment to that one invoice only.
+    const emptyPaymentForm = () => ({ amount: '', method: 'Cash', date: new Date().toISOString().slice(0, 10), ref: '', notes: '', linkedBillId: '' });
     const [paymentForm, setPaymentForm] = useState(emptyPaymentForm());
     const [paymentSaving, setPaymentSaving] = useState(false);
     const [paymentError, setPaymentError] = useState<string | null>(null);
@@ -296,7 +305,11 @@ export default function DigitalKhataPage() {
         if (!name) { setAddError('Customer name is required.'); return; }
         if (billAmount <= 0) { setAddError('Bill amount must be greater than 0.'); return; }
         const paidAmount = Math.min(Number(addForm.paidAmount) || 0, billAmount);
-        const phone = phoneKey(addForm.phone);
+        // Defensive layer — the input already sanitizes on every keystroke/paste,
+        // this just guards against a stale/programmatic form.phone value. Capped
+        // locally (not inside phoneKey itself, which is also used to match
+        // against already-stored numbers of unknown length elsewhere).
+        const phone = phoneKey(addForm.phone).slice(0, 10);
         setAddSaving(true);
         setAddError(null);
         try {
@@ -318,6 +331,53 @@ export default function DigitalKhataPage() {
                 await setDoc(getTenantDoc(db, tenantId, 'loyalty', phone), {
                     name, phone, updatedAt: serverTimestamp(),
                 }, { merge: true });
+            }
+            // Also upsert into `retailers` — the collection POS Billing's buyer
+            // suggestion dropdown queries. Without this, a customer added only via
+            // Khata (never billed through POS) would never appear there. Same
+            // identity priority POS itself uses when saving a walk-in: match by
+            // phone first, else by normalized name, else create a new record —
+            // so this never forks a duplicate for a customer who already has one.
+            try {
+                let existingRef: ReturnType<typeof getTenantDoc> | null = null;
+                if (phone) {
+                    const snap = await getDocs(query(getTenantCollection(db, tenantId, 'retailers'), where('number', '==', phone), limit(1)));
+                    if (!snap.empty) existingRef = snap.docs[0].ref;
+                }
+                if (!existingRef) {
+                    const nameKey = name.toLowerCase();
+                    const allSnap = await getDocs(getTenantCollection(db, tenantId, 'retailers'));
+                    const match = allSnap.docs.find(d => (d.data().name || '').trim().toLowerCase() === nameKey);
+                    if (match) existingRef = match.ref;
+                }
+                if (existingRef) {
+                    await updateDoc(existingRef, {
+                        ...(name ? { name } : {}),
+                        ...(phone ? { number: phone } : {}),
+                        ...(addForm.address.trim() ? { atPost: addForm.address.trim() } : {}),
+                        ...(addForm.pin.trim() ? { pin: addForm.pin.trim() } : {}),
+                        lastOrderedAt: serverTimestamp(),
+                    });
+                } else {
+                    // totalSales/outstandingAmount/totalPaid seed at 0, not the bill's
+                    // amount — this doc exists purely so the customer is findable in
+                    // POS suggestions. The actual balance the invoice shows is always
+                    // computed live from salesOrders (see POSPage.fetchLiveOutstanding),
+                    // so this cached counter is informational only and never read for
+                    // that calculation — keeping it at 0 avoids a second, divergent
+                    // source of truth for the same figure.
+                    await addDoc(getTenantCollection(db, tenantId, 'retailers'), {
+                        name, number: phone, atPost: addForm.address.trim(), pin: addForm.pin.trim(),
+                        taluka: '', district: '',
+                        status: 'active', channel: 'pos',
+                        totalSales: 0, outstandingAmount: 0, totalPaid: 0,
+                        createdAt: serverTimestamp(),
+                        lastOrderedAt: serverTimestamp(),
+                    });
+                }
+            } catch (err) {
+                // Never block the udhari entry itself on this best-effort sync.
+                console.error('Khata → retailers sync failed:', err);
             }
             showToast('Udhari entry added.', 'success');
             setAddOpen(false);
@@ -347,7 +407,8 @@ export default function DigitalKhataPage() {
         if (!name) { setEditError('Customer name is required.'); return; }
         if (billAmount <= 0) { setEditError('Bill amount must be greater than 0.'); return; }
         const paidAmount = Math.min(Number(editForm.paidAmount) || 0, billAmount);
-        const phone = phoneKey(editForm.phone);
+        // Defensive layer — see the matching comment in submitAdd.
+        const phone = phoneKey(editForm.phone).slice(0, 10);
         setEditSaving(true);
         setEditError(null);
         try {
@@ -378,32 +439,56 @@ export default function DigitalKhataPage() {
         }
     };
 
-    // Payment is allocated FIFO across the customer's outstanding bills (oldest
-    // first) so a partial payment settles the longest-standing dues first.
+    // With a specific invoice linked, the payment applies only to that one
+    // salesOrders document. Without one (linkedBillId === ''), falls back to
+    // the original behavior — FIFO across the customer's outstanding bills
+    // (oldest first) — unchanged, for backward compatibility.
     const submitPayment = async () => {
         if (!tenantId || !paymentFor) return;
-        let remaining = Math.min(Number(paymentForm.amount) || 0, paymentFor.outstanding);
+        const enteredAmount = Number(paymentForm.amount) || 0;
+        const linkedBill = paymentForm.linkedBillId
+            ? paymentFor.bills.find(b => b.id === paymentForm.linkedBillId)
+            : null;
+
+        if (paymentForm.linkedBillId && !linkedBill) { setPaymentError('Selected invoice could not be found.'); return; }
+        if (linkedBill && linkedBill.outstanding <= 0) { setPaymentError('That invoice is already fully paid.'); return; }
+
+        const cap = linkedBill ? linkedBill.outstanding : paymentFor.outstanding;
+        const remaining = Math.min(enteredAmount, cap);
         if (remaining <= 0) { setPaymentError('Enter a valid amount.'); return; }
         setPaymentSaving(true);
         setPaymentError(null);
         try {
-            const batch = writeBatch(db);
-            const ordered = [...paymentFor.bills].sort((a, b) => a.ts.getTime() - b.ts.getTime());
-            for (const b of ordered) {
-                if (remaining <= 0) break;
-                if (b.outstanding <= 0) continue;
-                const apply = Math.min(remaining, b.outstanding);
-                batch.update(getTenantDoc(db, tenantId, 'salesOrders', b.id), {
-                    amountPaid: b.paid + apply,
+            if (linkedBill) {
+                // Single-invoice allocation — updates only the selected document.
+                await updateDoc(getTenantDoc(db, tenantId, 'salesOrders', linkedBill.id), {
+                    amountPaid: linkedBill.paid + remaining,
                     paymentMethod: paymentForm.method,
                     paymentDate: paymentForm.date,
                     transactionRef: paymentForm.ref.trim() || null,
                     paymentNotes: paymentForm.notes.trim() || null,
                     updatedAt: serverTimestamp(),
                 });
-                remaining -= apply;
+            } else {
+                let toApply = remaining;
+                const batch = writeBatch(db);
+                const ordered = [...paymentFor.bills].sort((a, b) => a.ts.getTime() - b.ts.getTime());
+                for (const b of ordered) {
+                    if (toApply <= 0) break;
+                    if (b.outstanding <= 0) continue;
+                    const apply = Math.min(toApply, b.outstanding);
+                    batch.update(getTenantDoc(db, tenantId, 'salesOrders', b.id), {
+                        amountPaid: b.paid + apply,
+                        paymentMethod: paymentForm.method,
+                        paymentDate: paymentForm.date,
+                        transactionRef: paymentForm.ref.trim() || null,
+                        paymentNotes: paymentForm.notes.trim() || null,
+                        updatedAt: serverTimestamp(),
+                    });
+                    toApply -= apply;
+                }
+                await batch.commit();
             }
-            await batch.commit();
             showToast('Payment recorded.', 'success');
             setPaymentFor(null);
             setPaymentForm(emptyPaymentForm());
@@ -648,12 +733,15 @@ export default function DigitalKhataPage() {
             <div ref={locked ? undefined : addPhoneRef} style={{ position: 'relative' }}>
                 <label style={labelStyle}>Phone</label>
                 <input className="input-field" style={{ width: '100%', margin: 0 }} value={form.phone} disabled={locked}
+                    inputMode="numeric" maxLength={10}
                     onChange={e => {
-                        const val = e.target.value;
+                        // Digits only, capped at 10 — applies to typed input, IME
+                        // composition, and paste alike, since paste fires this same
+                        // onChange with the full pasted string as e.target.value.
+                        const val = e.target.value.replace(/\D/g, '').slice(0, 10);
                         setForm(f => ({ ...f, phone: val }));
-                        if (!locked && val.replace(/\D/g, '').length >= 3) {
-                            const q = val.replace(/\D/g, '');
-                            setPhoneSuggestions(customers.filter(c => c.phone.includes(q)).slice(0, 6));
+                        if (!locked && val.length >= 3) {
+                            setPhoneSuggestions(customers.filter(c => c.phone.includes(val)).slice(0, 6));
                         } else {
                             setPhoneSuggestions([]);
                         }
@@ -776,39 +864,74 @@ export default function DigitalKhataPage() {
                         <p style={{ color: 'var(--text-secondary)', fontSize: '0.85rem', marginBottom: '1.25rem' }}>
                             <strong>{paymentFor.name}</strong> &middot; Outstanding <strong style={{ color: '#ef4444' }}>{fmtINR(paymentFor.outstanding)}</strong>
                         </p>
-                        <div style={{ display: 'flex', flexDirection: 'column', gap: '0.85rem' }}>
-                            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.75rem' }}>
-                                <div>
-                                    <label style={labelStyle}>Amount Received (₹) *</label>
-                                    <input type="number" className="input-field" style={{ width: '100%', margin: 0 }} value={paymentForm.amount}
-                                        onChange={e => setPaymentForm(f => ({ ...f, amount: e.target.value }))} placeholder="0" autoFocus />
+                        {(() => {
+                            const outstandingBills = paymentFor.bills.filter(b => b.outstanding > 0);
+                            const linkedBill = paymentForm.linkedBillId ? paymentFor.bills.find(b => b.id === paymentForm.linkedBillId) : null;
+                            const enteredAmount = Number(paymentForm.amount) || 0;
+                            return (
+                                <div style={{ display: 'flex', flexDirection: 'column', gap: '0.85rem' }}>
+                                    {outstandingBills.length > 0 && (
+                                        <div>
+                                            <label style={labelStyle}>Link to Invoice</label>
+                                            <select className="input-field" style={{ width: '100%', margin: 0 }} value={paymentForm.linkedBillId}
+                                                onChange={e => setPaymentForm(f => ({ ...f, linkedBillId: e.target.value }))}>
+                                                <option value="">Unallocated — settle oldest dues first</option>
+                                                {outstandingBills.map(b => (
+                                                    <option key={b.id} value={b.id}>
+                                                        {billNo(b)} · Bill {fmtINR(b.total)} · Paid {fmtINR(b.paid)} · Due {fmtINR(b.outstanding)}
+                                                    </option>
+                                                ))}
+                                            </select>
+                                            {linkedBill && (
+                                                <div style={{ marginTop: '0.5rem', padding: '0.55rem 0.75rem', borderRadius: '8px', background: 'var(--surface-raised)', fontSize: '0.78rem', color: 'var(--text-secondary)', display: 'flex', flexWrap: 'wrap', gap: '0.4rem 0.9rem' }}>
+                                                    <span>Invoice: <strong style={{ color: 'var(--text-primary)' }}>{billNo(linkedBill)}</strong></span>
+                                                    <span>Bill: <strong style={{ color: 'var(--text-primary)' }}>{fmtINR(linkedBill.total)}</strong></span>
+                                                    <span>Paid: <strong style={{ color: '#10b981' }}>{fmtINR(linkedBill.paid)}</strong></span>
+                                                    <span>Outstanding: <strong style={{ color: '#ef4444' }}>{fmtINR(linkedBill.outstanding)}</strong></span>
+                                                    {enteredAmount > 0 && (
+                                                        <span style={{ width: '100%', borderTop: '1px dashed var(--surface-border)', paddingTop: '0.4rem', marginTop: '0.1rem' }}>
+                                                            After this payment — Paid: <strong style={{ color: '#10b981' }}>{fmtINR(linkedBill.paid + Math.min(enteredAmount, linkedBill.outstanding))}</strong>
+                                                            {' · '}Outstanding: <strong style={{ color: '#ef4444' }}>{fmtINR(Math.max(0, linkedBill.outstanding - enteredAmount))}</strong>
+                                                        </span>
+                                                    )}
+                                                </div>
+                                            )}
+                                        </div>
+                                    )}
+                                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.75rem' }}>
+                                        <div>
+                                            <label style={labelStyle}>Amount Received (₹) *</label>
+                                            <input type="number" className="input-field" style={{ width: '100%', margin: 0 }} value={paymentForm.amount}
+                                                onChange={e => setPaymentForm(f => ({ ...f, amount: e.target.value }))} placeholder="0" autoFocus />
+                                        </div>
+                                        <div>
+                                            <label style={labelStyle}>Payment Date</label>
+                                            <input type="date" className="input-field" style={{ width: '100%', margin: 0 }} value={paymentForm.date}
+                                                onChange={e => setPaymentForm(f => ({ ...f, date: e.target.value }))} />
+                                        </div>
+                                    </div>
+                                    <div>
+                                        <label style={labelStyle}>Payment Method</label>
+                                        <select className="input-field" style={{ width: '100%', margin: 0 }} value={paymentForm.method}
+                                            onChange={e => setPaymentForm(f => ({ ...f, method: e.target.value }))}>
+                                            {PAYMENT_METHODS.map(m => <option key={m}>{m}</option>)}
+                                        </select>
+                                    </div>
+                                    {paymentForm.method !== 'Cash' && (
+                                        <div>
+                                            <label style={labelStyle}>Transaction Reference / UTR</label>
+                                            <input className="input-field" style={{ width: '100%', margin: 0 }} value={paymentForm.ref}
+                                                onChange={e => setPaymentForm(f => ({ ...f, ref: e.target.value }))} placeholder="UPI Ref / Cheque No / UTR" />
+                                        </div>
+                                    )}
+                                    <div>
+                                        <label style={labelStyle}>Notes (optional)</label>
+                                        <input className="input-field" style={{ width: '100%', margin: 0 }} value={paymentForm.notes}
+                                            onChange={e => setPaymentForm(f => ({ ...f, notes: e.target.value }))} placeholder="e.g. partial payment for July dues" />
+                                    </div>
                                 </div>
-                                <div>
-                                    <label style={labelStyle}>Payment Date</label>
-                                    <input type="date" className="input-field" style={{ width: '100%', margin: 0 }} value={paymentForm.date}
-                                        onChange={e => setPaymentForm(f => ({ ...f, date: e.target.value }))} />
-                                </div>
-                            </div>
-                            <div>
-                                <label style={labelStyle}>Payment Method</label>
-                                <select className="input-field" style={{ width: '100%', margin: 0 }} value={paymentForm.method}
-                                    onChange={e => setPaymentForm(f => ({ ...f, method: e.target.value }))}>
-                                    {PAYMENT_METHODS.map(m => <option key={m}>{m}</option>)}
-                                </select>
-                            </div>
-                            {paymentForm.method !== 'Cash' && (
-                                <div>
-                                    <label style={labelStyle}>Transaction Reference / UTR</label>
-                                    <input className="input-field" style={{ width: '100%', margin: 0 }} value={paymentForm.ref}
-                                        onChange={e => setPaymentForm(f => ({ ...f, ref: e.target.value }))} placeholder="UPI Ref / Cheque No / UTR" />
-                                </div>
-                            )}
-                            <div>
-                                <label style={labelStyle}>Notes (optional)</label>
-                                <input className="input-field" style={{ width: '100%', margin: 0 }} value={paymentForm.notes}
-                                    onChange={e => setPaymentForm(f => ({ ...f, notes: e.target.value }))} placeholder="e.g. partial payment for July dues" />
-                            </div>
-                        </div>
+                            );
+                        })()}
                         {paymentError && <div style={{ ...errStyle, marginTop: '0.75rem' }}><AlertCircle size={13} /> {paymentError}</div>}
                         <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '0.6rem', marginTop: '1.25rem' }}>
                             <button onClick={() => { setPaymentFor(null); setPaymentForm(emptyPaymentForm()); }} className="btn btn-secondary" disabled={paymentSaving} style={{ padding: '0.55rem 1.1rem', fontSize: '0.85rem' }}>Cancel</button>
@@ -938,7 +1061,15 @@ export default function DigitalKhataPage() {
                             style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', fontSize: '0.85rem', padding: '0.5rem 1rem' }}>
                             <Plus size={15} /> Add Udhari
                         </button>
-                        <button onClick={() => { setPaymentFor(selected); setPaymentForm(emptyPaymentForm()); setPaymentError(null); }}
+                        <button onClick={() => {
+                            setPaymentFor(selected);
+                            // Default to the oldest outstanding bill (matches the FIFO
+                            // fallback's own settle-oldest-first convention) — still
+                            // fully changeable via the Link to Invoice selector.
+                            const oldestOutstanding = [...selected.bills].filter(b => b.outstanding > 0).sort((a, b) => a.ts.getTime() - b.ts.getTime())[0];
+                            setPaymentForm({ ...emptyPaymentForm(), linkedBillId: oldestOutstanding?.id || '' });
+                            setPaymentError(null);
+                        }}
                             className="btn btn-secondary" disabled={selected.outstanding <= 0}
                             style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', fontSize: '0.85rem', padding: '0.5rem 1rem', opacity: selected.outstanding <= 0 ? 0.5 : 1, cursor: selected.outstanding <= 0 ? 'not-allowed' : 'pointer' }}>
                             <Wallet size={15} /> Record Payment
@@ -971,7 +1102,7 @@ export default function DigitalKhataPage() {
                         <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.875rem' }}>
                             <thead>
                                 <tr style={{ borderBottom: '1px solid var(--surface-border)', background: 'var(--surface-raised)' }}>
-                                    {['Bill No', 'Date', 'Bill Amt', 'Paid', 'Outstanding', 'Status', 'Actions'].map(h => (
+                                    {['Bill No', 'Date', 'Bill Amount', 'Paid', 'Outstanding', 'Status', 'Actions'].map(h => (
                                         <th key={h} style={{ ...cellStyle, fontWeight: 600, color: 'var(--text-secondary)', textAlign: h === 'Actions' ? 'right' : 'left' }}>{h}</th>
                                     ))}
                                 </tr>
@@ -1115,7 +1246,7 @@ export default function DigitalKhataPage() {
                         <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.875rem' }}>
                             <thead>
                                 <tr style={{ borderBottom: '1px solid var(--surface-border)', background: 'var(--surface-raised)' }}>
-                                    {([['Customer', 'name'], ['Phone', null], ['Bills', null], ['Last Bill', 'lastTs'], ['Billed', 'total'], ['Paid', 'paid'], ['Outstanding', 'outstanding'], ['Status', null], ['', null]] as [string, SortCol | null][]).map(([label, col]) => {
+                                    {([['Customer', 'name'], ['Mobile Number', null], ['Total Bills', null], ['Last Bill Date', 'lastTs'], ['Total Billed Amount', 'total'], ['Total Paid Amount', 'paid'], ['Outstanding', 'outstanding'], ['Status', null], ['', null]] as [string, SortCol | null][]).map(([label, col]) => {
                                         const active = col && sortCol === col;
                                         return (
                                             <th key={label}

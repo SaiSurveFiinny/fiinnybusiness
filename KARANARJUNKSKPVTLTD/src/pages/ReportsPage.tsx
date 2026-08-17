@@ -8,16 +8,16 @@ type ReportTab = 'financial' | 'gst' | 'stock';
 const VALID_TABS: readonly ReportTab[] = ['financial', 'gst', 'stock'];
 
 const TABS: { id: ReportTab; label: string; icon: React.ReactNode }[] = [
+    { id: 'stock',     label: 'Stock Report',      icon: <Package2 size={16} /> },
     { id: 'financial', label: 'Financial Report', icon: <BarChart3 size={16} /> },
     { id: 'gst',       label: 'GST Report',       icon: <FileText size={16} /> },
-    { id: 'stock',     label: 'Stock Report',      icon: <Package2 size={16} /> },
 ];
 
 export default function ReportsPage() {
-    const [active, setActive] = useHashTab<ReportTab>(VALID_TABS, 'financial', 'fiinny-tab-reports');
+    const [active, setActive] = useHashTab<ReportTab>(VALID_TABS, 'stock', 'fiinny-tab-reports');
 
     return (
-        <div className="animate-fade-in" style={{ maxWidth: '1600px', margin: '0 auto' }}>
+        <div className="animate-fade-in" style={{ width: '100%' }}>
 
             {/* Sticky Tab Bar */}
             <div style={{

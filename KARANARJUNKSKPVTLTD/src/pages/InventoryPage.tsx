@@ -1,4 +1,4 @@
-import { Package, Warehouse, Layers, Truck, History, Factory } from 'lucide-react';
+import { Package, Layers, Truck, History } from 'lucide-react';
 import { useHashTab } from '../hooks/useHashTab';
 
 // Import sub-pages directly (InventoryPage itself is lazy-loaded by App.tsx)
@@ -14,13 +14,14 @@ import ManufacturersPage from './ManufacturersPage';
 type InventoryTab = 'products' | 'batches' | 'stock-movement' | 'warehouses' | 'transport' | 'manufacturers';
 const VALID_TABS: readonly InventoryTab[] = ['products', 'batches', 'stock-movement', 'warehouses', 'transport', 'manufacturers'];
 
+// Warehouses and Manufacturers are intentionally omitted here — unused in the
+// active inventory workflow. Their routes/components/data remain untouched;
+// this list only controls what's shown in the tab bar.
 const INVENTORY_TABS: { id: InventoryTab; label: string; icon: React.ReactNode }[] = [
     { id: 'products',       label: 'Product Master',    icon: <Package size={16} /> },
     { id: 'batches',        label: 'Inventory Batches', icon: <Layers size={16} /> },
     { id: 'stock-movement', label: 'Stock Movement',    icon: <History size={16} /> },
-    { id: 'warehouses',     label: 'Warehouses',        icon: <Warehouse size={16} /> },
     { id: 'transport',      label: 'Transport',         icon: <Truck size={16} /> },
-    { id: 'manufacturers',  label: 'Manufacturers',     icon: <Factory size={16} /> },
 ];
 
 // ─── Main Component ───────────────────────────────────────────────────────────

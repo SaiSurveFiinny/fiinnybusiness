@@ -6,8 +6,9 @@ import {
   FileSpreadsheet, FileDown, Search, AlertTriangle,
 } from 'lucide-react';
 import { query, onSnapshot, addDoc, updateDoc, serverTimestamp, getDocs, where } from 'firebase/firestore';
+import { ref as storageRef, uploadBytes, getDownloadURL, deleteObject } from 'firebase/storage';
 import { softDelete } from '../utils/softDelete';
-import { db } from '../firebase';
+import { db, storage } from '../firebase';
 import { useAuth } from '../contexts/AuthContext';
 import { getTenantCollection, getTenantDoc } from '../utils/tenantPath';
 import { logAudit } from '../utils/auditLog';
@@ -20,7 +21,7 @@ interface Product {
   id: string;
   productNumber?: string;
   name: string;
-  type?: string;         // Category
+  type?: string;         // Category (predefined or free-text "Others" value)
   mfgCompany?: string;   // Manufacturer
   description?: string;
   unitSize?: number;
@@ -37,6 +38,18 @@ interface Product {
   boxCapacity?: number;
   margin?: string;
   imageUrl?: string;
+  // Firebase Storage bookkeeping for imageUrl — present only for products whose
+  // photo was uploaded after the Storage migration. Absent (undefined) on older
+  // products whose imageUrl is still a base64 data URL stored inline; those
+  // continue to render exactly as before since imageUrl is just an <img src>.
+  imagePath?: string;
+  imageUploadedAt?: unknown;
+  // Reference batch info — last known values, auto-populated by Purchase Invoice
+  // posting (see inventoryPosting.ts). The authoritative per-batch records live
+  // in the separate `inventoryBatches` collection (InventoryBatchPage).
+  batchNumber?: string;
+  mfgDate?: string;
+  expiryDate?: string;
 }
 
 interface BatchItem {
@@ -86,12 +99,31 @@ const CSV_COLS = [
 
 const UNIT_MEASURES = ['pcs', 'ml', 'ltr', 'g', 'kg'] as const;
 const GST_OPTIONS = [0, 5, 12, 18, 28];
+const MAX_GST_PCT = 100;
+
+// ── Product photo upload constraints ────────────────────────────────────────
+// The compressed photo is uploaded to Firebase Storage at
+// tenants/{tenantId}/product-images/{productId-or-timestamp} — nested under
+// tenants/{tenantId}/ like every other upload in this app (uploadPaymentProof,
+// AdminStoreProductsPage) so it's covered by the existing storage.rules
+// tenant-scoped read/write rule without requiring a rules change. Only the
+// resulting download URL (plus imagePath for later replacement/deletion) is
+// stored on the product document, so there's no Firestore document-size
+// concern here.
+const MAX_UPLOAD_BYTES = 5 * 1024 * 1024; // 5 MB pre-compression cap
+const ACCEPTED_IMAGE_TYPES = ['image/jpeg', 'image/jpg', 'image/png', 'image/webp'];
+const IMAGE_MAX_DIM = 1200;
+const IMAGE_QUALITY_START = 0.85;
+const IMAGE_QUALITY_MIN = 0.5;
+const IMAGE_STORAGE_FOLDER = 'product-images';
 
 const emptyForm = () => ({
-  productNumber: '', name: '', type: '', mfgCompany: '', description: '',
-  unitSize: 1, unitMeasure: 'pcs' as string, baseUnit: 'pcs' as string,
-  gstPct: 5, maxRetailPrice: 0, retailerPrice: 0, purchasePrice: 0, sellingPrice: 0,
+  productNumber: '', name: '', type: '', otherType: '', mfgCompany: '', description: '',
+  unitSize: 1, unit: 'pcs' as string,
+  gstPct: 5, customGst: false, customGstValue: '',
+  maxRetailPrice: 0, retailerPrice: 0, purchasePrice: 0, sellingPrice: 0,
   imageUrl: '', stockQty: 0,
+  batchNumber: '', mfgDate: '', expiryDate: '',
 });
 
 // ── Component ─────────────────────────────────────────────────────────────────
@@ -107,6 +139,11 @@ export default function RateSheetPage() {
   const [searchTerm, setSearchTerm] = useState('');
   const [formData, setFormData] = useState(emptyForm());
   const [imagePreview, setImagePreview] = useState<string | null>(null);
+  const [imageError, setImageError] = useState<string | null>(null);
+  const [imageProcessing, setImageProcessing] = useState(false); // client-side compression
+  const [imageUploading, setImageUploading] = useState(false);   // Storage upload on submit
+  const [imageBlob, setImageBlob] = useState<Blob | null>(null); // compressed photo pending upload
+  const [existingImagePath, setExistingImagePath] = useState<string | null>(null); // for delete-on-replace
   const [dupWarning, setDupWarning] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -184,30 +221,41 @@ export default function RateSheetPage() {
   const handleOpenModal = (product?: Product) => {
     if (product) {
       setEditingProduct(product);
+      const isKnownCategory = !product.type || (AGRI_CATEGORIES as readonly string[]).includes(product.type);
+      const isCustomGst = product.gstPct != null && !GST_OPTIONS.includes(product.gstPct);
       setFormData({
         productNumber: product.productNumber || '',
         name: product.name,
-        type: product.type || '',
+        type: isKnownCategory ? (product.type || '') : 'Others',
+        otherType: isKnownCategory ? '' : (product.type || ''),
         mfgCompany: product.mfgCompany || '',
         description: product.description || '',
         unitSize: product.unitSize ?? 1,
-        unitMeasure: product.unitMeasure || 'pcs',
-        baseUnit: product.baseUnit || 'pcs',
+        unit: product.baseUnit || product.unitMeasure || 'pcs',
         gstPct: product.gstPct ?? 5,
+        customGst: isCustomGst,
+        customGstValue: isCustomGst ? String(product.gstPct) : '',
         maxRetailPrice: product.maxRetailPrice || 0,
         retailerPrice: product.retailerPrice || 0,
         purchasePrice: canSeeCost ? (product.purchasePrice || 0) : 0,
         sellingPrice: product.sellingPrice || 0,
         imageUrl: product.imageUrl || '',
         stockQty: totalStock(product),
+        batchNumber: product.batchNumber || '',
+        mfgDate: product.mfgDate || '',
+        expiryDate: product.expiryDate || '',
       });
       setImagePreview(product.imageUrl || null);
+      setExistingImagePath(product.imagePath || null);
     } else {
       setEditingProduct(null);
       setFormData({ ...emptyForm(), productNumber: nextSku() });
       setImagePreview(null);
+      setExistingImagePath(null);
     }
+    setImageBlob(null);
     setDupWarning(null);
+    setImageError(null);
     setIsModalOpen(true);
   };
 
@@ -216,6 +264,9 @@ export default function RateSheetPage() {
     setEditingProduct(null);
     setDupWarning(null);
     setImagePreview(null);
+    setImageError(null);
+    setImageBlob(null);
+    setExistingImagePath(null);
   };
 
   const nextSku = () => {
@@ -227,40 +278,125 @@ export default function RateSheetPage() {
     return `KA-${String(max + 1).padStart(3, '0')}`;
   };
 
-  // ── Image resize ────────────────────────────────────────────────────────────
-  const handleImageChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+  // ── Image validate → compress → preview ─────────────────────────────────────
+  const readFileAsDataUrl = (file: File): Promise<string> =>
+    new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onloadend = () => resolve(reader.result as string);
+      reader.onerror = () => reject(new Error('Could not read the selected file.'));
+      reader.readAsDataURL(file);
+    });
+
+  const loadImage = (src: string): Promise<HTMLImageElement> =>
+    new Promise((resolve, reject) => {
+      const img = new Image();
+      img.onload = () => resolve(img);
+      img.onerror = () => reject(new Error('Could not decode the selected image.'));
+      img.src = src;
+    });
+
+  const canvasToBlob = (canvas: HTMLCanvasElement, quality: number): Promise<Blob | null> =>
+    new Promise(resolve => canvas.toBlob(resolve, 'image/jpeg', quality));
+
+  /** Downscales to IMAGE_MAX_DIM and re-encodes as JPEG, stepping quality (and
+   * if still large, dimensions) down toward the ~200-500 KB target. Returns
+   * the smallest attempt as a fallback if the target isn't reached, so a
+   * genuinely dense photo still uploads rather than failing outright. */
+  const compressToBlob = async (img: HTMLImageElement): Promise<Blob | null> => {
+    let { width, height } = img;
+    if (width > IMAGE_MAX_DIM || height > IMAGE_MAX_DIM) {
+      if (width >= height) { height = Math.round(height * IMAGE_MAX_DIM / width); width = IMAGE_MAX_DIM; }
+      else { width = Math.round(width * IMAGE_MAX_DIM / height); height = IMAGE_MAX_DIM; }
+    }
+
+    let smallest: Blob | null = null;
+    for (let attempt = 0; attempt < 6; attempt++) {
+      const canvas = document.createElement('canvas');
+      canvas.width = width; canvas.height = height;
+      const ctx = canvas.getContext('2d');
+      if (!ctx) return smallest;
+      ctx.drawImage(img, 0, 0, width, height);
+
+      const quality = Math.max(IMAGE_QUALITY_MIN, IMAGE_QUALITY_START - attempt * 0.1);
+      const blob = await canvasToBlob(canvas, quality);
+      if (!blob) continue;
+      if (!smallest || blob.size < smallest.size) smallest = blob;
+      if (blob.size <= 500_000) return blob;
+
+      if (quality <= IMAGE_QUALITY_MIN) { width = Math.round(width * 0.8); height = Math.round(height * 0.8); }
+    }
+    return smallest;
+  };
+
+  const handleImageChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
-    const reader = new FileReader();
-    reader.onloadend = () => {
-      const dataUrl = reader.result as string;
-      const img = new Image();
-      img.onload = () => {
-        const MAX_DIM = 1000;
-        let { width, height } = img;
-        if (width > MAX_DIM || height > MAX_DIM) {
-          if (width >= height) { height = Math.round(height * MAX_DIM / width); width = MAX_DIM; }
-          else { width = Math.round(width * MAX_DIM / height); height = MAX_DIM; }
-        }
-        const canvas = document.createElement('canvas');
-        canvas.width = width; canvas.height = height;
-        const ctx = canvas.getContext('2d');
-        if (!ctx) { setImagePreview(dataUrl); setFormData(p => ({ ...p, imageUrl: dataUrl })); return; }
-        ctx.drawImage(img, 0, 0, width, height);
-        const compressed = canvas.toDataURL('image/jpeg', 0.82);
-        setImagePreview(compressed);
-        setFormData(p => ({ ...p, imageUrl: compressed }));
-      };
-      img.onerror = () => { setImagePreview(dataUrl); setFormData(p => ({ ...p, imageUrl: dataUrl })); };
-      img.src = dataUrl;
-    };
-    reader.readAsDataURL(file);
+    setImageError(null);
+
+    if (!ACCEPTED_IMAGE_TYPES.includes(file.type)) {
+      setImageError('Unsupported file format. Please upload a JPG, PNG, or WEBP image.');
+      e.target.value = '';
+      return;
+    }
+    if (file.size > MAX_UPLOAD_BYTES) {
+      setImageError('Image size exceeds 5 MB. Please upload an image smaller than 5 MB.');
+      e.target.value = '';
+      return;
+    }
+
+    setImageProcessing(true);
+    try {
+      const rawDataUrl = await readFileAsDataUrl(file);
+      const img = await loadImage(rawDataUrl);
+      const compressed = await compressToBlob(img);
+      if (!compressed) {
+        setImageError('Could not compress this image. Please try a smaller or simpler image.');
+        return;
+      }
+      setImageBlob(compressed);
+      setImagePreview(URL.createObjectURL(compressed));
+    } catch (err) {
+      console.error('Product photo compression failed:', err);
+      setImageError('Could not process this image. Please try a different file.');
+    } finally {
+      setImageProcessing(false);
+      e.target.value = '';
+    }
   };
 
   // ── Save ────────────────────────────────────────────────────────────────────
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!tenantId) return;
+
+    if (imageProcessing) {
+      alert('Please wait for the photo to finish processing before saving.');
+      return;
+    }
+
+    // Resolve category: "Others" requires and uses the free-text value
+    if (formData.type === 'Others' && !formData.otherType.trim()) {
+      alert('Please enter a category name for "Others".');
+      return;
+    }
+    const resolvedType = formData.type === 'Others' ? formData.otherType.trim() : formData.type;
+
+    // Resolve GST: custom requires a valid 0–100 numeric value
+    let resolvedGst = formData.gstPct;
+    if (formData.customGst) {
+      const g = Number(formData.customGstValue);
+      if (formData.customGstValue.trim() === '' || !Number.isFinite(g) || g < 0 || g > MAX_GST_PCT) {
+        alert(`Please enter a valid GST % between 0 and ${MAX_GST_PCT}.`);
+        return;
+      }
+      resolvedGst = Math.round(g * 100) / 100;
+    }
+
+    // Dates: expiry must not precede manufacturing when both are set
+    if (formData.mfgDate && formData.expiryDate && formData.expiryDate < formData.mfgDate) {
+      alert('Expiry Date cannot be earlier than Manufacturing Date.');
+      return;
+    }
 
     // Dedup guard
     const dup = checkDuplicate(formData.name, formData.mfgCompany, editingProduct?.id);
@@ -269,24 +405,60 @@ export default function RateSheetPage() {
       return;
     }
 
-    if ((formData.imageUrl?.length || 0) > 900_000) {
-      alert('Product photo is too large. Please pick a smaller image.');
-      return;
-    }
-
     const margin = formData.maxRetailPrice > 0
       ? `${Math.round(((formData.maxRetailPrice - formData.retailerPrice) / formData.maxRetailPrice) * 100)}%`
       : 'N/A';
 
-    const { purchasePrice, stockQty, ...costFree } = formData;
-    const { stockQty: _sq, ...withCost } = formData;
-    const baseData = canSeeCost ? withCost : costFree;
     const data: Record<string, unknown> = {
-      ...baseData,
+      productNumber: formData.productNumber,
+      name: formData.name,
+      type: resolvedType,
+      mfgCompany: formData.mfgCompany,
+      description: formData.description,
+      unitSize: formData.unitSize,
+      unitMeasure: formData.unit,
+      baseUnit: formData.unit,
+      gstPct: resolvedGst,
+      maxRetailPrice: formData.maxRetailPrice,
+      retailerPrice: formData.retailerPrice,
+      sellingPrice: formData.sellingPrice,
+      batchNumber: formData.batchNumber,
+      mfgDate: formData.mfgDate,
+      expiryDate: formData.expiryDate,
+      ...(canSeeCost ? { purchasePrice: formData.purchasePrice } : {}),
       margin,
-      loosePieces: stockQty,
+      loosePieces: formData.stockQty,
       updatedAt: serverTimestamp(),
     };
+
+    // Only touch imageUrl/imagePath when a new photo was picked this session.
+    // Leaving no new photo → these keys are simply omitted, so existing
+    // Firestore values (base64 or Storage URL) are left completely untouched.
+    if (imageBlob) {
+      setImageUploading(true);
+      try {
+        const uploadKey = editingProduct?.id || `new-${Date.now()}`;
+        const path = `tenants/${tenantId}/${IMAGE_STORAGE_FOLDER}/${uploadKey}`;
+        const fileRef = storageRef(storage, path);
+        await uploadBytes(fileRef, imageBlob, { contentType: 'image/jpeg' });
+        data.imageUrl = await getDownloadURL(fileRef);
+        data.imagePath = path;
+        data.imageUploadedAt = serverTimestamp();
+
+        // Best-effort cleanup of the previous file when replacing an existing
+        // Storage-backed photo (older base64-only products have no imagePath).
+        if (existingImagePath && existingImagePath !== path) {
+          deleteObject(storageRef(storage, existingImagePath)).catch(err =>
+            console.warn('Could not delete previous product photo:', err));
+        }
+      } catch (err) {
+        console.error('Product photo upload failed:', err);
+        alert('Failed to upload product photo. Please try again.');
+        return;
+      } finally {
+        setImageUploading(false);
+      }
+    }
 
     try {
       if (editingProduct) {
@@ -487,8 +659,8 @@ export default function RateSheetPage() {
         <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.875rem' }}>
           <thead>
             <tr style={{ borderBottom: '2px solid var(--surface-border)', color: 'var(--text-secondary)' }}>
-              {['#', 'Photo', 'Product Name', 'Category', 'Manufacturer', 'Unit', 'GST %', 'MRP', ...(canSeeCost ? ['Purch Rate'] : []), 'Sales Rate', 'Stock', 'Batches', ...(canManage ? ['Actions'] : [])].map(h => (
-                <th key={h} style={{ padding: '0.7rem 0.85rem', fontWeight: 600, textAlign: ['MRP', 'Purch Rate', 'Sales Rate', 'Stock'].includes(h) ? 'right' : 'left', whiteSpace: 'nowrap' }}>{h}</th>
+              {['#', 'Photo', 'Batch No.', 'Product Name', 'Category', 'Manufacturer', 'Size', 'Unit', 'GST %', 'MRP', ...(canSeeCost ? ['Purch Rate'] : []), 'Retail Price', 'Sales Rate', 'Stock', 'Batches', ...(canManage ? ['Actions'] : [])].map(h => (
+                <th key={h} style={{ padding: '0.7rem 0.85rem', fontWeight: 600, textAlign: ['MRP', 'Purch Rate', 'Retail Price', 'Sales Rate', 'Stock'].includes(h) ? 'right' : 'left', whiteSpace: 'nowrap' }}>{h}</th>
               ))}
             </tr>
           </thead>
@@ -502,12 +674,26 @@ export default function RateSheetPage() {
               const isExpired = expDays < 0;
               const isExpiring = expDays >= 0 && expDays <= EXPIRY_WARN_DAYS;
 
+              // Product-level expiry (from the Add/Edit Product form) — distinct
+              // from `bs`/batchSummaries above, which comes from the separate
+              // Inventory Batches collection. Drives the whole-row warning only;
+              // does not touch or duplicate the existing per-batch expiry pill.
+              // Already-expired dates are treated the same as "expiring soon"
+              // here (both surfaced as the row warning) rather than as a
+              // separate visual state, so there's one consistent red signal.
+              const productExpDays = p.expiryDate ? daysUntil(p.expiryDate) : null;
+              const rowExpiring = productExpDays !== null && productExpDays <= EXPIRY_WARN_DAYS;
+
               return (
                 <tr
                   key={p.id}
-                  style={{ borderBottom: '1px solid var(--surface-border)', transition: 'background 0.15s' }}
-                  onMouseOver={e => (e.currentTarget.style.background = 'var(--surface-raised)')}
-                  onMouseOut={e => (e.currentTarget.style.background = 'transparent')}
+                  style={{
+                    borderBottom: '1px solid var(--surface-border)',
+                    transition: 'background 0.15s',
+                    background: rowExpiring ? 'hsla(0,84%,60%,0.08)' : undefined,
+                  }}
+                  onMouseOver={e => (e.currentTarget.style.background = rowExpiring ? 'hsla(0,84%,60%,0.14)' : 'var(--surface-raised)')}
+                  onMouseOut={e => (e.currentTarget.style.background = rowExpiring ? 'hsla(0,84%,60%,0.08)' : 'transparent')}
                 >
                   <td style={{ padding: '0.65rem 0.85rem', color: 'var(--text-tertiary)', fontWeight: 500 }}>{i + 1}</td>
                   <td style={{ padding: '0.65rem 0.85rem' }}>
@@ -517,6 +703,14 @@ export default function RateSheetPage() {
                         : <Package size={15} color="var(--primary-light)" />}
                     </div>
                   </td>
+                  <td style={{ padding: '0.65rem 0.85rem', color: 'var(--text-secondary)', whiteSpace: 'nowrap' }}>
+                    {p.batchNumber || '—'}
+                    {rowExpiring && (
+                      <div style={{ fontSize: '0.68rem', color: '#ef4444', fontWeight: 600, marginTop: '0.1rem' }}>
+                        Exp {fmtDate(p.expiryDate)}
+                      </div>
+                    )}
+                  </td>
                   <td style={{ padding: '0.65rem 0.85rem' }}>
                     <div style={{ fontWeight: 600, color: 'var(--text-primary)' }}>{p.name}</div>
                     {p.productNumber && <div style={{ fontSize: '0.72rem', color: 'var(--text-tertiary)' }}>{p.productNumber}</div>}
@@ -524,13 +718,17 @@ export default function RateSheetPage() {
                   <td style={{ padding: '0.65rem 0.85rem', color: 'var(--text-secondary)' }}>{p.type || '—'}</td>
                   <td style={{ padding: '0.65rem 0.85rem', color: 'var(--text-secondary)' }}>{p.mfgCompany || '—'}</td>
                   <td style={{ padding: '0.65rem 0.85rem', color: 'var(--text-secondary)', whiteSpace: 'nowrap' }}>
-                    {p.unitSize ? `${p.unitSize} ${p.unitMeasure || 'pcs'}` : (p.unitMeasure || p.baseUnit || '—')}
+                    {p.unitSize ?? '—'}
+                  </td>
+                  <td style={{ padding: '0.65rem 0.85rem', color: 'var(--text-secondary)', whiteSpace: 'nowrap' }}>
+                    {p.unitMeasure || p.baseUnit || '—'}
                   </td>
                   <td style={{ padding: '0.65rem 0.85rem', color: 'var(--text-secondary)' }}>{p.gstPct ?? 0}%</td>
                   <td style={{ padding: '0.65rem 0.85rem', textAlign: 'right', fontWeight: 600 }}>₹{(p.maxRetailPrice || 0).toFixed(2)}</td>
                   {canSeeCost && (
                     <td style={{ padding: '0.65rem 0.85rem', textAlign: 'right', color: 'var(--text-tertiary)' }}>₹{(p.purchasePrice || 0).toFixed(2)}</td>
                   )}
+                  <td style={{ padding: '0.65rem 0.85rem', textAlign: 'right', color: 'var(--text-secondary)' }}>₹{(p.retailerPrice || 0).toFixed(2)}</td>
                   <td style={{ padding: '0.65rem 0.85rem', textAlign: 'right' }}>₹{(p.sellingPrice || 0).toFixed(2)}</td>
                   <td style={{ padding: '0.65rem 0.85rem', textAlign: 'right', whiteSpace: 'nowrap' }}>
                     <span style={{ fontWeight: 700, color: isLow ? '#ef4444' : 'var(--text-primary)' }}>{stock}</span>
@@ -582,143 +780,180 @@ export default function RateSheetPage() {
       {/* Add/Edit Modal */}
       {isModalOpen && createPortal(
         <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.85)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000, backdropFilter: 'blur(8px)', padding: '1rem' }}>
-          <div className="glass-panel animate-scale-in" style={{ width: '95vw', maxWidth: '860px', maxHeight: '92vh', display: 'flex', flexDirection: 'column', overflow: 'hidden', boxShadow: 'var(--neon-glow)' }}>
+          <div className="glass-panel animate-scale-in" style={{ width: '95vw', maxWidth: '740px', maxHeight: '90vh', display: 'flex', flexDirection: 'column', overflow: 'hidden', boxShadow: 'var(--neon-glow)' }}>
 
             {/* Modal header */}
-            <div style={{ padding: '1.25rem 1.75rem', borderBottom: '1px solid var(--surface-border)', display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexShrink: 0 }}>
+            <div style={{ padding: '0.85rem 1.25rem', borderBottom: '1px solid var(--surface-border)', display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexShrink: 0 }}>
               <div>
-                <h2 style={{ margin: 0, fontSize: '1.2rem' }}>{editingProduct ? 'Edit Product' : 'Add to Product Master'}</h2>
-                <p style={{ margin: 0, fontSize: '0.8rem', color: 'var(--text-tertiary)', marginTop: '0.2rem' }}>
+                <h2 style={{ margin: 0, fontSize: '1.05rem' }}>{editingProduct ? 'Edit Product' : 'Add to Product Master'}</h2>
+                <p style={{ margin: 0, fontSize: '0.75rem', color: 'var(--text-tertiary)', marginTop: '0.15rem' }}>
                   This record is shared across POS, B2B Invoice, and Purchase Invoices.
                 </p>
               </div>
-              <button onClick={handleCloseModal} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-secondary)', display: 'flex' }}><X size={20} /></button>
+              <button onClick={handleCloseModal} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-secondary)', display: 'flex' }}><X size={18} /></button>
             </div>
 
             {/* Dedup warning */}
             {dupWarning && (
-              <div style={{ margin: '0.75rem 1.75rem 0', padding: '0.65rem 1rem', background: 'hsla(38,92%,50%,0.12)', border: '1px solid hsla(38,92%,50%,0.3)', borderRadius: '8px', fontSize: '0.82rem', color: '#b45309', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                <AlertTriangle size={14} style={{ flexShrink: 0 }} />
+              <div style={{ margin: '0.6rem 1.25rem 0', padding: '0.5rem 0.85rem', background: 'hsla(38,92%,50%,0.12)', border: '1px solid hsla(38,92%,50%,0.3)', borderRadius: '8px', fontSize: '0.78rem', color: '#b45309', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                <AlertTriangle size={13} style={{ flexShrink: 0 }} />
                 {dupWarning} Use the existing product to avoid duplicates.
               </div>
             )}
 
-            <form onSubmit={handleSubmit} style={{ flex: 1, overflowY: 'auto', padding: '1.5rem 1.75rem', display: 'flex', flexDirection: 'column', gap: '1.25rem' }}>
+            <form onSubmit={handleSubmit} style={{ flex: 1, overflowY: 'auto', padding: '0.75rem 1.25rem', display: 'flex', flexDirection: 'column', gap: '0.55rem' }}>
 
               {/* Section 1: Product Identity */}
               <section>
-                <div style={{ fontSize: '0.72rem', fontWeight: 700, textTransform: 'uppercase', color: 'var(--text-tertiary)', letterSpacing: '0.08em', marginBottom: '0.85rem' }}>1 · Product Identity</div>
-                <div style={{ display: 'flex', gap: '1.25rem' }}>
+                <div style={{ fontSize: '0.68rem', fontWeight: 700, textTransform: 'uppercase', color: 'var(--text-tertiary)', letterSpacing: '0.08em', marginBottom: '0.4rem' }}>1 · Product Identity</div>
+                <div style={{ display: 'flex', gap: '0.75rem' }}>
                   {/* Photo */}
-                  <div style={{ position: 'relative', width: 100, height: 100, borderRadius: 10, border: '2px dashed var(--surface-border)', background: 'var(--surface-raised)', overflow: 'hidden', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, cursor: 'pointer' }}>
-                    {imagePreview
-                      ? <img src={imagePreview} alt="Preview" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
-                      : <div style={{ textAlign: 'center', color: 'var(--text-tertiary)', fontSize: '0.7rem' }}><Plus size={20} style={{ margin: '0 auto' }} /><div>Photo</div></div>}
-                    <input type="file" accept="image/*" onChange={handleImageChange} style={{ position: 'absolute', inset: 0, opacity: 0, cursor: 'pointer' }} />
+                  <div style={{ flexShrink: 0 }}>
+                    <div style={{ position: 'relative', width: 60, height: 60, borderRadius: 10, border: '2px dashed var(--surface-border)', background: 'var(--surface-raised)', overflow: 'hidden', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: (imageProcessing || imageUploading) ? 'wait' : 'pointer' }}>
+                      {imagePreview
+                        ? <img src={imagePreview} alt="Preview" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                        : <div style={{ textAlign: 'center', color: 'var(--text-tertiary)', fontSize: '0.58rem' }}><Plus size={14} style={{ margin: '0 auto' }} /><div>Photo</div></div>}
+                      {(imageProcessing || imageUploading) && (
+                        <div style={{ position: 'absolute', inset: 0, background: 'rgba(0,0,0,0.55)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                          <Loader2 size={16} className="animate-spin" color="#fff" />
+                        </div>
+                      )}
+                      <input type="file" accept={ACCEPTED_IMAGE_TYPES.join(',')} onChange={handleImageChange} disabled={imageProcessing || imageUploading} style={{ position: 'absolute', inset: 0, opacity: 0, cursor: (imageProcessing || imageUploading) ? 'wait' : 'pointer' }} />
+                    </div>
+                    {imageError && (
+                      <div style={{ marginTop: '0.3rem', maxWidth: 140, fontSize: '0.62rem', lineHeight: 1.3, color: '#ef4444' }}>{imageError}</div>
+                    )}
                   </div>
-                  <div style={{ flex: 1, display: 'grid', gridTemplateColumns: '1fr 2fr', gap: '0.75rem' }}>
-                    <div>
-                      <label className="input-label">SKU / Product No.</label>
-                      <input className="input-field" value={formData.productNumber} onChange={e => set({ productNumber: e.target.value })} placeholder="KA-001" />
+                  <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: '0.4rem' }}>
+                    {/* Row 1: SKU, Product Name, Batch Number */}
+                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.4rem' }}>
+                      <div style={{ width: 110, flexShrink: 0 }}>
+                        <label className="input-label">SKU / Product No.</label>
+                        <input className="input-field field-sm" value={formData.productNumber} onChange={e => set({ productNumber: e.target.value })} placeholder="KA-001" />
+                      </div>
+                      <div style={{ flex: '1 1 220px', minWidth: 160 }}>
+                        <label className="input-label">Product Name *</label>
+                        <input required className="input-field field-sm" value={formData.name} onChange={e => { set({ name: e.target.value }); handleNameOrMfgChange(e.target.value, formData.mfgCompany); }} placeholder="e.g. Confidor 200 SL" />
+                      </div>
+                      <div style={{ width: 130, flexShrink: 0 }}>
+                        <label className="input-label">Batch Number</label>
+                        <input className="input-field field-sm" value={formData.batchNumber} onChange={e => set({ batchNumber: e.target.value })} placeholder="e.g. B2024-01" />
+                      </div>
                     </div>
-                    <div>
-                      <label className="input-label">Product Name *</label>
-                      <input required className="input-field" value={formData.name} onChange={e => { set({ name: e.target.value }); handleNameOrMfgChange(e.target.value, formData.mfgCompany); }} placeholder="e.g. Confidor 200 SL" />
-                    </div>
-                    <div>
-                      <label className="input-label">Category</label>
-                      <select className="input-field" value={formData.type} onChange={e => set({ type: e.target.value })}>
-                        <option value="">— Select —</option>
-                        {AGRI_CATEGORIES.map(c => <option key={c} value={c}>{c}</option>)}
-                      </select>
-                    </div>
-                    <div>
-                      <label className="input-label">Manufacturer</label>
-                      <input className="input-field" value={formData.mfgCompany} onChange={e => { set({ mfgCompany: e.target.value }); handleNameOrMfgChange(formData.name, e.target.value); }} placeholder="e.g. Bayer CropScience" />
+                    {/* Row 2: Category, Other Category, Manufacturer */}
+                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.4rem' }}>
+                      <div style={{ width: 150, flexShrink: 0 }}>
+                        <label className="input-label">Category</label>
+                        <select className="input-field field-sm" value={formData.type} onChange={e => set({ type: e.target.value })}>
+                          <option value="">— Select —</option>
+                          {AGRI_CATEGORIES.map(c => <option key={c} value={c}>{c}</option>)}
+                        </select>
+                      </div>
+                      {formData.type === 'Others' && (
+                        <div style={{ width: 170, flexShrink: 0 }}>
+                          <label className="input-label">Other Category</label>
+                          <input required className="input-field field-sm" value={formData.otherType} onChange={e => set({ otherType: e.target.value })} placeholder="Enter category name" />
+                        </div>
+                      )}
+                      <div style={{ flex: '1 1 200px', minWidth: 160 }}>
+                        <label className="input-label">Manufacturer</label>
+                        <input className="input-field field-sm" value={formData.mfgCompany} onChange={e => { set({ mfgCompany: e.target.value }); handleNameOrMfgChange(formData.name, e.target.value); }} placeholder="e.g. Bayer CropScience" />
+                      </div>
                     </div>
                   </div>
-                </div>
-                <div style={{ marginTop: '0.75rem' }}>
-                  <label className="input-label">Description (optional)</label>
-                  <input className="input-field" value={formData.description} onChange={e => set({ description: e.target.value })} placeholder="Short notes shown on rate sheets" />
                 </div>
               </section>
 
-              {/* Section 2: Unit Details */}
+              {/* Section 2: Unit & Tax */}
               <section>
-                <div style={{ fontSize: '0.72rem', fontWeight: 700, textTransform: 'uppercase', color: 'var(--text-tertiary)', letterSpacing: '0.08em', marginBottom: '0.85rem' }}>2 · Unit Details</div>
-                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '0.75rem' }}>
-                  <div>
+                <div style={{ fontSize: '0.68rem', fontWeight: 700, textTransform: 'uppercase', color: 'var(--text-tertiary)', letterSpacing: '0.08em', marginBottom: '0.4rem' }}>2 · Unit & Tax</div>
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.4rem' }}>
+                  <div style={{ width: 130, flexShrink: 0 }}>
                     <label className="input-label">Unit Size</label>
-                    <input type="number" min="0" step="0.01" className="input-field" value={formData.unitSize || ''} onChange={e => set({ unitSize: Number(e.target.value) })} onWheel={e => e.currentTarget.blur()} placeholder="e.g. 500" />
+                    <input type="number" min="0" step="0.01" className="input-field field-sm" value={formData.unitSize || ''} onChange={e => set({ unitSize: Number(e.target.value) })} onWheel={e => e.currentTarget.blur()} placeholder="e.g. 500" />
                   </div>
-                  <div>
-                    <label className="input-label">Unit Measure</label>
-                    <select className="input-field" value={formData.unitMeasure} onChange={e => set({ unitMeasure: e.target.value })}>
-                      {UNIT_MEASURES.map(u => <option key={u} value={u}>{u}</option>)}
+                  <div style={{ width: 170, flexShrink: 0 }}>
+                    <label className="input-label">Unit</label>
+                    <select className="input-field field-sm" value={formData.unit} onChange={e => set({ unit: e.target.value })}>
+                      {UNIT_MEASURES.map(u => <option key={u} value={u}>{u.charAt(0).toUpperCase() + u.slice(1)}</option>)}
                     </select>
                   </div>
-                  <div>
-                    <label className="input-label">Base Unit</label>
-                    <select className="input-field" value={formData.baseUnit} onChange={e => set({ baseUnit: e.target.value })}>
-                      {UNIT_MEASURES.map(u => <option key={u} value={u}>{u}</option>)}
-                    </select>
-                  </div>
-                  <div>
+                  <div style={{ width: 110, flexShrink: 0 }}>
                     <label className="input-label">GST %</label>
-                    <select className="input-field" value={formData.gstPct} onChange={e => set({ gstPct: Number(e.target.value) })}>
-                      {GST_OPTIONS.map(g => <option key={g} value={g}>{g}%</option>)}
-                    </select>
+                    {formData.customGst ? (
+                      <div style={{ display: 'flex', gap: '0.3rem' }}>
+                        <input type="number" min="0" max={MAX_GST_PCT} step="0.01" className="input-field field-sm" value={formData.customGstValue} onChange={e => set({ customGstValue: e.target.value })} onWheel={e => e.currentTarget.blur()} placeholder="%" autoFocus />
+                        <button type="button" onClick={() => set({ customGst: false, customGstValue: '' })} className="btn btn-secondary" style={{ padding: '0 0.5rem', flexShrink: 0 }} title="Use preset">×</button>
+                      </div>
+                    ) : (
+                      <select className="input-field field-sm" value={formData.gstPct} onChange={e => {
+                        if (e.target.value === 'custom') { set({ customGst: true, customGstValue: String(formData.gstPct) }); }
+                        else { set({ gstPct: Number(e.target.value) }); }
+                      }}>
+                        {GST_OPTIONS.map(g => <option key={g} value={g}>{g}%</option>)}
+                        <option value="custom">Custom…</option>
+                      </select>
+                    )}
                   </div>
                 </div>
               </section>
 
-              {/* Section 3: Rates */}
+              {/* Section 3: Stock & Rates */}
               <section>
-                <div style={{ fontSize: '0.72rem', fontWeight: 700, textTransform: 'uppercase', color: 'var(--text-tertiary)', letterSpacing: '0.08em', marginBottom: '0.85rem' }}>3 · Rates</div>
-                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '0.75rem' }}>
-                  <div>
-                    <label className="input-label">MRP</label>
-                    <input type="number" step="0.01" min="0" className="input-field" value={formData.maxRetailPrice || ''} onChange={e => set({ maxRetailPrice: Number(e.target.value) })} onWheel={e => e.currentTarget.blur()} placeholder="0.00" />
+                <div style={{ fontSize: '0.68rem', fontWeight: 700, textTransform: 'uppercase', color: 'var(--text-tertiary)', letterSpacing: '0.08em', marginBottom: '0.4rem' }}>3 · Stock & Rates</div>
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.4rem' }}>
+                  <div style={{ width: 110, flexShrink: 0 }}>
+                    <label className="input-label">Stock Quantity</label>
+                    <input type="number" min="0" step="1" className="input-field field-sm" value={formData.stockQty === 0 ? '' : formData.stockQty} onChange={e => set({ stockQty: Number(e.target.value) })} onWheel={e => e.currentTarget.blur()} placeholder="0" />
                   </div>
-                  <div>
+                  <div style={{ width: 120, flexShrink: 0 }}>
+                    <label className="input-label">MRP</label>
+                    <input type="number" step="0.01" min="0" className="input-field field-sm" value={formData.maxRetailPrice || ''} onChange={e => set({ maxRetailPrice: Number(e.target.value) })} onWheel={e => e.currentTarget.blur()} placeholder="0.00" />
+                  </div>
+                  <div style={{ width: 140, flexShrink: 0 }}>
                     <label className="input-label">Retailer Price (PTR)</label>
-                    <input type="number" step="0.01" min="0" className="input-field" value={formData.retailerPrice || ''} onChange={e => set({ retailerPrice: Number(e.target.value) })} onWheel={e => e.currentTarget.blur()} placeholder="0.00" />
+                    <input type="number" step="0.01" min="0" className="input-field field-sm" value={formData.retailerPrice || ''} onChange={e => set({ retailerPrice: Number(e.target.value) })} onWheel={e => e.currentTarget.blur()} placeholder="0.00" />
                   </div>
                   {canSeeCost && (
-                    <div>
+                    <div style={{ width: 120, flexShrink: 0 }}>
                       <label className="input-label">Purchase Rate</label>
-                      <input type="number" step="0.01" min="0" className="input-field" value={formData.purchasePrice || ''} onChange={e => set({ purchasePrice: Number(e.target.value) })} onWheel={e => e.currentTarget.blur()} placeholder="0.00" />
+                      <input type="number" step="0.01" min="0" className="input-field field-sm" value={formData.purchasePrice || ''} onChange={e => set({ purchasePrice: Number(e.target.value) })} onWheel={e => e.currentTarget.blur()} placeholder="0.00" />
                     </div>
                   )}
-                  <div>
+                  <div style={{ width: 120, flexShrink: 0 }}>
                     <label className="input-label">Sales Rate</label>
-                    <input type="number" step="0.01" min="0" className="input-field" value={formData.sellingPrice || ''} onChange={e => set({ sellingPrice: Number(e.target.value) })} onWheel={e => e.currentTarget.blur()} placeholder="0.00" />
+                    <input type="number" step="0.01" min="0" className="input-field field-sm" value={formData.sellingPrice || ''} onChange={e => set({ sellingPrice: Number(e.target.value) })} onWheel={e => e.currentTarget.blur()} placeholder="0.00" />
                   </div>
                 </div>
-                <p style={{ fontSize: '0.75rem', color: 'var(--text-tertiary)', marginTop: '0.5rem' }}>
-                  These are defaults only. Rates on individual Purchase Invoices override them without changing the master.
+                <p style={{ fontSize: '0.7rem', color: 'var(--text-tertiary)', marginTop: '0.35rem' }}>
+                  {editingProduct
+                    ? 'Stock: direct edit for correction. Rates are defaults only — Purchase Invoices override them without changing the master.'
+                    : 'Stock: leave 0 if it will be added via Purchase Invoices. Rates are defaults only and can be overridden per invoice.'}
                 </p>
               </section>
 
-              {/* Section 4: Stock */}
+              {/* Section 4: Batch Information */}
               <section>
-                <div style={{ fontSize: '0.72rem', fontWeight: 700, textTransform: 'uppercase', color: 'var(--text-tertiary)', letterSpacing: '0.08em', marginBottom: '0.85rem' }}>4 · Stock</div>
-                <div style={{ display: 'grid', gridTemplateColumns: '1fr 3fr', gap: '0.75rem', alignItems: 'end' }}>
-                  <div>
-                    <label className="input-label">Stock Quantity</label>
-                    <input type="number" min="0" step="1" className="input-field" value={formData.stockQty === 0 ? '' : formData.stockQty} onChange={e => set({ stockQty: Number(e.target.value) })} onWheel={e => e.currentTarget.blur()} placeholder="0" />
+                <div style={{ fontSize: '0.68rem', fontWeight: 700, textTransform: 'uppercase', color: 'var(--text-tertiary)', letterSpacing: '0.08em', marginBottom: '0.4rem' }}>4 · Batch Information</div>
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.4rem' }}>
+                  <div style={{ width: 165, flexShrink: 0 }}>
+                    <label className="input-label">Manufacturing Date</label>
+                    <input type="date" className="input-field field-sm" value={formData.mfgDate} onChange={e => set({ mfgDate: e.target.value })} />
                   </div>
-                  <p style={{ fontSize: '0.75rem', color: 'var(--text-tertiary)', margin: 0 }}>
-                    {editingProduct
-                      ? 'Direct edit for correction. For regular stock-in, use Purchase Invoices to keep the audit trail intact.'
-                      : 'Opening stock for this product. Leave 0 if stock will be added via Purchase Invoices.'}
-                  </p>
+                  <div style={{ width: 165, flexShrink: 0 }}>
+                    <label className="input-label">Expiry Date</label>
+                    <input type="date" className="input-field field-sm" value={formData.expiryDate} onChange={e => set({ expiryDate: e.target.value })} />
+                  </div>
                 </div>
+                <p style={{ fontSize: '0.7rem', color: 'var(--text-tertiary)', marginTop: '0.35rem' }}>
+                  Reference values shown on the catalog row. For multi-batch stock tracking with individual expiry dates, use Inventory Batches.
+                </p>
               </section>
 
-              <button type="submit" className="btn btn-primary" style={{ width: '100%', height: '3rem', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '0.5rem', fontSize: '1rem', flexShrink: 0 }}>
-                <Save size={18} /> {editingProduct ? 'Save Changes' : 'Add to Product Master'}
+              <button type="submit" disabled={imageProcessing || imageUploading} className="btn btn-primary" style={{ width: '100%', height: '2.5rem', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '0.5rem', fontSize: '0.9rem', flexShrink: 0, opacity: (imageProcessing || imageUploading) ? 0.7 : 1 }}>
+                {imageUploading
+                  ? <><Loader2 size={16} className="animate-spin" /> Uploading photo…</>
+                  : <><Save size={16} /> {editingProduct ? 'Save Changes' : 'Add to Product Master'}</>}
               </button>
             </form>
           </div>

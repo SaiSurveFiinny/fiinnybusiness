@@ -152,6 +152,7 @@ function Layout({ children, currentTheme, toggleTheme }: { children: React.React
   const SALES_NAV_PATHS = ['/sales-targets', '/worklist'];
 
   const mainNavItems = [
+    { path: '/reports', icon: <BarChart3 size={19} />, label: 'Reports', screenKey: 'analytics' },
     { path: '/dashboard', icon: <Home size={19} />, label: 'B2B Dashboard', screenKey: 'dashboard' },
     { path: '/b2c-dashboard', icon: <BarChart3 size={19} />, label: 'B2C Dashboard', screenKey: 'b2c_dashboard' },
     { path: '/online-dashboard', icon: <Activity size={19} />, label: 'Online Dashboard', screenKey: 'online_dashboard' },
@@ -174,7 +175,6 @@ function Layout({ children, currentTheme, toggleTheme }: { children: React.React
     { path: '/supplier-ledger', icon: <Truck size={19} />, label: 'Supplier Ledger', screenKey: 'worklist' },
     { path: '/expenses', icon: <Receipt size={19} />, label: 'Expenses', screenKey: 'expenses' },
     { path: '/delivery-challans', icon: <Truck size={19} />, label: 'Delivery Challans', screenKey: 'worklist' },
-    { path: '/reports', icon: <BarChart3 size={19} />, label: 'Reports', screenKey: 'analytics' },
     { path: '/warehouses', icon: <Layers size={19} />, label: 'Warehouses / Godowns', screenKey: 'inventory' },
     { path: '/inventory-batches', icon: <Package size={19} />, label: 'Inventory Batches', screenKey: 'inventory' },
     { path: '/barcode', icon: <Activity size={19} />, label: 'Barcode Labels', screenKey: 'inventory' },
@@ -277,8 +277,8 @@ function Layout({ children, currentTheme, toggleTheme }: { children: React.React
       {/* Horizontal priority nav */}
       <HorizontalNavbar />
 
-      {/* Main Content */}
-      <main className="main-content">{children}</main>
+      {/* Main Content — Reports uses the full viewport width */}
+      <main className={`main-content${location.pathname.startsWith('/reports') ? ' main-content--full' : ''}`}>{children}</main>
 
       {/* Drawer Overlay */}
       {drawerOpen && (
