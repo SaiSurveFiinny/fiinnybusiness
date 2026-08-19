@@ -7,6 +7,65 @@ import '../../../core/models/order_model.dart';
 class OrderRepository {
   final _db = FirebaseFirestore.instance;
 
+  /// Last-resort owner lookup for a cart item that carries no sellerPhone.
+  ///
+  /// Prefers a phone (the security rule reads `sellerPhone == myPhone()`) and
+  /// falls back to the owner UID, matching how web-created orders are keyed.
+  /// Returns '' only if the product doc is gone — never throws, because the
+  /// payment has already succeeded by the time this runs and losing the order
+  /// would be far worse than an imperfect key.
+  Future<String> _resolveSellerKeyFromProduct(CartItemModel item) async {
+    try {
+      final snap = await _db.collection('products').doc(item.catalogId).get();
+      final d = snap.data();
+      if (d == null) return '';
+
+      // 1. The ordered doc owns itself.
+      final own = _ownerOf(d);
+      if (own.isNotEmpty) return own;
+
+      // 2. Ownerless CANONICAL catalog doc (source: 'admin', flagged
+      //    online_delivery but carrying no retailer*/owner* fields at all).
+      //    The real seller lives on a separate copy doc that the marketplace
+      //    merges in by name — see CatalogRepository.fetchAllMergedProducts.
+      //    Only trust it when a single seller stocks the product; if two do,
+      //    guessing would credit one seller with another's order.
+      final name = (d['name'] as String?)?.trim() ?? '';
+      if (name.isEmpty) return '';
+
+      final siblings =
+          await _db.collection('products').where('name', isEqualTo: name).get();
+      final owners = siblings.docs
+          .map((s) => s.data())
+          .where((s) => _copySources.contains(s['source'] as String? ?? ''))
+          .map(_ownerOf)
+          .where((o) => o.isNotEmpty)
+          .toSet();
+
+      if (owners.length == 1) return owners.first;
+    } catch (_) {
+      // Fall through — an unkeyed order still beats a dropped paid order.
+      // backfillOrderSeller repairs whatever reaches Firestore unkeyed.
+    }
+    return '';
+  }
+
+  /// Sources marking a doc as a seller's copy of a canonical catalog product.
+  static const _copySources = {
+    'admin_assigned',
+    'manufacturer_assigned',
+    'retailer_inventory_copy',
+  };
+
+  /// First non-empty ownership field on a product doc, phone-first, or ''.
+  static String _ownerOf(Map<String, dynamic> d) {
+    for (final field in ['retailerPhone', 'ownerPhone', 'retailerId', 'ownerId']) {
+      final v = (d[field] as String?)?.trim();
+      if (v != null && v.isNotEmpty) return v;
+    }
+    return '';
+  }
+
   /// Creates one order doc per unique seller after successful payment.
   Future<void> createOrdersAfterPayment({
     required List<CartItemModel> items,
@@ -19,10 +78,15 @@ class OrderRepository {
   }) async {
     final user = FirebaseAuth.instance.currentUser!;
 
-    // Group cart items by seller
+    // Group cart items by seller. A cart item whose sellerPhone is empty (the
+    // product carried no resolvable owner field) must NOT be grouped under ''
+    // — that writes a paid order with no seller key, which no dashboard query
+    // can ever match. Recover the owner from the product doc instead.
     final Map<String, List<CartItemModel>> bySeller = {};
     for (final item in items) {
-      bySeller.putIfAbsent(item.sellerPhone, () => []).add(item);
+      var key = item.sellerPhone.trim();
+      if (key.isEmpty) key = await _resolveSellerKeyFromProduct(item);
+      bySeller.putIfAbsent(key, () => []).add(item);
     }
 
     final batch = _db.batch();
@@ -45,10 +109,15 @@ class OrderRepository {
         'customerName': customerName,
         'customerPhone': customerPhone,
         'customerAddress': customerAddress,
-        // sellerId kept as phone for legacy query compatibility
+        // sellerId kept as phone for legacy query compatibility. May also be
+        // an owner UID when the product carried no phone — web-created orders
+        // are keyed that way too, so the dashboard matches either.
         'sellerId': sellerPhone,
-        // sellerPhone required by security rule: sellerPhone == myPhone()
-        'sellerPhone': sellerPhone,
+        // sellerPhone backs the security rule `sellerPhone == myPhone()`, so
+        // only write it when the key really is a phone — a UID here would make
+        // the rule silently unsatisfiable for the seller.
+        'sellerPhone':
+            RegExp(r'^\+?[0-9]{10,13}$').hasMatch(sellerPhone) ? sellerPhone : '',
         'sellerName': sellerName,
         'sellerType': 'retailer',
         'items': sellerItems

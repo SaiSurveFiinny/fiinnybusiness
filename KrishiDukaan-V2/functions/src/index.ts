@@ -79,7 +79,16 @@ export const syncSellerProductToCanonical = onDocumentWritten(
         before.ownerPhone !== d.ownerPhone ||
         before.ownerId !== d.ownerId ||
         before.retailerId !== d.retailerId;
-      if (!priceChanged && !stockChanged && !discountChanged && !identityChanged) return;
+      // A seller adding or repricing a package size must reach the canonical
+      // availability entry. Without this the trigger returned immediately on a
+      // variants-only edit, so a retailer who stocked a new size (5L on a
+      // catalogue product listing only 1L) never surfaced it anywhere.
+      const variantsChanged =
+        JSON.stringify(before.variants ?? null) !== JSON.stringify(d.variants ?? null);
+      if (
+        !priceChanged && !stockChanged && !discountChanged &&
+        !identityChanged && !variantsChanged
+      ) return;
     }
 
     // Values to mirror
@@ -120,7 +129,10 @@ export const syncSellerProductToCanonical = onDocumentWritten(
           ? [...(root.availability as Record<string, unknown>[])]
           : [];
 
-        if (!availability.length) return;
+        // The seller's own package sizes. The marketplace resolves per-store
+        // pricing from the entry's variants, so a size missing here is a size
+        // that store cannot sell even when the chip is visible.
+        const sellerVariants = Array.isArray(d.variants) ? d.variants : null;
 
         let changed = false;
         const updated = availability.map((entry) => {
@@ -136,12 +148,34 @@ export const syncSellerProductToCanonical = onDocumentWritten(
           if (sellingPrice != null) patch.sellingPrice = sellingPrice;
           if (stockLabel != null) patch.stockLevel = stockLabel;
           patch.discountPct = effectivePct;
+          if (sellerVariants) patch.variants = sellerVariants;
           // P6: Enrich storePhone when it is missing in the availability entry.
           // This replaces the per-product arrayRemove+arrayUnion loop that backfill
           // used to run after the batch commit (which generated N extra HTTP requests).
           if (!entry.storePhone && ownerPhone) patch.storePhone = ownerPhone;
           return patch;
         });
+
+        // No entry for this seller yet — create one rather than dropping the
+        // update. Canonical docs assigned by admin often have no availability[]
+        // at all, so the map above matched nothing and every price, stock, and
+        // variant change this seller made was silently discarded.
+        if (!changed && (ownerId || ownerPhone)) {
+          updated.push({
+            storeId: ownerId || ownerPhone,
+            storePhone: ownerPhone || undefined,
+            storeName: d.store ?? d.storeName ?? undefined,
+            stockLevel: stockLabel ?? "In Stock",
+            sellingPrice: sellingPrice ?? undefined,
+            isOnline:
+              typeof d.isOnline === "boolean"
+                ? d.isOnline
+                : d.sellMode === "online_delivery",
+            discountPct: effectivePct,
+            ...(sellerVariants ? { variants: sellerVariants } : {}),
+          });
+          changed = true;
+        }
 
         if (changed) {
           txn.update(rootRef, {

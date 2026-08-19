@@ -1265,7 +1265,16 @@ export default function App() {
   }, []);
 
   // Buy Now: add to cart (auto-select first online store if available) + go to cart
-  const handleBuyNow = useCallback((product: MarketplaceProduct) => {
+  //
+  // The selected package size MUST be threaded through. ProductDetailView passes
+  // the chosen variant to onBuyNow, but this handler used to drop it — so Buy Now
+  // silently added the base size no matter which chip the buyer picked. It went
+  // unnoticed while products effectively had one selectable size per store; the
+  // moment a store stocked a second (5L alongside 1L), Buy Now charged for 1L.
+  const handleBuyNow = useCallback((
+    product: MarketplaceProduct,
+    variant?: { unit: string; price: number; stock?: number },
+  ) => {
     if (product.sellMode === "offline_store_only") {
       setToastMsg("This product is not available for online ordering.");
       setToastType("error");
@@ -1304,10 +1313,13 @@ export default function App() {
     });
 
     if (onlineStore) {
-      handleAddToCartFromStore(product, onlineStore);
+      // Pass the variant's price as the explicit price too: handleAddToCartFromStore
+      // resolves the store's own per-size price from it, and falling back to the
+      // base price here would charge 1L money for a 5L can.
+      handleAddToCartFromStore(product, onlineStore, variant?.price, variant);
     } else {
       // No specific store found — add as pending and navigate to cart
-      addToCart(product);
+      addToCart(product, variant);
     }
     navigate("cart");
   }, [storesWithDistance, handleAddToCartFromStore, addToCart, navigate]);

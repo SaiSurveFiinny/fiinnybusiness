@@ -349,7 +349,15 @@ class ListingRepository {
     return ListingModel(
       id:           doc.id,
       catalogId:    doc.id,
-      sellerPhone:  d['retailerPhone'] as String? ?? d['retailerId'] as String? ?? '',
+      // All four ownership keyings must be tried: products written by the web
+      // (source: manufacturer_inventory) carry ownerPhone/ownerId and NO
+      // retailer* fields. Checking only retailer* yielded '' here, which then
+      // travelled into the cart and produced orders with an empty sellerId —
+      // invisible to the seller dashboard forever after.
+      sellerPhone:  d['retailerPhone'] as String? ??
+                    d['ownerPhone'] as String? ??
+                    d['retailerId'] as String? ??
+                    d['ownerId'] as String? ?? '',
       sellerName:   d['store'] as String? ?? d['storeName'] as String? ?? '',
       sellerType:   'retailer',
       sellerAddress: d['address'] as String?,
