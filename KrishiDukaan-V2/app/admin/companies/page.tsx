@@ -415,6 +415,7 @@ function ProductsTab({ manufacturer }: { manufacturer: ManufacturerEntry }) {
   const [products, setProducts] = useState<any[]>([]);
   const [loading, setLoading] = useState(false);
   const [status, setStatus] = useState<Status>(null);
+  const [search, setSearch] = useState("");
 
   useEffect(() => {
     if (!manufacturer.uid) { setProducts([]); return; }
@@ -425,6 +426,12 @@ function ProductsTab({ manufacturer }: { manufacturer: ManufacturerEntry }) {
       .finally(() => setLoading(false));
   }, [manufacturer.uid]);
 
+  const filteredProducts = products.filter((p: any) => {
+    const q = search.trim().toLowerCase();
+    if (!q) return true;
+    return [p.name, p.category].filter(Boolean).some((v) => String(v).toLowerCase().includes(q));
+  });
+
   return (
     <div className="space-y-4">
       <StatusBanner status={status} onDismiss={() => setStatus(null)} />
@@ -432,6 +439,23 @@ function ProductsTab({ manufacturer }: { manufacturer: ManufacturerEntry }) {
         <Info className="w-4 h-4 shrink-0 text-blue-600" />
         <span>Products are fetched live from the manufacturer&apos;s inventory. Always up to date.</span>
       </div>
+      {products.length > 0 && (
+        <div className="flex items-center gap-3 bg-surface-container-low border border-outline-variant rounded-2xl px-4 py-2.5">
+          <Search className="h-4 w-4 text-outline shrink-0" />
+          <input
+            type="text"
+            placeholder="Search products by name or category…"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            className="flex-1 bg-transparent border-none focus:ring-0 text-sm text-on-surface placeholder-on-surface-variant"
+          />
+          {search && (
+            <button type="button" onClick={() => setSearch("")} className="text-outline hover:text-on-surface">
+              <X className="h-3.5 w-3.5" />
+            </button>
+          )}
+        </div>
+      )}
       {!manufacturer.uid ? (
         <div className="rounded-2xl border border-dashed border-outline-variant/50 px-6 py-10 text-center space-y-2">
           <Package className="w-8 h-8 text-on-surface-variant/30 mx-auto" />
@@ -446,9 +470,13 @@ function ProductsTab({ manufacturer }: { manufacturer: ManufacturerEntry }) {
           <Package className="w-10 h-10 text-on-surface-variant/30 mx-auto" />
           <p className="font-semibold text-on-surface-variant">No products found in inventory.</p>
         </div>
+      ) : filteredProducts.length === 0 ? (
+        <div className="rounded-2xl border border-dashed border-outline-variant/50 px-6 py-14 text-center space-y-2">
+          <p className="font-semibold text-on-surface-variant">No products match &ldquo;{search}&rdquo;.</p>
+        </div>
       ) : (
         <div className="space-y-2.5">
-          {products.map((p: any) => (
+          {filteredProducts.map((p: any) => (
             <div key={p.id} className="flex items-center gap-4 rounded-xl border border-outline-variant/30 bg-surface-container-lowest p-3.5">
               <div className="w-12 h-12 rounded-xl overflow-hidden bg-surface-container shrink-0">
                 {p.image
@@ -483,6 +511,7 @@ function StoresTab({ manufacturer }: { manufacturer: ManufacturerEntry }) {
   const [stores, setStores] = useState<RetailerNetworkStore[]>([]);
   const [loading, setLoading] = useState(false);
   const [status, setStatus] = useState<Status>(null);
+  const [search, setSearch] = useState("");
 
   useEffect(() => {
     setLoading(true);
@@ -492,6 +521,12 @@ function StoresTab({ manufacturer }: { manufacturer: ManufacturerEntry }) {
       .finally(() => setLoading(false));
   }, [manufacturer.phone]);
 
+  const filteredStores = stores.filter((s) => {
+    const q = search.trim().toLowerCase();
+    if (!q) return true;
+    return [s.name, s.address, s.storePhone].filter(Boolean).some((v) => String(v).toLowerCase().includes(q));
+  });
+
   return (
     <div className="space-y-4">
       <StatusBanner status={status} onDismiss={() => setStatus(null)} />
@@ -499,6 +534,23 @@ function StoresTab({ manufacturer }: { manufacturer: ManufacturerEntry }) {
         <Info className="w-4 h-4 shrink-0 text-blue-600" />
         <span>Stores are fetched live from the manufacturer&apos;s retailer network. No duplication — always up to date.</span>
       </div>
+      {stores.length > 0 && (
+        <div className="flex items-center gap-3 bg-surface-container-low border border-outline-variant rounded-2xl px-4 py-2.5">
+          <Search className="h-4 w-4 text-outline shrink-0" />
+          <input
+            type="text"
+            placeholder="Search stores by name, address, or phone…"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            className="flex-1 bg-transparent border-none focus:ring-0 text-sm text-on-surface placeholder-on-surface-variant"
+          />
+          {search && (
+            <button type="button" onClick={() => setSearch("")} className="text-outline hover:text-on-surface">
+              <X className="h-3.5 w-3.5" />
+            </button>
+          )}
+        </div>
+      )}
       {loading ? (
         <div className="flex h-32 items-center justify-center gap-2 text-sm text-on-surface-variant">
           <Loader2 className="w-5 h-5 animate-spin" /> Loading…
@@ -508,9 +560,13 @@ function StoresTab({ manufacturer }: { manufacturer: ManufacturerEntry }) {
           <Store className="w-10 h-10 text-on-surface-variant/30 mx-auto" />
           <p className="font-semibold text-on-surface-variant">No retailers found in network.</p>
         </div>
+      ) : filteredStores.length === 0 ? (
+        <div className="rounded-2xl border border-dashed border-outline-variant/50 px-6 py-14 text-center space-y-2">
+          <p className="font-semibold text-on-surface-variant">No stores match &ldquo;{search}&rdquo;.</p>
+        </div>
       ) : (
         <div className="space-y-2.5">
-          {stores.map(s => (
+          {filteredStores.map(s => (
             <div key={s.id} className="flex items-center gap-4 rounded-xl border border-outline-variant/30 bg-surface-container-lowest p-3.5">
               <div className="w-9 h-9 rounded-xl bg-primary/10 flex items-center justify-center shrink-0">
                 <Store className="w-4 h-4 text-primary" />
