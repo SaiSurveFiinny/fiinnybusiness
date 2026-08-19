@@ -330,6 +330,7 @@ export default function AdminInventoryPage() {
   const [loading, setLoading] = useState(true);
   const [search,  setSearch]  = useState("");
   const [showLogs, setShowLogs] = useState(false);
+  const [logSearch, setLogSearch] = useState("");
   const [typeFilter, setTypeFilter] = useState<"all" | "retailer" | "manufacturer">("all");
 
   const load = async () => {
@@ -356,6 +357,14 @@ export default function AdminInventoryPage() {
     retailer: items.filter(i => i.ownerType === "retailer").length,
     manufacturer: items.filter(i => i.ownerType === "manufacturer").length,
   };
+
+  const filteredLogs = logs.filter(log => {
+    const q = logSearch.trim().toLowerCase();
+    if (!q) return true;
+    return [log.productName, log.ownerPhone, log.note, log.modifiedBy]
+      .filter(Boolean)
+      .some(v => String(v).toLowerCase().includes(q));
+  });
 
   return (
     <div className="space-y-6 max-w-5xl">
@@ -447,9 +456,29 @@ export default function AdminInventoryPage() {
         </button>
 
         {showLogs && (
-          <div className="border-t border-outline-variant/20 max-h-[400px] overflow-y-auto">
+          <div className="border-t border-outline-variant/20">
+            {logs.length > 0 && (
+              <div className="flex items-center gap-3 bg-surface-container-low border-b border-outline-variant/20 px-4 py-2.5">
+                <Search className="h-4 w-4 text-outline shrink-0" />
+                <input
+                  type="text"
+                  placeholder="Search log by product, owner phone, or note…"
+                  value={logSearch}
+                  onChange={e => setLogSearch(e.target.value)}
+                  className="flex-1 bg-transparent border-none focus:ring-0 text-xs text-on-surface placeholder-on-surface-variant"
+                />
+                {logSearch && (
+                  <button type="button" onClick={() => setLogSearch("")} className="text-outline hover:text-on-surface">
+                    <X className="h-3.5 w-3.5" />
+                  </button>
+                )}
+              </div>
+            )}
+            <div className="max-h-[400px] overflow-y-auto">
             {logs.length === 0 ? (
               <p className="text-sm text-center text-on-surface-variant py-10">No inventory changes logged yet.</p>
+            ) : filteredLogs.length === 0 ? (
+              <p className="text-sm text-center text-on-surface-variant py-10">No log entries match &ldquo;{logSearch}&rdquo;.</p>
             ) : (
               <table className="w-full text-xs">
                 <thead className="sticky top-0 bg-surface-container-low border-b border-outline-variant/20">
@@ -462,7 +491,7 @@ export default function AdminInventoryPage() {
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-outline-variant/10">
-                  {logs.map(log => (
+                  {filteredLogs.map(log => (
                     <tr key={log.id} className="hover:bg-surface-container-low/40">
                       <td className="px-4 py-2.5">
                         <p className="font-semibold text-on-surface truncate max-w-[140px]">{log.productName}</p>
@@ -498,6 +527,7 @@ export default function AdminInventoryPage() {
                 </tbody>
               </table>
             )}
+            </div>
           </div>
         )}
       </div>

@@ -22,7 +22,7 @@ const db = admin.firestore();
  *
  * Triggers on every write to products/{productId}.
  * If the doc is a seller copy (has manufacturerProductId or originalProductId),
- * it fans out the changed price / stock / discount to:
+ * it fans out the changed price / stock / discount / online-delivery status to:
  *   1. The canonical product's availability[] entry  (marketplace reads this)
  *   2. The seller's inventory doc                    (web dashboard reads this)
  *
@@ -79,7 +79,15 @@ export const syncSellerProductToCanonical = onDocumentWritten(
         before.ownerPhone !== d.ownerPhone ||
         before.ownerId !== d.ownerId ||
         before.retailerId !== d.retailerId;
-      if (!priceChanged && !stockChanged && !discountChanged && !identityChanged) return;
+      // A seller flipping their own Inventory → Online Delivery toggle must
+      // reach the canonical availability[] entry too — without this, a
+      // retailer who legitimately turns delivery on for an assigned product
+      // never shows up as orderable, since availability[].isOnline (what the
+      // marketplace store picker reads) was never being kept in sync with
+      // this doc's own isOnline/sellMode.
+      const onlineChanged =
+        before.isOnline !== d.isOnline || before.sellMode !== d.sellMode;
+      if (!priceChanged && !stockChanged && !discountChanged && !identityChanged && !onlineChanged) return;
     }
 
     // Values to mirror
@@ -107,6 +115,15 @@ export const syncSellerProductToCanonical = onDocumentWritten(
         : typeof d.discountPct === "number" && d.discountEnabled === true
         ? (d.discountPct as number)
         : 0;
+
+    // A seller's copy is the source of truth for whether THEY personally sell
+    // this online — explicit isOnline wins; otherwise derive from sellMode.
+    // Missing/unset entirely defaults to false (never advertise online
+    // delivery a seller never explicitly turned on).
+    const isOnline =
+      typeof d.isOnline === "boolean"
+        ? d.isOnline
+        : d.sellMode === "online_delivery";
 
     // ── 1. Update canonical availability[] entry ──────────────────────────────
     try {
@@ -136,6 +153,7 @@ export const syncSellerProductToCanonical = onDocumentWritten(
           if (sellingPrice != null) patch.sellingPrice = sellingPrice;
           if (stockLabel != null) patch.stockLevel = stockLabel;
           patch.discountPct = effectivePct;
+          patch.isOnline = isOnline;
           // P6: Enrich storePhone when it is missing in the availability entry.
           // This replaces the per-product arrayRemove+arrayUnion loop that backfill
           // used to run after the batch commit (which generated N extra HTTP requests).
