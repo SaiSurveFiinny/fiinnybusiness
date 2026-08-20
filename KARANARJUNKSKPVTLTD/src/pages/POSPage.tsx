@@ -30,7 +30,7 @@ import { prepareStockDeduction, recordStockMovements, formatLowStockAlert } from
 import { getInvoiceProductCategories, getAllConfiguredLicenses } from '../utils/invoiceCategories';
 import { logAudit } from '../utils/auditLog';
 import { PosInvoicePreview, numberToWords, toMonthYear } from '../components/PosInvoicePreview';
-import { AGRI_CATEGORIES } from '../utils/constants';
+import { AGRI_CATEGORIES, INVOICE_CONTACT_LABEL } from '../utils/constants';
 import { fetchInvoiceTemplate, fetchInvoiceBranding } from '../services/invoiceTemplateService';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useTranslation } from 'react-i18next';
@@ -1499,6 +1499,7 @@ export default function POSPage() {
                                                 {branding?.address && <div style={{ fontSize: '0.68rem', color: '#333', lineHeight: 1.4, textAlign: 'center' }}>{branding.address}</div>}
                                                 <div style={{ fontSize: '0.66rem', color: '#333', display: 'flex', gap: '8px', flexWrap: 'wrap', justifyContent: 'center' }}>
                                                     {branding?.gstin && <span><strong>GSTIN:</strong> {branding.gstin}</span>}
+                                                    <span>| <strong>Contact:</strong> {INVOICE_CONTACT_LABEL}</span>
                                                     {branding?.contact && <span>| <strong>Ph:</strong> {branding.contact}</span>}
                                                 </div>
                                             </div>
@@ -1833,6 +1834,7 @@ export default function POSPage() {
                                             <div style={{ fontSize: '0.78rem', color: '#444', marginTop: '2px' }}>
                                                 {branding?.address || 'Address'}<br />
                                                 {branding?.gstin && <><strong>GSTIN:</strong> {branding.gstin} &nbsp;</>}
+                                                <strong>Contact:</strong> {INVOICE_CONTACT_LABEL} &nbsp;
                                                 {branding?.contact && <>Contact No.: {branding.contact}</>}
                                             </div>
                                             {(() => {

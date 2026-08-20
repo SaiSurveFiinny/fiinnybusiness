@@ -14,6 +14,7 @@ import { getTenantCollection, getTenantDoc } from '../utils/tenantPath';
 import { fetchInvoiceBranding } from '../services/invoiceTemplateService';
 import { getAllConfiguredLicenses } from '../utils/invoiceCategories';
 import { validateGSTIN } from '../utils/gstinValidator';
+import { INVOICE_CONTACT_LABEL } from '../utils/constants';
 import { logAudit } from '../utils/auditLog';
 
 // ─────────────────────────────────────────────
@@ -867,6 +868,7 @@ ${styles}
                         )}
                         <div style={{ fontSize: '0.48rem', color: '#333', display: 'flex', gap: '5px', flexWrap: 'wrap' as const, justifyContent: 'center' }}>
                             {branding?.gstin && <span><strong>GSTIN:</strong> {branding.gstin}</span>}
+                            <span>| <strong>Contact:</strong> {INVOICE_CONTACT_LABEL}</span>
                             {branding?.contact && <span>| <strong>Ph:</strong> {branding.contact}</span>}
                         </div>
                     </div>
@@ -1282,6 +1284,7 @@ ${styles}
                             <div style={{ fontSize: '0.78rem', color: '#444', marginTop: '2px' }}>
                                 {branding?.address || tenantData?.location || 'Address'}<br />
                                 {branding?.gstin && <><strong>GSTIN:</strong> {branding.gstin} &nbsp;</>}
+                                <strong>Contact:</strong> {INVOICE_CONTACT_LABEL} &nbsp;
                                 {branding?.contact && <>Contact No.: {branding.contact}</>}
                                 {branding?.email && <>&nbsp; Email: {branding.email}</>}
                             </div>

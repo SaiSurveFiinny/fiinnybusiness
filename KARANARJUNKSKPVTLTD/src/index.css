@@ -300,6 +300,18 @@ select.input-field option {
   max-width: none;
 }
 
+/* Hide the browser's up/down spinner arrows on number inputs so users can type
+   values directly (used by column numeric filters). */
+.no-spinner::-webkit-outer-spin-button,
+.no-spinner::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+.no-spinner {
+  -moz-appearance: textfield;
+  appearance: textfield;
+}
+
 /* Animations */
 @keyframes fadeIn {
   from {

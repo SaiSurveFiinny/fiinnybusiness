@@ -1,5 +1,6 @@
 import UpiQrCode from './UpiQrCode';
 import { getInvoiceProductCategories, getAllConfiguredLicenses } from '../utils/invoiceCategories';
+import { INVOICE_CONTACT_LABEL } from '../utils/constants';
 
 // ── English fallback for the L() translation helper ─────────────────────────
 // When the component is used without a translation function (e.g. from
@@ -229,6 +230,7 @@ export function PosInvoicePreview({
                             {branding?.address && <div style={{ fontSize: '0.50rem', color: '#333', lineHeight: 1.35 }}>{branding.address}</div>}
                             <div style={{ fontSize: '0.48rem', color: '#333', display: 'flex', gap: '5px', flexWrap: 'wrap' as const, justifyContent: 'center' }}>
                                 {branding?.gstin && <span><strong>GSTIN:</strong> {branding.gstin}</span>}
+                                <span>| <strong>Contact:</strong> {INVOICE_CONTACT_LABEL}</span>
                                 {branding?.contact && <span>| <strong>Ph:</strong> {branding.contact}</span>}
                             </div>
                         </div>
@@ -439,7 +441,8 @@ export function PosInvoicePreview({
                                 <div style={{ fontSize: '0.78rem', color: '#333', marginTop: '2px' }}>
                                     {branding?.address || ''}<br />
                                     {branding?.gstin && <><strong>GSTIN:</strong> {branding.gstin} &nbsp;</>}
-                                    {branding?.contact && <>Contact: {branding.contact}</>}
+                                    <strong>Contact:</strong> {INVOICE_CONTACT_LABEL} &nbsp;
+                                    {branding?.contact && <>Contact No.: {branding.contact}</>}
                                 </div>
                                 {allLicenses.length > 0 && (
                                     <div style={{ fontSize: '0.70rem', color: '#555', marginTop: '2px', display: 'flex', gap: '10px', flexWrap: 'wrap' as const }}>

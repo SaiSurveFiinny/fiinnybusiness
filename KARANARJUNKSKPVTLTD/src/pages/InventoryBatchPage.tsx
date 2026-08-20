@@ -179,7 +179,7 @@ export default function InventoryBatchPage() {
 
   // ── Render ────────────────────────────────────────────────────────────────
   return (
-    <div className="animate-fade-in" style={{ maxWidth: '1100px', margin: '0 auto' }}>
+    <div className="animate-fade-in" style={{ width: '100%' }}>
 
       {/* Header */}
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '1.5rem', flexWrap: 'wrap', gap: '1rem' }}>

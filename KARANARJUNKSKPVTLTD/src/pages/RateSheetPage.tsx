@@ -14,6 +14,11 @@ import { getTenantCollection, getTenantDoc } from '../utils/tenantPath';
 import { logAudit } from '../utils/auditLog';
 import { AGRI_CATEGORIES } from '../utils/constants';
 import Papa from 'papaparse';
+import {
+  type NumFilter, EMPTY_NUM, matchNum, isNumActive,
+  HDR_COL_STYLE, SortLabel, ColumnTextFilter, ColumnNumFilter, ColumnSelectFilter,
+} from '../components/tableFilters';
+import { useColumnLayout } from '../hooks/useColumnLayout';
 
 // ── Interfaces ────────────────────────────────────────────────────────────────
 
@@ -126,6 +131,43 @@ const emptyForm = () => ({
   batchNumber: '', mfgDate: '', expiryDate: '',
 });
 
+// ── Column sort ───────────────────────────────────────────────────────────────
+type SortCol =
+  | 'batchNumber' | 'name' | 'type' | 'mfgCompany' | 'unitSize' | 'unitMeasure'
+  | 'gstPct' | 'mrp' | 'purchase' | 'retail' | 'sales' | 'stock' | 'batches';
+
+// ── Column layout config (drives resize / freeze / reorder / persistence) ──────
+type PMColKey =
+  | 'sr' | 'photo' | 'batchNumber' | 'name' | 'category' | 'mfg' | 'size' | 'unit'
+  | 'gst' | 'mrp' | 'purchase' | 'retail' | 'sales' | 'stock' | 'batches' | 'actions';
+
+const PM_ALL_KEYS: PMColKey[] = [
+  'sr', 'photo', 'batchNumber', 'name', 'category', 'mfg', 'size', 'unit',
+  'gst', 'mrp', 'purchase', 'retail', 'sales', 'stock', 'batches', 'actions',
+];
+
+const PM_LABELS: Record<PMColKey, string> = {
+  sr: '#', photo: 'Photo', batchNumber: 'Batch No.', name: 'Product Name',
+  category: 'Category', mfg: 'Manufacturer', size: 'Size', unit: 'Unit',
+  gst: 'GST %', mrp: 'MRP', purchase: 'Purch Rate', retail: 'Retail Price',
+  sales: 'Sales Rate', stock: 'Stock', batches: 'Batches', actions: 'Actions',
+};
+
+// Batch No. kept intentionally compact (task requirement); the rest are sized to
+// fit their filter control + header comfortably.
+const PM_DEFAULT_WIDTHS: Record<PMColKey, number> = {
+  sr: 56, photo: 68, batchNumber: 112, name: 220, category: 150, mfg: 165,
+  size: 105, unit: 115, gst: 105, mrp: 120, purchase: 120, retail: 120,
+  sales: 120, stock: 115, batches: 120, actions: 96,
+};
+
+const PM_ALIGN: Record<PMColKey, 'left' | 'right'> = {
+  sr: 'left', photo: 'left', batchNumber: 'left', name: 'left', category: 'left',
+  mfg: 'left', size: 'left', unit: 'left', gst: 'left', mrp: 'right',
+  purchase: 'right', retail: 'right', sales: 'right', stock: 'right',
+  batches: 'left', actions: 'left',
+};
+
 // ── Component ─────────────────────────────────────────────────────────────────
 
 export default function RateSheetPage() {
@@ -150,6 +192,40 @@ export default function RateSheetPage() {
   const canManage = userRole === 'admin' || userRole === 'analyst';
   const canSeeCost = userRole === 'admin';
   const canDelete = userRole === 'admin';
+
+  // ── Column filters + sort ─────────────────────────────────────────────────
+  const [fBatch, setFBatch]       = useState('');
+  const [fCategory, setFCategory] = useState('');           // '' = all
+  const [fMfg, setFMfg]           = useState('');
+  const [fUnit, setFUnit]         = useState('');           // '' = all
+  const [fSize, setFSize]         = useState<NumFilter>(EMPTY_NUM);
+  const [fGst, setFGst]           = useState<NumFilter>(EMPTY_NUM);
+  const [fMrp, setFMrp]           = useState<NumFilter>(EMPTY_NUM);
+  const [fPurch, setFPurch]       = useState<NumFilter>(EMPTY_NUM);
+  const [fRetail, setFRetail]     = useState<NumFilter>(EMPTY_NUM);
+  const [fSales, setFSales]       = useState<NumFilter>(EMPTY_NUM);
+  const [fStock, setFStock]       = useState<NumFilter>(EMPTY_NUM);
+  const [fBatches, setFBatches]   = useState<NumFilter>(EMPTY_NUM);
+
+  const [sortCol, setSortCol] = useState<SortCol | null>(null);
+  const [sortDir, setSortDir] = useState<'asc' | 'desc'>('asc');
+  const toggleSort = (col: SortCol) => {
+    if (sortCol === col) { if (sortDir === 'asc') setSortDir('desc'); else setSortCol(null); }
+    else { setSortCol(col); setSortDir('asc'); }
+  };
+
+  // ── Column layout (resize / freeze / reorder / persistence) ────────────────
+  const activeColKeys = useMemo(
+    () => PM_ALL_KEYS.filter(k => (k !== 'purchase' || canSeeCost) && (k !== 'actions' || canManage)),
+    [canSeeCost, canManage],
+  );
+  const layout = useColumnLayout<PMColKey>({
+    keys: activeColKeys,
+    defaultWidths: PM_DEFAULT_WIDTHS,
+    labels: PM_LABELS,
+    storageKey: 'fiinny_pm',
+    tenantId,
+  });
 
   // ── Data fetching ───────────────────────────────────────────────────────────
   useEffect(() => {
@@ -582,17 +658,89 @@ export default function RateSheetPage() {
     });
   };
 
-  // ── Filter ──────────────────────────────────────────────────────────────────
+  // ── Column-filter helpers ───────────────────────────────────────────────────
+  const rowStock = (p: Product) => batchSummaries.get(p.id)?.totalQty ?? totalStock(p);
+  const rowBatches = (p: Product) => batchSummaries.get(p.id)?.count ?? 0;
+
+  // Distinct Category / Unit values for the header dropdown filters
+  const categoryOptions = useMemo(
+    () => Array.from(new Set(products.map(p => (p.type || '').trim()).filter(Boolean))).sort((a, b) => a.localeCompare(b)),
+    [products],
+  );
+  const unitOptions = useMemo(
+    () => Array.from(new Set(products.map(p => (p.unitMeasure || p.baseUnit || '').trim()).filter(Boolean))).sort((a, b) => a.localeCompare(b)),
+    [products],
+  );
+
+  const anyColumnFilter =
+    fBatch.trim() !== '' || fCategory !== '' || fMfg.trim() !== '' || fUnit !== '' ||
+    [fSize, fGst, fMrp, fPurch, fRetail, fSales, fStock, fBatches].some(isNumActive);
+
+  // ── Filter + sort ───────────────────────────────────────────────────────────
   const visibleProducts = useMemo(() => {
-    if (!searchTerm.trim()) return products;
-    const q = searchTerm.toLowerCase();
-    return products.filter(p =>
-      p.name.toLowerCase().includes(q) ||
-      (p.productNumber || '').toLowerCase().includes(q) ||
-      (p.mfgCompany || '').toLowerCase().includes(q) ||
-      (p.type || '').toLowerCase().includes(q),
+    const q = searchTerm.trim().toLowerCase();
+    const batchQ = fBatch.trim().toLowerCase();
+    const mfgQ = fMfg.trim().toLowerCase();
+
+    const filtered = products.filter(p => {
+      // Global product search (name / SKU / manufacturer / category)
+      if (q && !(
+        p.name.toLowerCase().includes(q) ||
+        (p.productNumber || '').toLowerCase().includes(q) ||
+        (p.mfgCompany || '').toLowerCase().includes(q) ||
+        (p.type || '').toLowerCase().includes(q)
+      )) return false;
+      // Column filters
+      if (batchQ && !(p.batchNumber || '').toLowerCase().includes(batchQ)) return false;
+      if (fCategory && (p.type || '') !== fCategory) return false;
+      if (mfgQ && !(p.mfgCompany || '').toLowerCase().includes(mfgQ)) return false;
+      if (fUnit && (p.unitMeasure || p.baseUnit || '') !== fUnit) return false;
+      if (!matchNum(p.unitSize ?? 0, fSize)) return false;
+      if (!matchNum(p.gstPct ?? 0, fGst)) return false;
+      if (!matchNum(p.maxRetailPrice || 0, fMrp)) return false;
+      if (!matchNum(p.purchasePrice || 0, fPurch)) return false;
+      if (!matchNum(p.retailerPrice || 0, fRetail)) return false;
+      if (!matchNum(p.sellingPrice || 0, fSales)) return false;
+      if (!matchNum(rowStock(p), fStock)) return false;
+      if (!matchNum(rowBatches(p), fBatches)) return false;
+      return true;
+    });
+
+    if (!sortCol) return filtered;
+
+    const dir = sortDir === 'asc' ? 1 : -1;
+    const strOf = (p: Product): string => {
+      switch (sortCol) {
+        case 'batchNumber': return p.batchNumber || '';
+        case 'name':        return p.name || '';
+        case 'type':        return p.type || '';
+        case 'mfgCompany':  return p.mfgCompany || '';
+        case 'unitMeasure': return p.unitMeasure || p.baseUnit || '';
+        default:            return '';
+      }
+    };
+    const numOf = (p: Product): number => {
+      switch (sortCol) {
+        case 'unitSize': return p.unitSize ?? 0;
+        case 'gstPct':   return p.gstPct ?? 0;
+        case 'mrp':      return p.maxRetailPrice || 0;
+        case 'purchase': return p.purchasePrice || 0;
+        case 'retail':   return p.retailerPrice || 0;
+        case 'sales':    return p.sellingPrice || 0;
+        case 'stock':    return rowStock(p);
+        case 'batches':  return rowBatches(p);
+        default:         return NaN;
+      }
+    };
+    const isNumericSort = !['batchNumber', 'name', 'type', 'mfgCompany', 'unitMeasure'].includes(sortCol);
+
+    return [...filtered].sort((a, b) =>
+      isNumericSort
+        ? (numOf(a) - numOf(b)) * dir
+        : strOf(a).localeCompare(strOf(b)) * dir,
     );
-  }, [products, searchTerm]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [products, batchSummaries, searchTerm, fBatch, fCategory, fMfg, fUnit, fSize, fGst, fMrp, fPurch, fRetail, fSales, fStock, fBatches, sortCol, sortDir]);
 
   // ── Render ──────────────────────────────────────────────────────────────────
   if (loading) return (
@@ -603,8 +751,206 @@ export default function RateSheetPage() {
 
   const set = (patch: Partial<ReturnType<typeof emptyForm>>) => setFormData(f => ({ ...f, ...patch }));
 
+  // ── Dynamic column renderers (colOrder-driven, like the Stock Report) ────────
+  const renderHeaderTh = (key: PMColKey, colIdx: number) => {
+    const align = PM_ALIGN[key];
+    const thBase: React.CSSProperties = {
+      padding: '0.7rem 0.85rem', fontWeight: 600, textAlign: align,
+      whiteSpace: 'nowrap', verticalAlign: 'top', overflow: 'hidden',
+      position: 'sticky', top: 0, zIndex: 2, background: 'var(--surface-base)',
+      ...layout.stickyStyle(colIdx, { header: true, rowBg: 'var(--surface-base)' }),
+      ...(layout.isDragOver(key) ? { borderLeft: '3px solid var(--primary)' } : {}),
+    };
+    let inner: React.ReactNode;
+    switch (key) {
+      case 'sr':    inner = '#'; break;
+      case 'photo': inner = 'Photo'; break;
+      case 'batchNumber': inner = (
+        <div style={HDR_COL_STYLE}>
+          <SortLabel label="Batch No." active={sortCol === 'batchNumber'} dir={sortDir} onClick={() => toggleSort('batchNumber')} />
+          <ColumnTextFilter value={fBatch} onChange={setFBatch} />
+        </div>
+      ); break;
+      case 'name': inner = (
+        <SortLabel label="Product Name" active={sortCol === 'name'} dir={sortDir} onClick={() => toggleSort('name')} />
+      ); break;
+      case 'category': inner = (
+        <div style={HDR_COL_STYLE}>
+          <SortLabel label="Category" active={sortCol === 'type'} dir={sortDir} onClick={() => toggleSort('type')} />
+          <ColumnSelectFilter value={fCategory} options={categoryOptions} onChange={setFCategory} allLabel="All Categories" />
+        </div>
+      ); break;
+      case 'mfg': inner = (
+        <div style={HDR_COL_STYLE}>
+          <SortLabel label="Manufacturer" active={sortCol === 'mfgCompany'} dir={sortDir} onClick={() => toggleSort('mfgCompany')} />
+          <ColumnTextFilter value={fMfg} onChange={setFMfg} />
+        </div>
+      ); break;
+      case 'size': inner = (
+        <div style={HDR_COL_STYLE}>
+          <SortLabel label="Size" active={sortCol === 'unitSize'} dir={sortDir} onClick={() => toggleSort('unitSize')} />
+          <ColumnNumFilter state={fSize} onChange={setFSize} />
+        </div>
+      ); break;
+      case 'unit': inner = (
+        <div style={HDR_COL_STYLE}>
+          <SortLabel label="Unit" active={sortCol === 'unitMeasure'} dir={sortDir} onClick={() => toggleSort('unitMeasure')} />
+          <ColumnSelectFilter value={fUnit} options={unitOptions} onChange={setFUnit} allLabel="All Units" />
+        </div>
+      ); break;
+      case 'gst': inner = (
+        <div style={HDR_COL_STYLE}>
+          <SortLabel label="GST %" active={sortCol === 'gstPct'} dir={sortDir} onClick={() => toggleSort('gstPct')} />
+          <ColumnNumFilter state={fGst} onChange={setFGst} />
+        </div>
+      ); break;
+      case 'mrp': inner = (
+        <div style={HDR_COL_STYLE}>
+          <SortLabel label="MRP" align="right" active={sortCol === 'mrp'} dir={sortDir} onClick={() => toggleSort('mrp')} />
+          <ColumnNumFilter state={fMrp} onChange={setFMrp} />
+        </div>
+      ); break;
+      case 'purchase': inner = (
+        <div style={HDR_COL_STYLE}>
+          <SortLabel label="Purch Rate" align="right" active={sortCol === 'purchase'} dir={sortDir} onClick={() => toggleSort('purchase')} />
+          <ColumnNumFilter state={fPurch} onChange={setFPurch} />
+        </div>
+      ); break;
+      case 'retail': inner = (
+        <div style={HDR_COL_STYLE}>
+          <SortLabel label="Retail Price" align="right" active={sortCol === 'retail'} dir={sortDir} onClick={() => toggleSort('retail')} />
+          <ColumnNumFilter state={fRetail} onChange={setFRetail} />
+        </div>
+      ); break;
+      case 'sales': inner = (
+        <div style={HDR_COL_STYLE}>
+          <SortLabel label="Sales Rate" align="right" active={sortCol === 'sales'} dir={sortDir} onClick={() => toggleSort('sales')} />
+          <ColumnNumFilter state={fSales} onChange={setFSales} />
+        </div>
+      ); break;
+      case 'stock': inner = (
+        <div style={HDR_COL_STYLE}>
+          <SortLabel label="Stock" align="right" active={sortCol === 'stock'} dir={sortDir} onClick={() => toggleSort('stock')} />
+          <ColumnNumFilter state={fStock} onChange={setFStock} />
+        </div>
+      ); break;
+      case 'batches': inner = (
+        <div style={HDR_COL_STYLE}>
+          <SortLabel label="Batches" active={sortCol === 'batches'} dir={sortDir} onClick={() => toggleSort('batches')} />
+          <ColumnNumFilter state={fBatches} onChange={setFBatches} />
+        </div>
+      ); break;
+      case 'actions': inner = 'Actions'; break;
+      default: inner = PM_LABELS[key];
+    }
+    return (
+      <th key={key} style={thBase} {...layout.getDragProps(key)}>
+        {inner}
+        {layout.resizeHandle(key)}
+      </th>
+    );
+  };
+
+  interface RowCtx {
+    bs?: { count: number; totalQty: number; soonest: string };
+    stock: number; isLow: boolean;
+    isExpired: boolean; isExpiring: boolean; soonestExpiry?: string;
+    rowExpiring: boolean; index: number;
+  }
+
+  const renderBodyTd = (key: PMColKey, colIdx: number, p: Product, ctx: RowCtx): React.ReactNode => {
+    const align = PM_ALIGN[key];
+    const tdBase: React.CSSProperties = {
+      padding: '0.65rem 0.85rem', textAlign: align, overflow: 'hidden', textOverflow: 'ellipsis',
+      ...layout.stickyStyle(colIdx, { rowBg: ctx.rowExpiring ? 'hsl(0,70%,97%)' : 'var(--surface-base)' }),
+    };
+    switch (key) {
+      case 'sr':
+        return <td key={key} style={{ ...tdBase, color: 'var(--text-tertiary)', fontWeight: 500 }}>{ctx.index + 1}</td>;
+      case 'photo':
+        return (
+          <td key={key} style={tdBase}>
+            <div style={{ width: 34, height: 34, borderRadius: 8, overflow: 'hidden', background: 'hsla(152,60%,40%,0.1)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+              {p.imageUrl
+                ? <img src={p.imageUrl} alt={p.name} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                : <Package size={15} color="var(--primary-light)" />}
+            </div>
+          </td>
+        );
+      case 'batchNumber':
+        return (
+          <td key={key} style={{ ...tdBase, color: 'var(--text-secondary)', whiteSpace: 'nowrap' }}>
+            {p.batchNumber || '—'}
+            {ctx.rowExpiring && (
+              <div style={{ fontSize: '0.68rem', color: '#ef4444', fontWeight: 600, marginTop: '0.1rem' }}>
+                Exp {fmtDate(p.expiryDate)}
+              </div>
+            )}
+          </td>
+        );
+      case 'name':
+        return (
+          <td key={key} style={tdBase}>
+            <div style={{ fontWeight: 600, color: 'var(--text-primary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{p.name}</div>
+            {p.productNumber && <div style={{ fontSize: '0.72rem', color: 'var(--text-tertiary)' }}>{p.productNumber}</div>}
+          </td>
+        );
+      case 'category':
+        return <td key={key} style={{ ...tdBase, color: 'var(--text-secondary)', whiteSpace: 'nowrap' }}>{p.type || '—'}</td>;
+      case 'mfg':
+        return <td key={key} style={{ ...tdBase, color: 'var(--text-secondary)', whiteSpace: 'nowrap' }}>{p.mfgCompany || '—'}</td>;
+      case 'size':
+        return <td key={key} style={{ ...tdBase, color: 'var(--text-secondary)', whiteSpace: 'nowrap' }}>{p.unitSize ?? '—'}</td>;
+      case 'unit':
+        return <td key={key} style={{ ...tdBase, color: 'var(--text-secondary)', whiteSpace: 'nowrap' }}>{p.unitMeasure || p.baseUnit || '—'}</td>;
+      case 'gst':
+        return <td key={key} style={{ ...tdBase, color: 'var(--text-secondary)' }}>{p.gstPct ?? 0}%</td>;
+      case 'mrp':
+        return <td key={key} style={{ ...tdBase, fontWeight: 600, whiteSpace: 'nowrap' }}>₹{(p.maxRetailPrice || 0).toFixed(2)}</td>;
+      case 'purchase':
+        return <td key={key} style={{ ...tdBase, color: 'var(--text-tertiary)', whiteSpace: 'nowrap' }}>₹{(p.purchasePrice || 0).toFixed(2)}</td>;
+      case 'retail':
+        return <td key={key} style={{ ...tdBase, color: 'var(--text-secondary)', whiteSpace: 'nowrap' }}>₹{(p.retailerPrice || 0).toFixed(2)}</td>;
+      case 'sales':
+        return <td key={key} style={{ ...tdBase, whiteSpace: 'nowrap' }}>₹{(p.sellingPrice || 0).toFixed(2)}</td>;
+      case 'stock':
+        return (
+          <td key={key} style={{ ...tdBase, whiteSpace: 'nowrap' }}>
+            <span style={{ fontWeight: 700, color: ctx.isLow ? '#ef4444' : 'var(--text-primary)' }}>{ctx.stock}</span>
+            {ctx.isLow && (
+              <span style={{ marginLeft: '0.35rem', fontSize: '0.65rem', padding: '0.1rem 0.35rem', borderRadius: '999px', background: 'hsla(0,84%,60%,0.12)', color: '#ef4444', fontWeight: 700 }}>LOW</span>
+            )}
+          </td>
+        );
+      case 'batches':
+        return (
+          <td key={key} style={tdBase}>
+            {ctx.bs ? (
+              <span style={{ fontSize: '0.75rem', padding: '0.2rem 0.55rem', borderRadius: '999px', fontWeight: 600, whiteSpace: 'nowrap', background: ctx.isExpired ? 'hsla(0,84%,60%,0.12)' : ctx.isExpiring ? 'hsla(38,92%,50%,0.12)' : 'hsla(152,60%,40%,0.12)', color: ctx.isExpired ? '#ef4444' : ctx.isExpiring ? '#f59e0b' : 'var(--primary-light)' }}>
+                {ctx.bs.count} batch{ctx.bs.count !== 1 ? 'es' : ''}
+                {ctx.isExpired && ' · ⚠ expired'}
+                {!ctx.isExpired && ctx.isExpiring && ` · exp ${fmtDate(ctx.soonestExpiry)}`}
+              </span>
+            ) : <span style={{ color: 'var(--text-tertiary)', fontSize: '0.78rem' }}>—</span>}
+          </td>
+        );
+      case 'actions':
+        return (
+          <td key={key} style={tdBase}>
+            <div style={{ display: 'flex', gap: '0.4rem' }}>
+              <button onClick={() => handleOpenModal(p)} className="btn btn-secondary" style={{ padding: '0.35rem' }}><Edit2 size={13} /></button>
+              {canDelete && (
+                <button onClick={() => handleDelete(p.id)} className="btn" style={{ padding: '0.35rem', background: 'hsla(0,84%,60%,0.08)', color: '#ef4444', border: '1px solid hsla(0,84%,60%,0.2)' }}><Trash2 size={13} /></button>
+              )}
+            </div>
+          </td>
+        );
+      default: return <td key={key} style={tdBase} />;
+    }
+  };
+
   return (
-    <div className="animate-fade-in" style={{ maxWidth: '1600px', margin: '0 auto' }}>
+    <div className="animate-fade-in" style={{ width: '100%' }}>
 
       {/* Header */}
       <div style={{ marginBottom: '1.5rem', display: 'flex', flexWrap: 'wrap', gap: '1rem', justifyContent: 'space-between', alignItems: 'flex-start' }}>
@@ -654,127 +1000,84 @@ export default function RateSheetPage() {
         )}
       </div>
 
+      {/* Table customization hint */}
+      <div style={{ display: 'flex', gap: '0.8rem', alignItems: 'center', marginBottom: '0.6rem', fontSize: '0.72rem', color: 'var(--text-tertiary)', flexWrap: 'wrap' }}>
+        <span>Drag column headers to reorder.</span>
+        <span>Drag column edges to resize.</span>
+        <span>Right-click a header to freeze or reset.</span>
+        {layout.freezeCount > 0 && (
+          <span style={{ marginLeft: 'auto', color: 'var(--primary)', fontWeight: 600 }}>
+            Frozen up to “{PM_LABELS[layout.colOrder[layout.freezeCount - 1]]}”
+          </span>
+        )}
+      </div>
+
+      {/* Full-screen capture div during column resize — prevents cursor flicker */}
+      {layout.isResizing && <div style={{ position: 'fixed', inset: 0, zIndex: 9999, cursor: 'col-resize' }} />}
+
+      {/* Right-click column context menu (freeze / reset widths / reset order) */}
+      {layout.ContextMenu()}
+
       {/* Table */}
-      <div className="glass-panel" style={{ overflowX: 'auto' }}>
-        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.875rem' }}>
-          <thead>
-            <tr style={{ borderBottom: '2px solid var(--surface-border)', color: 'var(--text-secondary)' }}>
-              {['#', 'Photo', 'Batch No.', 'Product Name', 'Category', 'Manufacturer', 'Size', 'Unit', 'GST %', 'MRP', ...(canSeeCost ? ['Purch Rate'] : []), 'Retail Price', 'Sales Rate', 'Stock', 'Batches', ...(canManage ? ['Actions'] : [])].map(h => (
-                <th key={h} style={{ padding: '0.7rem 0.85rem', fontWeight: 600, textAlign: ['MRP', 'Purch Rate', 'Retail Price', 'Sales Rate', 'Stock'].includes(h) ? 'right' : 'left', whiteSpace: 'nowrap' }}>{h}</th>
+      <div className="glass-panel" style={{ overflow: 'hidden' }}>
+        <div style={{ overflowX: 'auto', maxHeight: '72vh', overflowY: 'auto' }} onContextMenu={layout.handleTableContextMenu}>
+          <table style={{ width: layout.totalTableWidth, tableLayout: 'fixed', borderCollapse: 'collapse', fontSize: '0.875rem' }}>
+            <colgroup>
+              {layout.colOrder.map(key => (
+                <col key={key} ref={layout.registerColEl(key)} style={{ width: layout.colWidths[key] }} />
               ))}
-            </tr>
-          </thead>
-          <tbody>
-            {visibleProducts.map((p, i) => {
-              const bs = batchSummaries.get(p.id);
-              const stock = bs?.totalQty ?? totalStock(p);
-              const isLow = stock < LOW_STOCK;
-              const soonestExpiry = bs?.soonest;
-              const expDays = soonestExpiry ? daysUntil(soonestExpiry) : 999;
-              const isExpired = expDays < 0;
-              const isExpiring = expDays >= 0 && expDays <= EXPIRY_WARN_DAYS;
-
-              // Product-level expiry (from the Add/Edit Product form) — distinct
-              // from `bs`/batchSummaries above, which comes from the separate
-              // Inventory Batches collection. Drives the whole-row warning only;
-              // does not touch or duplicate the existing per-batch expiry pill.
-              // Already-expired dates are treated the same as "expiring soon"
-              // here (both surfaced as the row warning) rather than as a
-              // separate visual state, so there's one consistent red signal.
-              const productExpDays = p.expiryDate ? daysUntil(p.expiryDate) : null;
-              const rowExpiring = productExpDays !== null && productExpDays <= EXPIRY_WARN_DAYS;
-
-              return (
-                <tr
-                  key={p.id}
-                  style={{
-                    borderBottom: '1px solid var(--surface-border)',
-                    transition: 'background 0.15s',
-                    background: rowExpiring ? 'hsla(0,84%,60%,0.08)' : undefined,
-                  }}
-                  onMouseOver={e => (e.currentTarget.style.background = rowExpiring ? 'hsla(0,84%,60%,0.14)' : 'var(--surface-raised)')}
-                  onMouseOut={e => (e.currentTarget.style.background = rowExpiring ? 'hsla(0,84%,60%,0.08)' : 'transparent')}
-                >
-                  <td style={{ padding: '0.65rem 0.85rem', color: 'var(--text-tertiary)', fontWeight: 500 }}>{i + 1}</td>
-                  <td style={{ padding: '0.65rem 0.85rem' }}>
-                    <div style={{ width: 34, height: 34, borderRadius: 8, overflow: 'hidden', background: 'hsla(152,60%,40%,0.1)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                      {p.imageUrl
-                        ? <img src={p.imageUrl} alt={p.name} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
-                        : <Package size={15} color="var(--primary-light)" />}
-                    </div>
-                  </td>
-                  <td style={{ padding: '0.65rem 0.85rem', color: 'var(--text-secondary)', whiteSpace: 'nowrap' }}>
-                    {p.batchNumber || '—'}
-                    {rowExpiring && (
-                      <div style={{ fontSize: '0.68rem', color: '#ef4444', fontWeight: 600, marginTop: '0.1rem' }}>
-                        Exp {fmtDate(p.expiryDate)}
-                      </div>
-                    )}
-                  </td>
-                  <td style={{ padding: '0.65rem 0.85rem' }}>
-                    <div style={{ fontWeight: 600, color: 'var(--text-primary)' }}>{p.name}</div>
-                    {p.productNumber && <div style={{ fontSize: '0.72rem', color: 'var(--text-tertiary)' }}>{p.productNumber}</div>}
-                  </td>
-                  <td style={{ padding: '0.65rem 0.85rem', color: 'var(--text-secondary)' }}>{p.type || '—'}</td>
-                  <td style={{ padding: '0.65rem 0.85rem', color: 'var(--text-secondary)' }}>{p.mfgCompany || '—'}</td>
-                  <td style={{ padding: '0.65rem 0.85rem', color: 'var(--text-secondary)', whiteSpace: 'nowrap' }}>
-                    {p.unitSize ?? '—'}
-                  </td>
-                  <td style={{ padding: '0.65rem 0.85rem', color: 'var(--text-secondary)', whiteSpace: 'nowrap' }}>
-                    {p.unitMeasure || p.baseUnit || '—'}
-                  </td>
-                  <td style={{ padding: '0.65rem 0.85rem', color: 'var(--text-secondary)' }}>{p.gstPct ?? 0}%</td>
-                  <td style={{ padding: '0.65rem 0.85rem', textAlign: 'right', fontWeight: 600 }}>₹{(p.maxRetailPrice || 0).toFixed(2)}</td>
-                  {canSeeCost && (
-                    <td style={{ padding: '0.65rem 0.85rem', textAlign: 'right', color: 'var(--text-tertiary)' }}>₹{(p.purchasePrice || 0).toFixed(2)}</td>
-                  )}
-                  <td style={{ padding: '0.65rem 0.85rem', textAlign: 'right', color: 'var(--text-secondary)' }}>₹{(p.retailerPrice || 0).toFixed(2)}</td>
-                  <td style={{ padding: '0.65rem 0.85rem', textAlign: 'right' }}>₹{(p.sellingPrice || 0).toFixed(2)}</td>
-                  <td style={{ padding: '0.65rem 0.85rem', textAlign: 'right', whiteSpace: 'nowrap' }}>
-                    <span style={{ fontWeight: 700, color: isLow ? '#ef4444' : 'var(--text-primary)' }}>{stock}</span>
-                    {isLow && (
-                      <span style={{ marginLeft: '0.35rem', fontSize: '0.65rem', padding: '0.1rem 0.35rem', borderRadius: '999px', background: 'hsla(0,84%,60%,0.12)', color: '#ef4444', fontWeight: 700 }}>
-                        LOW
-                      </span>
-                    )}
-                  </td>
-                  <td style={{ padding: '0.65rem 0.85rem' }}>
-                    {bs ? (
-                      <span style={{ fontSize: '0.75rem', padding: '0.2rem 0.55rem', borderRadius: '999px', fontWeight: 600, background: isExpired ? 'hsla(0,84%,60%,0.12)' : isExpiring ? 'hsla(38,92%,50%,0.12)' : 'hsla(152,60%,40%,0.12)', color: isExpired ? '#ef4444' : isExpiring ? '#f59e0b' : 'var(--primary-light)' }}>
-                        {bs.count} batch{bs.count !== 1 ? 'es' : ''}
-                        {isExpired && ' · ⚠ expired'}
-                        {!isExpired && isExpiring && ` · exp ${fmtDate(soonestExpiry)}`}
-                      </span>
-                    ) : <span style={{ color: 'var(--text-tertiary)', fontSize: '0.78rem' }}>—</span>}
-                  </td>
-                  {canManage && (
-                    <td style={{ padding: '0.65rem 0.85rem' }}>
-                      <div style={{ display: 'flex', gap: '0.4rem' }}>
-                        <button onClick={() => handleOpenModal(p)} className="btn btn-secondary" style={{ padding: '0.35rem' }}><Edit2 size={13} /></button>
-                        {canDelete && (
-                          <button onClick={() => handleDelete(p.id)} className="btn" style={{ padding: '0.35rem', background: 'hsla(0,84%,60%,0.08)', color: '#ef4444', border: '1px solid hsla(0,84%,60%,0.2)' }}><Trash2 size={13} /></button>
-                        )}
-                      </div>
-                    </td>
-                  )}
-                </tr>
-              );
-            })}
-            {visibleProducts.length === 0 && (
-              <tr>
-                <td colSpan={20} style={{ padding: '3rem', textAlign: 'center', color: 'var(--text-secondary)' }}>
-                  <Package size={36} style={{ margin: '0 auto 0.75rem', opacity: 0.25, display: 'block' }} />
-                  {searchTerm ? `No products match "${searchTerm}".` : 'No products yet.'}
-                  {canManage && !searchTerm && (
-                    <button onClick={() => handleOpenModal()} className="btn btn-primary" style={{ marginTop: '1rem', display: 'inline-flex', alignItems: 'center', gap: '0.5rem' }}>
-                      <Plus size={15} /> Add First Product
-                    </button>
-                  )}
-                </td>
+            </colgroup>
+            <thead>
+              <tr style={{ borderBottom: '2px solid var(--surface-border)', color: 'var(--text-secondary)', background: 'var(--surface-base)' }}>
+                {layout.colOrder.map((key, colIdx) => renderHeaderTh(key, colIdx))}
               </tr>
-            )}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              {visibleProducts.map((p, i) => {
+                const bs = batchSummaries.get(p.id);
+                const stock = bs?.totalQty ?? totalStock(p);
+                const isLow = stock < LOW_STOCK;
+                const soonestExpiry = bs?.soonest;
+                const expDays = soonestExpiry ? daysUntil(soonestExpiry) : 999;
+                const isExpired = expDays < 0;
+                const isExpiring = expDays >= 0 && expDays <= EXPIRY_WARN_DAYS;
+
+                // Product-level expiry (from the Add/Edit Product form) — distinct
+                // from `bs`/batchSummaries above, which comes from the separate
+                // Inventory Batches collection. Drives the whole-row warning only.
+                const productExpDays = p.expiryDate ? daysUntil(p.expiryDate) : null;
+                const rowExpiring = productExpDays !== null && productExpDays <= EXPIRY_WARN_DAYS;
+
+                const ctx: RowCtx = { bs, stock, isLow, isExpired, isExpiring, soonestExpiry, rowExpiring, index: i };
+
+                return (
+                  <tr
+                    key={p.id}
+                    style={{
+                      borderBottom: '1px solid var(--surface-border)',
+                      background: rowExpiring ? 'hsla(0,84%,60%,0.08)' : undefined,
+                    }}
+                  >
+                    {layout.colOrder.map((key, colIdx) => renderBodyTd(key, colIdx, p, ctx))}
+                  </tr>
+                );
+              })}
+              {visibleProducts.length === 0 && (
+                <tr>
+                  <td colSpan={layout.colOrder.length} style={{ padding: '3rem', textAlign: 'center', color: 'var(--text-secondary)' }}>
+                    <Package size={36} style={{ margin: '0 auto 0.75rem', opacity: 0.25, display: 'block' }} />
+                    {searchTerm ? `No products match "${searchTerm}".` : anyColumnFilter ? 'No products match the active column filters.' : 'No products yet.'}
+                    {canManage && !searchTerm && !anyColumnFilter && (
+                      <button onClick={() => handleOpenModal()} className="btn btn-primary" style={{ marginTop: '1rem', display: 'inline-flex', alignItems: 'center', gap: '0.5rem' }}>
+                        <Plus size={15} /> Add First Product
+                      </button>
+                    )}
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
       </div>
 
       {/* Add/Edit Modal */}
