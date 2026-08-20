@@ -427,18 +427,13 @@ class _ProductDetailScreenState extends ConsumerState<ProductDetailScreen> {
   }) async {
     if (options.isEmpty) return;
 
-    StoreOption chosen;
-    if (options.length == 1) {
-      chosen = options.first;
-    } else {
-      final picked = await showStoreSelector(
-        context,
-        options: options,
-        title: buyNow ? 'Buy from which store?' : 'Add from which store?',
-      );
-      if (picked == null) return; // user dismissed the sheet
-      chosen = picked;
-    }
+    // Auto-select the best store instead of interrupting with a picker.
+    // buildStoreOptions has already dropped any store that cannot supply the
+    // SELECTED size and priced the rest at their own rate for it, so the
+    // cheapest here is genuinely the cheapest for the size being bought — it
+    // can never be a smaller size's price standing in for a bigger one.
+    // The buyer can still switch shops from the cart ("Change store").
+    final chosen = _bestOption(options);
 
     if (!mounted) return;
     _addOptionToCart(catalog, chosen);
@@ -446,11 +441,15 @@ class _ProductDetailScreenState extends ConsumerState<ProductDetailScreen> {
     if (buyNow) {
       context.push('/checkout');
     } else {
+      // Name the shop that was auto-picked. The buyer no longer chooses it up
+      // front, so this plus the cart's "Change store" is how they stay in
+      // control of who they're buying from.
+      final label = options.length > 1
+          ? 'Added ${catalog.name} — cheapest at ${chosen.listing.sellerName}'
+          : 'Added ${catalog.name} from ${chosen.listing.sellerName}';
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: Text(
-            'Added ${catalog.name} from ${chosen.listing.sellerName}',
-          ),
+          content: Text(label),
           backgroundColor: AppColors.primary,
           action: SnackBarAction(
             label: 'View Cart',
@@ -460,6 +459,27 @@ class _ProductDetailScreenState extends ConsumerState<ProductDetailScreen> {
         ),
       );
     }
+  }
+
+  /// The store to buy from when the buyer doesn't pick one: the lowest price
+  /// they'd actually pay for the selected size, ties broken by proximity.
+  ///
+  /// Compares effectivePrice (post-discount) rather than the list price —
+  /// that's the number that reaches the cart, so a shop with a worse list
+  /// price but a live offer can still legitimately win.
+  static StoreOption _bestOption(List<StoreOption> options) {
+    var best = options.first;
+    for (final o in options.skip(1)) {
+      if (o.effectivePrice < best.effectivePrice) {
+        best = o;
+      } else if (o.effectivePrice == best.effectivePrice) {
+        final od = o.listing.distanceKm;
+        final bd = best.listing.distanceKm;
+        // Unknown distance never displaces a shop with a known one.
+        if (od != null && (bd == null || od < bd)) best = o;
+      }
+    }
+    return best;
   }
 
   /// The package size the buyer currently has selected, or null when this

@@ -21,15 +21,18 @@ CatalogModel _catalog({
 ListingModel _listing({
   required double price,
   List<VariantModel> variants = const [],
+  String id = 's1',
+  double? distanceKm,
 }) => ListingModel(
-      id: 's1',
+      id: id,
       catalogId: 'p1',
-      sellerPhone: '+919999999999',
-      sellerName: 'Store',
+      sellerPhone: '+91999999$id',
+      sellerName: 'Store $id',
       sellerType: 'retailer',
       price: price,
       stockQuantity: 10,
       variants: variants,
+      distanceKm: distanceKm,
     );
 
 void main() {
@@ -110,6 +113,51 @@ void main() {
       expect(storePriceForVariant(l, c, oneL), 530, reason: 'base size ok');
       expect(storePriceForVariant(l, c, fiveL), isNull,
           reason: 'non-base size not stocked');
+    });
+  });
+
+  group('auto-selected store (buildStoreOptions ordering + cheapest rule)', () {
+    final oneL = const VariantModel(label: '1L', price: 530, stock: null);
+    final fiveL = const VariantModel(label: '5L', price: 2500, stock: null);
+
+    test('cheapest option for the SELECTED size wins, not the base size', () {
+      final c = _catalog(price: 530, variants: [oneL, fiveL]);
+      // Shop A is cheaper at 1L but dearer at 5L; shop B is the reverse.
+      final a = _listing(id: 'a', price: 500, distanceKm: 1, variants: const [
+        VariantModel(label: '1L', price: 500, stock: null),
+        VariantModel(label: '5L', price: 2600, stock: null),
+      ]);
+      final b = _listing(id: 'b', price: 550, distanceKm: 9, variants: const [
+        VariantModel(label: '1L', price: 550, stock: null),
+        VariantModel(label: '5L', price: 2400, stock: null),
+      ]);
+
+      final for5L = buildStoreOptions(c, [a, b], selectedVariant: fiveL);
+      expect(for5L.length, 2);
+      final best5 = for5L.reduce((x, y) =>
+          y.effectivePrice < x.effectivePrice ? y : x);
+      expect(best5.listing.id, 'b', reason: '5L is cheaper at shop b');
+      expect(best5.effectivePrice, 2400);
+
+      final for1L = buildStoreOptions(c, [a, b], selectedVariant: oneL);
+      final best1 = for1L.reduce((x, y) =>
+          y.effectivePrice < x.effectivePrice ? y : x);
+      expect(best1.listing.id, 'a', reason: '1L is cheaper at shop a');
+      expect(best1.effectivePrice, 500);
+    });
+
+    test('a store not carrying the selected size is never offered', () {
+      final c = _catalog(price: 530, variants: [oneL, fiveL]);
+      final only1L = _listing(id: 'a', price: 100, variants: const [
+        VariantModel(label: '1L', price: 100, stock: null),
+      ]);
+      final has5L = _listing(id: 'b', price: 2400, variants: const [
+        VariantModel(label: '5L', price: 2400, stock: null),
+      ]);
+
+      final opts = buildStoreOptions(c, [only1L, has5L], selectedVariant: fiveL);
+      expect(opts.map((o) => o.listing.id), ['b'],
+          reason: 'the ₹100 shop only sells 1L and must not win on price');
     });
   });
 }
