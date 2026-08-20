@@ -80,7 +80,15 @@ class _KrishiDukaanAppState extends ConsumerState<KrishiDukaanApp> {
             fontWeight: FontWeight.w700,
             letterSpacing: 0.2,
           ),
-          iconTheme: IconThemeData(color: Colors.white),
+          // NO iconTheme here on purpose. AppBar resolves icon colour as
+          // `widget.iconTheme ?? appBarTheme.iconTheme ?? default(foregroundColor)`,
+          // so pinning it white here silently OVERRODE every screen that sets
+          // its own `foregroundColor` — the light TopBarBackdrop screens
+          // (Profile, Home, Marketplace, Hubs, Stores, Support, Reel upload)
+          // ended up with white icons on a white bar, i.e. an invisible back
+          // arrow and hamburger. Leaving it unset makes icons follow
+          // foregroundColor, which already defaults to white above, so the
+          // deep-green bars are unchanged.
           // Rounded bottom corners to match the pill-shaped bottom nav.
           shape: RoundedRectangleBorder(
             borderRadius: BorderRadius.vertical(bottom: Radius.circular(22)),
