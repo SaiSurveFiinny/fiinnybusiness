@@ -88,6 +88,7 @@ export default function AdminSubscriptionsPage() {
   const [activeTab, setActiveTab] = useState<'subscriptions' | 'plans' | 'failedPayments'>('subscriptions');
   const [loading, setLoading] = useState(true);
   const [failedPaymentsError, setFailedPaymentsError] = useState<string | null>(null);
+  const [failedPaymentsSearch, setFailedPaymentsSearch] = useState("");
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState("all");
 
@@ -181,6 +182,29 @@ export default function AdminSubscriptionsPage() {
     const user = users.find(u => u.id === phone || u.uid === phone);
     return user?.name || user?.email || phone || "—";
   };
+
+  const resolveFailedPaymentUserName = (fp: any): string | null => {
+    const phone = fp.userPhone;
+    // fp.userUid was added later; fp.userId may be UID or phone depending on when it was written
+    const u = users.find(u =>
+      (phone && (u.id === phone || u.phone === phone)) ||
+      u.uid === fp.userUid ||
+      u.uid === fp.userId ||
+      u.id === fp.userId
+    );
+    return u?.name || u?.email || null;
+  };
+
+  const filteredFailedPayments = failedPayments.filter((fp) => {
+    const q = failedPaymentsSearch.trim().toLowerCase();
+    if (!q) return true;
+    const userName = resolveFailedPaymentUserName(fp);
+    const paymentId = fp.error?.metadata?.payment_id || fp.error?.metadata?.paymentId;
+    const orderId = fp.orderId || fp.error?.metadata?.order_id;
+    return [userName, fp.userPhone, fp.userId, fp.userUid, paymentId, orderId]
+      .filter(Boolean)
+      .some((v) => String(v).toLowerCase().includes(q));
+  });
 
   const filtered = subs
     .filter(s => {
@@ -1021,24 +1045,36 @@ export default function AdminSubscriptionsPage() {
             </div>
           )}
 
+          {!failedPaymentsError && failedPayments.length > 0 && (
+            <div className="flex items-center gap-3 bg-surface-container-low border border-outline-variant rounded-2xl px-4 py-2.5">
+              <Search className="h-4 w-4 text-outline shrink-0" />
+              <input
+                type="text"
+                placeholder="Search by user name, phone, or payment/order ID…"
+                value={failedPaymentsSearch}
+                onChange={e => setFailedPaymentsSearch(e.target.value)}
+                className="flex-1 bg-transparent border-none focus:ring-0 text-sm text-on-surface placeholder-on-surface-variant"
+              />
+              {failedPaymentsSearch && (
+                <button type="button" onClick={() => setFailedPaymentsSearch("")} className="text-outline hover:text-on-surface">
+                  <X className="h-3.5 w-3.5" />
+                </button>
+              )}
+            </div>
+          )}
+
           {!failedPaymentsError && failedPayments.length === 0 ? (
             <div className="rounded-2xl border border-outline-variant/30 bg-surface-container-lowest p-10 text-center text-sm text-on-surface-variant">
               No failed payments recorded yet.
             </div>
+          ) : filteredFailedPayments.length === 0 ? (
+            <div className="rounded-2xl border border-outline-variant/30 bg-surface-container-lowest p-10 text-center text-sm text-on-surface-variant">
+              No failed payments match &ldquo;{failedPaymentsSearch}&rdquo;.
+            </div>
           ) : (
             <div className="space-y-3">
-              {failedPayments.map((fp) => {
-                const userName = (() => {
-                  const phone = fp.userPhone;
-                  // fp.userUid was added later; fp.userId may be UID or phone depending on when it was written
-                  const u = users.find(u =>
-                    (phone && (u.id === phone || u.phone === phone)) ||
-                    u.uid === fp.userUid ||
-                    u.uid === fp.userId ||
-                    u.id === fp.userId
-                  );
-                  return u?.name || u?.email || null;
-                })();
+              {filteredFailedPayments.map((fp) => {
+                const userName = resolveFailedPaymentUserName(fp);
                 const paymentId = fp.error?.metadata?.payment_id || fp.error?.metadata?.paymentId;
                 const orderId = fp.orderId || fp.error?.metadata?.order_id;
                 const errorReason = fp.error?.reason || fp.error?.description || fp.error?.code || 'Unknown error';

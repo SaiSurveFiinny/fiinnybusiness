@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { PenLine, Trash2, Plus, Eye } from "lucide-react";
+import { PenLine, Trash2, Plus, Eye, Search, X } from "lucide-react";
 import {
   fetchBlogPosts,
   createBlogPost,
@@ -75,6 +75,7 @@ export default function AdminBlogPage() {
   const [toast, setToast] = useState<{ msg: string; type: "success" | "error" } | null>(null);
   const [deleteConfirm, setDeleteConfirm] = useState<string | null>(null);
   const [seeding, setSeeding] = useState(false);
+  const [search, setSearch] = useState("");
 
   const showToast = (msg: string, type: "success" | "error" = "success") => {
     setToast({ msg, type });
@@ -111,6 +112,14 @@ export default function AdminBlogPage() {
       setLoading(false);
     }
   };
+
+  const filteredPosts = posts.filter((p) => {
+    const q = search.trim().toLowerCase();
+    if (!q) return true;
+    return [p.title, p.excerpt, p.author, p.slug, ...(p.tags || [])]
+      .filter(Boolean)
+      .some((v) => String(v).toLowerCase().includes(q));
+  });
 
   useEffect(() => { load(); }, []);
 
@@ -196,6 +205,25 @@ export default function AdminBlogPage() {
         </div>
       </div>
 
+      {/* Search */}
+      {posts.length > 0 && (
+        <div className="mb-4 flex items-center gap-3 bg-surface-container-low border border-outline-variant rounded-2xl px-4 py-2.5">
+          <Search className="h-4 w-4 text-outline shrink-0" />
+          <input
+            type="text"
+            placeholder="Search by title, tag, or author…"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            className="flex-1 bg-transparent border-none focus:ring-0 text-sm text-on-surface placeholder-on-surface-variant"
+          />
+          {search && (
+            <button type="button" onClick={() => setSearch("")} className="text-outline hover:text-on-surface">
+              <X className="h-3.5 w-3.5" />
+            </button>
+          )}
+        </div>
+      )}
+
       {/* Posts list */}
       {loading ? (
         <div className="flex justify-center py-20">
@@ -225,9 +253,13 @@ export default function AdminBlogPage() {
             </button>
           </div>
         </div>
+      ) : filteredPosts.length === 0 ? (
+        <div className="text-center py-20 text-on-surface-variant">
+          <p className="font-bold text-lg">No posts match &ldquo;{search}&rdquo;</p>
+        </div>
       ) : (
         <div className="flex flex-col gap-3">
-          {posts.map(post => (
+          {filteredPosts.map(post => (
             <div
               key={post.id}
               className="rounded-2xl border border-surface-container bg-white p-4 transition-shadow hover:shadow-sm"

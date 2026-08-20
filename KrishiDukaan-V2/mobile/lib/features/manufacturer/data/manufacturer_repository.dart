@@ -735,8 +735,16 @@ class ManufacturerRepository {
       'store': storeName,
       'stock': 'In Stock',
       'stockQuantity': 0,
-      'sellMode': src['sellMode'] ?? 'offline_store_only',
-      'isOnline': src['isOnline'] ?? false,
+      // Assigned copies start OFFLINE regardless of the manufacturer's own
+      // sellMode/isOnline — inheriting it here meant every retailer a
+      // manufacturer assigned a product to instantly showed up as an
+      // online-orderable store, even ones who never touched their own
+      // Inventory → Online Delivery setting (or aren't active on the
+      // platform yet). Online delivery is a per-shop decision the retailer
+      // must make themselves. Mirrors the fix already applied on web
+      // (app/dashboard/_lib/product-assignment-firestore.ts).
+      'sellMode': 'offline_store_only',
+      'isOnline': false,
       'variants': src['variants'] ?? [],
       'createdAt': now,
       'updatedAt': now,
@@ -793,6 +801,10 @@ class ManufacturerRepository {
         'storeName': storeName,
         'stockLevel': 'In Stock',
         'sellingPrice': price,
+        // Explicit false, matching the copy's sellMode above — some readers
+        // treat a MISSING isOnline as "not blocked", which would advertise
+        // online delivery for a shop that never enabled it.
+        'isOnline': false,
       }]),
       'updatedAt': now,
     });

@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { Loader2, Mail, RefreshCw, Send, SendHorizonal, Users } from "lucide-react";
+import { Loader2, Mail, RefreshCw, Search, Send, SendHorizonal, Users } from "lucide-react";
 import { fetchAllUsers } from "../../firebase";
 import { buildReportDataClientSide } from "../../lib/reports/build-report-client";
 
@@ -20,6 +20,7 @@ type RowState = { state: SendState; sentAt?: string; error?: string };
 export default function AdminReportsPage() {
   const [manufacturers, setManufacturers] = useState<Manufacturer[]>([]);
   const [loading, setLoading] = useState(true);
+  const [search, setSearch] = useState("");
   const [rowStates, setRowStates] = useState<Record<string, RowState>>({});
   const [sendAllState, setSendAllState] = useState<SendState>("idle");
   const [sendAllResult, setSendAllResult] = useState<string | null>(null);
@@ -40,6 +41,14 @@ export default function AdminReportsPage() {
 
   const displayName = (m: Manufacturer) =>
     m.shopName || m.ownerName || m.name || "—";
+
+  const filteredManufacturers = manufacturers.filter((m) => {
+    const q = search.trim().toLowerCase();
+    if (!q) return true;
+    return [m.shopName, m.ownerName, m.name, m.email, m.id]
+      .filter(Boolean)
+      .some((v) => String(v).toLowerCase().includes(q));
+  });
 
   // Fetch report data client-side (uses admin's Firebase auth) then POST to email API
   const sendReport = async (m: Manufacturer) => {
@@ -195,6 +204,18 @@ export default function AdminReportsPage() {
         </p>
       </div>
 
+      {/* Search */}
+      <div className="flex items-center gap-3 bg-surface-container-low border border-outline-variant rounded-2xl px-4 py-2.5">
+        <Search className="h-4 w-4 text-outline shrink-0" />
+        <input
+          type="text"
+          placeholder="Search by manufacturer name or email…"
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          className="flex-1 bg-transparent border-none focus:ring-0 text-sm text-on-surface placeholder-on-surface-variant"
+        />
+      </div>
+
       {/* Table */}
       {manufacturers.length === 0 ? (
         <div className="flex flex-col items-center gap-3 rounded-2xl border border-dashed border-outline-variant/40 py-16 text-center">
@@ -202,6 +223,10 @@ export default function AdminReportsPage() {
           <p className="text-sm text-on-surface-variant">
             Manufacturers will appear here once they sign up.
           </p>
+        </div>
+      ) : filteredManufacturers.length === 0 ? (
+        <div className="flex flex-col items-center gap-3 rounded-2xl border border-dashed border-outline-variant/40 py-16 text-center">
+          <p className="font-semibold text-on-surface">No manufacturers match &ldquo;{search}&rdquo;</p>
         </div>
       ) : (
         <div className="rounded-2xl border border-outline-variant/30 bg-surface-container-lowest overflow-hidden">
@@ -223,7 +248,7 @@ export default function AdminReportsPage() {
                 </tr>
               </thead>
               <tbody>
-                {manufacturers.map((m) => {
+                {filteredManufacturers.map((m) => {
                   const rs = rowStates[m.id];
                   return (
                     <tr
