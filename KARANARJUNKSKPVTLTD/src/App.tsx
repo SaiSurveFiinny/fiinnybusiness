@@ -277,8 +277,10 @@ function Layout({ children, currentTheme, toggleTheme }: { children: React.React
       {/* Horizontal priority nav */}
       <HorizontalNavbar />
 
-      {/* Main Content — Reports uses the full viewport width */}
-      <main className={`main-content${location.pathname.startsWith('/reports') ? ' main-content--full' : ''}`}>{children}</main>
+      {/* Main Content — Reports and Admin (sidebar + content layout needs the
+          extra width) use the full viewport width instead of the centered
+          1200px column. */}
+      <main className={`main-content${(location.pathname.startsWith('/reports') || location.pathname.startsWith('/admin')) ? ' main-content--full' : ''}`}>{children}</main>
 
       {/* Drawer Overlay */}
       {drawerOpen && (
