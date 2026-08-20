@@ -466,7 +466,7 @@ class _ListingTile extends StatelessWidget {
                       ),
                     ),
                     child: Text(
-                      '${v.label} · ₹${v.price.toStringAsFixed(0)} (${v.stock})',
+                      '${v.label} · ₹${v.price.toStringAsFixed(0)} (${v.stock ?? 0})',
                       style: AppTextStyles.caption.copyWith(
                         fontWeight: FontWeight.w500,
                       ),
@@ -1005,7 +1005,7 @@ class _AddListingSheetState extends ConsumerState<_AddListingSheet> {
                           style: const TextStyle(fontWeight: FontWeight.bold),
                         ),
                         subtitle: Text(
-                          'Price: ₹${v.price.toStringAsFixed(0)} · Stock: ${v.stock}',
+                          'Price: ₹${v.price.toStringAsFixed(0)} · Stock: ${v.stock ?? 0}',
                         ),
                         trailing: IconButton(
                           icon: const Icon(
@@ -1381,7 +1381,7 @@ class _AddListingSheetState extends ConsumerState<_AddListingSheet> {
     int totalStock = 0;
     if (_variants.isNotEmpty) {
       basePrice = _variants.first.price;
-      totalStock = _variants.fold(0, (acc, v) => acc + v.stock);
+      totalStock = _variants.fold(0, (acc, v) => acc + (v.stock ?? 0));
     } else {
       if (priceInput == null || stockInput == null) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -1507,7 +1507,7 @@ class _EditListingSheetState extends State<_EditListingSheet> {
     _sellMode = widget.listing.sellMode ?? 'online_delivery';
     _variants = widget.listing.variants
         .map(
-          (v) => _VariantEntry(label: v.label, price: v.price, stock: v.stock),
+          (v) => _VariantEntry(label: v.label, price: v.price, stock: v.stock ?? 0),
         )
         .toList();
     // Initialize image URL controllers from existing images

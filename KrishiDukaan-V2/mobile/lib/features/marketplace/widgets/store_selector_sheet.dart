@@ -6,6 +6,7 @@ import '../../../core/models/catalog_model.dart';
 import '../../../core/models/listing_model.dart';
 import '../../../core/utils/currency_utils.dart';
 import '../../../core/utils/geo_utils.dart';
+import '../../../core/utils/weight_utils.dart';
 import '../providers/marketplace_provider.dart';
 
 /// A single orderable seller resolved with its effective price + discount.
@@ -27,20 +28,75 @@ class StoreOption {
   });
 }
 
+/// This store's own list price for [selectedVariant], or null when the store
+/// does not stock that size at all.
+///
+/// Port of web's `resolveStoreVariant` (app/views/ProductDetailView.tsx). It is
+/// the single source of truth for per-size, per-store pricing: without it every
+/// store was quoted `listing.price` — the BASE size's price — so picking 5L on
+/// a 1L/5L product added the 5L can at the 1L price. Sizes are compared through
+/// normalizeUnit so "5L" and "5 Ltr" resolve to the same size.
+double? storePriceForVariant(
+  ListingModel listing,
+  CatalogModel catalog,
+  VariantModel? selectedVariant,
+) {
+  // Single-size product (no size chips) — nothing to resolve against.
+  if (selectedVariant == null) return listing.price;
+
+  final selectedKey = normalizeUnit(selectedVariant.label);
+
+  // Store configured explicit per-size prices — authoritative.
+  final storeVariants = listing.variants;
+  if (storeVariants.isNotEmpty) {
+    for (final v in storeVariants) {
+      if (normalizeUnit(v.label) != selectedKey) continue;
+      if (v.isOutOfStock) return null; // known out of stock for this size
+      return v.price > 0 ? v.price : selectedVariant.price;
+    }
+    return null; // store simply doesn't carry this size
+  }
+
+  // Legacy store with no per-size prices: it only provides the BASE size,
+  // i.e. the one whose price equals the product's own price.
+  final catalogVariants = catalog.variants;
+  final baseIdx = (catalogVariants == null || catalogVariants.isEmpty)
+      ? -1
+      : () {
+          final i = catalogVariants.indexWhere((v) => v.price == catalog.price);
+          return i >= 0 ? i : 0;
+        }();
+  final isBase = baseIdx >= 0 &&
+      normalizeUnit(catalogVariants![baseIdx].label) == selectedKey;
+  if (isBase) return listing.price;
+
+  // Non-base size requested but this store has no configured price for it.
+  return null;
+}
+
 /// Resolves the online + in-stock sellers for [catalog] into [StoreOption]s,
 /// preserving the nearest-first order of [listings]. A seller's own active
 /// discount wins; otherwise the catalog's per-seller discount map is used as a
 /// fallback (mirrors the seller-tile logic on the product page).
+///
+/// [selectedVariant] is the package size the buyer picked. Stores that cannot
+/// supply that exact size are omitted entirely, and those that can are priced
+/// at THEIR price for it — so the sheet, the price shown on each row, and the
+/// line that reaches the cart can never disagree about what is being bought.
 List<StoreOption> buildStoreOptions(
-    CatalogModel catalog, List<ListingModel> listings) {
+    CatalogModel catalog, List<ListingModel> listings,
+    {VariantModel? selectedVariant}) {
   final discounts = catalog.sellerDiscounts;
   final options = <StoreOption>[];
   if (catalog.sellMode == 'offline_store_only' || catalog.isOnline == false) {
     return options; // No online delivery available
   }
-  
+
   for (final l in listings) {
     if (!l.isInStock || !l.isOnline) continue;
+
+    final base = storePriceForVariant(l, catalog, selectedVariant);
+    if (base == null) continue; // this store cannot supply the selected size
 
     double effective;
     double pct;
@@ -48,24 +104,24 @@ List<StoreOption> buildStoreOptions(
     final d = l.discount;
     if (d != null && d.isCurrentlyActive) {
       effective =
-          (l.price - d.discountAmount(l.price)).clamp(0.0, double.infinity);
+          (base - d.discountAmount(base)).clamp(0.0, double.infinity);
       hasDiscount = true;
       pct = d.type == 'fixed_amount' ? 0.0 : d.percentage;
     } else {
       final mapPct = discounts[l.sellerPhone] ?? discounts[l.id] ?? 0.0;
       if (mapPct > 0) {
-        effective = l.price * (1 - mapPct / 100);
+        effective = base * (1 - mapPct / 100);
         hasDiscount = true;
         pct = mapPct;
       } else {
-        effective = l.price;
+        effective = base;
         hasDiscount = false;
         pct = 0.0;
       }
     }
     options.add(StoreOption(
       listing: l,
-      originalPrice: l.price,
+      originalPrice: base,
       effectivePrice: effective,
       discountPct: pct,
       hasDiscount: hasDiscount,
@@ -84,6 +140,7 @@ Future<StoreOption?> showStoreSelector(
   String title = 'Select a store',
   String? subtitle = 'Nearest stores shown first',
   String? currentListingId,
+  String? variantLabel,
 }) {
   return showModalBottomSheet<StoreOption>(
     context: context,
@@ -98,6 +155,7 @@ Future<StoreOption?> showStoreSelector(
       title: title,
       subtitle: subtitle,
       currentListingId: currentListingId,
+      variantLabel: variantLabel,
     ),
   );
 }
@@ -115,6 +173,12 @@ class StoreSelectorSheet extends ConsumerWidget {
   /// When set, that store is badged "Current" (used by the cart's change flow).
   final String? currentListingId;
 
+  /// The package size already chosen for this line (cart change-store flow).
+  /// Options are priced for THIS size, and stores that don't carry it are
+  /// hidden — otherwise switching store silently re-prices a 5L line at the
+  /// 1L price.
+  final String? variantLabel;
+
   const StoreSelectorSheet({
     super.key,
     this.options,
@@ -122,6 +186,7 @@ class StoreSelectorSheet extends ConsumerWidget {
     this.title = 'Select a store',
     this.subtitle = 'Nearest stores shown first',
     this.currentListingId,
+    this.variantLabel,
   }) : assert(options != null || catalogId != null,
             'Provide either options or a catalogId');
 
@@ -186,9 +251,27 @@ class StoreSelectorSheet extends ConsumerWidget {
     }
     final catalog = catalogAsync.value;
     if (catalog == null) return _message('This product is no longer available.');
-    final built = buildStoreOptions(catalog, listingsAsync.value ?? []);
+
+    // Resolve the line's size label back to a catalog variant so options are
+    // priced for the size actually being bought.
+    VariantModel? selected;
+    final wanted = normalizeUnit(variantLabel);
+    final catalogVariants = catalog.variants;
+    if (wanted.isNotEmpty && catalogVariants != null && catalogVariants.length > 1) {
+      for (final v in catalogVariants) {
+        if (normalizeUnit(v.label) == wanted) {
+          selected = v;
+          break;
+        }
+      }
+    }
+
+    final built = buildStoreOptions(catalog, listingsAsync.value ?? [],
+        selectedVariant: selected);
     if (built.isEmpty) {
-      return _message('No store sells this online right now.');
+      return _message(selected != null
+          ? 'No store sells the ${selected.label} size online right now.'
+          : 'No store sells this online right now.');
     }
     return _list(context, built);
   }
