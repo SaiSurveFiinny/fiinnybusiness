@@ -832,19 +832,26 @@ class _ProductDetailScreenState extends ConsumerState<ProductDetailScreen> {
                     vertical: 8,
                   ),
                   decoration: BoxDecoration(
+                    // An unselected chip used to be pure white on the near-white
+                    // page (#FFFFFF on #FAFAFA) behind a hairline #E0E0E0 border,
+                    // so the sizes were effectively invisible — buyers couldn't
+                    // see there was anything to tap. Unselected now carries a
+                    // tinted fill and a solid brand-green outline; still clearly
+                    // secondary to the filled selected chip, but unmistakably a
+                    // control.
                     color: isSelected
                         ? AppColors.primary
                         : outOfStock
-                        ? AppColors.background
-                        : Colors.white,
+                        ? AppColors.surfaceVariant
+                        : AppColors.primaryContainer,
                     borderRadius: BorderRadius.circular(10),
                     border: Border.all(
                       color: isSelected
                           ? AppColors.primary
                           : outOfStock
                           ? AppColors.divider
-                          : AppColors.divider,
-                      width: isSelected ? 2 : 1,
+                          : AppColors.primary.withValues(alpha: 0.45),
+                      width: isSelected ? 2 : 1.5,
                     ),
                     boxShadow: isSelected
                         ? [
