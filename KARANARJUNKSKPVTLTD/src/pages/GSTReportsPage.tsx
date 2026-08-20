@@ -68,7 +68,7 @@ export default function GSTReportsPage() {
   const tab = (a:boolean) => ({ padding:'0.6rem 1.5rem', borderRadius:'8px', border:'none', cursor:'pointer' as const, fontWeight:a?700:400, background:a?'var(--primary-light)':'transparent', color:a?'#fff':'var(--text-secondary)', font:'inherit', fontSize:'0.9rem' });
 
   return (
-    <div className="animate-fade-in" style={{ maxWidth:'1100px', margin:'0 auto' }}>
+    <div className="animate-fade-in" style={{ width:'100%' }}>
       <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', marginBottom:'2rem', flexWrap:'wrap', gap:'1rem' }}>
         <div>
           <h1 className="primary-gradient-text" style={{ fontSize:'2rem', display:'flex', alignItems:'center', gap:'0.75rem' }}>
