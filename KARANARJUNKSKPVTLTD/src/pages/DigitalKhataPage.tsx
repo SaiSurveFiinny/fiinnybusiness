@@ -10,6 +10,7 @@ import { useAuth } from '../contexts/AuthContext';
 import { softDelete } from '../utils/softDelete';
 import { getTenantCollection, getTenantDoc } from '../utils/tenantPath';
 import { useToast } from '../contexts/ToastContext';
+import { resolveDateRange } from '../utils/dateRanges';
 import {
     BookOpen, Search, IndianRupee, Clock, CheckCircle2, AlertCircle, Phone, User, Calendar, ArrowUpRight,
     ArrowLeft, FileText, Printer, Pencil, Plus, Receipt, X, Trash2, Wallet, AlertTriangle, Ban,
@@ -117,6 +118,13 @@ export default function DigitalKhataPage() {
     const [loading, setLoading] = useState(true);
     const [search, setSearch] = useState('');
     const [tab, setTab] = useState<FilterTab>('all');
+    // Date filter — scoped to the customer-list toolbar only (does not touch
+    // exportPendingCustomers, which intentionally always exports every
+    // pending/partial customer regardless of the toolbar filters).
+    type DateFilterKey = 'all' | 'today' | 'yesterday' | 'last7' | 'last30' | 'custom';
+    const [dateFilter, setDateFilter] = useState<DateFilterKey>('all');
+    const [customFrom, setCustomFrom] = useState('');
+    const [customTo, setCustomTo] = useState('');
     type SortCol = 'name' | 'outstanding' | 'total' | 'paid' | 'lastTs';
     // Default to most-recent-first: the rows people need are the ones just
     // billed, not the largest balances. Both columns stay sortable.
@@ -585,8 +593,24 @@ export default function DigitalKhataPage() {
                 c.bills.some(b => billNo(b).toLowerCase().includes(q))
             );
         }
+        // Filters on lastTs — the same "Last Bill" timestamp already shown in
+        // the customer-list column, so this uses the one authoritative date
+        // the page already computes rather than introducing a second source.
+        if (dateFilter !== 'all') {
+            let range: { start: Date | null; end: Date };
+            if (dateFilter === 'last30') {
+                const from = new Date(); from.setDate(from.getDate() - 29); from.setHours(0, 0, 0, 0);
+                const to = new Date(); to.setHours(23, 59, 59, 999);
+                range = { start: from, end: to };
+            } else if (dateFilter === 'custom') {
+                range = resolveDateRange('customRange', undefined, customFrom, customTo);
+            } else {
+                range = resolveDateRange(dateFilter === 'last7' ? 'last7days' : dateFilter);
+            }
+            list = list.filter(c => (!range.start || c.lastTs >= range.start) && c.lastTs <= range.end);
+        }
         return list;
-    }, [customers, tab, search]);
+    }, [customers, tab, search, dateFilter, customFrom, customTo]);
 
     const sorted = useMemo(() => {
         const mult = sortDir === 'asc' ? 1 : -1;
@@ -987,19 +1011,6 @@ export default function DigitalKhataPage() {
         </>
     );
 
-    const tabStyle = (t: FilterTab) => ({
-        padding: '0.45rem 1.2rem',
-        borderRadius: '20px',
-        border: `1px solid ${tab === t ? 'var(--primary-light)' : 'var(--surface-border)'}`,
-        background: tab === t ? 'var(--primary-light)' : 'transparent',
-        color: tab === t ? '#fff' : 'var(--text-secondary)',
-        fontWeight: 600,
-        fontSize: '0.82rem',
-        cursor: 'pointer',
-        fontFamily: 'inherit',
-        transition: 'all 0.15s',
-    });
-
     const statusBadge = (status: string) => {
         const map: Record<string, { bg: string; color: string; label: string }> = {
             pending: { bg: '#ef444422', color: '#ef4444', label: 'Pending' },
@@ -1202,21 +1213,51 @@ export default function DigitalKhataPage() {
             </div>
 
             {/* Filters */}
-            <div className="glass-panel" style={{ padding: '1rem 1.25rem', marginBottom: '1.5rem', display: 'flex', gap: '1rem', alignItems: 'center', flexWrap: 'wrap' }}>
-                {/* Tab pills */}
-                <div style={{ display: 'flex', gap: '0.4rem' }}>
-                    <button style={tabStyle('pending')} onClick={() => setTab('pending')}>⏳ Pending</button>
-                    <button style={tabStyle('partial')} onClick={() => setTab('partial')}>🔶 Partial</button>
-                    <button style={tabStyle('all')} onClick={() => setTab('all')}>📋 All</button>
-                </div>
+            <div className="glass-panel" style={{ padding: '1rem 1.25rem', marginBottom: '1.5rem', display: 'flex', gap: '0.75rem', alignItems: 'center', flexWrap: 'wrap' }}>
+                {/* Status */}
+                <select
+                    value={tab}
+                    onChange={e => setTab(e.target.value as FilterTab)}
+                    className="input-field"
+                    style={{ margin: 0, height: '38px', width: '150px', flexShrink: 0, cursor: 'pointer', padding: '0.4rem 0.6rem' }}
+                >
+                    <option value="pending">⏳ Pending</option>
+                    <option value="partial">🔶 Partial</option>
+                    <option value="all">📋 All</option>
+                </select>
+
+                {/* Date Range */}
+                <select
+                    value={dateFilter}
+                    onChange={e => setDateFilter(e.target.value as DateFilterKey)}
+                    className="input-field"
+                    style={{ margin: 0, height: '38px', width: '170px', flexShrink: 0, cursor: 'pointer', padding: '0.4rem 0.6rem' }}
+                >
+                    <option value="all">All Dates</option>
+                    <option value="today">Today</option>
+                    <option value="yesterday">Yesterday</option>
+                    <option value="last7">Last 7 Days</option>
+                    <option value="last30">Last 30 Days</option>
+                    <option value="custom">Custom Range</option>
+                </select>
+                {dateFilter === 'custom' && (
+                    <div style={{ display: 'flex', gap: '0.4rem', alignItems: 'center' }}>
+                        <input type="date" className="input-field" style={{ margin: 0, height: '38px', width: '150px' }}
+                            value={customFrom} onChange={e => setCustomFrom(e.target.value)} />
+                        <span style={{ color: 'var(--text-tertiary)', fontSize: '0.8rem' }}>–</span>
+                        <input type="date" className="input-field" style={{ margin: 0, height: '38px', width: '150px' }}
+                            value={customTo} onChange={e => setCustomTo(e.target.value)} />
+                    </div>
+                )}
+
                 {/* Search */}
-                <div style={{ flex: '1 1 260px', position: 'relative' }}>
+                <div style={{ flex: '1 1 260px', maxWidth: '480px', position: 'relative' }}>
                     <Search size={16} style={{ position: 'absolute', left: '0.85rem', top: '50%', transform: 'translateY(-50%)', color: 'var(--text-tertiary)' }} />
                     <input
                         type="text"
-                        placeholder="Search by customer name, phone or bill no."
+                        placeholder="Search customer, phone or bill no."
                         className="input-field"
-                        style={{ paddingLeft: '2.2rem', margin: 0, height: '38px' }}
+                        style={{ paddingLeft: '2.2rem', margin: 0, height: '38px', width: '100%' }}
                         value={search}
                         onChange={e => setSearch(e.target.value)}
                     />
@@ -1225,11 +1266,11 @@ export default function DigitalKhataPage() {
                 <button
                     onClick={exportPendingCustomers}
                     title="Export pending & partial customers to Excel"
-                    style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', padding: '0.45rem 1rem', borderRadius: '20px', border: '1px solid #ef4444', background: 'rgba(239,68,68,0.08)', color: '#ef4444', fontWeight: 600, fontSize: '0.82rem', cursor: 'pointer', fontFamily: 'inherit', whiteSpace: 'nowrap', transition: 'all 0.15s' }}
+                    style={{ display: 'flex', alignItems: 'center', gap: '0.35rem', padding: '0.45rem 0.85rem', borderRadius: '20px', border: '1px solid #ef4444', background: 'rgba(239,68,68,0.08)', color: '#ef4444', fontWeight: 600, fontSize: '0.78rem', cursor: 'pointer', fontFamily: 'inherit', whiteSpace: 'nowrap', transition: 'all 0.15s' }}
                     onMouseOver={e => (e.currentTarget.style.background = 'rgba(239,68,68,0.18)')}
                     onMouseOut={e => (e.currentTarget.style.background = 'rgba(239,68,68,0.08)')}
                 >
-                    <Download size={14} /> Download Pending Customers
+                    <Download size={13} /> Download Pending Customers
                 </button>
             </div>
 

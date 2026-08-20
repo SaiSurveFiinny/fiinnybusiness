@@ -33,6 +33,10 @@ export interface InvoiceTemplateBranding {
     razorpayKeyId?: string;
     thermalHeader?: string;
     thermalFooter?: string;
+    // Presentation-only invoice text-case preference — consumed by
+    // PosInvoicePreview's up() helper. Undefined (existing tenants) behaves
+    // as 'normal'. Never affects stored customer/product/order data.
+    invoiceTextCase?: 'normal' | 'uppercase';
 }
 
 export interface InvoiceTemplate {

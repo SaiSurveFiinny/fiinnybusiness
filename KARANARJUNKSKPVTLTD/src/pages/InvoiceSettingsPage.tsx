@@ -71,6 +71,9 @@ export default function InvoiceSettingsPage() {
         upiId: '',
         razorpayKeyId: '',
         terms: '1. Goods once sold will not be taken back.\n2. Payment should be made within 30 days.',
+        // Default preserves today's exact display — existing tenants who never
+        // touch this setting keep the original mixed-case invoice presentation.
+        invoiceTextCase: 'normal' as 'normal' | 'uppercase',
     });
     const [uploadingSig, setUploadingSig] = useState(false);
     const [uploadingLogo, setUploadingLogo] = useState(false);
@@ -170,6 +173,7 @@ export default function InvoiceSettingsPage() {
         fertilizerLicense: settings.fertilizerLicense,
         pesticideLicense: settings.pesticideLicense,
         seedsLicense: settings.seedsLicense,
+        invoiceTextCase: settings.invoiceTextCase,
     };
 
     const inputStyle: React.CSSProperties = {
@@ -329,6 +333,28 @@ export default function InvoiceSettingsPage() {
                         <Field label="Terms & Conditions">
                             <textarea style={{ ...textareaStyle, minHeight: '90px' }} value={settings.terms}
                                 onChange={e => set({ terms: e.target.value })} />
+                        </Field>
+                    </Card>
+
+                    {/* Invoice Text Format */}
+                    <Card title="Invoice Text Format" icon={<FileText size={15} />}>
+                        <Field label="Text Display Format" hint="Controls how customer, product, company, batch and unit text appears on the printed invoice. Numbers, dates, GST %, rates and amounts are never affected.">
+                            <div style={{ display: 'flex', borderRadius: '8px', overflow: 'hidden', border: '1px solid var(--surface-border)' }}>
+                                {([
+                                    ['normal', 'Normal / Existing'],
+                                    ['uppercase', 'UPPERCASE / Capital Letters'],
+                                ] as const).map(([value, label]) => (
+                                    <button key={value} type="button" onClick={() => set({ invoiceTextCase: value })}
+                                        style={{
+                                            flex: 1, padding: '0.5rem 0.75rem', border: 'none', fontWeight: 700, fontSize: '0.8rem',
+                                            cursor: 'pointer', fontFamily: 'inherit', transition: 'all 0.15s',
+                                            background: settings.invoiceTextCase === value ? 'var(--primary)' : 'var(--surface-raised)',
+                                            color: settings.invoiceTextCase === value ? 'white' : 'var(--text-secondary)',
+                                        }}>
+                                        {label}
+                                    </button>
+                                ))}
+                            </div>
                         </Field>
                     </Card>
 
