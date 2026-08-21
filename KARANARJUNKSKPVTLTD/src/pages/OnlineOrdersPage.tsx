@@ -342,7 +342,7 @@ export default function OnlineOrdersPage() {
     };
 
     return (
-        <div className="animate-fade-in" style={{ maxWidth: '1400px', margin: '0 auto' }}>
+        <div className="animate-fade-in" style={{ width: '100%' }}>
             <div style={{ marginBottom: '2rem', display: 'flex', flexWrap: 'wrap', gap: '1rem', justifyContent: 'space-between', alignItems: 'flex-start' }}>
                 <div>
                     <h1 className="primary-gradient-text" style={{ fontSize: '2rem', display: 'flex', alignItems: 'center', gap: '0.75rem', marginBottom: '0.5rem' }}>

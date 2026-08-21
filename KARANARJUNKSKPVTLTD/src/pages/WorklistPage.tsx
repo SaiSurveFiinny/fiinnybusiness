@@ -108,20 +108,28 @@ export default function WorklistPage() {
     });
 
     return (
-        <div className="animate-fade-in" style={{ maxWidth: '1400px', margin: '0 auto' }}>
+        <div className="animate-fade-in" style={{ width: '100%' }}>
             {/* ── Tab Bar ── */}
             <div
             style={{
                 position: 'sticky',
-                top: '64px', // 👈 adjust based on your main navbar height
+                top: 0,
                 zIndex: 50,
-                background: 'var(--surface-base)', // 👈 IMPORTANT (avoid overlap issues)
+                background: 'var(--surface-base)',
+                backdropFilter: 'blur(12px)',
+                WebkitBackdropFilter: 'blur(12px)',
                 display: 'flex',
                 gap: '0.25rem',
-                marginBottom: '1.75rem',
                 borderBottom: '2px solid var(--surface-border)',
-                padding: '0.5rem 0 0 0',
                 overflowX: 'auto',
+                scrollbarWidth: 'none',
+                marginLeft: '-2rem',
+                marginRight: '-2rem',
+                paddingLeft: '2rem',
+                paddingRight: '2rem',
+                marginTop: '-2rem',
+                paddingTop: '0.75rem',
+                marginBottom: '1.75rem',
             }}
             >
                 {visibleTabs.map(tab => {
