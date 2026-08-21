@@ -284,10 +284,10 @@ function Layout({ children, currentTheme, toggleTheme }: { children: React.React
       {/* Horizontal priority nav */}
       <HorizontalNavbar />
 
-      {/* Main Content — Reports, Admin, and Inventory (wide sub-navbar + data
-          tables need the extra width) use the full viewport width instead of
-          the centered 1200px column. */}
-      <main className={`main-content${(location.pathname.startsWith('/reports') || location.pathname.startsWith('/admin') || location.pathname.startsWith('/inventory') || location.pathname.startsWith('/worklist') || location.pathname.startsWith('/payment-reminders') || location.pathname.startsWith('/dispatch') || location.pathname.startsWith('/online-orders')) ? ' main-content--full' : ''}`}>{children}</main>
+      {/* Main Content — Reports, Admin, Inventory, POS, and Worklist (wide
+          sub-navbar + data tables need the extra width) use the full viewport
+          width instead of the centered 1200px column. */}
+      <main className={`main-content${(location.pathname.startsWith('/reports') || location.pathname.startsWith('/admin') || location.pathname.startsWith('/inventory') || location.pathname.startsWith('/worklist') || location.pathname.startsWith('/pos') || location.pathname.startsWith('/payment-reminders') || location.pathname.startsWith('/dispatch') || location.pathname.startsWith('/online-orders')) ? ' main-content--full' : ''}`}>{children}</main>
 
       {/* Drawer Overlay */}
       {drawerOpen && (

@@ -195,7 +195,12 @@ export default function RateSheetPage() {
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const canManage = userRole === 'admin' || userRole === 'analyst';
+  // Editing the purchase rate stays admin-only (unchanged permission).
   const canSeeCost = userRole === 'admin';
+  // Viewing the Purchase Rate column is allowed for Admin and Analyst. This is a
+  // display-only flag — it never gates editing/writing the value (see canSeeCost
+  // in the modal + save path), so no underlying permission or calculation changes.
+  const canSeePurchaseRate = userRole === 'admin' || userRole === 'analyst';
   const canDelete = userRole === 'admin';
 
   // ── Column filters + sort ─────────────────────────────────────────────────
@@ -220,11 +225,17 @@ export default function RateSheetPage() {
 
   // ── Column layout (resize / freeze / reorder / persistence) ────────────────
   const activeColKeys = useMemo(
-    () => PM_ALL_KEYS.filter(k => (k !== 'purchase' || canSeeCost) && (k !== 'actions' || canManage)),
-    [canSeeCost, canManage],
+    () => PM_ALL_KEYS.filter(k => (k !== 'purchase' || canSeePurchaseRate) && (k !== 'actions' || canManage)),
+    [canSeePurchaseRate, canManage],
   );
   const layout = useColumnLayout<PMColKey>({
     keys: activeColKeys,
+    // Place a newly-visible/absent column (e.g. Purchase Rate when it becomes
+    // visible for Analyst, or an older saved order that predates it) at its
+    // default position — after MRP — instead of appending it at the end. Keeps
+    // the intended MRP → Purch Rate → Retail Price → Sales Rate sequence while
+    // preserving the rest of a user's saved custom order.
+    insertMissingAtDefaultIndex: true,
     defaultWidths: PM_DEFAULT_WIDTHS,
     labels: PM_LABELS,
     storageKey: 'fiinny_pm',

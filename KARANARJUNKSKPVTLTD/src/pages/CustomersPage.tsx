@@ -43,7 +43,11 @@ function fmtDate(ts: any): string {
     return d.toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' });
 }
 
-export default function CustomersPage() {
+// `fullWidth` is set when this page is embedded as a POS sub-tab, where it
+// should span the full-width POS layout instead of the standalone /customers
+// route's centered 1300px column. Defaults false so the standalone route is
+// unchanged.
+export default function CustomersPage({ fullWidth = false }: { fullWidth?: boolean } = {}) {
     const { tenantId, userRole } = useAuth();
     const navigate = useNavigate();
 
@@ -139,7 +143,7 @@ export default function CustomersPage() {
     }
 
     return (
-        <div className="animate-fade-in" style={{ maxWidth: '1300px', margin: '0 auto' }}>
+        <div className="animate-fade-in" style={{ maxWidth: fullWidth ? 'none' : '1300px', margin: '0 auto' }}>
 
             {/* Header */}
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end', marginBottom: '1.75rem', flexWrap: 'wrap', gap: '1rem' }}>

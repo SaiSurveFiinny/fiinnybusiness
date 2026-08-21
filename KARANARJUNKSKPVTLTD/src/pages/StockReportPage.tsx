@@ -581,7 +581,10 @@ export default function StockReportPage() {
             fetchSalesOrders,
             fetchAdjustments,
         ]).then(([pSnap, bSnap, mSnap, sSnap, aSnap]) => {
-            const prods = pSnap.docs.map(d => ({ id: d.id, ...d.data() })) as Product[];
+            const prods = (pSnap.docs.map(d => ({ id: d.id, ...d.data() })) as Product[])
+                // Default display order: alphabetical by product name. Clicking a
+                // sortable column header still overrides this (see displayRows).
+                .sort((a, b) => (a.name || '').localeCompare(b.name || ''));
             setProducts(prods);
             const batchDocs = bSnap.docs.map(d => ({ id: d.id, ...d.data() } as BatchDoc));
             setBatches(batchDocs);

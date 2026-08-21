@@ -418,9 +418,10 @@ export default function B2BInvoicePage() {
     }, 0);
     const totalSgst = totalCgst;
     const totalTax = totalCgst + totalSgst;
-    const discountAmt = parseFloat(discount) || 0;
+    const discountAmt = Math.max(0, parseFloat(discount) || 0);
     const roundOff = Math.round(computedTaxable + totalTax - discountAmt) - (computedTaxable + totalTax - discountAmt);
-    const netAmount = Math.round(computedTaxable + totalTax - discountAmt);
+    // Discount can never drive the payable below zero.
+    const netAmount = Math.max(0, Math.round(computedTaxable + totalTax - discountAmt));
     const prevBal = parseFloat(previousBalance) || 0;
     const netBalance = netAmount + prevBal;
 
