@@ -34,10 +34,22 @@ class _Duration {
 }
 
 class SubscriptionScreen extends ConsumerStatefulWidget {
-  /// 'new_account' → just signed up; 'paywall' → bounced off the dashboard.
+  /// 'new_account' → just signed up; 'paywall' → bounced off the dashboard;
+  /// 'renewal' → opened from a subscription_expiry notification.
   final String? reason;
 
-  const SubscriptionScreen({super.key, this.reason});
+  /// Seats and plan length from the user's expiring subscription, passed by a
+  /// subscription_expiry notification so renewal comes up pre-configured and
+  /// the user only has to pay. Null when the screen is opened any other way.
+  final int? initialSeats;
+  final int? initialMonths;
+
+  const SubscriptionScreen({
+    super.key,
+    this.reason,
+    this.initialSeats,
+    this.initialMonths,
+  });
 
   @override
   ConsumerState<SubscriptionScreen> createState() => _SubscriptionScreenState();
@@ -54,6 +66,22 @@ class _SubscriptionScreenState extends ConsumerState<SubscriptionScreen> {
   void initState() {
     super.initState();
     _razorpay = AppRazorpay(onSuccess: _onSuccess, onError: _onError);
+
+    // Preselect the expiring plan on a renewal. An unrecognised month count
+    // (an old or admin-set plan length) falls back to the default rather than
+    // leaving the screen with no duration selected.
+    final seats = widget.initialSeats;
+    if (seats != null && seats > 0) _seats = seats;
+
+    final months = widget.initialMonths;
+    if (months != null) {
+      for (final d in _durations) {
+        if (d.months == months) {
+          _duration = d;
+          break;
+        }
+      }
+    }
   }
 
   @override
@@ -324,7 +352,20 @@ class _SubscriptionScreenState extends ConsumerState<SubscriptionScreen> {
                   'The dashboard is locked until you have an active '
                   'subscription. Pick a plan below to continue.',
             ),
-          if (isPaid)
+          // Renewal arrives while the subscription is still active, so this
+          // banner is deliberately not gated on !isPaid the way the two above
+          // are — the plan picker below is already preselected to their
+          // current seats and duration.
+          if (widget.reason == 'renewal')
+            _noticeBanner(
+              icon: Icons.hourglass_bottom_rounded,
+              color: AppColors.warning,
+              title: 'Renew your subscription',
+              subtitle:
+                  'Your current plan is selected below. Complete the payment '
+                  'to keep your dashboard and listings live.',
+            ),
+          if (isPaid && widget.reason != 'renewal')
             Container(
               margin: const EdgeInsets.only(bottom: 20),
               padding: const EdgeInsets.all(16),

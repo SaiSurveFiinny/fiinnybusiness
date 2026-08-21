@@ -344,7 +344,8 @@ class _ProductDetailScreenState extends ConsumerState<ProductDetailScreen> {
     AsyncValue<List<ListingModel>> listingsAsync,
   ) {
     final options = listingsAsync.maybeWhen(
-      data: (raw) => buildStoreOptions(catalog, raw),
+      data: (raw) => buildStoreOptions(catalog, raw,
+          selectedVariant: _selectedVariantOf(catalog)),
       orElse: () => null,
     );
     final canOrder = options != null && options.isNotEmpty;
@@ -426,18 +427,13 @@ class _ProductDetailScreenState extends ConsumerState<ProductDetailScreen> {
   }) async {
     if (options.isEmpty) return;
 
-    StoreOption chosen;
-    if (options.length == 1) {
-      chosen = options.first;
-    } else {
-      final picked = await showStoreSelector(
-        context,
-        options: options,
-        title: buyNow ? 'Buy from which store?' : 'Add from which store?',
-      );
-      if (picked == null) return; // user dismissed the sheet
-      chosen = picked;
-    }
+    // Auto-select the best store instead of interrupting with a picker.
+    // buildStoreOptions has already dropped any store that cannot supply the
+    // SELECTED size and priced the rest at their own rate for it, so the
+    // cheapest here is genuinely the cheapest for the size being bought — it
+    // can never be a smaller size's price standing in for a bigger one.
+    // The buyer can still switch shops from the cart ("Change store").
+    final chosen = _bestOption(options);
 
     if (!mounted) return;
     _addOptionToCart(catalog, chosen);
@@ -445,11 +441,15 @@ class _ProductDetailScreenState extends ConsumerState<ProductDetailScreen> {
     if (buyNow) {
       context.push('/checkout');
     } else {
+      // Name the shop that was auto-picked. The buyer no longer chooses it up
+      // front, so this plus the cart's "Change store" is how they stay in
+      // control of who they're buying from.
+      final label = options.length > 1
+          ? 'Added ${catalog.name} — cheapest at ${chosen.listing.sellerName}'
+          : 'Added ${catalog.name} from ${chosen.listing.sellerName}';
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: Text(
-            'Added ${catalog.name} from ${chosen.listing.sellerName}',
-          ),
+          content: Text(label),
           backgroundColor: AppColors.primary,
           action: SnackBarAction(
             label: 'View Cart',
@@ -459,6 +459,37 @@ class _ProductDetailScreenState extends ConsumerState<ProductDetailScreen> {
         ),
       );
     }
+  }
+
+  /// The store to buy from when the buyer doesn't pick one: the lowest price
+  /// they'd actually pay for the selected size, ties broken by proximity.
+  ///
+  /// Compares effectivePrice (post-discount) rather than the list price —
+  /// that's the number that reaches the cart, so a shop with a worse list
+  /// price but a live offer can still legitimately win.
+  static StoreOption _bestOption(List<StoreOption> options) {
+    var best = options.first;
+    for (final o in options.skip(1)) {
+      if (o.effectivePrice < best.effectivePrice) {
+        best = o;
+      } else if (o.effectivePrice == best.effectivePrice) {
+        final od = o.listing.distanceKm;
+        final bd = best.listing.distanceKm;
+        // Unknown distance never displaces a shop with a known one.
+        if (od != null && (bd == null || od < bd)) best = o;
+      }
+    }
+    return best;
+  }
+
+  /// The package size the buyer currently has selected, or null when this
+  /// product has no size chooser. Must match the `selectedVariant` computed in
+  /// build() exactly (chips only render when there's more than one size), since
+  /// this is what prices the order.
+  VariantModel? _selectedVariantOf(CatalogModel catalog) {
+    final variants = catalog.variants;
+    if (variants == null || variants.length <= 1) return null;
+    return variants[_selectedVariantIdx.clamp(0, variants.length - 1)];
   }
 
   /// The currently selected variant's label (e.g. "1kg", "500ml"). Drives the
@@ -789,7 +820,7 @@ class _ProductDetailScreenState extends ConsumerState<ProductDetailScreen> {
             children: List.generate(variants.length, (i) {
               final v = variants[i];
               final isSelected = _selectedVariantIdx == i;
-              final outOfStock = v.stock == 0;
+              final outOfStock = v.isOutOfStock;
               return GestureDetector(
                 onTap: outOfStock
                     ? null
@@ -801,19 +832,26 @@ class _ProductDetailScreenState extends ConsumerState<ProductDetailScreen> {
                     vertical: 8,
                   ),
                   decoration: BoxDecoration(
+                    // An unselected chip used to be pure white on the near-white
+                    // page (#FFFFFF on #FAFAFA) behind a hairline #E0E0E0 border,
+                    // so the sizes were effectively invisible — buyers couldn't
+                    // see there was anything to tap. Unselected now carries a
+                    // tinted fill and a solid brand-green outline; still clearly
+                    // secondary to the filled selected chip, but unmistakably a
+                    // control.
                     color: isSelected
                         ? AppColors.primary
                         : outOfStock
-                        ? AppColors.background
-                        : Colors.white,
+                        ? AppColors.surfaceVariant
+                        : AppColors.primaryContainer,
                     borderRadius: BorderRadius.circular(10),
                     border: Border.all(
                       color: isSelected
                           ? AppColors.primary
                           : outOfStock
                           ? AppColors.divider
-                          : AppColors.divider,
-                      width: isSelected ? 2 : 1,
+                          : AppColors.primary.withValues(alpha: 0.45),
+                      width: isSelected ? 2 : 1.5,
                     ),
                     boxShadow: isSelected
                         ? [
@@ -1111,6 +1149,8 @@ class _ProductDetailScreenState extends ConsumerState<ProductDetailScreen> {
                       catalogImage: catalog.imageUrl,
                       displayPrice: displayPrice,
                       variantLabel: _selectedVariantLabel(catalog),
+                      variantPrice: storePriceForVariant(
+                          listing, catalog, _selectedVariantOf(catalog)),
                       gstApplicable: _gstFor(listing, catalog).applicable,
                       gstRate: _gstFor(listing, catalog).rate,
                       // Match the store by phone first (reliable) then storeId.
@@ -2098,6 +2138,14 @@ class _SellerTile extends ConsumerStatefulWidget {
   /// for the delivery weight estimate.
   final String? variantLabel;
 
+  /// THIS store's own list price for the selected package size, or null when
+  /// it does not carry that size. Resolved by the parent (which holds the
+  /// catalog) via storePriceForVariant. Every price this tile shows and every
+  /// cart line it writes must be based on this, not on `listing.price` — the
+  /// latter is the BASE size's price, so a 5L selection was being charged at
+  /// the 1L rate.
+  final double? variantPrice;
+
   /// GST already resolved against listing + catalog by the parent screen.
   final bool gstApplicable;
   final double gstRate;
@@ -2110,6 +2158,7 @@ class _SellerTile extends ConsumerStatefulWidget {
     required this.displayPrice,
     this.sellerDiscountPct = 0,
     this.variantLabel,
+    this.variantPrice,
     this.gstApplicable = false,
     this.gstRate = 0,
   });
@@ -2121,17 +2170,28 @@ class _SellerTile extends ConsumerStatefulWidget {
 class _SellerTileState extends ConsumerState<_SellerTile> {
   bool _expanded = false;
 
+  /// This store's list price for the SELECTED size. Falls back to the
+  /// listing's own price only for single-size products, where the parent
+  /// passes no variantPrice.
+  double get _basePrice => widget.variantPrice ?? widget.listing.price;
+
+  /// True when this store cannot supply the size the buyer picked — ordering
+  /// must be blocked rather than silently substituting another size.
+  bool get _carriesSelectedSize =>
+      widget.variantLabel == null || widget.variantPrice != null;
+
   /// Effective price for this store, resolving both percentage and fixed_amount
   /// discounts. Uses listing's own discount first, then catalog per-seller map.
   double get _effectivePrice {
     final listing = widget.listing;
+    final base = _basePrice;
     if (listing.discount != null && listing.discount!.isCurrentlyActive) {
-      return (listing.price - listing.discount!.discountAmount(listing.price))
+      return (base - listing.discount!.discountAmount(base))
           .clamp(0.0, double.infinity);
     }
     // Fallback to catalog-level percentage discount map
     final pct = widget.sellerDiscountPct;
-    return pct > 0 ? listing.price * (1 - pct / 100) : listing.price;
+    return pct > 0 ? base * (1 - pct / 100) : base;
   }
 
   /// Percentage for display badge (0 when fixed_amount — shown differently).
@@ -2157,7 +2217,7 @@ class _SellerTileState extends ConsumerState<_SellerTile> {
     final listing = widget.listing;
     final discountPct = _discountPct;
     final hasDiscount = _hasDiscount;
-    final originalPrice = listing.price;
+    final originalPrice = _basePrice;
     final effectivePrice = hasDiscount ? _effectivePrice : originalPrice;
 
     return GestureDetector(
@@ -2489,7 +2549,7 @@ class _SellerTileState extends ConsumerState<_SellerTile> {
                     // strip at the bottom of the card — no duplicate here.
 
                     // ── Primary actions: Add to Cart + Buy Now (online) ────
-                    if (listing.isInStock && listing.isOnline) ...[
+                    if (listing.isInStock && listing.isOnline && _carriesSelectedSize) ...[
                       const SizedBox(height: 8),
                       Row(
                         children: [
@@ -2684,7 +2744,7 @@ class _SellerTileState extends ConsumerState<_SellerTile> {
             sellerPhone: listing.sellerPhone,
             sellerName: listing.sellerName,
             price: _effectivePrice,
-            originalPrice: listing.price,
+            originalPrice: _basePrice,
             discountPct: _discountPct,
             quantity: 1,
             variantLabel: widget.variantLabel,
@@ -2722,7 +2782,7 @@ class _SellerTileState extends ConsumerState<_SellerTile> {
             sellerPhone: listing.sellerPhone,
             sellerName: listing.sellerName,
             price: _effectivePrice,
-            originalPrice: listing.price,
+            originalPrice: _basePrice,
             discountPct: _discountPct,
             quantity: 1,
             variantLabel: widget.variantLabel,

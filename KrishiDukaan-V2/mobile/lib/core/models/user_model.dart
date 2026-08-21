@@ -65,6 +65,23 @@ class UserModel {
     return hasName && hasLocation;
   }
 
+  /// Human-readable names of the fields still missing, in the order the edit
+  /// form shows them. Empty exactly when [isProfileComplete] is true, so the
+  /// reminder popup and the edit screen's banner can never disagree about
+  /// whether there is anything left to fill in.
+  List<String> get missingProfileFields {
+    if (isProfileComplete) return const [];
+    final missing = <String>[];
+    if (name.trim().isEmpty) missing.add('Full Name');
+    if (isSeller && (businessName ?? '').trim().isEmpty) {
+      missing.add('Shop / Business Name');
+    }
+    if ((city ?? '').trim().isEmpty && (address ?? '').trim().isEmpty) {
+      missing.add('Address');
+    }
+    return missing;
+  }
+
   bool get isConsumer => role == 'consumer';
   bool get isRetailer => role == 'retailer' || role == 'manufacturer';
   bool get isManufacturer => role == 'manufacturer';

@@ -1048,10 +1048,41 @@ export default function ProductDetailView({
   // resolveStoreVariant so the rendered list, the price block, and the order
   // actions all show the same set of stores. Sorting/dedup already done upstream
   // in displayStores; this only removes stores that don't stock the chosen size.
-  const visibleStores = useMemo(
-    () => displayStores.filter((s) => resolveStoreVariant(s).stocked),
-    [displayStores, resolveStoreVariant],
+  // Can THIS store take an online order for this product? Two gates, both
+  // required: the seller has delivery enabled at account level, and this
+  // specific listing's availability entry isn't explicitly offline (legacy
+  // entries have no isOnline, so absence means yes).
+  //
+  // Extracted so the ORDER button and the list ordering below read from one
+  // definition — if they drifted, a store could sort to the top of the list
+  // and then render without the button that put it there.
+  const canOrderFrom = useCallback(
+    (store: any): boolean => {
+      const phone = store?.phone as string | undefined;
+      if (!phone) return false;
+      const availEntry = product.availability?.find(
+        (a) =>
+          a.storePhone === phone || a.storeId === phone || a.storeId === store.id,
+      );
+      return storeOnlineMap[phone] === true && availEntry?.isOnline !== false;
+    },
+    [product.availability, storeOnlineMap],
   );
+
+  const visibleStores = useMemo(() => {
+    const stocked = displayStores.filter((s) => resolveStoreVariant(s).stocked);
+    // Stores that can actually deliver go first. Someone on this page wants to
+    // buy, and the list is distance-sorted — so a store willing to ship sat
+    // wherever its pin fell, often below the 3-store mobile cutoff, while the
+    // visible entries offered nothing but a map pin.
+    //
+    // A stable partition, not a re-sort: distance order (established upstream
+    // in displayStores) is preserved inside each group.
+    const online: typeof stocked = [];
+    const offline: typeof stocked = [];
+    for (const s of stocked) (canOrderFrom(s) ? online : offline).push(s);
+    return [...online, ...offline];
+  }, [displayStores, resolveStoreVariant, canOrderFrom]);
 
   // Compute the displayed price block (current price, MRP, savings, discount %,
   // "lowest nearby") for the CURRENTLY SELECTED variant only. Never uses the
@@ -1450,26 +1481,8 @@ export default function ProductDetailView({
                     </button>
                   </HelperTooltip>
                   {onAddToCartFromStore && (() => {
-                    const phone = (store as any).phone as string | undefined;
-                    // Account-level: seller has online delivery enabled.
-                    // Product-level: this specific listing's isOnline flag (from availability entry).
-                    // Legacy entries without isOnline default to true — account-level check is sufficient.
-                    const availEntry = product.availability?.find(
-                      (a) =>
-                        (phone && (a.storePhone === phone || a.storeId === phone)) ||
-                        a.storeId === store.id,
-                    );
-                    const productLevelOnline = availEntry?.isOnline !== false;
-                    const canOrder = !!phone && storeOnlineMap[phone] === true && productLevelOnline;
-                    console.log("[ProductDetailView] per-store canOrder", {
-                      storeId: store.id,
-                      storePhone: phone,
-                      accountLevelOnline: phone ? storeOnlineMap[phone] : undefined,
-                      availEntryIsOnline: availEntry?.isOnline,
-                      productLevelOnline,
-                      canOrder,
-                    });
-                    if (!canOrder) return null;
+                    // Same helper that ordered the list above — see canOrderFrom.
+                    if (!canOrderFrom(store)) return null;
                     return (
                       <button
                         onClick={(e) => {

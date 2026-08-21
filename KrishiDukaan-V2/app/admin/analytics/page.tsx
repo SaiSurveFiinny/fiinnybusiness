@@ -1,8 +1,11 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { collection, getDocs, orderBy, query, limit, where, getCountFromServer } from "firebase/firestore";
 import { db } from "../../firebase";
+import { getProducts } from "../_lib/admin-data";
+import { readSnapshot, writeSnapshot, STATS_TTL_MS } from "../_lib/admin-cache";
+import { RefreshButton } from "../_components/refresh-button";
 import { Users, Eye, MousePointer, Navigation, TrendingUp, Store, Package, BarChart3, AlertTriangle } from "lucide-react";
 
 type DayVisit = { date: string; total: number };
@@ -51,16 +54,23 @@ function StatCard({ icon: Icon, label, value, sub, color }: {
   );
 }
 
+type AnalyticsSnapshot = { visits: DayVisit[]; stats: PlatformStats };
+
+const SNAPSHOT_KEY = "analytics";
+
 export default function AnalyticsPage() {
-  const [visits, setVisits] = useState<DayVisit[]>([]);
-  const [stats, setStats] = useState<PlatformStats | null>(null);
-  const [loading, setLoading] = useState(true);
+  // Warm start from the last snapshot — this page used to scan the whole `products`
+  // collection on every single mount just to sum three counters.
+  const seed = typeof window !== "undefined" ? readSnapshot<AnalyticsSnapshot>(SNAPSHOT_KEY) : null;
+  const [visits, setVisits] = useState<DayVisit[]>(seed?.data.visits ?? []);
+  const [stats, setStats] = useState<PlatformStats | null>(seed?.data.stats ?? null);
+  const [savedAt, setSavedAt] = useState<number | null>(seed?.savedAt ?? null);
+  const [loading, setLoading] = useState(!seed);
+  const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  useEffect(() => {
-    async function load() {
+  const load = useCallback(async (force = false) => {
       try {
-        setLoading(true);
         setError(null);
 
         // Fetch last 14 days of site visits
@@ -81,9 +91,10 @@ export default function AnalyticsPage() {
         // Aggregate product-level events across ALL products
         let totalImpressions = 0, totalClicks = 0, totalDirections = 0, totalProducts = 0;
         try {
-          const productsSnap = await getDocs(collection(db, "products"));
-          productsSnap.docs.forEach((d) => {
-            const data = d.data();
+          // Shared cached scan — the Overview and Products tabs read the same snapshot.
+          const productDocs = await getProducts({ force });
+          productDocs.forEach((doc) => {
+            const data = doc as Record<string, any>;
             if (data.source === "retailer_inventory_copy" || data.source === "manufacturer_assigned") return;
             totalImpressions += Number(data.impressions || 0);
             totalClicks += Number(data.clicks || 0);
@@ -116,7 +127,7 @@ export default function AnalyticsPage() {
         const totalVisits = visitDays.reduce((s, d) => s + d.total, 0);
         const last7 = visitDays.slice(-7).reduce((s, d) => s + d.total, 0);
 
-        setStats({
+        const nextStats: PlatformStats = {
           totalVisits,
           visitsLast7: last7,
           totalImpressions,
@@ -126,16 +137,31 @@ export default function AnalyticsPage() {
           totalManufacturers,
           totalProducts,
           totalUsers,
-        });
+        };
+        setStats(nextStats);
+        setSavedAt(Date.now());
+        writeSnapshot<AnalyticsSnapshot>(SNAPSHOT_KEY, { visits: visitDays, stats: nextStats });
       } catch (e: any) {
         console.error(e);
         setError((prev) => (prev ? prev + "\n" : "") + `General: ${e.message || e}`);
       } finally {
         setLoading(false);
+        setRefreshing(false);
       }
-    }
-    load();
   }, []);
+
+  useEffect(() => {
+    // Snapshot still fresh → render it and read nothing.
+    if (seed && Date.now() - seed.savedAt < STATS_TTL_MS) return;
+    void load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const handleRefresh = () => {
+    if (refreshing) return;
+    setRefreshing(true);
+    void load(true);
+  };
 
   if (loading) {
     return (
@@ -150,9 +176,14 @@ export default function AnalyticsPage() {
 
   return (
     <div className="space-y-8">
-      <div>
-        <h1 className="text-xl font-black text-on-surface sm:text-2xl">Site Analytics</h1>
-        <p className="mt-1 text-xs text-on-surface-variant sm:text-sm">Platform-wide traffic and engagement overview</p>
+      <div className="flex items-start justify-between gap-3 flex-wrap">
+        <div>
+          <h1 className="text-xl font-black text-on-surface sm:text-2xl">Site Analytics</h1>
+          <p className="mt-1 text-xs text-on-surface-variant sm:text-sm">
+            Platform-wide traffic and engagement — cached between visits.
+          </p>
+        </div>
+        <RefreshButton savedAt={savedAt} refreshing={refreshing} onRefresh={handleRefresh} />
       </div>
 
       {error && (

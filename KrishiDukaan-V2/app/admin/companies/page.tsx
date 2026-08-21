@@ -14,7 +14,6 @@ import {
 } from "firebase/firestore";
 import { auth, db } from "../../firebase";
 import {
-  fetchAllUsers,
   fetchManufacturerProducts,
   fetchManufacturerNetworkStores,
   type RetailerNetworkStore,
@@ -25,6 +24,7 @@ import {
   fetchManufacturerProfile,
 } from "../../dashboard/_lib/brand-page-firestore";
 import { PendingSignupPanel } from "../_components/pending-signup-panel";
+import { getUsers, invalidateUsers } from "../_lib/admin-data";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -747,10 +747,11 @@ export default function AdminCompaniesPage() {
     return nameMatch || phoneMatch;
   });
 
-  const load = () => {
+  const load = (force = false) => {
+    if (force) invalidateUsers();
     setLoading(true);
     setError(null);
-    fetchAllUsers()
+    getUsers({ force })
       .then(users => {
         const mfrs: ManufacturerEntry[] = (users as any[])
           .filter(u => u.role === "manufacturer")
@@ -813,7 +814,7 @@ export default function AdminCompaniesPage() {
             </div>
             <button
               type="button"
-              onClick={load}
+              onClick={() => load(true)}
               disabled={loading}
               className="flex items-center gap-1.5 rounded-xl border border-white/20 px-3 sm:px-4 py-1.5 sm:py-2 text-[11px] sm:text-xs font-bold text-white/80 hover:bg-white/10 transition-colors"
             >

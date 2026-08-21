@@ -1,4 +1,6 @@
 import 'package:cached_network_image/cached_network_image.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
@@ -15,12 +17,49 @@ import '../../marketplace/providers/marketplace_provider.dart';
 import '../providers/reels_provider.dart';
 import '../widgets/reel_filters.dart';
 
-class ShopProfileScreen extends ConsumerWidget {
+class ShopProfileScreen extends ConsumerStatefulWidget {
   final String shopPhone;
   const ShopProfileScreen({super.key, required this.shopPhone});
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
+  ConsumerState<ShopProfileScreen> createState() => _ShopProfileScreenState();
+}
+
+class _ShopProfileScreenState extends ConsumerState<ShopProfileScreen> {
+  @override
+  void initState() {
+    super.initState();
+    _trackStoreView();
+  }
+
+  /// Best-effort, silent bump of `retailers/{phone}.storeViews` and today's
+  /// bucket in `storeViewsByDay` — the counters the weekly/monthly/yearly
+  /// analytics digest reads for "store views". Same shape and same
+  /// authenticated-shopper gate as _trackProductEvent in the product detail
+  /// screen; a seller opening their own storefront is not a view, and a
+  /// tracking failure must never affect the page.
+  void _trackStoreView() {
+    final auth = FirebaseAuth.instance.currentUser;
+    if (auth == null) return;
+
+    final me = ref.read(currentUserProvider).value;
+    if (me != null && me.phone == widget.shopPhone) return;
+
+    final now = DateTime.now();
+    final dayKey = '${now.year}-${now.month.toString().padLeft(2, '0')}-'
+        '${now.day.toString().padLeft(2, '0')}';
+    FirebaseFirestore.instance
+        .collection('retailers')
+        .doc(widget.shopPhone)
+        .update({
+      'storeViews': FieldValue.increment(1),
+      'storeViewsByDay.$dayKey': FieldValue.increment(1),
+    }).catchError((_) {});
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final shopPhone = widget.shopPhone;
     final shopAsync = ref.watch(shopUserProvider(shopPhone));
     // Richer profile data (tagline/website/logo/banner) the web dashboard
     // profile editor writes to `profiles/{phone}` — additive on top of
@@ -266,6 +305,12 @@ class ShopProfileScreen extends ConsumerWidget {
                           data: (v) => _fmt(v),
                           loading: () => '—',
                           error: (_, _) => '—',
+                        ),
+                        // Same screen a `reel_follow` notification opens.
+                        onTap: () => context.push(
+                          isOwnShop
+                              ? '/followers'
+                              : '/followers?phone=${Uri.encodeComponent(shopPhone)}',
                         ),
                       ),
                       Container(width: 1, height: 32, color: AppColors.divider),

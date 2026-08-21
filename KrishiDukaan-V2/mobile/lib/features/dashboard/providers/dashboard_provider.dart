@@ -2,6 +2,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../../core/models/listing_model.dart';
 import '../../../core/models/order_model.dart';
 import '../data/dashboard_repository.dart';
+import '../data/store_analytics.dart';
 
 final _repo = DashboardRepository();
 
@@ -26,6 +27,17 @@ final deliverySettingsProvider =
 });
 
 final dashboardRepoProvider = Provider((_) => _repo);
+
+final _storeAnalyticsRepo = StoreAnalyticsRepository();
+
+/// Reach/engagement stats behind the Analytics screen, scoped to a period.
+/// Keyed by "<phone>|<periodKey>" so switching period refetches rather than
+/// reusing the previous window's numbers.
+final storeAnalyticsProvider =
+    FutureProvider.family<StoreAnalytics, ({String phone, AnalyticsPeriod period})>(
+        (ref, arg) {
+  return _storeAnalyticsRepo.fetch(arg.phone, arg.period);
+});
 
 /// Real seat stats from subscriptions + retailerSeatListings.
 /// Matches web's computeSeatStats logic exactly.

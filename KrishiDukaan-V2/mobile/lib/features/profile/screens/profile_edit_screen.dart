@@ -26,7 +26,15 @@ class ProfileEditScreen extends ConsumerStatefulWidget {
   /// user opened it manually to edit.
   final String? reason;
 
-  const ProfileEditScreen({super.key, this.reason});
+  /// Set by a `profile_incomplete` notification. Any non-null value turns on
+  /// missing-field highlighting; the value itself is the backend's
+  /// pipe-separated list of what was missing when the reminder was sent. The
+  /// list is only used for the banner wording — which fields actually get
+  /// outlined is recomputed from the live form, so a reminder that arrived
+  /// before the user filled something in cannot flag a field they just fixed.
+  final String? highlight;
+
+  const ProfileEditScreen({super.key, this.reason, this.highlight});
 
   @override
   ConsumerState<ProfileEditScreen> createState() => _ProfileEditScreenState();
@@ -262,6 +270,7 @@ class _ProfileEditScreenState extends ConsumerState<ProfileEditScreen> {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
+                    if (_highlighting) _MissingBanner(missing: _missingNow(isSeller)),
                     if (isNew)
                       Padding(
                         padding: const EdgeInsets.only(bottom: 16),
@@ -291,7 +300,7 @@ class _ProfileEditScreenState extends ConsumerState<ProfileEditScreen> {
                     Text('Your Details', style: AppTextStyles.heading3),
                     const SizedBox(height: 12),
                     _field(_nameCtrl, 'Full Name', Icons.person_outline,
-                        validator: _required),
+                        validator: _required, highlightIfEmpty: true),
                     const SizedBox(height: 12),
                     _field(_emailCtrl, 'Email (optional)', Icons.email_outlined,
                         keyboardType: TextInputType.emailAddress),
@@ -302,10 +311,12 @@ class _ProfileEditScreenState extends ConsumerState<ProfileEditScreen> {
                       const SizedBox(height: 12),
                       _field(_businessCtrl, 'Shop / Business Name',
                           Icons.storefront_outlined,
-                          validator: _required),
+                          validator: _required, highlightIfEmpty: true),
                       const SizedBox(height: 12),
                       _field(_addressCtrl, 'Address', Icons.home_outlined,
-                          maxLines: 2, validator: _required),
+                          maxLines: 2,
+                          validator: _required,
+                          highlightIfEmpty: true),
                       const SizedBox(height: 12),
                       Row(
                         children: [
@@ -324,6 +335,7 @@ class _ProfileEditScreenState extends ConsumerState<ProfileEditScreen> {
                       const SizedBox(height: 12),
                       _field(_pincodeCtrl, 'Pincode', Icons.pin_outlined,
                           keyboardType: TextInputType.number,
+                          highlightIfEmpty: true,
                           inputFormatters: [
                             FilteringTextInputFormatter.digitsOnly,
                             LengthLimitingTextInputFormatter(6),
@@ -452,6 +464,24 @@ class _ProfileEditScreenState extends ConsumerState<ProfileEditScreen> {
     );
   }
 
+  /// True once the user arrived from a "complete your profile" reminder.
+  bool get _highlighting => widget.highlight != null;
+
+  /// Required-and-still-empty fields, recomputed on every build so an outline
+  /// clears the moment the user types into it.
+  List<String> _missingNow(bool isSeller) {
+    final missing = <String>[];
+    if (_nameCtrl.text.trim().isEmpty) missing.add('Full Name');
+    if (isSeller && _businessCtrl.text.trim().isEmpty) {
+      missing.add('Shop / Business Name');
+    }
+    if (_addressCtrl.text.trim().isEmpty && _cityCtrl.text.trim().isEmpty) {
+      missing.add('Address');
+    }
+    if (_pincodeCtrl.text.trim().isEmpty) missing.add('Pincode');
+    return missing;
+  }
+
   Widget _field(
     TextEditingController controller,
     String label,
@@ -460,7 +490,11 @@ class _ProfileEditScreenState extends ConsumerState<ProfileEditScreen> {
     TextInputType? keyboardType,
     int maxLines = 1,
     List<TextInputFormatter>? inputFormatters,
+    bool highlightIfEmpty = false,
   }) {
+    final flagged =
+        _highlighting && highlightIfEmpty && controller.text.trim().isEmpty;
+
     return TextFormField(
       controller: controller,
       validator: validator,
@@ -468,16 +502,79 @@ class _ProfileEditScreenState extends ConsumerState<ProfileEditScreen> {
       maxLines: maxLines,
       inputFormatters: inputFormatters,
       style: AppTextStyles.body,
+      // Only while highlighting: rebuild per keystroke so the amber outline
+      // disappears as soon as the field has content.
+      onChanged: _highlighting ? (_) => setState(() {}) : null,
       decoration: InputDecoration(
         labelText: label,
-        prefixIcon: Icon(icon),
+        prefixIcon: Icon(icon, color: flagged ? AppColors.error : null),
         filled: true,
         fillColor: Colors.white,
         border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+        enabledBorder: flagged
+            ? OutlineInputBorder(
+                borderRadius: BorderRadius.circular(12),
+                borderSide:
+                    const BorderSide(color: AppColors.error, width: 1.5),
+              )
+            : null,
         focusedBorder: OutlineInputBorder(
           borderRadius: BorderRadius.circular(12),
           borderSide: const BorderSide(color: AppColors.primary, width: 2),
         ),
+      ),
+    );
+  }
+}
+
+/// "Still missing…" callout shown when the screen is opened from a profile
+/// completion reminder. Turns green once every required field has content, so
+/// the user gets confirmation before they even hit Save.
+class _MissingBanner extends StatelessWidget {
+  final List<String> missing;
+  const _MissingBanner({required this.missing});
+
+  @override
+  Widget build(BuildContext context) {
+    final done = missing.isEmpty;
+    final color = done ? AppColors.success : AppColors.error;
+
+    return Container(
+      margin: const EdgeInsets.only(bottom: 16),
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.08),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: color.withValues(alpha: 0.4)),
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Icon(done ? Icons.check_circle_outline : Icons.error_outline,
+              color: color, size: 20),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  done ? 'All set — tap Save' : 'Complete your profile',
+                  style: AppTextStyles.bodyMedium
+                      .copyWith(fontWeight: FontWeight.w800, color: color),
+                ),
+                const SizedBox(height: 3),
+                Text(
+                  done
+                      ? 'Everything we need is filled in.'
+                      : 'Still missing: ${missing.join(", ")}. '
+                          'A complete profile helps buyers find and trust your store.',
+                  style: AppTextStyles.bodySmall
+                      .copyWith(color: AppColors.onSurfaceVariant),
+                ),
+              ],
+            ),
+          ),
+        ],
       ),
     );
   }

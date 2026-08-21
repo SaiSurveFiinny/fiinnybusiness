@@ -322,6 +322,9 @@ class _CartItemTile extends ConsumerWidget {
       title: 'Change store',
       subtitle: 'Nearest stores first — pick where to buy',
       currentListingId: item.listingId,
+      // Keep the size the line was bought at — changing store must not
+      // silently re-price a 5L line at the 1L price.
+      variantLabel: item.variantLabel,
     );
     if (picked == null || !context.mounted) return;
 

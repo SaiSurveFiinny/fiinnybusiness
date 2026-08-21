@@ -4,9 +4,25 @@ import { onSchedule } from "firebase-functions/v2/scheduler";
 import { onRequest } from "firebase-functions/v2/https";
 import { logger } from "firebase-functions/v2";
 import { queueWaNotification } from "./wa-notify";
+import { looksLikePhone, firstPhone, notify, displayName } from "./notify";
+import { recordEngagement } from "./notifications/engagement";
 
 export { sendWaNotification, retryWaNotifications, webhookReceiver } from "./wa-dispatch";
 export { transcodeReel } from "./reels/media/transcodeReel";
+export {
+  notifyOwnerOnReelRepost,
+  flushEngagementNotifications,
+  pruneEngagementBuffer,
+} from "./notifications/engagement";
+export {
+  notifySellerOnInventoryAdd,
+  notifyLowStock,
+} from "./notifications/inventory";
+export { sendStoreAnalyticsDigest } from "./notifications/digest";
+export {
+  remindIncompleteProfiles,
+  remindSubscriptionRenewal,
+} from "./notifications/reminders";
 export {
   provisionErpTenantOnSubscription,
   provisionErpTenantByAdmin,
@@ -87,7 +103,16 @@ export const syncSellerProductToCanonical = onDocumentWritten(
       // this doc's own isOnline/sellMode.
       const onlineChanged =
         before.isOnline !== d.isOnline || before.sellMode !== d.sellMode;
-      if (!priceChanged && !stockChanged && !discountChanged && !identityChanged && !onlineChanged) return;
+      // A seller adding or repricing a package size must reach the canonical
+      // availability entry. Without this the trigger returned immediately on a
+      // variants-only edit, so a retailer who stocked a new size (5L on a
+      // catalogue product listing only 1L) never surfaced it anywhere.
+      const variantsChanged =
+        JSON.stringify(before.variants ?? null) !== JSON.stringify(d.variants ?? null);
+      if (
+        !priceChanged && !stockChanged && !discountChanged &&
+        !identityChanged && !onlineChanged && !variantsChanged
+      ) return;
     }
 
     // Values to mirror
@@ -137,7 +162,10 @@ export const syncSellerProductToCanonical = onDocumentWritten(
           ? [...(root.availability as Record<string, unknown>[])]
           : [];
 
-        if (!availability.length) return;
+        // The seller's own package sizes. The marketplace resolves per-store
+        // pricing from the entry's variants, so a size missing here is a size
+        // that store cannot sell even when the chip is visible.
+        const sellerVariants = Array.isArray(d.variants) ? d.variants : null;
 
         let changed = false;
         const updated = availability.map((entry) => {
@@ -154,12 +182,31 @@ export const syncSellerProductToCanonical = onDocumentWritten(
           if (stockLabel != null) patch.stockLevel = stockLabel;
           patch.discountPct = effectivePct;
           patch.isOnline = isOnline;
+          if (sellerVariants) patch.variants = sellerVariants;
           // P6: Enrich storePhone when it is missing in the availability entry.
           // This replaces the per-product arrayRemove+arrayUnion loop that backfill
           // used to run after the batch commit (which generated N extra HTTP requests).
           if (!entry.storePhone && ownerPhone) patch.storePhone = ownerPhone;
           return patch;
         });
+
+        // No entry for this seller yet — create one rather than dropping the
+        // update. Canonical docs assigned by admin often have no availability[]
+        // at all, so the map above matched nothing and every price, stock, and
+        // variant change this seller made was silently discarded.
+        if (!changed && (ownerId || ownerPhone)) {
+          updated.push({
+            storeId: ownerId || ownerPhone,
+            storePhone: ownerPhone || undefined,
+            storeName: d.store ?? d.storeName ?? undefined,
+            stockLevel: stockLabel ?? "In Stock",
+            sellingPrice: sellingPrice ?? undefined,
+            isOnline,
+            discountPct: effectivePct,
+            ...(sellerVariants ? { variants: sellerVariants } : {}),
+          });
+          changed = true;
+        }
 
         if (changed) {
           txn.update(rootRef, {
@@ -449,117 +496,6 @@ export const expireSubscriptions = onSchedule(
 
 // ─── Notifications ────────────────────────────────────────────────────────────
 
-/** Phone variants to try when looking up users/{phone}: as-is, +91-prefixed,
- *  and 10-digit stripped — doc IDs exist in both formats. */
-function phoneVariants(phone: string): string[] {
-  const v = new Set<string>();
-  const p = phone.trim();
-  if (!p) return [];
-  v.add(p);
-  if (p.startsWith("+91")) v.add(p.substring(3));
-  else v.add(`+91${p}`);
-  return Array.from(v);
-}
-
-/**
- * Writes a notifications/{id} doc for the recipient and sends an FCM push to
- * their saved token (users/{phone}.fcmToken). Never throws — notification
- * failures must not break the triggering write.
- */
-/** True when [v] looks like an Indian phone (10–13 digits, optional +91). */
-function looksLikePhone(v: unknown): v is string {
-  if (typeof v !== "string") return false;
-  const t = v.trim();
-  const stripped = t.startsWith("+91") ? t.slice(3) : t;
-  return /^\d{10,13}$/.test(stripped);
-}
-
-/**
- * Returns the first phone-like value from the candidates. Web and mobile
- * write phones into different fields (retailerPhone vs retailerId/ownerId,
- * some null) — and UID values must be skipped, so plain ?? chains don't work.
- */
-function firstPhone(...candidates: unknown[]): string {
-  for (const c of candidates) {
-    if (looksLikePhone(c)) return (c as string).trim();
-  }
-  return "";
-}
-
-async function notify(
-  recipientPhone: string,
-  type: string,
-  title: string,
-  body: string,
-  data: Record<string, string> = {}
-): Promise<void> {
-  const phone = (recipientPhone ?? "").trim();
-  if (!phone) {
-    console.warn(`[notify] skipped ${type} "${title}" — no recipient phone`);
-    return;
-  }
-
-  try {
-    await db.collection("notifications").add({
-      recipientPhone: phone,
-      // Store the alternate format too so the client query matches whichever
-      // format its user doc uses.
-      recipientPhones: phoneVariants(phone),
-      type,
-      title,
-      body,
-      data,
-      read: false,
-      createdAt: admin.firestore.FieldValue.serverTimestamp(),
-    });
-  } catch (err) {
-    console.error(`[notify] doc write failed for ${phone}:`, err);
-  }
-
-  try {
-    let token: string | null = null;
-    for (const variant of phoneVariants(phone)) {
-      const snap = await db.collection("users").doc(variant).get();
-      const t = snap.exists
-        ? (snap.data()?.fcmToken as string | undefined)
-        : undefined;
-      if (t) {
-        token = t;
-        break;
-      }
-    }
-    if (!token) return;
-
-    await admin.messaging().send({
-      token,
-      notification: { title, body },
-      data: { type, ...data },
-      android: { priority: "high" },
-    });
-  } catch (err) {
-    console.error(`[notify] push failed for ${phone}:`, err);
-  }
-}
-
-/** Resolves a seller's display name from manufacturers/users/retailers docs. */
-async function displayName(phone: string, fallback: string): Promise<string> {
-  for (const variant of phoneVariants(phone)) {
-    for (const col of ["manufacturers", "users", "retailers"]) {
-      try {
-        const snap = await db.collection(col).doc(variant).get();
-        if (!snap.exists) continue;
-        const d = snap.data() ?? {};
-        const name = String(
-          d.businessName ?? d.shopName ?? d.name ?? d.ownerName ?? ""
-        ).trim();
-        if (name) return name;
-      } catch {
-        /* keep trying other variants */
-      }
-    }
-  }
-  return fallback;
-}
 
 /**
  * Resolves a manufacturer's display name by trying phone variants first, then
@@ -995,16 +931,17 @@ export const notifyReelOwnerOnLike = onDocumentCreated(
     const ownerPhone = String(reel.shopOwnerId ?? "");
     if (!ownerPhone || ownerPhone === likerId) return; // don't notify self-like
 
-    const shopName = String(reel.shopName ?? "your reel");
     const likerName = await displayName(likerId, "Someone");
 
-    await notify(
+    // Buffered, not pushed: a reel that takes off would otherwise fire one
+    // notification per like. flushEngagementNotifications groups them hourly.
+    await recordEngagement({
       ownerPhone,
-      "reel_like",
-      "New like on your reel ❤️",
-      `${likerName} liked your reel "${shopName}"`,
-      { reelId }
-    );
+      actorPhone: likerId,
+      actorName: likerName,
+      kind: "like",
+      reelId,
+    });
   }
 );
 
@@ -1041,6 +978,18 @@ export const notifyReelOwnerOnComment = onDocumentCreated(
       { reelId }
     );
 
+    // Also buffered — with instantSent so the hourly flush never re-sends it,
+    // but a grouped summary can still read "…liked and commented on your
+    // content". Comments stay instant because they expect a reply.
+    await recordEngagement({
+      ownerPhone,
+      actorPhone: commenterPhone,
+      actorName: commenterName,
+      kind: "comment",
+      reelId,
+      instantSent: true,
+    });
+
     const taggedUserId = d.taggedUserId as string | undefined;
     if (taggedUserId && taggedUserId !== commenterPhone) {
       await notify(
@@ -1070,13 +1019,12 @@ export const notifyShopOwnerOnFollow = onDocumentCreated(
 
     const followerName = await displayName(followerPhone, "Someone");
 
-    await notify(
-      shopPhone,
-      "reel_follow",
-      "New follower 🎉",
-      `${followerName} started following your shop`,
-      { followerPhone }
-    );
+    await recordEngagement({
+      ownerPhone: shopPhone,
+      actorPhone: followerPhone,
+      actorName: followerName,
+      kind: "follow",
+    });
   }
 );
 

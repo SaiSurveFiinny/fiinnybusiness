@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import '../constants/app_colors.dart';
+import '../../features/profile/widgets/profile_completion_prompt.dart';
 import '../providers/cart_provider.dart';
 
 /// Tracks which bottom-nav tab is currently visible.
@@ -84,7 +85,8 @@ class AppShell extends ConsumerWidget {
 
     // System back from a non-Home tab returns to Home instead of closing the
     // app (Android hardware/gesture back lands here when the shell is on top).
-    return PopScope(
+    return ProfileCompletionPrompt(
+      child: PopScope(
       canPop: currentIndex == 0,
       onPopInvokedWithResult: (didPop, _) {
         if (!didPop) navigationShell.goBranch(0);
@@ -137,6 +139,7 @@ class AppShell extends ConsumerWidget {
             ),
           ),
         ),
+      ),
       ),
     );
   }

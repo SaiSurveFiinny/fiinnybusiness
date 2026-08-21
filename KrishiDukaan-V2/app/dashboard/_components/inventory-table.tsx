@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import {
-  AlertTriangle, CheckCircle2, ExternalLink, Loader2, Pencil, Power, PowerOff, Tag, Trash2, Truck,
+  AlertTriangle, Boxes, CheckCircle2, ExternalLink, Loader2, Pencil, Power, PowerOff, Tag, Trash2, Truck,
 } from "lucide-react";
 import type { InventoryRow, StockStatus } from "../_types/inventory";
 import { deriveStockStatus, stockStatusLabel } from "../_types/inventory";
@@ -11,6 +11,7 @@ import { cn } from "../_lib/cn";
 import { useI18n } from "../../i18n/I18nContext";
 import { EditProductModal } from "./edit-product-modal";
 import { DiscountPanel } from "./discount-panel";
+import { AssignedStockPanel } from "./assigned-stock-panel";
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 
@@ -210,11 +211,12 @@ function SellModeToggleButton({
 // ─── Actions cell ───────────────────────────────────────────────────────────
 
 function ActionsCell({
-  row, onEdit, onToggleDiscount, onDelete, onUpdated, accountDeliveryEnabled,
+  row, onEdit, onToggleDiscount, onToggleStock, onDelete, onUpdated, accountDeliveryEnabled,
 }: {
   row: InventoryRow;
   onEdit: () => void;
   onToggleDiscount: () => void;
+  onToggleStock?: () => void;
   onDelete?: (productId: string, inventoryId: string) => Promise<void>;
   onUpdated: () => Promise<void> | void;
   accountDeliveryEnabled?: boolean;
@@ -252,6 +254,17 @@ function ActionsCell({
             className="inline-flex items-center gap-1.5 rounded-lg border border-outline-variant/40 bg-white px-2.5 py-1.5 text-xs font-semibold text-on-surface hover:border-primary hover:text-primary hover:bg-primary/5 transition-all"
           >
             <Pencil className="h-3 w-3" /> {t('editBtn')}
+          </button>
+        )}
+
+        {/* Stock & price — assigned products, which have no Edit button.
+            Without this an assigned product is stuck at stock 0 forever. */}
+        {!isOwn && onToggleStock && (
+          <button
+            type="button" onClick={onToggleStock}
+            className="inline-flex items-center gap-1.5 rounded-lg border border-outline-variant/40 bg-white px-2.5 py-1.5 text-xs font-semibold text-on-surface hover:border-primary hover:text-primary hover:bg-primary/5 transition-all"
+          >
+            <Boxes className="h-3 w-3" /> Stock
           </button>
         )}
 
@@ -326,6 +339,8 @@ function MobileProductCard({
   onEdit,
   onToggleDiscount,
   discountOpen,
+  onToggleStock,
+  stockOpen,
   onToggleActive,
   onDelete,
   userId,
@@ -336,6 +351,8 @@ function MobileProductCard({
   onEdit: () => void;
   onToggleDiscount: () => void;
   discountOpen: boolean;
+  onToggleStock?: () => void;
+  stockOpen?: boolean;
   onToggleActive?: (productId: string, inventoryId: string, isActive: boolean) => Promise<void>;
   onDelete?: (productId: string, inventoryId: string) => Promise<void>;
   userId?: string;
@@ -467,6 +484,22 @@ function MobileProductCard({
           </button>
         )}
 
+        {/* Stock & price — assigned products, which have no Edit button */}
+        {!isOwn && onToggleStock && row.inventoryId && (
+          <button
+            type="button"
+            onClick={onToggleStock}
+            className={cn(
+              "inline-flex items-center gap-1 rounded-lg border px-2.5 py-1.5 text-xs font-semibold transition-all",
+              stockOpen
+                ? "border-primary/40 bg-primary/5 text-primary"
+                : "border-outline-variant/40 bg-white text-on-surface hover:border-primary hover:text-primary hover:bg-primary/5",
+            )}
+          >
+            <Boxes className="h-3 w-3" /> Stock
+          </button>
+        )}
+
         {/* Discount — own and assigned */}
         {row.inventoryId && (
           <button
@@ -531,6 +564,20 @@ function MobileProductCard({
         {deleteErr && <p className="w-full text-[10px] text-red-600">{deleteErr}</p>}
       </div>
 
+      {/* ── Inline Stock & Price Panel — assigned products ───────────────────── */}
+      {stockOpen && row.inventoryId && (
+        <div className="border-t border-outline-variant/15 p-4">
+          <AssignedStockPanel
+            inventoryId={row.inventoryId}
+            stockQuantity={row.stockQuantity}
+            sellingPrice={row.sellingPrice}
+            reorderThreshold={row.reorderThreshold}
+            onSaved={async () => { onToggleStock?.(); await onUpdated(); }}
+            onCancel={() => onToggleStock?.()}
+          />
+        </div>
+      )}
+
       {/* ── Inline Discount Panel — own and assigned ─────────────────────────── */}
       {discountOpen && row.inventoryId && (
         <div className="border-t border-outline-variant/15 p-4">
@@ -565,6 +612,7 @@ export function InventoryTable({
   const [error, setError] = useState<string | null>(null);
   const [editing, setEditing] = useState<InventoryRow | null>(null);
   const [discountId, setDiscountId] = useState<string | null>(null);
+  const [stockId, setStockId] = useState<string | null>(null);
 
   const emptyMsg = role === "manufacturer"
     ? t('noCatalogueYet')
@@ -594,6 +642,8 @@ export function InventoryTable({
             onEdit={() => setEditing(r)}
             onToggleDiscount={() => setDiscountId((prev) => (prev === r.productId ? null : r.productId))}
             discountOpen={discountId === r.productId}
+            onToggleStock={() => setStockId((prev) => (prev === r.productId ? null : r.productId))}
+            stockOpen={stockId === r.productId}
             onToggleActive={onToggleActive}
             onDelete={onDelete}
             onUpdated={onUpdated}
@@ -685,10 +735,30 @@ export function InventoryTable({
                         row={r}
                         onEdit={() => setEditing(r)}
                         onToggleDiscount={() => setDiscountId((prev) => (prev === r.productId ? null : r.productId))}
+                        onToggleStock={() => setStockId((prev) => (prev === r.productId ? null : r.productId))}
                         onDelete={onDelete}
                         onUpdated={onUpdated}
                         accountDeliveryEnabled={accountDeliveryEnabled}
                       />
+                      {/* Inline stock & price panel — assigned products */}
+                      {stockId === r.productId && (
+                        r.inventoryId ? (
+                          <div className="mt-2 w-60">
+                            <AssignedStockPanel
+                              inventoryId={r.inventoryId}
+                              stockQuantity={r.stockQuantity}
+                              sellingPrice={r.sellingPrice}
+                              reorderThreshold={r.reorderThreshold}
+                              onSaved={async () => { setStockId(null); await onUpdated(); }}
+                              onCancel={() => setStockId(null)}
+                            />
+                          </div>
+                        ) : (
+                          <p className="mt-2 max-w-[200px] text-xs text-on-surface-variant">
+                            No inventory record yet — accept this product first.
+                          </p>
+                        )
+                      )}
                       {/* Inline discount panel — own and assigned products */}
                       {discountId === r.productId && (
                         r.inventoryId ? (
@@ -726,7 +796,8 @@ export function InventoryTable({
       </div>
 
       <p className="text-xs text-on-surface-variant">
-        Use Edit to update stock, price, and variants. Inactive products are hidden from the marketplace and do not consume a seat.
+        Use Edit to update stock, price, and variants on your own products, and Stock on products assigned to you.
+        Inactive products are hidden from the marketplace and do not consume a seat.
       </p>
 
       {editing && (
