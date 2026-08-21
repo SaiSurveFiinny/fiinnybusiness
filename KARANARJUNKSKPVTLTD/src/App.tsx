@@ -152,6 +152,9 @@ function Layout({ children, currentTheme, toggleTheme }: { children: React.React
   // Paths sales role is allowed to see in the sidebar nav
   const SALES_NAV_PATHS = ['/sales-targets', '/worklist'];
 
+  // Analyst sees exactly these five items in the drawer — nothing more
+  const ANALYST_NAV_PATHS = ['/reports', '/worklist', '/pos', '/supplier-ledger', '/rates'];
+
   const mainNavItems = [
     { path: '/reports', icon: <BarChart3 size={19} />, label: 'Reports', screenKey: 'analytics' },
     { path: '/dashboard', icon: <Home size={19} />, label: 'B2B Dashboard', screenKey: 'dashboard' },
@@ -206,6 +209,7 @@ function Layout({ children, currentTheme, toggleTheme }: { children: React.React
 
   const navItems = mainNavItems.filter(item => {
     if (isSalesUser) return SALES_NAV_PATHS.includes(item.path);
+    if (userRole === 'analyst') return ANALYST_NAV_PATHS.includes(item.path);
     if (!isOwner && !isShopkeeper) return false;
     if (isShopkeeper && BASIC_PLAN_HIDDEN_PATHS.includes(item.path)) return false;
     if (userRole && permissions && !permissions[userRole]?.[item.screenKey as AppScreen]) return false;

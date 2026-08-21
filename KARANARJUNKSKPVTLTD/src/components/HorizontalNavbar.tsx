@@ -35,6 +35,8 @@ const PRIORITY_NAV: NavItem[] = [
 // /admin#<tab> (see AdminHubPage). The navbar keeps a single "Admin" entry.
 
 const SALES_NAV_PATHS = ['/sales-targets', '/worklist', '/help'];
+// Analyst sees exactly these five items in the horizontal nav — nothing more
+const ANALYST_NAV_PATHS = ['/reports', '/worklist', '/pos', '/supplier-ledger', '/inventory'];
 const SCROLL_STEP = 220;
 
 export default function HorizontalNavbar() {
@@ -50,6 +52,7 @@ export default function HorizontalNavbar() {
   const visibleItems = (isOwner || isSalesUser) ? PRIORITY_NAV.filter(item => {
     if (!userRole || !permissions) return false;
     if (isSalesUser) return SALES_NAV_PATHS.includes(item.path);
+    if (userRole === 'analyst') return ANALYST_NAV_PATHS.includes(item.path);
     if (item.path === '/sales-targets') return false;
     if (permissions[userRole] && !permissions[userRole][item.screenKey]) return false;
     return true;

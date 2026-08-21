@@ -4,10 +4,11 @@ import { query, getDocs, orderBy, where } from 'firebase/firestore';
 import { db } from '../firebase';
 import { useAuth } from '../contexts/AuthContext';
 import { getTenantCollection } from '../utils/tenantPath';
-import { classifySale, gstFromInclusive, resolveSaleLine, closesTo, openingBalance, type BalanceEvent } from '../utils/stockReport';
+import { classifySale, gstFromInclusive, resolveSaleLine, openingStock as calcOpeningStock } from '../utils/stockReport';
 import {
     Package2, Loader2, Search, X, Download,
     Calendar, Eye, Pencil, ChevronUp, ChevronDown, Filter,
+    FileText, FileSpreadsheet, FileType,
 } from 'lucide-react';
 import Papa from 'papaparse';
 import * as XLSX from 'xlsx';
@@ -111,8 +112,9 @@ interface Txn {
 
 interface ProductView {
     product: Product;
-    openingStock: number;    // reconstructed position at the START of the data range
-    remainingStock: number;  // opening + in-range purchases − sales + adjustments
+    openingStock: number;    // derived: remaining − in-range purchases + sales − adjustments
+    remainingStock: number;  // authoritative live stock = Σ inventoryBatches.quantity
+    purchaseRate: number;    // quantity-weighted inventoryBatches.purchaseRate (₹/unit)
     txns: Txn[];             // in-range transactions shown as detail rows
 }
 
@@ -237,13 +239,13 @@ const PERIODS: { key: Period; label: string }[] = [
 ];
 
 // The Channel column displays the full transaction channel (Purchase / B2B /
-// B2C·POS / Adjustment), but the column *filter* is a simple single-select over
+// B2C / Adjustment), but the column *filter* is a simple single-select over
 // the two sale channels only — Purchase and Adjustment are not filter options.
 type ChannelSel = 'all' | 'b2b' | 'pos';
 const CHANNEL_SEL_OPTS: { key: ChannelSel; label: string }[] = [
     { key: 'all', label: 'All' },
     { key: 'b2b', label: 'B2B' },
-    { key: 'pos', label: 'B2C / POS' },
+    { key: 'pos', label: 'B2C' },
 ];
 
 function toStr(d: Date) { return d.toISOString().slice(0, 10); }
@@ -279,7 +281,7 @@ const todayStr = () => new Date().toISOString().slice(0, 10);
 const CHANNEL_CHIP: Record<TxnChannel, { label: string; bg: string; color: string }> = {
     purchase:   { label: 'Purchase',  bg: 'hsla(152,60%,40%,0.12)', color: '#10b981' },
     b2b:        { label: 'B2B',       bg: 'hsla(263,70%,60%,0.12)', color: '#8b5cf6' },
-    pos:        { label: 'B2C / POS', bg: 'hsla(217,91%,60%,0.12)', color: '#3b82f6' },
+    pos:        { label: 'B2C', bg: 'hsla(217,91%,60%,0.12)', color: '#3b82f6' },
     adjustment: { label: 'Adjustment',bg: 'hsla(38,92%,50%,0.12)',  color: '#d97706' },
 };
 
@@ -352,7 +354,7 @@ export default function StockReportPage() {
         setShowProductDropdown(true);
     };
 
-    // ── Channel filter — single-select: All / B2B / B2C·POS ───────────────────
+    // ── Channel filter — single-select: All / B2B / B2C ───────────────────────
     const [channelSel, setChannelSel] = useState<ChannelSel>('all');
 
     // Close the product dropdown on any click outside the search input or the list.
@@ -706,56 +708,50 @@ export default function StockReportPage() {
             const padj      = adjustEventsByProduct.get(p.id) ?? [];
             const txns      = txnsByProduct.get(p.id) ?? [];   // in-range detail rows
 
-            // ── Opening Stock: balance recorded just BEFORE the range start ──────
-            // Reconstructed from the movement/adjustment ledger (never reversed
-            // out of current inventory). Hybrid: a batch/product with *no* ledger
-            // history at all is seeded from its current stock.
-            let openingStock = 0;
-            if (pb.length > 0) {
-                const batchKeys = new Set<string>();
-                for (const b of pb)      batchKeys.add(b.batchNumber || '—');
-                for (const m of pmoves)  batchKeys.add(m.batchNumber || '—');
-                for (const a of padj)    batchKeys.add(a.batchNumber || '—');
+            // ── Remaining Stock: authoritative LIVE inventory ───────────────────
+            // Σ inventoryBatches.quantity — the exact figure Product Master shows
+            // (RateSheetPage rowStock). Never a historical reconstruction. Falls
+            // back to the product-level stock for pre-batch products.
+            const batchQty = pb.reduce((s, b) => s + (b.quantity || 0), 0);
+            const remainingStock = pb.length > 0
+                ? batchQty
+                : (p.loosePieces ?? 0) + (p.quantity ?? 0) * (p.boxCapacity ?? 1);
 
-                for (const bn of batchKeys) {
-                    const events: BalanceEvent[] = [];
-                    for (const m of pmoves) if ((m.batchNumber || '—') === bn && m.remainingBatchQty != null) {
-                        const net = (m.qtyIn || 0) - (m.qtyOut || 0);
-                        events.push({ date: m.date, ord: tsMs(m.createdAt), balance: m.remainingBatchQty, pre: m.remainingBatchQty - net });
-                    }
-                    for (const a of padj)   if ((a.batchNumber || '—') === bn)
-                        events.push({ date: a.date, ord: a.ord, balance: a.after, pre: a.after - a.delta });
-
-                    const prior = openingBalance(events, dateFrom);
-                    if (prior != null) openingStock += prior;                 // reconstructed from the ledger
-                    else                                                     // no ledger history → hybrid seed from current
-                        openingStock += pb.filter(b => (b.batchNumber || '—') === bn).reduce((s, b) => s + (b.quantity || 0), 0);
-                }
+            // ── Purchase Rate: quantity-weighted inventoryBatches.purchaseRate ──
+            // Values remaining stock at the rate it was actually received at. When
+            // there is no live batch quantity, average the rated batches; final
+            // fallback is the product-master purchase price.
+            let purchaseRate: number;
+            if (pb.length > 0 && batchQty > 0) {
+                const totalVal = pb.reduce((s, b) => s + (b.quantity || 0) * (b.purchaseRate ?? p.purchasePrice ?? 0), 0);
+                purchaseRate = totalVal / batchQty;
+            } else if (pb.length > 0) {
+                const rated = pb.filter(b => (b.purchaseRate ?? 0) > 0);
+                purchaseRate = rated.length ? rated.reduce((s, b) => s + (b.purchaseRate || 0), 0) / rated.length : (p.purchasePrice ?? 0);
             } else {
-                // Product-level (pre-batch products): reconstruct from remainingStock.
-                const events: BalanceEvent[] = pmoves
-                    .filter(m => m.remainingStock != null)
-                    .map(m => ({ date: m.date, ord: tsMs(m.createdAt), balance: m.remainingStock as number, pre: (m.remainingStock as number) - ((m.qtyIn || 0) - (m.qtyOut || 0)) }));
-                const prior = openingBalance(events, dateFrom);
-                openingStock = prior != null ? prior : (p.loosePieces ?? 0) + (p.quantity ?? 0) * (p.boxCapacity ?? 1);
+                purchaseRate = p.purchasePrice ?? 0;
             }
 
-            // ── Remaining Stock: opening + in-range flows (from the ledger) ──────
-            const purchasesQty = pmoves.filter(m => m.type === 'purchase' && inRange(m.date)).reduce((s, m) => s + (m.qtyIn  || 0), 0);
-            const salesQty     = pmoves.filter(m => m.type !== 'purchase' && inRange(m.date)).reduce((s, m) => s + (m.qtyOut || 0), 0);
+            // ── Opening Stock: derived backward from live stock so the ledger
+            // identity always closes against real inventory:
+            //   opening = remaining − in-range purchases + in-range sales − adjust
+            // Sales use the sale orders (the same source as the B2B/B2C columns).
+            const purchasesQty = pmoves.filter(m => m.type === 'purchase' && inRange(m.date)).reduce((s, m) => s + (m.qtyIn || 0), 0);
+            const salesQty     = saleRows.filter(s => s.productId === p.id && inRange(s.date)).reduce((s, x) => s + (x.qty || 0), 0);
             const adjustQty    = padj.filter(a => inRange(a.date)).reduce((s, a) => s + a.delta, 0);
-            const remainingStock = closesTo(openingStock, purchasesQty, salesQty, adjustQty);
+            const openingStock = calcOpeningStock(remainingStock, purchasesQty, salesQty, adjustQty);
 
-            return { product: p, openingStock, remainingStock, txns };
+            return { product: p, openingStock, remainingStock, purchaseRate, txns };
         });
-    }, [products, selectedProductIds, batchesByProduct, movementsByProduct, adjustEventsByProduct, txnsByProduct, dateFrom, dateTo]);
+    }, [products, selectedProductIds, batchesByProduct, movementsByProduct, adjustEventsByProduct, txnsByProduct, saleRows, dateFrom, dateTo]);
 
     // ── Flatten to spreadsheet rows ───────────────────────────────────────────
     const flatRows = useMemo((): FlatRow[] => {
         const rows: FlatRow[] = [];
         for (const v of productViews) {
-            const salesRate = v.product.sellingPrice ?? 0;
-            const stockValue = v.remainingStock * salesRate;
+            // Stock Value = Remaining Stock × Purchase Rate (quantity-weighted
+            // inventoryBatches.purchaseRate — see productViews).
+            const stockValue = v.remainingStock * v.purchaseRate;
             const txns = [...v.txns].sort((a, b) => (b.date || '').localeCompare(a.date || ''));
             if (txns.length === 0) {
                 rows.push({ key: `stock-${v.product.id}`, productId: v.product.id, productName: v.product.name, openingStock: v.openingStock, remainingStock: v.remainingStock, showStock: true, batchNumber: '', channel: 'stock', channelLabel: '—', party: '', date: '', txn: null, b2bQty: null, b2cQty: null, purchaseAmount: 0, salesAmount: 0, gst: 0, gstPct: v.product.gstPct ?? 0, stockValue });
@@ -839,12 +835,7 @@ export default function StockReportPage() {
         return { productCount: productIds.size, opening, batchCount: batchKeys.size, nameCount: names.size, b2b, b2c, remaining, purchase, sales, gst, stockValue };
     }, [displayRows]);
 
-    // ── CSV export ────────────────────────────────────────────────────────────
-    const handleExport = () => {
-        const blob = new Blob(['﻿' + Papa.unparse(exportRows())], { type: 'text/csv;charset=utf-8;' });
-        const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = `stock_report_${dateFrom}_${dateTo}.csv`; a.click(); URL.revokeObjectURL(a.href);
-    };
-
+    // ── All Data export — mirrors the on-screen Stock Report table exactly ──────
     const exportRows = () => displayRows.map((r, i) => ({
         'Sr. No.': i + 1,
         'Product': r.productName,
@@ -863,37 +854,75 @@ export default function StockReportPage() {
         'Stock Value (₹)': r.showStock && r.stockValue ? r.stockValue.toFixed(2) : '',
     }));
 
-    const handleExportExcel = () => {
-        const ws = XLSX.utils.json_to_sheet(exportRows());
-        const wb = XLSX.utils.book_new();
-        XLSX.utils.book_append_sheet(wb, ws, 'Stock Report');
-        XLSX.writeFile(wb, `stock_report_${dateFrom}_${dateTo}.xlsx`);
+    // ── Generic format writers — shared by both All Data and Product Data ────────
+    type ExportRow = Record<string, string | number>;
+
+    const exportCSV = (rows: ExportRow[], fileBase: string) => {
+        const blob = new Blob(['﻿' + Papa.unparse(rows)], { type: 'text/csv;charset=utf-8;' });
+        const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = `${fileBase}.csv`; a.click(); URL.revokeObjectURL(a.href);
     };
 
-    const handleExportPDF = () => {
+    const exportExcel = (rows: ExportRow[], sheetName: string, fileBase: string) => {
+        const ws = XLSX.utils.json_to_sheet(rows);
+        const wb = XLSX.utils.book_new();
+        XLSX.utils.book_append_sheet(wb, ws, sheetName);
+        XLSX.writeFile(wb, `${fileBase}.xlsx`);
+    };
+
+    const exportPDF = (rows: ExportRow[], title: string, fileBase: string) => {
         const doc = new jsPDF({ orientation: 'landscape' });
         doc.setFontSize(14);
-        doc.text('Stock Report', 14, 15);
+        doc.text(title, 14, 15);
         doc.setFontSize(9);
         doc.text(`Data Range: ${fmtDate(dateFrom)} – ${fmtDate(dateTo)}`, 14, 22);
-        const head = [['Sr.', 'Product', 'Opening', 'Batch', 'Channel', 'Retailer', 'Date', 'Invoice', 'B2B', 'B2C', 'Remaining', 'Purchase (₹)', 'Sales (₹)', 'GST%', 'Stock Value (₹)']];
-        const body = displayRows.map((r, i) => [
-            i + 1, r.productName,
-            r.showStock ? r.openingStock : '',
-            r.batchNumber !== '—' ? r.batchNumber : '',
-            r.channelLabel !== '—' ? r.channelLabel : '',
-            r.party,
-            r.date ? fmtDate(r.date) : '',
-            r.txn?.invoiceNumber !== '—' ? (r.txn?.invoiceNumber ?? '') : '',
-            r.b2bQty ?? '', r.b2cQty ?? '',
-            r.showStock ? r.remainingStock : '',
-            r.purchaseAmount ? r.purchaseAmount.toFixed(2) : '',
-            r.salesAmount ? r.salesAmount.toFixed(2) : '',
-            r.gstPct ? `${r.gstPct}%` : '',
-            r.showStock && r.stockValue ? r.stockValue.toFixed(2) : '',
-        ]);
+        const head = rows.length ? [Object.keys(rows[0])] : [];
+        const body = rows.map(r => Object.values(r));
         autoTable(doc, { head, body, startY: 28, styles: { fontSize: 7 }, headStyles: { fillColor: [99, 60, 180] } });
-        doc.save(`stock_report_${dateFrom}_${dateTo}.pdf`);
+        doc.save(`${fileBase}.pdf`);
+    };
+
+    // ── Product Data export ─────────────────────────────────────────────────────
+    // Product-level aggregation: one row per product (all batches/transactions
+    // rolled up). Reuses the same Stock Report calculations — openingStock and
+    // remainingStock come from productViews; purchases and sales are read from the
+    // in-range ledger / sale rows. Default order: Remaining Stock ascending so
+    // low-stock products surface at the top. This ordering is local to this export
+    // and does not affect the normal All Data report.
+    const productDataRows = () => {
+        const rows = productViews.map(v => {
+            const p = v.product;
+            const purchaseRate = v.purchaseRate;   // quantity-weighted inventoryBatches.purchaseRate
+            const pmoves = movementsByProduct.get(p.id) ?? [];
+            const purchaseStock = pmoves
+                .filter(m => m.type === 'purchase' && inRange(m.date))
+                .reduce((s, m) => s + (m.qtyIn || 0), 0);
+            const opening = v.openingStock;
+            const totalStock = opening + purchaseStock;
+            const totalStockValue = totalStock * purchaseRate;
+            const productSales = saleRows.filter(s => s.productId === p.id);
+            const b2bSales = productSales.filter(s => s.type === 'sale_b2b').reduce((s, x) => s + (x.qty || 0), 0);
+            const b2cSales = productSales.filter(s => s.type === 'sale_pos').reduce((s, x) => s + (x.qty || 0), 0);
+            const totalSales = b2bSales + b2cSales;                                   // quantity
+            const totalSalesValue = productSales.reduce((s, x) => s + (x.amount || 0), 0);  // ₹ amount
+            const remaining = v.remainingStock;
+            const remainingStockValue = remaining * purchaseRate;
+            return { name: p.name, opening, purchaseStock, totalStock, totalStockValue, b2bSales, b2cSales, totalSales, totalSalesValue, remaining, remainingStockValue };
+        });
+        rows.sort((a, b) => a.remaining - b.remaining);   // lowest remaining stock first
+        return rows.map((r, i) => ({
+            'Sr. No.': i + 1,
+            'Product': r.name,
+            'Opening Stock': r.opening,
+            'Purchase Stock': r.purchaseStock,
+            'Total Stock': r.totalStock,
+            'Total Stock Value\n(Opening + Purchase)': r.totalStockValue.toFixed(2),
+            'B2B Sales': r.b2bSales,
+            'B2C Sales': r.b2cSales,
+            'Total Sales': r.totalSales,
+            'Total Sales Value': r.totalSalesValue.toFixed(2),
+            'Remaining Stock': r.remaining,
+            'Remaining Stock Value': r.remainingStockValue.toFixed(2),
+        }));
     };
 
     // ── Invoice actions ───────────────────────────────────────────────────────
@@ -1206,7 +1235,7 @@ export default function StockReportPage() {
             ); break;
             case 'stockValue': inner = (
                 <div style={hdrColStyle}>
-                    <span onClick={() => toggleSort('stockValue')} style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', cursor: 'pointer', userSelect: 'none' }} title="Remaining Stock × Sales Rate">
+                    <span onClick={() => toggleSort('stockValue')} style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', cursor: 'pointer', userSelect: 'none' }} title="Remaining Stock × Purchase Rate">
                         Stock Value <SortIndicator col="stockValue" />
                     </span>
                     {inlineNumFilter(fStockValue, setFStockValue)}
@@ -1230,7 +1259,8 @@ export default function StockReportPage() {
             case 'sr':
                 return <td key={key} style={{ ...getTdStyle(colIdx, 'right', rowIdx), color: 'var(--text-tertiary)' }}>{rowIdx + 1}</td>;
             case 'product':
-                return <td key={key} style={{ ...getTdStyle(colIdx, 'left', rowIdx), fontWeight: r.showStock ? 700 : 400 }}>{r.showStock ? r.productName : ''}</td>;
+                // Wrap long product names within the (resizable) column width instead of truncating.
+                return <td key={key} style={{ ...getTdStyle(colIdx, 'left', rowIdx), fontWeight: r.showStock ? 700 : 400, whiteSpace: 'normal', overflow: 'visible', textOverflow: 'clip', wordBreak: 'break-word' }}>{r.showStock ? r.productName : ''}</td>;
             case 'currentStock':
                 return stockCell(r.openingStock, colIdx, rowIdx, r.showStock, key);
             case 'batchNumber':
@@ -1426,19 +1456,31 @@ export default function StockReportPage() {
                         {showExportMenu && (
                             <>
                                 <div style={{ position: 'fixed', inset: 0, zIndex: 4990 }} onClick={() => setShowExportMenu(false)} />
-                                <div style={{ position: 'absolute', right: 0, top: 'calc(100% + 4px)', zIndex: 4991, background: 'var(--surface-raised)', border: '1px solid var(--surface-border)', borderRadius: '10px', padding: '0.3rem', minWidth: '150px', boxShadow: '0 8px 30px rgba(0,0,0,0.18)' }}>
+                                <div style={{ position: 'absolute', right: 0, top: 'calc(100% + 6px)', zIndex: 4991, background: 'var(--surface-solid)', border: '1px solid var(--surface-border)', borderRadius: '12px', padding: '0.55rem', width: '280px', boxShadow: '0 12px 34px rgba(0,0,0,0.28)' }}>
                                     {([
-                                        { label: 'PDF',         action: handleExportPDF },
-                                        { label: 'Excel (.xlsx)', action: handleExportExcel },
-                                        { label: 'CSV (.csv)',  action: handleExport },
-                                    ] as const).map(item => (
-                                        <button key={item.label}
-                                            onClick={() => { item.action(); setShowExportMenu(false); }}
-                                            style={{ display: 'block', width: '100%', textAlign: 'left', background: 'none', border: 'none', cursor: 'pointer', padding: '0.45rem 0.7rem', borderRadius: '7px', fontSize: '0.82rem', color: 'var(--text-primary)', font: 'inherit' }}
-                                            onMouseEnter={e => (e.currentTarget.style.background = 'hsla(0,0%,50%,0.08)')}
-                                            onMouseLeave={e => (e.currentTarget.style.background = 'none')}>
-                                            {item.label}
-                                        </button>
+                                        { section: 'All Data',     rows: exportRows,      sheet: 'Stock Report', title: 'Stock Report',                 fileBase: `stock_report_${dateFrom}_${dateTo}` },
+                                        { section: 'Product Data', rows: productDataRows,  sheet: 'Product Data', title: 'Stock Report — Product Data', fileBase: `stock_report_product_data_${dateFrom}_${dateTo}` },
+                                    ] as const).map((group, gi) => (
+                                        <div key={group.section} style={{ marginTop: gi > 0 ? '0.5rem' : 0, paddingTop: gi > 0 ? '0.5rem' : 0, borderTop: gi > 0 ? '1px solid var(--surface-border)' : 'none' }}>
+                                            <div style={{ padding: '0 0.15rem 0.35rem', fontSize: '0.66rem', fontWeight: 700, color: 'var(--text-tertiary)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>{group.section}</div>
+                                            <div style={{ display: 'flex', gap: '0.4rem', flexWrap: 'wrap' }}>
+                                                {([
+                                                    { label: 'PDF',   Icon: FileText,        run: () => exportPDF(group.rows(), group.title, group.fileBase) },
+                                                    { label: 'Excel', Icon: FileSpreadsheet, run: () => exportExcel(group.rows(), group.sheet, group.fileBase) },
+                                                    { label: 'CSV',   Icon: FileType,        run: () => exportCSV(group.rows(), group.fileBase) },
+                                                ] as const).map(item => (
+                                                    <button key={item.label}
+                                                        onClick={() => { item.run(); setShowExportMenu(false); }}
+                                                        title={`Export ${group.section} as ${item.label}`}
+                                                        style={{ flex: '1 1 4.5rem', minWidth: '4.5rem', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '0.25rem', background: 'var(--surface-base)', border: '1px solid var(--surface-border)', cursor: 'pointer', padding: '0.5rem 0.4rem', borderRadius: '9px', fontSize: '0.74rem', fontWeight: 600, color: 'var(--text-primary)', font: 'inherit' }}
+                                                        onMouseEnter={e => { e.currentTarget.style.background = 'hsla(263,70%,60%,0.12)'; e.currentTarget.style.borderColor = 'var(--primary)'; }}
+                                                        onMouseLeave={e => { e.currentTarget.style.background = 'var(--surface-base)'; e.currentTarget.style.borderColor = 'var(--surface-border)'; }}>
+                                                        <item.Icon size={16} />
+                                                        {item.label}
+                                                    </button>
+                                                ))}
+                                            </div>
+                                        </div>
                                     ))}
                                 </div>
                             </>
