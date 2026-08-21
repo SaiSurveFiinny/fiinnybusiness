@@ -12,7 +12,8 @@ import { useEffect, useState } from "react";
 import {
   Users, UserPlus, Loader2, Trash2, Pencil, X, Check, ShieldAlert,
 } from "lucide-react";
-import { auth, fetchAllUsers, adminUpdateTeamSections } from "../../firebase";
+import { auth, adminUpdateTeamSections } from "../../firebase";
+import { getUsers, invalidateUsers } from "../_lib/admin-data";
 import { ADMIN_SECTIONS, type AdminSection } from "../_context/admin-auth-context";
 
 type TeamMember = {
@@ -273,10 +274,11 @@ export default function AdminTeamPage() {
   const [loading, setLoading] = useState(true);
   const [deleting, setDeleting] = useState<string | null>(null);
 
-  const load = async () => {
+  const load = async (force = false) => {
+    if (force) invalidateUsers();
     setLoading(true);
     try {
-      const all = await fetchAllUsers();
+      const all = await getUsers({ force });
       const team = all
         .filter((u) => u.role === "team")
         .map((u) => ({
@@ -305,7 +307,7 @@ export default function AdminTeamPage() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ targetUid: uid, callerUid }),
       });
-      await load();
+      await load(true);
     } finally {
       setDeleting(null);
     }
@@ -325,7 +327,7 @@ export default function AdminTeamPage() {
         </p>
       </div>
 
-      <CreateTeamMemberForm onCreated={() => void load()} />
+      <CreateTeamMemberForm onCreated={() => void load(true)} />
 
       <div className="space-y-2">
         <p className="text-sm font-bold text-on-surface">Team Members ({members.length})</p>
@@ -343,7 +345,7 @@ export default function AdminTeamPage() {
               <EditSectionsRow
                 key={m.uid}
                 member={m}
-                onSaved={() => void load()}
+                onSaved={() => void load(true)}
                 onDelete={() => void remove(m.uid)}
                 deleting={deleting === m.uid}
               />

@@ -3,26 +3,22 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Pencil, Search, ShieldCheck, Users, AlertTriangle, X, Check,
-  Package, ChevronRight, ChevronUp, ChevronDown, ExternalLink, UserPlus, Loader2, Link2, Trash2,
-  SlidersHorizontal, Calendar, RotateCcw, MapPin, Truck, WifiOff, Tag, Receipt, LayoutDashboard,
+  ChevronUp, ChevronDown, UserPlus, Loader2,
+  SlidersHorizontal, Calendar, RotateCcw, MapPin, LayoutDashboard,
   Bell,
 } from "lucide-react";
 import {
-  fetchAllUsers, promoteToAdmin,
-  fetchAllSellerProducts, fetchAllSubscriptions,
-  fetchUsersPage, fetchUserRoleCounts, fetchProductsForUserKeys, fetchSubscriptionsForPhones,
-  selectUserProductDocs, collapseUserProductDocs,
-  adminAssignProductToSeller, adminRemoveAssignment, ensureSellerStorefront,
-  adminUpdateProductSellMode,
-  type UserProduct,
+  promoteToAdmin, ensureSellerStorefront,
+  fetchUsersPage, fetchSubscriptionsForPhones,
   db, auth,
 } from "../../firebase";
 import { AdminUserEditPanel } from "../_components/admin-user-edit-panel";
-import { SearchableDropdown } from "../_components/searchable-dropdown";
 import { PendingSignupPanel } from "../_components/pending-signup-panel";
+import { RefreshButton } from "../_components/refresh-button";
 import { useAdminAuth } from "../_context/admin-auth-context";
-import { AddProductInventoryForm } from "../../dashboard/_components/add-product-inventory-form";
-import { DiscountPanel } from "../../dashboard/_components/discount-panel";
+import {
+  getUsers, getSubscriptions, getRoleCounts, invalidateUsers, newestAge, CACHE_KEYS,
+} from "../_lib/admin-data";
 import {
   addDoc, doc, setDoc, getDoc, serverTimestamp, collection, Timestamp, GeoPoint,
   query, where, getDocs, limit,
@@ -58,72 +54,33 @@ const ROLE_BADGE: Record<string, string> = {
   customer: "bg-gray-100 text-gray-600 border border-gray-200",
 };
 
-function AdminSellModeToggle({
-  productId, sellMode, sellerPhone, onRefresh,
-}: {
-  productId: string;
-  sellMode: string | undefined;
-  sellerPhone: string | undefined;
-  onRefresh: () => Promise<void>;
-}) {
-  const [busy, setBusy] = useState(false);
-  const isOnline = sellMode !== "offline_store_only";
-
-  const handleToggle = async () => {
-    if (!productId) return;
-    setBusy(true);
-    try {
-      const next: "online_delivery" | "offline_store_only" = isOnline ? "offline_store_only" : "online_delivery";
-      await adminUpdateProductSellMode(productId, next, sellerPhone);
-      await onRefresh();
-    } catch (e) {
-      console.error("Failed to toggle sell mode", e);
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  return (
-    <label className={`flex items-center gap-1 cursor-pointer select-none ${busy ? "opacity-60 pointer-events-none" : ""}`} title={isOnline ? "Online delivery — click to disable" : "Offline only — click to enable"}>
-      {isOnline
-        ? <Truck className="h-2.5 w-2.5 text-blue-500 shrink-0" />
-        : <WifiOff className="h-2.5 w-2.5 text-orange-500 shrink-0" />}
-      <span className={`text-[10px] font-semibold ${isOnline ? "text-blue-600" : "text-orange-600"}`}>
-        {isOnline ? "Online" : "Offline"}
-      </span>
-      <div className="relative shrink-0">
-        <input type="checkbox" className="sr-only" checked={isOnline} disabled={busy} onChange={handleToggle} />
-        <div className={`h-4 w-7 rounded-full transition-colors duration-200 ${isOnline ? "bg-blue-500" : "bg-surface-container-highest"}`} />
-        <div className={`absolute top-0.5 left-0.5 h-3 w-3 rounded-full bg-white shadow transition-transform duration-200 ${isOnline ? "translate-x-3" : "translate-x-0"}`}>
-          {busy && <Loader2 className="h-2 w-2 animate-spin text-outline absolute inset-0.5" />}
-        </div>
-      </div>
-    </label>
-  );
-}
-
 export default function AdminUsersPage() {
   const identity = useAdminAuth();
   const isFullAdmin = identity.role === "admin";
   // Browse mode — Firestore-paginated "page N of users", loaded 25 at a time via "See More".
   const PAGE_SIZE = 25;
   const [pageUsers, setPageUsers] = useState<any[]>([]);
-  const [pageProducts, setPageProducts] = useState<any[]>([]);
   const [pageSubs, setPageSubs] = useState<any[]>([]);
   const [lastDoc, setLastDoc] = useState<any>(null);
   const [hasMore, setHasMore] = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);
   const [roleCounts, setRoleCounts] = useState({ all: 0, retailer: 0, manufacturer: 0, admin: 0, customer: 0 });
 
-  // Full mode — the complete users/products/subscriptions collections, fetched once and
-  // cached for the rest of the session the moment search/role-filter/advanced-filter/promote
-  // needs to look beyond whatever pages are currently loaded.
+  // Full mode — the complete users/subscriptions collections, pulled from the shared
+  // admin cache (app/admin/_lib/admin-data) the moment search/role-filter/advanced-filter/
+  // promote needs to look beyond whatever pages are currently loaded. The cache is shared
+  // with the other admin tabs, so this is normally free after the first use.
+  // Products are deliberately NOT fetched here — this tab shows no product data.
   const [fullUsers, setFullUsers] = useState<any[] | null>(null);
-  const [fullProducts, setFullProducts] = useState<any[] | null>(null);
   const [fullSubs, setFullSubs] = useState<any[] | null>(null);
   const [fullLoading, setFullLoading] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
+  const [dataAge, setDataAge] = useState<number | null>(null);
 
   const [search, setSearch] = useState("");
+  // Debounced copy of `search` — the input stays instant while the (potentially
+  // thousands-of-rows) filter/sort pass runs at most once per pause in typing.
+  const [debouncedSearch, setDebouncedSearch] = useState("");
   const [loading, setLoading] = useState(true);
   const [filterRole, setFilterRole] = useState("all");
 
@@ -134,8 +91,6 @@ export default function AdminUsersPage() {
   const [filterDateFrom, setFilterDateFrom] = useState("");
   const [filterDateTo, setFilterDateTo] = useState("");
   const [filterHasSubscription, setFilterHasSubscription] = useState<"all" | "yes" | "no">("all");
-  const [filterMinProducts, setFilterMinProducts] = useState("");
-  const [filterMaxProducts, setFilterMaxProducts] = useState("");
   const [filterCity, setFilterCity] = useState("");
   const [filterState, setFilterState] = useState("");
   const [sortOrder, setSortOrder] = useState<"desc" | "asc">("desc");
@@ -167,23 +122,6 @@ export default function AdminUsersPage() {
   const [createError, setCreateError] = useState<string | null>(null);
   const [createSuccess, setCreateSuccess] = useState<string | null>(null);
 
-  // Product edit from within the users panel
-  const [editingProductDoc, setEditingProductDoc] = useState<any | null>(null);
-  const [editingInventoryDoc, setEditingInventoryDoc] = useState<any | null>(null);
-  const [loadingEditProduct, setLoadingEditProduct] = useState(false);
-
-  // Products panel (products derived from allProducts — see memos below)
-  const [productsUser, setProductsUser] = useState<any | null>(null);
-  // Full products catalog, lazily fetched once the Products panel is first opened —
-  // the "Assign Product" dropdown needs every assignable product, not just the ones
-  // owned by whichever users happen to be paginated in.
-  const [catalogProducts, setCatalogProducts] = useState<any[] | null>(null);
-  const [catalogLoading, setCatalogLoading] = useState(false);
-  const [assignProductId, setAssignProductId] = useState("");
-  const [assigning, setAssigning] = useState(false);
-  const [removingId, setRemovingId] = useState<string | null>(null);
-  const [assignMsg, setAssignMsg] = useState<{ ok: boolean; text: string } | null>(null);
-
   // Google Maps autocomplete ref — create modal only
   const createAddressInputRef = useRef<HTMLInputElement>(null);
   const createAcListenerRef   = useRef<any>(null);
@@ -191,44 +129,58 @@ export default function AdminUsersPage() {
   // Whether the admin has engaged search/role-chip/advanced-filter/promote-panel — any of
   // these need to look beyond whatever pages are currently loaded, so they trigger a
   // one-time fetch-and-cache of the complete collections instead of scoped paginated data.
-  const isFiltering = !!search.trim() || filterRole !== "all" ||
+  const isFiltering = !!debouncedSearch.trim() || filterRole !== "all" ||
     filterActive !== "all" || filterHasSubscription !== "all" ||
-    !!filterDateFrom || !!filterDateTo || filterMinProducts !== "" || filterMaxProducts !== "" ||
+    !!filterDateFrom || !!filterDateTo ||
     !!filterCity.trim() || !!filterState.trim();
   const needsFullData = isFiltering || showPromotePanel;
 
   // Derived "current dataset" — paginated browse-mode pages by default, or the fully
   // cached collections once full mode has been triggered and loaded.
   const users = isFiltering ? (fullUsers ?? []) : pageUsers;
-  const allProducts = isFiltering ? (fullProducts ?? []) : pageProducts;
   const allSubs = isFiltering ? (fullSubs ?? []) : pageSubs;
   // Promote-to-admin search always needs the full user list regardless of the main
   // table's mode, falling back to whatever page is loaded while the full fetch is in flight.
   const promoteSourceUsers = fullUsers ?? pageUsers;
 
-  const scopedKeysForUsers = (us: any[]) => us.flatMap(u => [u.uid, u.phone, u.id].filter(Boolean).map(String));
-
-  const load = () => {
+  /**
+   * Reloads the first page. `force` (the Refresh button, and every write on this tab)
+   * also drops the shared users cache so the next search re-reads Firestore; a plain
+   * reload reuses whatever the cache already holds.
+   */
+  const load = (force = false) => {
+    if (force) invalidateUsers();
     setLoading(true);
-    setPageUsers([]); setPageProducts([]); setPageSubs([]);
+    setPageUsers([]); setPageSubs([]);
     setLastDoc(null); setHasMore(true);
-    setFullUsers(null); setFullProducts(null); setFullSubs(null);
-    Promise.all([fetchUsersPage(PAGE_SIZE), fetchUserRoleCounts()])
+    setFullUsers(null); setFullSubs(null);
+    return Promise.all([fetchUsersPage(PAGE_SIZE), getRoleCounts({ force })])
       .then(async ([page, counts]) => {
         setPageUsers(page.users);
         setLastDoc(page.lastDoc);
         setHasMore(page.hasMore);
         setRoleCounts(counts);
-        const [ps, ss] = await Promise.all([
-          fetchProductsForUserKeys(scopedKeysForUsers(page.users)).catch(() => []),
-          fetchSubscriptionsForPhones(page.users.map(u => u.phone).filter(Boolean)).catch(() => []),
-        ]);
-        setPageProducts(ps); setPageSubs(ss);
+        setDataAge(Date.now());
+        const ss = await fetchSubscriptionsForPhones(page.users.map(u => u.phone).filter(Boolean)).catch(() => []);
+        setPageSubs(ss);
       })
       .finally(() => setLoading(false));
   };
 
   useEffect(() => { load(); }, []);
+
+  useEffect(() => {
+    // Clearing the box takes effect immediately; typing settles after 250ms.
+    if (!search) { setDebouncedSearch(""); return; }
+    const t = setTimeout(() => setDebouncedSearch(search), 250);
+    return () => clearTimeout(t);
+  }, [search]);
+
+  const handleRefresh = () => {
+    if (refreshing) return;
+    setRefreshing(true);
+    load(true).finally(() => setRefreshing(false));
+  };
 
   const loadMore = async () => {
     if (!lastDoc || loadingMore) return;
@@ -238,31 +190,27 @@ export default function AdminUsersPage() {
       setPageUsers(prev => [...prev, ...page.users]);
       setLastDoc(page.lastDoc);
       setHasMore(page.hasMore);
-      const [ps, ss] = await Promise.all([
-        fetchProductsForUserKeys(scopedKeysForUsers(page.users)).catch(() => []),
-        fetchSubscriptionsForPhones(page.users.map(u => u.phone).filter(Boolean)).catch(() => []),
-      ]);
-      const dedupe = (prev: any[], fresh: any[]) => {
+      const ss = await fetchSubscriptionsForPhones(page.users.map(u => u.phone).filter(Boolean)).catch(() => []);
+      setPageSubs(prev => {
         const seen = new Set(prev.map(p => p.id));
-        return [...prev, ...fresh.filter(p => !seen.has(p.id))];
-      };
-      setPageProducts(prev => dedupe(prev, ps));
-      setPageSubs(prev => dedupe(prev, ss));
+        return [...prev, ...ss.filter(p => !seen.has(p.id))];
+      });
     } finally {
       setLoadingMore(false);
     }
   };
 
-  // Lazily fetch and cache the full collections the moment full mode is needed.
+  // Pull the full collections the moment full mode is needed. Both come from the shared
+  // admin cache, so searching after the first time costs no Firestore reads at all.
   useEffect(() => {
     if (!needsFullData || fullUsers !== null || fullLoading) return;
     setFullLoading(true);
-    Promise.all([
-      fetchAllUsers(),
-      fetchAllSellerProducts().catch(() => []),
-      fetchAllSubscriptions().catch(() => []),
-    ])
-      .then(([us, ps, ss]) => { setFullUsers(us); setFullProducts(ps); setFullSubs(ss); })
+    Promise.all([getUsers(), getSubscriptions().catch(() => [])])
+      .then(([us, ss]) => {
+        setFullUsers(us); setFullSubs(ss);
+        const age = newestAge(CACHE_KEYS.users);
+        if (age !== null) setDataAge(Date.now() - age);
+      })
       .finally(() => setFullLoading(false));
   }, [needsFullData, fullUsers, fullLoading]);
 
@@ -340,15 +288,6 @@ export default function AdminUsersPage() {
   // currently-loaded page — they stay accurate no matter how many pages are loaded.
   const counts = roleCounts;
 
-  // Accurate per-user product count (deduped) — keyed by user doc id.
-  const productCounts = useMemo(() => {
-    const m = new Map<string, number>();
-    for (const u of users) {
-      m.set(u.id, collapseUserProductDocs(selectUserProductDocs(allProducts, u)).length);
-    }
-    return m;
-  }, [users, allProducts]);
-
   // Total active seats per user — sum of seatsPurchased across all non-expired active subs.
   // Keyed by ownerPhone. Editing seats still targets the latest active sub record (unchanged).
   const activeSeatsByPhone = useMemo(() => {
@@ -390,14 +329,12 @@ export default function AdminUsersPage() {
     setFilterHasSubscription("all");
     setFilterDateFrom("");
     setFilterDateTo("");
-    setFilterMinProducts("");
-    setFilterMaxProducts("");
     setFilterCity("");
     setFilterState("");
   };
 
   const filtered = users.filter(u => {
-    const q = search.toLowerCase();
+    const q = debouncedSearch.toLowerCase();
     const matchSearch = !q || [u.name, u.email, u.role, u.id, u.phone, u.city, u.state, u.shopName, u.businessName].join(" ").toLowerCase().includes(q);
     const matchRole = filterRole === "all" || (filterRole === "customer" ? (!u.role || u.role === "customer") : u.role === filterRole);
 
@@ -417,14 +354,10 @@ export default function AdminUsersPage() {
     const matchDateFrom = !filterDateFrom ? true : (uCreatedAt > 0 ? uCreatedAt >= new Date(filterDateFrom).getTime() : false);
     const matchDateTo   = !filterDateTo   ? true : (uCreatedAt > 0 ? uCreatedAt <= new Date(filterDateTo).getTime() + 86399999 : false);
 
-    const pc = (productCounts.get(u.id) ?? 0);
-    const matchMinProd = filterMinProducts === "" ? true : pc >= Number(filterMinProducts);
-    const matchMaxProd = filterMaxProducts === "" ? true : pc <= Number(filterMaxProducts);
-
     const matchCity  = !filterCity.trim()  ? true : (u.city  || "").toLowerCase().includes(filterCity.trim().toLowerCase());
     const matchState = !filterState.trim() ? true : (u.state || "").toLowerCase().includes(filterState.trim().toLowerCase());
 
-    return matchSearch && matchRole && matchActive && matchSubscription && matchDateFrom && matchDateTo && matchMinProd && matchMaxProd && matchCity && matchState;
+    return matchSearch && matchRole && matchActive && matchSubscription && matchDateFrom && matchDateTo && matchCity && matchState;
   });
 
   // Sort filtered results by createdAt (desc = newest first, asc = oldest first)
@@ -438,172 +371,9 @@ export default function AdminUsersPage() {
     filterHasSubscription !== "all",
     !!filterDateFrom,
     !!filterDateTo,
-    filterMinProducts !== "",
-    filterMaxProducts !== "",
     !!filterCity.trim(),
     !!filterState.trim(),
   ].filter(Boolean).length;
-
-  // Products shown in the slide-over for the selected user (deduped).
-  const panelProducts = useMemo<UserProduct[]>(
-    () => productsUser ? collapseUserProductDocs(selectUserProductDocs(allProducts, productsUser)) : [],
-    [productsUser, allProducts],
-  );
-
-  // Canonical (non-copy) products that an admin can assign, de-duped by name. This needs
-  // the entire products catalog — not just the products owned by currently-loaded users —
-  // so it's backed by its own lazily-fetched full snapshot (catalogProducts), not allProducts.
-  const assignableProducts = useMemo(() => {
-    const copySources = new Set(["admin_assigned", "retailer_inventory_copy", "manufacturer_assigned"]);
-    const seen = new Set<string>();
-    const out: { id: string; name: string; category: string; image: string; price: number }[] = [];
-    for (const d of (catalogProducts ?? [])) {
-      if (d.isActive === false || copySources.has(d.source) || !d.name) continue;
-      const key = String(d.name).toLowerCase().trim();
-      if (seen.has(key)) continue;
-      seen.add(key);
-      const image = String(d.image || (Array.isArray(d.images) ? d.images[0] : "") || "");
-      out.push({ id: d.id, name: String(d.name), category: String(d.category || ""), image, price: Number(d.price || 0) });
-    }
-    return out.sort((a, b) => a.name.localeCompare(b.name));
-  }, [catalogProducts]);
-
-  const openProducts = (u: any) => {
-    setProductsUser(u);
-    setAssignProductId("");
-    setAssignMsg(null);
-    if (catalogProducts === null && !catalogLoading) {
-      setCatalogLoading(true);
-      fetchAllSellerProducts().then(setCatalogProducts).catch(() => setCatalogProducts([])).finally(() => setCatalogLoading(false));
-    }
-    // Self-heal: make sure this seller has a live storefront record so they appear
-    // in stores and their assigned products attach to a store.
-    if (u.role === "retailer" || u.role === "manufacturer") {
-      ensureSellerStorefront({
-        phone: u.phone || u.id, id: u.id, uid: u.uid, role: u.role,
-        name: u.name, shopName: u.shopName, businessName: u.businessName,
-        address: u.address, city: u.city, state: u.state, pincode: u.pincode,
-        latitude: u.latitude, longitude: u.longitude,
-      }).catch(() => { /* non-blocking */ });
-    }
-  };
-
-  const refreshProducts = async () => {
-    if (!productsUser) return;
-    try {
-      const all = await fetchAllSellerProducts();
-      setCatalogProducts(all);
-      const scoped = selectUserProductDocs(all, productsUser);
-      const mergeFresh = (prev: any[]) => {
-        const staleIds = new Set(selectUserProductDocs(prev, productsUser).map((d: any) => d.id));
-        return [...prev.filter(p => !staleIds.has(p.id)), ...scoped];
-      };
-      setPageProducts(mergeFresh);
-      setFullProducts(prev => (prev === null ? prev : mergeFresh(prev)));
-    } catch { /* keep current */ }
-  };
-
-  const handleEditProduct = async (entry: UserProduct) => {
-    const docId = entry.docIds[0] || entry.id;
-    if (!docId) return;
-    setLoadingEditProduct(true);
-    try {
-      const [productSnap, invSnap] = await Promise.all([
-        getDoc(doc(db, "products", docId)),
-        getDocs(query(collection(db, "inventory"), where("productId", "==", docId), limit(1))),
-      ]);
-      if (productSnap.exists()) setEditingProductDoc({ id: productSnap.id, ...productSnap.data() });
-      const invDoc = invSnap.docs[0];
-      setEditingInventoryDoc(invDoc ? { id: invDoc.id, ...invDoc.data() } : null);
-    } finally { setLoadingEditProduct(false); }
-  };
-
-  const handleAdminProductSave = async (payload: any) => {
-    const { editProductId, ...data } = payload;
-    if (!editProductId) return;
-
-    const { doc: fDoc, setDoc: fSetDoc, getDoc: fGetDoc, serverTimestamp: fTs } = await import("firebase/firestore");
-    const { db: fdb } = await import("../../firebase");
-
-    // Strip internal/ownership fields the form should never overwrite.
-    // In particular, "source" must not be changed (admin_assigned would become "admin").
-    const IMMUTABLE = new Set(["source", "id", "originalProductId", "manufacturerProductId",
-      "ownerId", "ownerPhone", "ownerType", "retailerId", "retailerPhone",
-      "manufacturerId", "manufacturerPhone", "assignedByAdmin", "assignedAt", "createdAt"]);
-    const clean: Record<string, unknown> = Object.fromEntries(
-      Object.entries(data).filter(([k, v]) => v !== undefined && !IMMUTABLE.has(k)),
-    );
-
-    // Sync isOnline into every availability[] entry so ProductDetailView's
-    // per-store canOrder check (availEntry.isOnline !== false) stays in sync.
-    const currentAv = (editingProductDoc as any)?.availability as any[] | undefined;
-    if (typeof data.isOnline === 'boolean' && Array.isArray(currentAv) && currentAv.length > 0) {
-      clean.availability = currentAv.map((entry: any) => ({ ...entry, isOnline: data.isOnline }));
-    }
-
-    await fSetDoc(fDoc(fdb, "products", editProductId), { ...clean, updatedAt: fTs() }, { merge: true });
-
-    // When enabling online delivery, also flip the account-level flag so
-    // ProductDetailView's canOrder (storeOnlineMap[phone] === true) passes.
-    // fetchStoreOnlineDelivery checks retailers/ first then manufacturers/,
-    // so update whichever docs already exist to avoid creating spurious records.
-    if (data.isOnline === true && productsUser) {
-      const sellerPhone = productsUser.phone || productsUser.id;
-      if (sellerPhone) {
-        const now = fTs();
-        const [rSnap, mSnap] = await Promise.all([
-          fGetDoc(fDoc(fdb, "retailers", sellerPhone)),
-          fGetDoc(fDoc(fdb, "manufacturers", sellerPhone)),
-        ]);
-        await Promise.all([
-          rSnap.exists() ? fSetDoc(fDoc(fdb, "retailers", sellerPhone), { onlineDelivery: true, updatedAt: now }, { merge: true }) : null,
-          mSnap.exists() ? fSetDoc(fDoc(fdb, "manufacturers", sellerPhone), { onlineDelivery: true, updatedAt: now }, { merge: true }) : null,
-        ].filter(Boolean) as Promise<void>[]);
-      }
-    }
-  };
-
-  const handleAssign = async () => {
-    const prod = assignableProducts.find(p => p.id === assignProductId);
-    if (!productsUser || !prod) return;
-    setAssigning(true); setAssignMsg(null);
-    try {
-      const adminUid = auth.currentUser?.uid ?? "admin";
-      const sellerPhone = productsUser.phone || productsUser.id;
-      const sellerName = productsUser.shopName || productsUser.businessName || productsUser.name || sellerPhone;
-      const role = productsUser.role === "manufacturer" ? "manufacturer" : "retailer";
-      const res = await adminAssignProductToSeller(prod.id, prod.name, sellerPhone, sellerName, role, adminUid);
-      if (res.alreadyAssigned) setAssignMsg({ ok: false, text: `"${prod.name}" is already assigned to this seller.` });
-      else { setAssignMsg({ ok: true, text: `Assigned "${prod.name}".` }); setAssignProductId(""); }
-      await refreshProducts();
-    } catch (e) {
-      setAssignMsg({ ok: false, text: e instanceof Error ? e.message : "Assignment failed." });
-    } finally { setAssigning(false); }
-  };
-
-  const handleRemove = async (entry: UserProduct) => {
-    const docIds = entry.docIds.length ? entry.docIds : entry.assignedDocIds;
-    if (!productsUser || docIds.length === 0) return;
-    const isOwn = entry.assignedDocIds.length === 0; // self-created, not an admin assignment
-    if (!window.confirm(
-      isOwn
-        ? `Remove "${entry.name}"? This is this seller's own product — it will be hidden from the marketplace.`
-        : `Remove "${entry.name}" from this seller?`,
-    )) return;
-    setRemovingId(entry.id); setAssignMsg(null);
-    try {
-      const adminUid = auth.currentUser?.uid ?? "admin";
-      const sellerPhone = productsUser.phone || productsUser.id;
-      for (const docId of docIds) {
-        await adminRemoveAssignment(docId, entry.name, sellerPhone, adminUid);
-      }
-      await refreshProducts();
-      setAssignMsg({ ok: true, text: `Removed "${entry.name}".` });
-    } catch (e) {
-      setAssignMsg({ ok: false, text: e instanceof Error ? e.message : "Remove failed." });
-    } finally { setRemovingId(null); }
-  };
-
 
   const handlePromoteConfirm = async () => {
     if (!promoteTarget) return;
@@ -614,10 +384,11 @@ export default function AdminUsersPage() {
     setPromoting(true);
     try {
       await promoteToAdmin(promoteTarget.id);
+      invalidateUsers();
       const promote = (prev: any[]) => prev.map(u => u.id === promoteTarget.id ? { ...u, role: "admin", isPaid: true } : u);
       setPageUsers(promote);
       setFullUsers(prev => (prev === null ? prev : promote(prev)));
-      fetchUserRoleCounts().then(setRoleCounts).catch(() => {});
+      getRoleCounts({ force: true }).then(setRoleCounts).catch(() => {});
       setPromoteTarget(null);
       setConfirmEmail("");
       setShowPromotePanel(false);
@@ -658,7 +429,7 @@ export default function AdminUsersPage() {
         if (!res.ok) throw new Error(data.error || `Failed to create ${label}.`);
         setCreateSuccess(data.message ?? `${label} account created.`);
         setCreateForm(BLANK_FORM);
-        load();
+        load(true);
       } catch (e) {
         setCreateError(e instanceof Error ? e.message : `Failed to create ${label}.`);
       } finally { setCreating(false); }
@@ -787,7 +558,7 @@ export default function AdminUsersPage() {
       setPhoneError(null);
       setSeatsInput("1");
       if (createAddressInputRef.current) createAddressInputRef.current.value = "";
-      load();
+      load(true);
     } catch (e) {
       setCreateError(e instanceof Error ? e.message : "Failed to create user.");
     } finally { setCreating(false); }
@@ -803,7 +574,8 @@ export default function AdminUsersPage() {
           </div>
           <p className="text-xs sm:text-sm text-on-surface-variant ml-7 sm:ml-9">View and edit all platform users.</p>
         </div>
-        <div className="flex items-center gap-2 shrink-0">
+        <div className="flex items-center gap-2 shrink-0 flex-wrap justify-end">
+          <RefreshButton savedAt={dataAge} refreshing={refreshing} onRefresh={handleRefresh} />
           <button
             type="button"
             onClick={() => setShowPendingSignups(v => !v)}
@@ -930,21 +702,6 @@ export default function AdminUsersPage() {
                 className="rounded-xl border border-outline-variant/40 bg-surface-container-low px-3 py-2 text-sm text-on-surface outline-none ring-primary/30 focus:ring-2" />
             </div>
 
-            {/* Min Products */}
-            <div className="flex flex-col gap-1.5">
-              <label className="text-xs font-semibold text-on-surface-variant">Min Products</label>
-              <input type="number" min="0" value={filterMinProducts} onChange={e => setFilterMinProducts(e.target.value)}
-                placeholder="0"
-                className="rounded-xl border border-outline-variant/40 bg-surface-container-low px-3 py-2 text-sm text-on-surface outline-none ring-primary/30 focus:ring-2" />
-            </div>
-
-            {/* Max Products */}
-            <div className="flex flex-col gap-1.5">
-              <label className="text-xs font-semibold text-on-surface-variant">Max Products</label>
-              <input type="number" min="0" value={filterMaxProducts} onChange={e => setFilterMaxProducts(e.target.value)}
-                placeholder="Any"
-                className="rounded-xl border border-outline-variant/40 bg-surface-container-low px-3 py-2 text-sm text-on-surface outline-none ring-primary/30 focus:ring-2" />
-            </div>
           </div>
 
           {/* Date Range */}
@@ -998,7 +755,6 @@ export default function AdminUsersPage() {
                   <th className="px-5 py-3 text-left text-[10px] font-black uppercase tracking-widest text-on-surface-variant">User</th>
                   <th className="px-5 py-3 text-left text-[10px] font-black uppercase tracking-widest text-on-surface-variant">Role</th>
                   <th className="px-5 py-3 text-left text-[10px] font-black uppercase tracking-widest text-on-surface-variant">Subscription</th>
-                  <th className="px-5 py-3 text-left text-[10px] font-black uppercase tracking-widest text-on-surface-variant">Products</th>
                   <th className="px-5 py-3 text-left text-[10px] font-black uppercase tracking-widest text-on-surface-variant">Seats</th>
                   <th className="px-5 py-3 text-left text-[10px] font-black uppercase tracking-widest text-on-surface-variant">
                     <button
@@ -1046,22 +802,6 @@ export default function AdminUsersPage() {
                         {u.isPaid ? "Active" : "Free"}
                       </span>
                     </td>
-                    <td className="px-5 py-3">
-                      {(() => {
-                        const isSeller = u.role === "retailer" || u.role === "manufacturer";
-                        const pc = productCounts.get(u.id) ?? 0;
-                        return (isSeller || pc > 0) ? (
-                          <button type="button" onClick={() => openProducts(u)}
-                            className="inline-flex items-center gap-1.5 text-sm font-semibold text-primary hover:underline">
-                            <Package className="h-3.5 w-3.5" />
-                            {pc}
-                            <ChevronRight className="h-3 w-3" />
-                          </button>
-                        ) : (
-                          <span className="text-sm text-on-surface-variant">—</span>
-                        );
-                      })()}
-                    </td>
                     <td className="px-5 py-3 text-sm text-on-surface">
                       {(() => {
                         const phone = u.phone || u.id;
@@ -1073,8 +813,10 @@ export default function AdminUsersPage() {
                       <span className="text-xs text-on-surface-variant whitespace-nowrap">{fmtDate(u.createdAt)}</span>
                     </td>
                     <td className="px-5 py-3 text-right">
+                      {/* Sellers are edited from their own dashboard (Dashboard button) —
+                          the inline Edit panel is kept only for roles that have no dashboard. */}
                       <div className="inline-flex items-center gap-1.5">
-                        {(u.role === "retailer" || u.role === "manufacturer") && (
+                        {(u.role === "retailer" || u.role === "manufacturer") ? (
                           <a
                             href={`/dashboard?adminView=${encodeURIComponent(u.phone || u.id)}`}
                             target="_blank"
@@ -1084,17 +826,18 @@ export default function AdminUsersPage() {
                           >
                             <LayoutDashboard className="h-3.5 w-3.5" /> Dashboard
                           </a>
+                        ) : (
+                          <button type="button" onClick={() => setEditUser(u)}
+                            className="inline-flex items-center gap-1.5 rounded-xl border border-outline-variant/40 px-3 py-1.5 text-xs font-medium text-on-surface hover:bg-surface-container transition-colors">
+                            <Pencil className="h-3.5 w-3.5" /> Edit
+                          </button>
                         )}
-                        <button type="button" onClick={() => setEditUser(u)}
-                          className="inline-flex items-center gap-1.5 rounded-xl border border-outline-variant/40 px-3 py-1.5 text-xs font-medium text-on-surface hover:bg-surface-container transition-colors">
-                          <Pencil className="h-3.5 w-3.5" /> Edit
-                        </button>
                       </div>
                     </td>
                   </tr>
                 ))}
                 {sorted.length === 0 && (
-                  <tr><td colSpan={7} className="px-5 py-10 text-center text-sm text-on-surface-variant">No users found.</td></tr>
+                  <tr><td colSpan={6} className="px-5 py-10 text-center text-sm text-on-surface-variant">No users found.</td></tr>
                 )}
               </tbody>
             </table>
@@ -1121,7 +864,7 @@ export default function AdminUsersPage() {
                     )}
                   </div>
                   <div className="flex items-center gap-1.5 shrink-0">
-                    {(u.role === "retailer" || u.role === "manufacturer") && (
+                    {(u.role === "retailer" || u.role === "manufacturer") ? (
                       <a
                         href={`/dashboard?adminView=${encodeURIComponent(u.phone || u.id)}`}
                         target="_blank"
@@ -1130,11 +873,12 @@ export default function AdminUsersPage() {
                       >
                         <LayoutDashboard className="h-3 w-3" />
                       </a>
+                    ) : (
+                      <button type="button" onClick={() => setEditUser(u)}
+                        className="inline-flex items-center gap-1 rounded-lg border border-outline-variant/40 px-2.5 py-1 text-[11px] font-medium text-on-surface hover:bg-surface-container">
+                        <Pencil className="h-3 w-3" /> Edit
+                      </button>
                     )}
-                    <button type="button" onClick={() => setEditUser(u)}
-                      className="inline-flex items-center gap-1 rounded-lg border border-outline-variant/40 px-2.5 py-1 text-[11px] font-medium text-on-surface hover:bg-surface-container">
-                      <Pencil className="h-3 w-3" /> Edit
-                    </button>
                   </div>
                 </div>
                 <div className="flex items-center gap-2 flex-wrap">
@@ -1145,12 +889,6 @@ export default function AdminUsersPage() {
                     <span className={`w-1.5 h-1.5 rounded-full ${u.isPaid ? "bg-green-500" : "bg-gray-300"}`} />
                     {u.isPaid ? "Active" : "Free"}
                   </span>
-                  {((u.role === "retailer" || u.role === "manufacturer") || (productCounts.get(u.id) ?? 0) > 0) && (
-                    <button type="button" onClick={() => openProducts(u)}
-                      className="inline-flex items-center gap-1 text-[11px] font-semibold text-primary">
-                      <Package className="h-3 w-3" /> {productCounts.get(u.id) ?? 0}
-                    </button>
-                  )}
                   {(() => {
                     const phone = u.phone || u.id;
                     const aggSeats = activeSeatsByPhone.get(phone) ?? u.totalSeats ?? 0;
@@ -1192,241 +930,10 @@ export default function AdminUsersPage() {
         <AdminUserEditPanel
           user={editUser}
           onClose={() => setEditUser(null)}
-          onSaved={() => { load(); }}
+          onSaved={() => { load(true); }}
         />
       )}
 
-      {/* ─── Products Panel (view + assign) ──────────────────────────────── */}
-      {productsUser && (() => {
-        const isSeller = productsUser.role === "retailer" || productsUser.role === "manufacturer";
-        return (
-        <div className="fixed inset-0 z-[70] flex items-end justify-end bg-black/40 backdrop-blur-sm pt-16">
-          <div className="w-full max-w-xl h-full bg-white flex flex-col shadow-2xl">
-            {/* Header */}
-            <div className="flex items-center justify-between border-b border-outline-variant/30 px-5 py-4 shrink-0">
-              <div>
-                <h2 className="text-base font-semibold text-on-surface">
-                  Products — {productsUser.name || productsUser.email || "User"}
-                </h2>
-                <p className="text-xs text-on-surface-variant mt-0.5">
-                  {productsUser.role} · {panelProducts.length} product{panelProducts.length !== 1 ? "s" : ""}
-                </p>
-              </div>
-              <button type="button" onClick={() => setProductsUser(null)}
-                className="rounded-xl p-1.5 text-on-surface-variant hover:bg-surface-container">
-                <X className="h-4 w-4" />
-              </button>
-            </div>
-
-            {/* Assign a product (sellers only) */}
-            {isSeller && (
-              <div className="border-b border-outline-variant/30 px-5 py-4 shrink-0 space-y-3 bg-surface-container-lowest">
-                <div className="flex items-center gap-1.5">
-                  <Link2 className="h-4 w-4 text-primary" />
-                  <p className="text-xs font-black uppercase tracking-widest text-on-surface-variant">Assign a product</p>
-                </div>
-                <SearchableDropdown
-                  placeholder="Search product to assign…"
-                  items={assignableProducts}
-                  selectedId={assignProductId}
-                  onSelect={setAssignProductId}
-                  loading={loading}
-                  filterFn={(p, q) => p.name.toLowerCase().includes(q) || p.category.toLowerCase().includes(q)}
-                  renderOption={p => (
-                    <div className="flex items-center gap-2.5">
-                      {p.image
-                        ? <img src={p.image} alt="" className="h-8 w-8 rounded-lg object-cover shrink-0 border border-outline-variant/10" />
-                        : <div className="h-8 w-8 rounded-lg bg-surface-container shrink-0 flex items-center justify-center"><Package className="h-4 w-4 text-on-surface-variant/40" /></div>}
-                      <div className="flex-1 min-w-0">
-                        <p className="text-sm font-semibold text-on-surface truncate">{p.name}</p>
-                        <p className="text-[10px] text-on-surface-variant capitalize">{p.category || "—"} · ₹{p.price}</p>
-                      </div>
-                    </div>
-                  )}
-                  renderSelected={p => (
-                    <div className="flex items-center gap-2.5">
-                      {p.image
-                        ? <img src={p.image} alt="" className="h-8 w-8 rounded-lg object-cover shrink-0 border border-outline-variant/10" />
-                        : <div className="h-8 w-8 rounded-lg bg-primary/10 shrink-0 flex items-center justify-center"><Package className="h-4 w-4 text-primary" /></div>}
-                      <div className="flex-1 min-w-0">
-                        <p className="text-sm font-semibold text-on-surface truncate">{p.name}</p>
-                        <p className="text-[10px] text-on-surface-variant capitalize">{p.category || "—"} · ₹{p.price}</p>
-                      </div>
-                    </div>
-                  )}
-                />
-                {assignMsg && (
-                  <div className={`flex items-center gap-2 rounded-xl border px-3 py-2 text-xs font-medium ${
-                    assignMsg.ok ? "border-green-200 bg-green-50 text-green-700" : "border-red-200 bg-red-50 text-red-700"
-                  }`}>
-                    {assignMsg.ok ? <Check className="h-3.5 w-3.5 shrink-0" /> : <AlertTriangle className="h-3.5 w-3.5 shrink-0" />}
-                    {assignMsg.text}
-                  </div>
-                )}
-                <button
-                  type="button"
-                  onClick={handleAssign}
-                  disabled={assigning || !assignProductId}
-                  className="flex w-full items-center justify-center gap-2 rounded-xl bg-primary px-4 py-2.5 text-sm font-bold text-white hover:opacity-90 disabled:opacity-50 transition-all"
-                >
-                  {assigning ? <><Loader2 className="h-4 w-4 animate-spin" /> Assigning…</> : <><Link2 className="h-4 w-4" /> Assign Product</>}
-                </button>
-                <p className="text-[11px] text-on-surface-variant">
-                  Creates a live, in-stock copy in this seller&apos;s inventory. Assigning the same product twice is blocked.
-                </p>
-              </div>
-            )}
-
-            {/* Product list (deduped) */}
-            <div className="flex-1 overflow-y-auto p-4 space-y-2">
-              {loading ? (
-                <div className="flex h-40 items-center justify-center">
-                  <div className="w-7 h-7 border-4 border-primary border-t-transparent rounded-full animate-spin" />
-                </div>
-              ) : panelProducts.length === 0 ? (
-                <div className="flex flex-col items-center justify-center h-40 gap-2 text-on-surface-variant">
-                  <Package className="h-8 w-8 opacity-30" />
-                  <p className="text-sm">No products yet for this user.</p>
-                </div>
-              ) : panelProducts.map(p => (
-                <div key={p.id}
-                  className="rounded-xl border border-outline-variant/30 bg-surface-container-low overflow-hidden">
-                  {/* Top row: image + name + actions */}
-                  <div className="flex items-start gap-3 p-3">
-                    {p.image ? (
-                      <img src={p.image} alt={p.name} className="h-14 w-14 rounded-lg object-cover shrink-0 border border-outline-variant/20" />
-                    ) : (
-                      <div className="h-14 w-14 rounded-lg bg-surface-container shrink-0 flex items-center justify-center">
-                        <Package className="h-6 w-6 text-on-surface-variant opacity-40" />
-                      </div>
-                    )}
-                    <div className="flex-1 min-w-0">
-                      <div className="flex items-center gap-1.5">
-                        <p className="font-semibold text-sm text-on-surface truncate">{p.name || "—"}</p>
-                        {p.copies > 1 && (
-                          <span className="shrink-0 rounded-full bg-amber-100 text-amber-700 px-1.5 py-0.5 text-[9px] font-black">×{p.copies}</span>
-                        )}
-                      </div>
-                      <div className="flex items-center gap-1.5 mt-0.5 flex-wrap">
-                        <span className="text-xs text-on-surface-variant capitalize">{p.category || "—"}</span>
-                        {p.price > 0 && (
-                          <span className="text-xs font-bold text-secondary">· ₹{p.price.toLocaleString("en-IN")}</span>
-                        )}
-                      </div>
-                    </div>
-                    <div className="flex items-center gap-1 shrink-0">
-                      <button type="button" onClick={() => handleEditProduct(p)} disabled={loadingEditProduct}
-                        className="p-1.5 rounded-lg text-on-surface-variant hover:text-primary hover:bg-surface-container transition-colors disabled:opacity-50"
-                        title="Edit product">
-                        {loadingEditProduct ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Pencil className="h-3.5 w-3.5" />}
-                      </button>
-                      <a href={`/?view=product&product=${p.id}`} target="_blank" rel="noopener noreferrer"
-                        className="p-1.5 rounded-lg text-on-surface-variant hover:text-primary hover:bg-surface-container transition-colors" title="View product">
-                        <ExternalLink className="h-3.5 w-3.5" />
-                      </a>
-                      <button type="button" onClick={() => handleRemove(p)} disabled={removingId === p.id}
-                        className="p-1.5 rounded-lg text-on-surface-variant hover:text-red-600 hover:bg-red-50 transition-colors disabled:opacity-50"
-                        title={p.assignedDocIds.length > 0 ? "Remove assignment" : "Remove product"}>
-                        {removingId === p.id ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Trash2 className="h-3.5 w-3.5" />}
-                      </button>
-                    </div>
-                  </div>
-                  {/* Bottom info bar */}
-                  <div className="flex items-center gap-1.5 flex-wrap px-3 pb-3">
-                    {/* Stock */}
-                    <span className={`text-[10px] font-black uppercase tracking-widest px-2 py-0.5 rounded-full ${
-                      p.stock === "In Stock" ? "bg-green-100 text-green-700" : "bg-orange-100 text-orange-700"
-                    }`}>{p.stock || "—"}</span>
-                    {/* Discount */}
-                    {(p.effectiveDiscountPct ?? 0) > 0 ? (
-                      <span className="flex items-center gap-0.5 text-[10px] font-black uppercase tracking-widest px-2 py-0.5 rounded-full bg-primary/10 text-primary">
-                        <Tag className="h-2.5 w-2.5" />{p.effectiveDiscountPct}% OFF
-                      </span>
-                    ) : (
-                      <span className="text-[10px] text-on-surface-variant/50 px-2 py-0.5 rounded-full border border-dashed border-outline-variant/30">No discount</span>
-                    )}
-                    {/* Online delivery — inline toggle */}
-                    <AdminSellModeToggle
-                      productId={p.docIds[0] || p.id}
-                      sellMode={p.sellMode}
-                      sellerPhone={productsUser?.phone || productsUser?.id}
-                      onRefresh={refreshProducts}
-                    />
-                    {/* GST */}
-                    {p.gstApplicable ? (
-                      <span className="flex items-center gap-0.5 text-[10px] font-semibold px-2 py-0.5 rounded-full bg-surface-container text-on-surface-variant border border-outline-variant/30">
-                        <Receipt className="h-2.5 w-2.5" />GST {p.gstRate}%
-                      </span>
-                    ) : (
-                      <span className="text-[10px] text-on-surface-variant/50 px-2 py-0.5 rounded-full border border-dashed border-outline-variant/30">No GST</span>
-                    )}
-                    {/* Source */}
-                    {p.source && (
-                      <span className="text-[9px] text-on-surface-variant/40 font-mono px-1.5">{p.source}</span>
-                    )}
-                  </div>
-                </div>
-              ))}
-            </div>
-          </div>
-        </div>
-        );
-      })()}
-
-      {/* ─── Product Edit Modal (from Users panel) ──────────────────────── */}
-      {editingProductDoc && (
-        <div className="fixed inset-x-0 bottom-0 top-16 z-[90] flex items-end justify-center bg-on-surface/40 p-0 backdrop-blur-sm sm:items-center sm:p-4">
-          <div className="flex max-h-[calc(100dvh-64px)] w-full flex-col rounded-t-3xl bg-white shadow-2xl sm:max-w-2xl sm:rounded-3xl overflow-hidden">
-            <div className="flex items-center justify-between border-b border-surface-container px-5 py-4 shrink-0">
-              <h2 className="text-base font-bold text-on-surface">Edit Product</h2>
-              <button onClick={() => { setEditingProductDoc(null); setEditingInventoryDoc(null); }} className="p-2 rounded-xl hover:bg-surface-container transition-colors">
-                <X className="h-5 w-5" />
-              </button>
-            </div>
-            <div className="flex-1 overflow-y-auto p-4 sm:p-5 space-y-5">
-              <AddProductInventoryForm
-                adminMode
-                initialProduct={editingProductDoc}
-                userId={auth.currentUser?.uid ?? null}
-                role="manufacturer"
-                seatStats={{ totalPurchased: 99, activeUsed: 0, available: 99, expiringSoon: 0 }}
-                onAdminSave={handleAdminProductSave}
-                onCreated={async () => {
-                  await refreshProducts();
-                  setEditingProductDoc(null);
-                  setEditingInventoryDoc(null);
-                }}
-              />
-              {editingInventoryDoc && (
-                <div className="border-t border-outline-variant/20 pt-5">
-                  <p className="text-sm font-semibold text-on-surface mb-3">Discount Settings</p>
-                  <DiscountPanel
-                    inventoryId={editingInventoryDoc.id}
-                    productId={editingProductDoc.id}
-                    originalProductId={editingProductDoc.originalProductId ?? null}
-                    sellingPrice={editingInventoryDoc.sellingPrice ?? editingProductDoc.price ?? 0}
-                    discountEnabled={editingInventoryDoc.discountEnabled ?? false}
-                    discountType={editingInventoryDoc.discountType ?? "percentage"}
-                    discountPct={editingInventoryDoc.discountPct ?? 0}
-                    discountFixedAmt={editingInventoryDoc.discountFixedAmt ?? 0}
-                    discountStartDate={editingInventoryDoc.discountStartDate?.toDate?.() ?? null}
-                    discountEndDate={editingInventoryDoc.discountEndDate?.toDate?.() ?? null}
-                    bulkDiscountEnabled={editingInventoryDoc.bulkDiscountEnabled ?? false}
-                    bulkDiscountTiers={editingInventoryDoc.bulkDiscountTiers ?? []}
-                    isActive={editingProductDoc.isActive ?? true}
-                    onSaved={async () => {
-                      const freshInv = await getDocs(query(collection(db, "inventory"), where("productId", "==", editingProductDoc.id), limit(1)));
-                      const invDoc = freshInv.docs[0];
-                      if (invDoc) setEditingInventoryDoc({ id: invDoc.id, ...invDoc.data() });
-                      await refreshProducts();
-                    }}
-                  />
-                </div>
-              )}
-            </div>
-          </div>
-        </div>
-      )}
 
       {/* ─── Guarded Admin Promotion Section (full admins only) ──────────── */}
       {isFullAdmin && (

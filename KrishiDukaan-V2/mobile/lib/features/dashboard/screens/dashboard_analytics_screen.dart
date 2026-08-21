@@ -5,19 +5,38 @@ import '../../../core/constants/app_text_styles.dart';
 import '../../../core/models/order_model.dart';
 import '../../../core/providers/user_provider.dart';
 import '../../../core/utils/currency_utils.dart';
+import '../data/store_analytics.dart';
 import '../providers/dashboard_provider.dart';
 
-/// Minimal seller Analytics screen mirroring web's /dashboard/analytics
-/// (orders/revenue + top products), built entirely from data already fetched
-/// elsewhere in the app (DashboardRepository.watchSellerOrders — no new
-/// backend work). Web's engagement metrics (impressions/CTR/views) are
-/// skipped: mobile never writes those tracking fields, so there's nothing
-/// real to show for them yet.
-class DashboardAnalyticsScreen extends ConsumerWidget {
-  const DashboardAnalyticsScreen({super.key});
+/// Seller Analytics: orders and revenue from the seller's own orders, plus the
+/// reach and engagement figures the weekly/monthly/yearly digest notification
+/// quotes (store views, product views, calls, followers, reel interactions).
+///
+/// The digest links here with `?period=week|month|year`, so whichever window
+/// the notification summarised is the one that opens.
+class DashboardAnalyticsScreen extends ConsumerStatefulWidget {
+  /// 'week' | 'month' | 'year' from an analytics_digest notification.
+  final String? initialPeriod;
+
+  const DashboardAnalyticsScreen({super.key, this.initialPeriod});
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
+  ConsumerState<DashboardAnalyticsScreen> createState() =>
+      _DashboardAnalyticsScreenState();
+}
+
+class _DashboardAnalyticsScreenState
+    extends ConsumerState<DashboardAnalyticsScreen> {
+  late AnalyticsPeriod _period;
+
+  @override
+  void initState() {
+    super.initState();
+    _period = AnalyticsPeriod.fromKey(widget.initialPeriod);
+  }
+
+  @override
+  Widget build(BuildContext context) {
     final user = ref.watch(currentUserProvider).value;
     return Scaffold(
       backgroundColor: AppColors.background,
@@ -29,36 +48,113 @@ class DashboardAnalyticsScreen extends ConsumerWidget {
       ),
       body: user == null
           ? const Center(child: Text('Not logged in.'))
-          : _Body(sellerPhone: user.phone),
+          : Column(
+              children: [
+                _PeriodSelector(
+                  selected: _period,
+                  onChanged: (p) => setState(() => _period = p),
+                ),
+                Expanded(
+                  child: _Body(sellerPhone: user.phone, period: _period),
+                ),
+              ],
+            ),
+    );
+  }
+}
+
+/// Week / Month / Year segmented control.
+class _PeriodSelector extends StatelessWidget {
+  final AnalyticsPeriod selected;
+  final ValueChanged<AnalyticsPeriod> onChanged;
+
+  const _PeriodSelector({required this.selected, required this.onChanged});
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      color: Colors.white,
+      padding: const EdgeInsets.fromLTRB(16, 12, 16, 12),
+      child: Row(
+        children: [
+          for (final p in AnalyticsPeriod.values) ...[
+            Expanded(
+              child: GestureDetector(
+                onTap: () => onChanged(p),
+                child: Container(
+                  padding: const EdgeInsets.symmetric(vertical: 9),
+                  decoration: BoxDecoration(
+                    color: p == selected
+                        ? AppColors.primary
+                        : AppColors.primaryContainer.withValues(alpha: 0.3),
+                    borderRadius: BorderRadius.circular(10),
+                  ),
+                  child: Text(
+                    p.label,
+                    textAlign: TextAlign.center,
+                    style: AppTextStyles.bodyMedium.copyWith(
+                      color: p == selected
+                          ? Colors.white
+                          : AppColors.onSurfaceVariant,
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                ),
+              ),
+            ),
+            if (p != AnalyticsPeriod.values.last) const SizedBox(width: 8),
+          ],
+        ],
+      ),
     );
   }
 }
 
 class _Body extends ConsumerWidget {
   final String sellerPhone;
-  const _Body({required this.sellerPhone});
+  final AnalyticsPeriod period;
+  const _Body({required this.sellerPhone, required this.period});
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final ordersAsync = ref.watch(sellerOrdersProvider(sellerPhone));
+    final reachAsync = ref.watch(
+        storeAnalyticsProvider((phone: sellerPhone, period: period)));
 
     return ordersAsync.when(
       loading: () => const Center(child: CircularProgressIndicator()),
       error: (_, _) => const Center(child: Text('Failed to load analytics.')),
-      data: (orders) => _Content(orders: orders),
+      data: (orders) => _Content(
+        orders: orders,
+        period: period,
+        reach: reachAsync,
+      ),
     );
   }
 }
 
 class _Content extends StatelessWidget {
   final List<OrderModel> orders;
-  const _Content({required this.orders});
+  final AnalyticsPeriod period;
+  final AsyncValue<StoreAnalytics> reach;
+
+  const _Content({
+    required this.orders,
+    required this.period,
+    required this.reach,
+  });
 
   @override
   Widget build(BuildContext context) {
-    final valid = orders.where((o) => o.status != 'cancelled').toList();
+    // Scope orders to the selected window so the revenue figure and the reach
+    // figures below it describe the same stretch of time.
+    final cutoff = DateTime.now().subtract(Duration(days: period.days));
+    final inPeriod = orders
+        .where((o) => o.createdAt == null || o.createdAt!.isAfter(cutoff))
+        .toList();
+    final valid = inPeriod.where((o) => o.status != 'cancelled').toList();
     final totalRevenue = valid.fold<double>(0, (sum, o) => sum + o.total);
-    final totalOrders = orders.length;
+    final totalOrders = inPeriod.length;
 
     final now = DateTime.now();
     final today = DateTime(now.year, now.month, now.day);
@@ -111,6 +207,28 @@ class _Content extends StatelessWidget {
           ],
         ),
         const SizedBox(height: 20),
+
+        // ── Reach & engagement ────────────────────────────────────────────
+        // The same counters the analytics_digest notification quotes.
+        Text('Reach & Engagement', style: AppTextStyles.heading3),
+        const SizedBox(height: 12),
+        reach.when(
+          loading: () => const _Card(
+            children: [
+              SizedBox(
+                height: 80,
+                child: Center(child: CircularProgressIndicator()),
+              ),
+            ],
+          ),
+          error: (_, _) =>
+              _EmptyCard(message: 'Could not load engagement stats'),
+          data: (r) => _ReachGrid(reach: r),
+        ),
+        const SizedBox(height: 20),
+
+        // The trend chart is always a 7-day view — a 365-bar chart on the
+        // Year tab would be unreadable on a phone.
         Text('Last 7 Days', style: AppTextStyles.heading3),
         const SizedBox(height: 12),
         _TrendCard(days: days, revenue: dayRevenue, maxRevenue: maxRevenue),
@@ -138,6 +256,98 @@ class _Content extends StatelessWidget {
             ],
           ),
         const SizedBox(height: 40),
+      ],
+    );
+  }
+}
+
+/// Two-column grid of reach counters. Zeroes are shown rather than hidden —
+/// "0 store views this week" is itself the useful signal for a seller.
+class _ReachGrid extends StatelessWidget {
+  final StoreAnalytics reach;
+  const _ReachGrid({required this.reach});
+
+  @override
+  Widget build(BuildContext context) {
+    final tiles = <({String label, int value, IconData icon, Color color})>[
+      (
+        label: 'Store views',
+        value: reach.storeViews,
+        icon: Icons.storefront_outlined,
+        color: AppColors.primary
+      ),
+      (
+        label: 'Product views',
+        value: reach.productViews,
+        icon: Icons.visibility_outlined,
+        color: AppColors.info
+      ),
+      (
+        label: 'Product taps',
+        value: reach.productClicks,
+        icon: Icons.touch_app_outlined,
+        color: AppColors.info
+      ),
+      (
+        label: 'Calls',
+        value: reach.calls,
+        icon: Icons.call_outlined,
+        color: AppColors.success
+      ),
+      (
+        label: 'Directions',
+        value: reach.directionRequests,
+        icon: Icons.directions_outlined,
+        color: AppColors.success
+      ),
+      (
+        label: 'Followers',
+        value: reach.followers,
+        icon: Icons.people_alt_outlined,
+        color: AppColors.primary
+      ),
+      (
+        label: 'Reel views',
+        value: reach.reelViews,
+        icon: Icons.play_circle_outline,
+        color: AppColors.info
+      ),
+      (
+        label: 'Interactions',
+        value: reach.interactions,
+        icon: Icons.favorite_border,
+        color: AppColors.error
+      ),
+    ];
+
+    return Column(
+      children: [
+        for (var i = 0; i < tiles.length; i += 2) ...[
+          if (i > 0) const SizedBox(height: 12),
+          Row(
+            children: [
+              Expanded(
+                child: _StatCard(
+                  label: tiles[i].label,
+                  value: '${tiles[i].value}',
+                  icon: tiles[i].icon,
+                  color: tiles[i].color,
+                ),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: i + 1 < tiles.length
+                    ? _StatCard(
+                        label: tiles[i + 1].label,
+                        value: '${tiles[i + 1].value}',
+                        icon: tiles[i + 1].icon,
+                        color: tiles[i + 1].color,
+                      )
+                    : const SizedBox(),
+              ),
+            ],
+          ),
+        ],
       ],
     );
   }

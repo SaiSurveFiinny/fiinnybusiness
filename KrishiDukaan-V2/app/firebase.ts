@@ -2510,10 +2510,18 @@ export async function adminManualActivate(
  * dedup, NO source exclusion, and NO image requirement. Sorted newest-first.
  */
 export async function fetchAllProductsForAdmin(): Promise<MarketplaceProduct[]> {
-  const snapshot = await getDocs(collection(db, 'products'));
-  return snapshot.docs
+  return mapAdminProductDocs(await fetchAllSellerProducts());
+}
+
+/**
+ * Pure shape-mapper behind fetchAllProductsForAdmin(). Split out so callers that
+ * already hold a cached raw `products` snapshot (see app/admin/_lib/admin-data.ts)
+ * can render the admin table without triggering a second collection scan.
+ */
+export function mapAdminProductDocs(docs: RawProductDoc[]): MarketplaceProduct[] {
+  return docs
     .map((item) => {
-      const data = item.data();
+      const data = item as Record<string, any>;
       const images = Array.isArray(data.images) ? data.images : undefined;
       const ts = (data.updatedAt ?? data.createdAt) as { toMillis?: () => number } | undefined;
       return {
@@ -3047,7 +3055,7 @@ export type UserProduct = MarketplaceProduct & {
   assignedDocIds: string[];
 };
 
-type RawProductDoc = Record<string, unknown> & { id: string };
+export type RawProductDoc = Record<string, unknown> & { id: string };
 
 /** Every owner identifier a product doc can be keyed by. */
 function productOwnerKeys(d: RawProductDoc): string[] {

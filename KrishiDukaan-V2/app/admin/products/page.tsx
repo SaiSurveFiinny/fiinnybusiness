@@ -2,7 +2,9 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { Box, Plus, Pencil, Trash2, Search, X, ImageIcon, Link2, Loader2, Check, Store, Users } from "lucide-react";
-import { auth, fetchAllProductsForAdmin, fetchAdminAssignedCopies, fetchInventoryForProducts, adminCreateProduct, adminUpdateProduct, adminDeleteProduct, adminAssignProductToSeller, adminRemoveAssignment, adminUpdateAssignmentPricing, fetchAllUsers } from "../../firebase";
+import { auth, mapAdminProductDocs, fetchAdminAssignedCopies, fetchInventoryForProducts, adminCreateProduct, adminUpdateProduct, adminDeleteProduct, adminAssignProductToSeller, adminRemoveAssignment, adminUpdateAssignmentPricing } from "../../firebase";
+import { getProducts, getUsers, invalidateProducts, invalidateUsers, cacheAge, CACHE_KEYS } from "../_lib/admin-data";
+import { RefreshButton } from "../_components/refresh-button";
 import type { MarketplaceProduct } from "../../../types/product";
 import { cn } from "../../dashboard/_lib/cn";
 import { AddProductInventoryForm } from "../../dashboard/_components/add-product-inventory-form";
@@ -38,7 +40,7 @@ export default function AdminProductsPage() {
 
   const loadSellers = async () => {
     if (sellersLoaded) return;
-    const users = await fetchAllUsers();
+    const users = await getUsers();
     setSellers(
       users
         .filter(u => u.role === "retailer" || u.role === "manufacturer")
@@ -73,18 +75,41 @@ export default function AdminProductsPage() {
     } finally { setAssigningSeller(null); }
   };
 
-  const load = () => {
+  const [refreshing, setRefreshing] = useState(false);
+  const [dataAge, setDataAge] = useState<number | null>(null);
+
+  /**
+   * `force` (Refresh, and every write on this tab) drops the shared products cache so
+   * the next read hits Firestore; a plain load reuses the snapshot Overview/Analytics
+   * may already have paid for.
+   *
+   * rawProducts only needs admin_assigned copies (~50 docs) — fetching the whole
+   * `products` collection a second time here used to double the read for no reason,
+   * since ~95% of that collection is manufacturer_assigned inventory copies this
+   * tab never reads.
+   */
+  const load = (force = false) => {
+    if (force) invalidateProducts();
     setLoading(true);
-    // rawProducts only needs admin_assigned copies (~50 docs) — fetching the whole
-    // `products` collection a second time here used to double the read for no reason,
-    // since ~95% of that collection is manufacturer_assigned inventory copies this
-    // tab never reads.
-    Promise.all([fetchAllProductsForAdmin(), fetchAdminAssignedCopies().catch(() => [])])
-      .then(([prods, raw]) => { setProducts(prods); setRawProducts(raw); })
+    return Promise.all([getProducts({ force }), fetchAdminAssignedCopies().catch(() => [])])
+      .then(([docs, raw]) => {
+        setProducts(mapAdminProductDocs(docs));
+        setRawProducts(raw);
+        const age = cacheAge(CACHE_KEYS.products);
+        setDataAge(age === null ? Date.now() : Date.now() - age);
+      })
       .finally(() => setLoading(false));
   };
 
   useEffect(() => { load(); }, []);
+
+  const handleRefresh = () => {
+    if (refreshing) return;
+    setRefreshing(true);
+    invalidateUsers();
+    setSellersLoaded(false);
+    load(true).finally(() => setRefreshing(false));
+  };
 
   // Map of base product id → active admin-assigned seller copies.
   const assignmentsByOriginal = useMemo(() => {
@@ -161,7 +186,7 @@ export default function AdminProductsPage() {
         stockQuantity: Number(row.stock) || 0,
         variants: row.variants,
       });
-      await load();
+      await load(true);
       setRowMsg(`Saved ${row.store}.`);
     } catch (e) {
       setRowMsg(e instanceof Error ? e.message : "Save failed.");
@@ -183,7 +208,7 @@ export default function AdminProductsPage() {
       const adminUid = auth.currentUser?.uid ?? "admin";
       await adminRemoveAssignment(row.copyId, viewAssignmentsFor.name, row.phone, adminUid);
       setAssignmentRows(prev => prev.filter(r => r.copyId !== row.copyId));
-      await load();
+      await load(true);
       setRowMsg(`Removed ${row.store}.`);
     } catch (e) {
       setRowMsg(e instanceof Error ? e.message : "Remove failed.");
@@ -340,9 +365,12 @@ export default function AdminProductsPage() {
           </div>
           <p className="ml-7 text-xs text-on-surface-variant sm:ml-9 sm:text-sm">All marketplace products. Admin can add, edit, or delete any product.</p>
         </div>
-        <button onClick={openAdd} className="flex w-full items-center justify-center gap-2 rounded-xl bg-primary px-4 py-2.5 text-sm font-bold text-white transition-colors hover:bg-primary-container sm:w-auto shrink-0">
-          <Plus className="h-4 w-4" /> Add Product
-        </button>
+        <div className="flex items-center gap-2 shrink-0 flex-wrap">
+          <RefreshButton savedAt={dataAge} refreshing={refreshing} onRefresh={handleRefresh} />
+          <button onClick={openAdd} className="flex items-center justify-center gap-2 rounded-xl bg-primary px-4 py-2.5 text-sm font-bold text-white transition-colors hover:bg-primary-container shrink-0">
+            <Plus className="h-4 w-4" /> Add Product
+          </button>
+        </div>
       </div>
 
       <div className="flex flex-wrap gap-2">
@@ -557,7 +585,7 @@ export default function AdminProductsPage() {
                 role="manufacturer"
                 seatStats={ADMIN_SEAT_STATS}
                 onAdminSave={handleAdminSave}
-                onCreated={async () => { await load(); setShowForm(false); }}
+                onCreated={async () => { await load(true); setShowForm(false); }}
               />
             </div>
           </div>

@@ -36,6 +36,7 @@ import '../../features/profile/screens/profile_screen.dart';
 import '../../features/profile/screens/profile_edit_screen.dart';
 import '../../features/profile/screens/settings_screen.dart';
 import '../../features/notifications/notifications.dart';
+import '../../features/notifications/engagement_group_screen.dart';
 import '../../features/support/screens/support_screen.dart';
 import '../../features/welcome/screens/splash_screen.dart';
 import '../../features/welcome/screens/welcome_screen.dart';
@@ -43,6 +44,7 @@ import '../../features/reels/screens/reels_feed_screen.dart';
 import '../../features/reels/screens/reel_deep_link_screen.dart';
 import '../../features/reels/screens/reel_upload_screen.dart';
 import '../../features/reels/screens/shop_profile_screen.dart';
+import '../../features/reels/screens/followers_screen.dart';
 import '../../features/reels/providers/reels_provider.dart';
 
 final _rootKey = GlobalKey<NavigatorState>(debugLabel: 'root');
@@ -338,6 +340,12 @@ final routerProvider = Provider<GoRouter>((ref) {
         builder: (_, state) => _RootBackFallback(
           child: SubscriptionScreen(
             reason: state.uri.queryParameters['reason'],
+            // A subscription_expiry notification passes the user's current
+            // plan so renewal is one tap on Pay.
+            initialSeats: int.tryParse(
+                state.uri.queryParameters['seats'] ?? ''),
+            initialMonths: int.tryParse(
+                state.uri.queryParameters['months'] ?? ''),
           ),
         ),
       ),
@@ -345,6 +353,27 @@ final routerProvider = Provider<GoRouter>((ref) {
         path: '/notifications',
         parentNavigatorKey: _rootKey,
         builder: (_, _) => const _RootBackFallback(child: NotificationsScreen()),
+      ),
+      // Followers list — where a `reel_follow` notification lands. Without a
+      // :phone it means the signed-in user's own followers.
+      GoRoute(
+        path: '/followers',
+        parentNavigatorKey: _rootKey,
+        builder: (_, state) => _RootBackFallback(
+          child: FollowersScreen(
+            shopPhone: state.uri.queryParameters['phone'],
+          ),
+        ),
+      ),
+      // The actor list behind one grouped engagement notification.
+      GoRoute(
+        path: '/activity/:groupId',
+        parentNavigatorKey: _rootKey,
+        builder: (_, state) => _RootBackFallback(
+          child: EngagementGroupScreen(
+            groupId: state.pathParameters['groupId']!,
+          ),
+        ),
       ),
       GoRoute(
         path: '/support',
@@ -364,6 +393,9 @@ final routerProvider = Provider<GoRouter>((ref) {
         builder: (_, state) => _RootBackFallback(
           child: ProfileEditScreen(
             reason: state.uri.queryParameters['reason'],
+            // Set by a profile_incomplete notification — turns on the
+            // "still missing" banner and outlines the empty required fields.
+            highlight: state.uri.queryParameters['highlight'],
           ),
         ),
       ),
@@ -406,6 +438,9 @@ final routerProvider = Provider<GoRouter>((ref) {
         builder: (_, state) => _RootBackFallback(
           child: InventoryScreen(
             autoOpenAdd: state.uri.queryParameters['autoAdd'] == '1',
+            // Set by inventory_added / low_stock notifications so the product
+            // they are about opens for editing straight away.
+            focusProductId: state.uri.queryParameters['product'],
           ),
         ),
       ),
@@ -427,7 +462,12 @@ final routerProvider = Provider<GoRouter>((ref) {
       GoRoute(
         path: '/dashboard/analytics',
         parentNavigatorKey: _rootKey,
-        builder: (_, _) => const _RootBackFallback(child: DashboardAnalyticsScreen()),
+        builder: (_, state) => _RootBackFallback(
+          child: DashboardAnalyticsScreen(
+            // 'week' | 'month' | 'year', from an analytics_digest notification.
+            initialPeriod: state.uri.queryParameters['period'],
+          ),
+        ),
       ),
       GoRoute(
         path: '/dashboard/reviews',

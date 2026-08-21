@@ -3,8 +3,11 @@
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { Users, Box, Layers, CreditCard, ShieldCheck, TrendingUp, Store, AlertTriangle } from "lucide-react";
-import { fetchAllProductsForAdmin, db } from "../firebase";
+import { db } from "../firebase";
 import { collection, query, where, orderBy, limit, getDocs, getCountFromServer } from "firebase/firestore";
+import { getProducts } from "./_lib/admin-data";
+import { readSnapshot, writeSnapshot, STATS_TTL_MS } from "./_lib/admin-cache";
+import { RefreshButton } from "./_components/refresh-button";
 
 function StatCard({ label, value, icon: Icon, color, onClick }: { label: string; value: string | number; icon: any; color: string; onClick?: () => void }) {
   return (
@@ -24,18 +27,30 @@ function StatCard({ label, value, icon: Icon, color, onClick }: { label: string;
   );
 }
 
+/** Everything the overview renders, in a shape that survives JSON round-tripping. */
+type OverviewSnapshot = {
+  stats: { total: number; retailers: number; manufacturers: number; admins: number; paid: number; products: number; hubs: number };
+  recentUsers: { id: string; name: string; email: string; role: string; isPaid: boolean }[];
+};
+
+const SNAPSHOT_KEY = "overview";
+
+const EMPTY_STATS = { total: 0, retailers: 0, manufacturers: 0, admins: 0, paid: 0, products: 0, hubs: 0 };
+
 export default function AdminPage() {
   const router = useRouter();
-  const [stats, setStats] = useState({
-    total: 0, retailers: 0, manufacturers: 0, admins: 0,
-    paid: 0, products: 0, hubs: 0,
-  });
-  const [recentUsers, setRecentUsers] = useState<any[]>([]);
-  const [loading, setLoading] = useState(true);
+  // Seeded synchronously from the last snapshot so opening /admin paints real numbers
+  // with zero Firestore reads. A fresh read happens only when the snapshot is missing
+  // or older than STATS_TTL_MS, or when the admin hits Refresh.
+  const seed = typeof window !== "undefined" ? readSnapshot<OverviewSnapshot>(SNAPSHOT_KEY) : null;
+  const [stats, setStats] = useState(seed?.data.stats ?? EMPTY_STATS);
+  const [recentUsers, setRecentUsers] = useState<any[]>(seed?.data.recentUsers ?? []);
+  const [savedAt, setSavedAt] = useState<number | null>(seed?.savedAt ?? null);
+  const [loading, setLoading] = useState(!seed);
+  const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const loadData = () => {
-    setLoading(true);
+  const loadData = (force = false) => {
     setError(null);
     const usersCol = collection(db, "users");
     Promise.all([
@@ -46,16 +61,17 @@ export default function AdminPage() {
       getCountFromServer(query(usersCol, where("isPaid", "==", true))),
       getCountFromServer(collection(db, "hubs")),
       getDocs(query(usersCol, orderBy("createdAt", "desc"), limit(8))),
-      fetchAllProductsForAdmin(),
+      // Shared with the Analytics and Products tabs — one `products` scan serves all three.
+      getProducts({ force }),
     ])
       .then(([totalSnap, retailersSnap, manufacturersSnap, adminsSnap, paidSnap, hubsSnap, recentSnap, products]) => {
         // Filter out copies and group by name (same as Products tab) — this needs
         // every product doc's name, so it's left as a full fetch (not a cheap count).
         const COPY_SOURCES = new Set(["admin_assigned", "retailer_inventory_copy", "manufacturer_assigned"]);
-        const catalogProducts = products.filter(p => !COPY_SOURCES.has((p as any).source));
-        const uniqueNames = new Set(catalogProducts.map(p => p.name.toLowerCase().trim()));
+        const catalogProducts = products.filter(p => !COPY_SOURCES.has(String((p as any).source ?? "")));
+        const uniqueNames = new Set(catalogProducts.map(p => String((p as any).name ?? "").toLowerCase().trim()).filter(Boolean));
 
-        setStats({
+        const nextStats = {
           total: totalSnap.data().count,
           retailers: retailersSnap.data().count,
           manufacturers: manufacturersSnap.data().count,
@@ -63,19 +79,41 @@ export default function AdminPage() {
           paid: paidSnap.data().count,
           products: uniqueNames.size,
           hubs: hubsSnap.data().count,
+        };
+        const nextRecent = recentSnap.docs.map(d => {
+          const u = d.data();
+          return {
+            id: d.id,
+            name: String(u.name ?? ""),
+            email: String(u.email ?? ""),
+            role: String(u.role ?? "customer"),
+            isPaid: !!u.isPaid,
+          };
         });
-        setRecentUsers(recentSnap.docs.map(d => ({ id: d.id, ...d.data() })));
+        setStats(nextStats);
+        setRecentUsers(nextRecent);
+        setSavedAt(Date.now());
+        writeSnapshot<OverviewSnapshot>(SNAPSHOT_KEY, { stats: nextStats, recentUsers: nextRecent });
       })
       .catch(err => {
         console.error("Failed to load admin overview data:", err);
         setError("Failed to load dashboard statistics from Firebase. Please check your connection.");
       })
-      .finally(() => setLoading(false));
+      .finally(() => { setLoading(false); setRefreshing(false); });
   };
 
   useEffect(() => {
+    // Warm start: skip the read entirely while the snapshot is still fresh.
+    if (seed && Date.now() - seed.savedAt < STATS_TTL_MS) return;
     loadData();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  const handleRefresh = () => {
+    if (refreshing) return;
+    setRefreshing(true);
+    loadData(true);
+  };
 
   if (loading) {
     return (
@@ -97,12 +135,17 @@ export default function AdminPage() {
 
   return (
     <div className="space-y-8">
-      <div>
+      <div className="flex items-start justify-between gap-3 flex-wrap">
+        <div>
         <div className="flex items-center gap-2 sm:gap-3 mb-1">
           <ShieldCheck className="h-5 w-5 sm:h-6 sm:w-6 text-primary" />
           <h1 className="text-lg sm:text-2xl font-black text-on-surface">Admin Overview</h1>
         </div>
-        <p className="text-xs sm:text-sm text-on-surface-variant ml-7 sm:ml-9">Platform snapshot — live from Firestore.</p>
+        <p className="text-xs sm:text-sm text-on-surface-variant ml-7 sm:ml-9">
+          Platform snapshot — cached between visits. Hit Refresh for live numbers.
+        </p>
+        </div>
+        <RefreshButton savedAt={savedAt} refreshing={refreshing} onRefresh={handleRefresh} />
       </div>
 
       {error && (

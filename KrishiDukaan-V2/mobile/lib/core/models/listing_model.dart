@@ -11,6 +11,13 @@ class ListingModel {
   final double? sellerLng;
   final double price;
   final int stockQuantity;
+
+  /// Stock level at or below which the seller gets a `low_stock` notification.
+  /// Null means the product has never been configured and the server's
+  /// DEFAULT_LOW_STOCK_THRESHOLD (10) applies — see notifyLowStock in
+  /// functions/src/notifications/inventory.ts.
+  final int? lowStockThreshold;
+
   final List<VariantModel> variants;
   final DiscountModel? discount;
   final String? assignedByManufacturerPhone;
@@ -57,6 +64,7 @@ class ListingModel {
     this.sellerLng,
     required this.price,
     required this.stockQuantity,
+    this.lowStockThreshold,
     required this.variants,
     this.discount,
     this.assignedByManufacturerPhone,
@@ -130,6 +138,7 @@ class ListingModel {
       price: (d['price'] as num?)?.toDouble() ??
           (d['sellingPrice'] as num?)?.toDouble() ?? 0.0,
       stockQuantity: _parseStock(d),
+      lowStockThreshold: (d['lowStockThreshold'] as num?)?.toInt(),
       variants: (d['variants'] as List? ?? [])
           .map((v) => VariantModel.fromMap(v as Map<String, dynamic>))
           .toList(),

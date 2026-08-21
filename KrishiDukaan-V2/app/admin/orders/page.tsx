@@ -27,7 +27,7 @@ import {
   FileText,
   X,
 } from "lucide-react";
-import { fetchAllOrdersForAdmin } from "../../firebase";
+import { getOrders, invalidateCache, CACHE_KEYS } from "../_lib/admin-data";
 import { formatCustomerAddress, normalizeOrderItems, orderGrandTotal } from "../../../types/order";
 import type { OrderDoc, OrderStatus, PaymentStatus } from "../../../types/order";
 import { openInvoice } from "../../utils/invoice-generator";
@@ -239,10 +239,11 @@ export default function AdminOrdersPage() {
   const [sellerFilter, setSellerFilter] = useState<SellerFilter>("all");
   const [expanded, setExpanded] = useState<string | null>(null);
 
-  const loadOrders = () => {
+  const loadOrders = (force = false) => {
+    if (force) invalidateCache(CACHE_KEYS.orders);
     setLoading(true);
     setError(null);
-    fetchAllOrdersForAdmin()
+    getOrders({ force })
       .then(setOrders)
       .catch((err) => {
         console.error("Failed to load orders:", err);
@@ -362,7 +363,7 @@ export default function AdminOrdersPage() {
         <div className="flex items-center gap-2">
           <button
             type="button"
-            onClick={loadOrders}
+            onClick={() => loadOrders(true)}
             className="inline-flex items-center gap-1.5 rounded-xl border border-outline-variant/40 bg-surface-container-lowest px-3 py-2 text-xs font-bold text-on-surface-variant hover:bg-surface-container transition-colors"
           >
             <RefreshCw className="h-3.5 w-3.5" /> Refresh
