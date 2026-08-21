@@ -184,7 +184,7 @@ export default function ManageRetailersPage() {
                             <tr
                                 key={retailer.id}
                                 className={`animate-fade-in delay-${(i % 5)}00`}
-                                style={{ borderBottom: '1px solid var(--surface-border)', transition: 'background-color 0.2s' }}
+                                style={{ borderBottom: '1px solid var(--surface-border)', transition: 'background-color 0.2s', animationFillMode: 'forwards' }}
                                 onMouseOver={(e) => e.currentTarget.style.backgroundColor = 'var(--surface-raised)'}
                                 onMouseOut={(e) => e.currentTarget.style.backgroundColor = 'transparent'}
                             >

@@ -1,10 +1,10 @@
-import { useState, useEffect, useMemo, Fragment } from 'react';
+import { useState, useEffect, useMemo, useRef, Fragment } from 'react';
 import { useHashTab } from '../hooks/useHashTab';
 import { useNavigate } from 'react-router-dom';
 import {
     Download, Store, Search, Filter, ArrowUpDown,
-    Users, Building2, UserPlus, TrendingUp, AlertCircle,
-    CheckCircle2, Bell, ShoppingCart, Truck, Mail, MessageSquare, Wallet,
+    Users, Building2, UserPlus, Calendar,
+    Bell, ShoppingCart, Truck, Mail, MessageSquare, Wallet,
     X, Copy, CheckSquare, FileText, ChevronDown, ChevronRight, Phone, Clock,
 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
@@ -13,7 +13,6 @@ import { db } from '../firebase';
 import { useAuth } from '../contexts/AuthContext';
 import { getTenantCollection } from '../utils/tenantPath';
 import UdhariUploadModal from '../components/UdhariUploadModal';
-import DatePeriodFilter from '../components/DatePeriodFilter';
 import { type FinancialPeriod, getFinancialDateRange } from '../utils/financialPeriod';
 
 // Import sub-pages directly (WorklistPage itself is lazy-loaded by App.tsx)
@@ -64,6 +63,10 @@ interface Retailer {
     totalPaid?: number;
     closestCreditDays?: number | null;
     computedOutstanding?: number;
+    // Live per-retailer totals — same formula as WorklistDetailsPage's
+    // computedTotalSales/computedTotalPaid (sum of live salesOrders / all payments).
+    computedTotalSales?: number;
+    computedTotalPaid?: number;
     assignedSalespersons?: string[];
 }
 
@@ -83,6 +86,18 @@ interface ReminderEntry {
 type ModuleTab = 'partners' | 'invoices' | 'payments' | 'reminders' | 'tracking' | 'online-orders' /* | 'purchase-orders' */;
 const VALID_TABS: readonly ModuleTab[] = ['partners', 'invoices', 'payments', 'reminders', 'tracking', 'online-orders'];
 type WLSortCol = 'name' | 'district' | 'salesperson' | 'contact' | 'outstanding' | 'totalSales' | 'date';
+
+// Partner Worklist's date filter — a subset of FinancialPeriod (no 'fy', which this
+// filter doesn't expose) driving both the dropdown options and its trigger label.
+const WORKLIST_DATE_FILTER_OPTIONS: [FinancialPeriod, string][] = [
+    ['today',  'Today'],
+    ['week',   'This Week'],
+    ['month',  'This Month'],
+    ['all',    'All Time'],
+    ['custom', 'Custom Range'],
+];
+const WORKLIST_DATE_FILTER_LABELS: Record<FinancialPeriod, string> =
+    Object.fromEntries(WORKLIST_DATE_FILTER_OPTIONS) as Record<FinancialPeriod, string>;
 
 const MODULE_TABS: { id: ModuleTab; label: string; icon: React.ReactNode }[] = [
     { id: 'partners',      label: 'Partners',          icon: <Building2 size={16} /> },
@@ -191,13 +206,29 @@ function PartnersTab() {
     const [retailers, setRetailers] = useState<Retailer[]>([]);
     const [loading, setLoading] = useState(true);
     const [showUdhariModal, setShowUdhariModal] = useState(false);
-    const [showAnalytics, setShowAnalytics] = useState(false);
 
-    const [financialPeriod, setFinancialPeriod] = useState<FinancialPeriod>('month');
-    const [customFrom, setCustomFrom] = useState('');
-    const [customTo, setCustomTo] = useState('');
+    // Raw dated sales/payment entries per retailer — kept alongside `retailers`
+    // (which carries the already-computed all-time financials) so the date
+    // filter can recompute computedTotalSales/computedTotalPaid/computedOutstanding
+    // for a range without a second Firestore read.
     const [sosByRetailer, setSosByRetailer] = useState<Map<string, { invoiceDate?: string; grandTotal?: number; netAmount?: number; totalAmount?: number }[]>>(new Map());
     const [pmtsByRetailer, setPmtsByRetailer] = useState<Map<string, { amount: number; paymentDate?: string }[]>>(new Map());
+    const [financialPeriod, setFinancialPeriod] = useState<FinancialPeriod>('all');
+    const [customFrom, setCustomFrom] = useState('');
+    const [customTo, setCustomTo] = useState('');
+    const [showDateDropdown, setShowDateDropdown] = useState(false);
+    const dateDropdownRef = useRef<HTMLDivElement>(null);
+
+    // Close the date filter dropdown on any click outside it.
+    useEffect(() => {
+        if (!showDateDropdown) return;
+        const onDown = (e: MouseEvent) => {
+            if (dateDropdownRef.current?.contains(e.target as Node)) return;
+            setShowDateDropdown(false);
+        };
+        document.addEventListener('mousedown', onDown);
+        return () => document.removeEventListener('mousedown', onDown);
+    }, [showDateDropdown]);
 
     const [searchTerm, setSearchTerm] = useState('');
     const [filterSize, setFilterSize] = useState('All');
@@ -399,7 +430,10 @@ function PartnersTab() {
                     const merged = [...directSPs];
                     districtSPs.forEach(sp => { if (!merged.includes(sp)) merged.push(sp); });
                     const assignedSalespersons = merged;
-                    return { ...r, closestCreditDays, computedOutstanding, assignedSalespersons };
+                    return {
+                        ...r, closestCreditDays, computedOutstanding, assignedSalespersons,
+                        computedTotalSales: soTotalSales, computedTotalPaid: soTotalPaid,
+                    };
                 });
 
                 // Sales users see retailers matching assignedDistricts OR assignedRetailers (union).
@@ -435,8 +469,36 @@ function PartnersTab() {
         fetchRetailers();
     }, [tenantId, userRole, assignedDistricts.join('|'), assignedRetailers.join('|')]);
 
+    // Recomputes each retailer's computedTotalSales/computedTotalPaid/computedOutstanding
+    // scoped to the selected date range, using the exact same formula as the all-time
+    // calculation above (sum of live salesOrders' grandTotal|netAmount|totalAmount,
+    // sum of payments.amount) — just restricted to entries whose invoiceDate/paymentDate
+    // falls inside the range. 'All Time' short-circuits to the already-computed values
+    // so no retailer/financial data is recalculated unnecessarily.
+    const dateFilteredRetailers = useMemo(() => {
+        const range = getFinancialDateRange(financialPeriod, customFrom, customTo);
+        if (!range) return retailers;
+        const [from, to] = range;
+        return retailers.map(r => {
+            const soList = sosByRetailer.get(r.id) ?? [];
+            const pmtList = pmtsByRetailer.get(r.id) ?? [];
+            const totalSales = soList
+                .filter(so => { const d = so.invoiceDate || ''; return d >= from && d <= to; })
+                .reduce((s, so) => s + Number(so.grandTotal ?? so.netAmount ?? so.totalAmount ?? 0), 0);
+            const totalPaid = pmtList
+                .filter(p => { const d = p.paymentDate || ''; return d >= from && d <= to; })
+                .reduce((s, p) => s + Number(p.amount ?? 0), 0);
+            return {
+                ...r,
+                computedTotalSales: totalSales,
+                computedTotalPaid: totalPaid,
+                computedOutstanding: Math.max(0, totalSales - totalPaid),
+            };
+        });
+    }, [retailers, sosByRetailer, pmtsByRetailer, financialPeriod, customFrom, customTo]);
+
     const processedRetailers = useMemo(() => {
-        let result = [...retailers];
+        let result = [...dateFilteredRetailers];
         // Outstanding filter — uses Total Sales − Amount Paid (matches profile page)
         if (partnerView === 'active')  result = result.filter(r => (r.computedOutstanding ?? 0) > 0);
         if (partnerView === 'cleared') result = result.filter(r => (r.computedOutstanding ?? 0) <= 0);
@@ -476,7 +538,31 @@ function PartnersTab() {
             }
         });
         return result;
-    }, [retailers, searchTerm, filterSize, colSort, partnerView]);
+    }, [dateFilteredRetailers, searchTerm, filterSize, colSort, partnerView]);
+
+    // Grand-total summary for the currently visible (filtered/searched) rows —
+    // sorting does not affect it since it aggregates the whole processedRetailers
+    // set regardless of order. Distinct counts normalize contact numbers by
+    // stripping whitespace only (never altering the stored value).
+    const worklistSummary = useMemo(() => {
+        const distinctContacts = new Set(
+            processedRetailers.map(r => (r.number || '').trim()).filter(Boolean)
+        );
+        const distinctSalespersons = new Set(
+            processedRetailers.flatMap(r => r.assignedSalespersons ?? [])
+        );
+        const totalInvoiceAmount = processedRetailers.reduce((s, r) => s + (r.computedTotalSales ?? 0), 0);
+        const totalPaymentReceived = processedRetailers.reduce((s, r) => s + (r.computedTotalPaid ?? 0), 0);
+        const totalOutstanding = processedRetailers.reduce((s, r) => s + (r.computedOutstanding ?? 0), 0);
+        return {
+            retailerCount: processedRetailers.length,
+            contactCount: distinctContacts.size,
+            salespersonCount: distinctSalespersons.size,
+            totalInvoiceAmount,
+            totalPaymentReceived,
+            totalOutstanding,
+        };
+    }, [processedRetailers]);
 
     // Escapes a value for CSV: wraps in quotes (and doubles any embedded quotes)
     // whenever it contains a comma, quote, or line break, per RFC 4180.
@@ -487,7 +573,7 @@ function PartnersTab() {
     // processedRetailers array (already filtered by Outstanding/Size/search/sort)
     // and the same per-cell values/formatting used in the <tbody> render.
     const handleExportCSV = () => {
-        const headers = ['Retailer Name', 'Contact', 'District', 'Salesperson', 'Portfolio', 'Outstanding'];
+        const headers = ['Retailer Name', 'Contact', 'District', 'Salesperson', 'Portfolio', 'Total Invoice Amount', 'Payment Received', 'Outstanding'];
         const csvRows = processedRetailers.map(r => {
             const outstanding = r.computedOutstanding ?? 0;
             const salesperson = (r.assignedSalespersons?.length ?? 0) > 0
@@ -499,6 +585,8 @@ function PartnersTab() {
                 r.district || '\u2014',
                 salesperson,
                 r.portfolioSize || '\u2014',
+                `\u20B9${(r.computedTotalSales ?? 0).toLocaleString('en-IN')}`,
+                `\u20B9${(r.computedTotalPaid ?? 0).toLocaleString('en-IN')}`,
                 `\u20B9${outstanding.toLocaleString('en-IN')}`,
             ].map(v => csvEscape(String(v))).join(',');
         });
@@ -512,67 +600,6 @@ function PartnersTab() {
         link.click();
         document.body.removeChild(link);
     };
-
-    const kpi = useMemo(() => {
-        const total = retailers.length;
-        // Active = outstanding > 0; Cleared = outstanding <= 0 (matches the filter buttons)
-        const active = retailers.filter(r => (r.computedOutstanding ?? 0) > 0).length;
-        // Financial totals from retailer docs' denormalized fields.
-        // totalSales and totalPaid are maintained by all invoice/payment mutations.
-        const totalInvoiceValue = retailers.reduce((s, r) => s + Number(r.totalSales ?? 0), 0);
-        const totalPaymentsReceived = retailers.reduce((s, r) => s + Number(r.totalPaid ?? 0), 0);
-        const totalOutstanding = retailers.reduce((s, r) => s + (r.computedOutstanding ?? 0), 0);
-        return {
-            total, active, cleared: total - active,
-            big: retailers.filter(r => r.portfolioSize === 'Big').length,
-            medium: retailers.filter(r => r.portfolioSize === 'Medium').length,
-            small: retailers.filter(r => r.portfolioSize === 'Small').length,
-            totalInvoiceValue,
-            totalPaymentsReceived,
-            totalOutstanding,
-        };
-    }, [retailers]);
-
-    const filteredKpi = useMemo(() => {
-        const range = getFinancialDateRange(financialPeriod, customFrom, customTo);
-        if (!range) {
-            return {
-                totalInvoiceValue: kpi.totalInvoiceValue,
-                totalPaymentsReceived: kpi.totalPaymentsReceived,
-                totalOutstanding: kpi.totalOutstanding,
-            };
-        }
-        const [from, to] = range;
-        const retailerIdSet = new Set(retailers.map(r => r.id));
-        let totalInvoiceValue = 0;
-        let totalPaymentsReceived = 0;
-
-        sosByRetailer.forEach((soList, rId) => {
-            if (!retailerIdSet.has(rId)) return;
-            for (const so of soList) {
-                const invDate = so.invoiceDate || '';
-                if ((!from || invDate >= from) && (!to || invDate <= to)) {
-                    totalInvoiceValue += Number(so.grandTotal ?? so.netAmount ?? so.totalAmount ?? 0);
-                }
-            }
-        });
-
-        pmtsByRetailer.forEach((pmtList, rId) => {
-            if (!retailerIdSet.has(rId)) return;
-            for (const pmt of pmtList) {
-                const pmtDate = pmt.paymentDate || '';
-                if ((!from || pmtDate >= from) && (!to || pmtDate <= to)) {
-                    totalPaymentsReceived += Number(pmt.amount ?? 0);
-                }
-            }
-        });
-
-        return {
-            totalInvoiceValue,
-            totalPaymentsReceived,
-            totalOutstanding: Math.max(0, totalInvoiceValue - totalPaymentsReceived),
-        };
-    }, [financialPeriod, customFrom, customTo, retailers, sosByRetailer, pmtsByRetailer, kpi]);
 
     // ── Column sort helpers (mirrors SupplierLedgerPage pattern) ──────────────
     const handleSort = (col: WLSortCol) => {
@@ -624,103 +651,56 @@ function PartnersTab() {
                     <p style={{ color: 'var(--text-secondary)' }}>B2B wholesale partners — orders, dues and follow-ups.</p>
                 </div>
                 <div style={{ display: 'flex', gap: '0.6rem', flexWrap: 'wrap', alignItems: 'center' }}>
+                    <div ref={dateDropdownRef} style={{ position: 'relative' }}>
+                        <button
+                            className="btn btn-secondary"
+                            onClick={() => setShowDateDropdown(v => !v)}
+                            style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}
+                        >
+                            <Calendar size={16} /> {WORKLIST_DATE_FILTER_LABELS[financialPeriod] ?? 'This Month'}
+                            <ChevronDown size={14} style={{ opacity: 0.7, transform: showDateDropdown ? 'rotate(180deg)' : 'none', transition: 'transform 0.15s' }} />
+                        </button>
+                        {showDateDropdown && (
+                            <div style={{ position: 'absolute', top: 'calc(100% + 0.4rem)', left: 0, zIndex: 200, background: 'var(--surface-solid)', border: '1px solid var(--surface-border)', borderRadius: '8px', padding: '0.4rem', minWidth: '180px', boxShadow: '0 4px 16px rgba(0,0,0,0.18)' }}>
+                                {WORKLIST_DATE_FILTER_OPTIONS.map(([p, label]) => (
+                                    <button
+                                        key={p}
+                                        onClick={() => { setFinancialPeriod(p); if (p !== 'custom') setShowDateDropdown(false); }}
+                                        style={{
+                                            display: 'block', width: '100%', textAlign: 'left', padding: '0.5rem 0.7rem', borderRadius: '6px', border: 'none',
+                                            background: financialPeriod === p ? 'var(--primary-light)' : 'transparent',
+                                            color: financialPeriod === p ? '#fff' : 'var(--text-secondary)',
+                                            fontWeight: financialPeriod === p ? 700 : 500, fontSize: '0.85rem', cursor: 'pointer', fontFamily: 'inherit',
+                                        }}
+                                    >
+                                        {label}
+                                    </button>
+                                ))}
+                                {financialPeriod === 'custom' && (
+                                    <div style={{ display: 'flex', flexDirection: 'column', gap: '0.4rem', padding: '0.5rem 0.7rem 0.2rem', borderTop: '1px solid var(--surface-border)', marginTop: '0.3rem' }}>
+                                        <label style={{ fontSize: '0.72rem', color: 'var(--text-tertiary)', fontWeight: 600 }}>
+                                            From
+                                            <input type="date" value={customFrom} max={customTo || undefined}
+                                                onChange={e => setCustomFrom(e.target.value)}
+                                                className="input-field" style={{ display: 'block', width: '100%', height: '32px', padding: '0 0.5rem', fontSize: '0.82rem', marginTop: '0.2rem' }} />
+                                        </label>
+                                        <label style={{ fontSize: '0.72rem', color: 'var(--text-tertiary)', fontWeight: 600 }}>
+                                            To
+                                            <input type="date" value={customTo} min={customFrom || undefined}
+                                                onChange={e => setCustomTo(e.target.value)}
+                                                className="input-field" style={{ display: 'block', width: '100%', height: '32px', padding: '0 0.5rem', fontSize: '0.82rem', marginTop: '0.2rem' }} />
+                                        </label>
+                                    </div>
+                                )}
+                            </div>
+                        )}
+                    </div>
                     <button className="btn btn-secondary" onClick={handleExportCSV} disabled={processedRetailers.length === 0}><Download size={16} /> {t('worklist.export_csv')}</button>
                     {!isViewOnly && (
                         <button className="btn btn-primary" onClick={() => navigate('/onboarding')}><UserPlus size={16} /> {t('worklist.add_new')}</button>
                     )}
                 </div>
             </div>
-
-            {/* ── Financial Summary Cards (always visible) ── */}
-            {!loading && (
-                <>
-                    {/* Financial Period Filter */}
-                    <div style={{ marginBottom: '0.75rem' }}>
-                        <DatePeriodFilter
-                            period={financialPeriod}
-                            customFrom={customFrom}
-                            customTo={customTo}
-                            onPeriodChange={setFinancialPeriod}
-                            onCustomFromChange={setCustomFrom}
-                            onCustomToChange={setCustomTo}
-                        />
-                    </div>
-
-                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '1rem', marginBottom: '1rem' }}>
-                        {/* Total Invoice Value */}
-                        <div className="glass-panel" style={{ padding: '1rem 1.25rem', borderLeft: '4px solid #38bdf8', background: 'rgba(56,189,248,0.07)' }}>
-                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
-                                <div>
-                                    <p style={{ color: 'var(--text-secondary)', fontSize: '0.7rem', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '0.2rem' }}>Total Invoice Value</p>
-                                    <h2 style={{ margin: 0, fontWeight: 800, fontSize: '1.6rem', color: '#38bdf8' }}>₹{filteredKpi.totalInvoiceValue.toLocaleString('en-IN')}</h2>
-                                </div>
-                                <div style={{ background: '#38bdf822', borderRadius: '10px', padding: '0.55rem', flexShrink: 0 }}>
-                                    <FileText size={18} color="#38bdf8" />
-                                </div>
-                            </div>
-                        </div>
-                        {/* Total Payments Received */}
-                        <div className="glass-panel" style={{ padding: '1rem 1.25rem', borderLeft: '4px solid #10b981', background: 'rgba(16,185,129,0.07)' }}>
-                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
-                                <div>
-                                    <p style={{ color: 'var(--text-secondary)', fontSize: '0.7rem', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '0.2rem' }}>Total Payments Received</p>
-                                    <h2 style={{ margin: 0, fontWeight: 800, fontSize: '1.6rem', color: '#10b981' }}>₹{filteredKpi.totalPaymentsReceived.toLocaleString('en-IN')}</h2>
-                                </div>
-                                <div style={{ background: '#10b98122', borderRadius: '10px', padding: '0.55rem', flexShrink: 0 }}>
-                                    <CheckCircle2 size={18} color="#10b981" />
-                                </div>
-                            </div>
-                        </div>
-                        {/* Total Outstanding */}
-                        <div className="glass-panel" style={{ padding: '1rem 1.25rem', borderLeft: `4px solid ${filteredKpi.totalOutstanding > 0 ? '#ef4444' : '#10b981'}`, background: filteredKpi.totalOutstanding > 0 ? 'rgba(239,68,68,0.07)' : 'rgba(16,185,129,0.04)' }}>
-                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
-                                <div>
-                                    <p style={{ color: 'var(--text-secondary)', fontSize: '0.7rem', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '0.2rem' }}>Total Outstanding</p>
-                                    <h2 style={{ margin: 0, fontWeight: 800, fontSize: '1.6rem', color: filteredKpi.totalOutstanding > 0 ? '#ef4444' : '#10b981' }}>₹{filteredKpi.totalOutstanding.toLocaleString('en-IN')}</h2>
-                                </div>
-                                <div style={{ background: `${filteredKpi.totalOutstanding > 0 ? '#ef4444' : '#10b981'}22`, borderRadius: '10px', padding: '0.55rem', flexShrink: 0 }}>
-                                    <AlertCircle size={18} color={filteredKpi.totalOutstanding > 0 ? '#ef4444' : '#10b981'} />
-                                </div>
-                            </div>
-                        </div>
-                    </div>
-
-                    {/* ── Additional Analytics (collapsible) ── */}
-                    <div style={{ marginBottom: '1.75rem' }}>
-                        <button
-                            onClick={() => setShowAnalytics(v => !v)}
-                            style={{ display: 'inline-flex', alignItems: 'center', gap: '0.4rem', padding: '0.35rem 1rem', background: 'var(--surface-raised)', border: '1px solid var(--surface-border)', borderRadius: '8px', cursor: 'pointer', fontSize: '0.78rem', color: 'var(--text-secondary)', fontFamily: 'inherit', fontWeight: 600, transition: 'all 0.15s' }}
-                        >
-                            {showAnalytics ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
-                            {showAnalytics ? 'Hide' : 'Show'} Additional Analytics
-                        </button>
-                        {showAnalytics && (
-                            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: '1rem', marginTop: '0.75rem' }}>
-                                {[
-                                    { label: 'Total Partners',   value: kpi.total,   icon: Users,        border: '#38bdf8', bg: 'rgba(56,189,248,0.07)' },
-                                    { label: 'With Outstanding', value: kpi.active,  icon: AlertCircle,  border: '#f59e0b', bg: 'rgba(245,158,11,0.07)' },
-                                    { label: 'Cleared',          value: kpi.cleared, icon: CheckCircle2, border: '#10b981', bg: 'rgba(16,185,129,0.07)' },
-                                    { label: 'Big Distributors', value: kpi.big,     icon: TrendingUp,   border: '#0ea5e9', bg: 'rgba(14,165,233,0.07)' },
-                                    { label: 'Medium Retailers', value: kpi.medium,  icon: Store,        border: '#a78bfa', bg: 'rgba(167,139,250,0.07)' },
-                                    { label: 'Small Retailers',  value: kpi.small,   icon: Building2,    border: '#34d399', bg: 'rgba(52,211,153,0.07)' },
-                                ].map(c => (
-                                    <div key={c.label} className="glass-panel" style={{ padding: '1rem 1.25rem', borderLeft: `4px solid ${c.border}`, background: c.bg }}>
-                                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
-                                            <div>
-                                                <p style={{ color: 'var(--text-secondary)', fontSize: '0.7rem', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '0.2rem' }}>{c.label}</p>
-                                                <h2 style={{ margin: 0, fontWeight: 800, fontSize: '1.75rem', color: c.border }}>{c.value}</h2>
-                                            </div>
-                                            <div style={{ background: `${c.border}22`, borderRadius: '10px', padding: '0.55rem', flexShrink: 0 }}>
-                                                <c.icon size={18} color={c.border} />
-                                            </div>
-                                        </div>
-                                    </div>
-                                ))}
-                            </div>
-                        )}
-                    </div>
-                </>
-            )}
 
             {/* Filters Bar */}
             <div className="glass-panel" style={{ padding: '1rem 1.25rem', marginBottom: '1.5rem', display: 'flex', gap: '1rem', flexWrap: 'wrap', alignItems: 'center' }}>
@@ -823,25 +803,54 @@ function PartnersTab() {
                                     <th style={thStyle('district')}          onClick={() => handleSort('district')}>District{sortIndicator('district')}</th>
                                     <th style={thStyle('salesperson')}       onClick={() => handleSort('salesperson')}>Salesperson{sortIndicator('salesperson')}</th>
                                     <th style={{ padding: '0.7rem 0.75rem', fontWeight: 600, fontSize: '0.72rem', textTransform: 'uppercase', letterSpacing: '0.05em', color: 'var(--text-secondary)', whiteSpace: 'nowrap' }}>Portfolio</th>
+                                    <th style={{ padding: '0.7rem 0.75rem', fontWeight: 600, fontSize: '0.72rem', textTransform: 'uppercase', letterSpacing: '0.05em', textAlign: 'right', color: 'var(--text-secondary)', whiteSpace: 'nowrap' }}>Total Invoice Amount</th>
+                                    <th style={{ padding: '0.7rem 0.75rem', fontWeight: 600, fontSize: '0.72rem', textTransform: 'uppercase', letterSpacing: '0.05em', textAlign: 'right', color: 'var(--text-secondary)', whiteSpace: 'nowrap' }}>Payment Received</th>
                                     <th style={thStyle('outstanding', 'right')} onClick={() => handleSort('outstanding')}>Outstanding{sortIndicator('outstanding')}</th>
                                     <th style={{ width: '36px' }} />
                                 </tr>
                             </thead>
                             <tbody>
+                                <tr style={{ borderBottom: '2px solid var(--surface-border)', background: 'var(--surface-raised)', fontWeight: 700 }}>
+                                    {!isViewOnly && <td style={{ padding: '0.75rem 0.5rem 0.75rem 1rem' }} />}
+                                    <td style={{ padding: '0.75rem 0.75rem', color: 'var(--text-primary)' }}>
+                                        Total <span style={{ color: 'var(--text-tertiary)', fontWeight: 500 }}>({worklistSummary.retailerCount})</span>
+                                    </td>
+                                    <td style={{ padding: '0.75rem 0.75rem', color: 'var(--text-secondary)', fontWeight: 500 }}>{worklistSummary.contactCount}</td>
+                                    <td style={{ padding: '0.75rem 0.75rem' }}>—</td>
+                                    <td style={{ padding: '0.75rem 0.75rem', color: 'var(--text-secondary)', fontWeight: 500 }}>{worklistSummary.salespersonCount}</td>
+                                    <td style={{ padding: '0.75rem 0.75rem' }}>—</td>
+                                    <td style={{ padding: '0.75rem 0.75rem', textAlign: 'right', whiteSpace: 'nowrap', color: 'var(--text-primary)' }}>
+                                        ₹{worklistSummary.totalInvoiceAmount.toLocaleString('en-IN')}
+                                    </td>
+                                    <td style={{ padding: '0.75rem 0.75rem', textAlign: 'right', whiteSpace: 'nowrap', color: '#10b981' }}>
+                                        ₹{worklistSummary.totalPaymentReceived.toLocaleString('en-IN')}
+                                    </td>
+                                    <td style={{ padding: '0.75rem 0.75rem', textAlign: 'right', whiteSpace: 'nowrap', color: worklistSummary.totalOutstanding > 0 ? '#ef4444' : '#10b981' }}>
+                                        ₹{worklistSummary.totalOutstanding.toLocaleString('en-IN')}
+                                    </td>
+                                    <td style={{ padding: '0.75rem 0.5rem' }} />
+                                </tr>
                                 {processedRetailers.map(r => {
                                     const outstanding = r.computedOutstanding ?? 0;
                                     const isSelected = selectedIds.has(r.id);
                                     const isExpanded = expandedRows.has(r.id);
+                                    const isHighRisk = outstanding > 100000;
                                     const psBadge = ({ 'Big': { bg: '#0ea5e922', color: '#0ea5e9' }, 'Medium': { bg: '#8b5cf622', color: '#8b5cf6' }, 'Small': { bg: '#10b98122', color: '#10b981' } } as Record<string, { bg: string; color: string }>)[r.portfolioSize || ''] || { bg: 'var(--surface-raised)', color: 'var(--text-tertiary)' };
-                                    // checkbox + 6 data cols + chevron = 8; viewOnly skips checkbox = 7
-                                    const expandColSpan = isViewOnly ? 7 : 8;
+                                    // checkbox + 8 data cols + chevron = 10; viewOnly skips checkbox = 9
+                                    const expandColSpan = isViewOnly ? 9 : 10;
+                                    const rowBg = isHighRisk
+                                        ? (isSelected ? 'hsla(0,84%,55%,0.16)' : 'hsla(0,84%,55%,0.09)')
+                                        : (isSelected ? 'hsla(210,100%,70%,0.07)' : 'transparent');
+                                    const rowBgHover = isHighRisk
+                                        ? 'hsla(0,84%,55%,0.2)'
+                                        : (isSelected ? 'hsla(210,100%,70%,0.1)' : 'var(--surface-raised)');
                                     return (
                                         <Fragment key={r.id}>
                                             <tr
                                                 onClick={() => navigate(`/worklist/${r.id}`)}
-                                                style={{ borderBottom: '1px solid var(--surface-border)', cursor: 'pointer', background: isSelected ? 'hsla(210,100%,70%,0.07)' : 'transparent', transition: 'background 0.12s' }}
-                                                onMouseEnter={e => { e.currentTarget.style.background = isSelected ? 'hsla(210,100%,70%,0.1)' : 'var(--surface-raised)'; }}
-                                                onMouseLeave={e => { e.currentTarget.style.background = isSelected ? 'hsla(210,100%,70%,0.07)' : 'transparent'; }}
+                                                style={{ borderBottom: '1px solid var(--surface-border)', cursor: 'pointer', background: rowBg, transition: 'background 0.12s' }}
+                                                onMouseEnter={e => { e.currentTarget.style.background = rowBgHover; }}
+                                                onMouseLeave={e => { e.currentTarget.style.background = rowBg; }}
                                             >
                                                 {!isViewOnly && (
                                                     <td style={{ padding: '0.8rem 0.5rem 0.8rem 1rem', textAlign: 'center' }} onClick={e => e.stopPropagation()}>
@@ -876,7 +885,7 @@ function PartnersTab() {
                                                         </span>
                                                     )}
                                                     {spTooltip === r.id && (r.assignedSalespersons?.length ?? 0) > 1 && (
-                                                        <div style={{ position: 'absolute', top: '100%', left: 0, zIndex: 200, background: 'var(--surface-raised)', border: '1px solid var(--surface-border)', borderRadius: '8px', padding: '0.5rem 0.75rem', minWidth: '160px', boxShadow: '0 4px 16px rgba(0,0,0,0.18)', pointerEvents: 'none' }}>
+                                                        <div style={{ position: 'absolute', top: '100%', left: 0, zIndex: 200, background: 'var(--surface-solid)', border: '1px solid var(--surface-border)', borderRadius: '8px', padding: '0.5rem 0.75rem', minWidth: '160px', boxShadow: '0 4px 16px rgba(0,0,0,0.18)', pointerEvents: 'none' }}>
                                                             <p style={{ margin: '0 0 0.3rem', fontSize: '0.65rem', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em', color: 'var(--text-tertiary)' }}>Assigned Salespersons</p>
                                                             {r.assignedSalespersons!.map(sp => (
                                                                 <div key={sp} style={{ display: 'flex', alignItems: 'center', gap: '0.3rem', padding: '0.2rem 0', fontSize: '0.82rem', color: 'var(--text-primary)', fontWeight: 500 }}>
@@ -890,6 +899,12 @@ function PartnersTab() {
                                                     <span style={{ background: psBadge.bg, color: psBadge.color, padding: '0.15rem 0.55rem', borderRadius: '99px', fontSize: '0.72rem', fontWeight: 700, whiteSpace: 'nowrap' }}>
                                                         {r.portfolioSize || '—'}
                                                     </span>
+                                                </td>
+                                                <td style={{ padding: '0.8rem 0.75rem', textAlign: 'right', whiteSpace: 'nowrap', color: 'var(--text-primary)' }}>
+                                                    ₹{(r.computedTotalSales ?? 0).toLocaleString('en-IN')}
+                                                </td>
+                                                <td style={{ padding: '0.8rem 0.75rem', textAlign: 'right', whiteSpace: 'nowrap', color: '#10b981', fontWeight: 600 }}>
+                                                    ₹{(r.computedTotalPaid ?? 0).toLocaleString('en-IN')}
                                                 </td>
                                                 <td style={{ padding: '0.8rem 0.75rem', textAlign: 'right', whiteSpace: 'nowrap' }}>
                                                     {outstanding > 0
