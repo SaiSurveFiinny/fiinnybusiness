@@ -5,6 +5,7 @@ import 'package:go_router/go_router.dart';
 import '../../core/constants/app_colors.dart';
 import '../../core/constants/app_text_styles.dart';
 import '../../core/providers/user_provider.dart';
+import '../../core/services/notification_service.dart';
 
 // ─── Model ────────────────────────────────────────────────────────────────────
 
@@ -140,6 +141,17 @@ class NotificationsScreen extends ConsumerWidget {
     'order_update': Icons.local_shipping_outlined,
     'assignment': Icons.assignment_turned_in_outlined,
     'network': Icons.handshake_outlined,
+    'inventory_added': Icons.inventory_2_outlined,
+    'low_stock': Icons.warning_amber_rounded,
+    'analytics_digest': Icons.insights_outlined,
+    'reel_like': Icons.favorite_border,
+    'reel_comment': Icons.mode_comment_outlined,
+    'reel_comment_tag': Icons.alternate_email,
+    'reel_repost': Icons.repeat_rounded,
+    'reel_follow': Icons.person_add_alt_1_outlined,
+    'engagement_group': Icons.people_alt_outlined,
+    'profile_incomplete': Icons.badge_outlined,
+    'subscription_expiry': Icons.hourglass_bottom_rounded,
   };
 
   static const _colors = {
@@ -147,6 +159,17 @@ class NotificationsScreen extends ConsumerWidget {
     'order_update': AppColors.success,
     'assignment': AppColors.primary,
     'network': AppColors.success,
+    'inventory_added': AppColors.success,
+    'low_stock': AppColors.error,
+    'analytics_digest': AppColors.info,
+    'reel_like': AppColors.error,
+    'reel_comment': AppColors.info,
+    'reel_comment_tag': AppColors.info,
+    'reel_repost': AppColors.primary,
+    'reel_follow': AppColors.success,
+    'engagement_group': AppColors.primary,
+    'profile_incomplete': AppColors.info,
+    'subscription_expiry': AppColors.error,
   };
 
   Future<void> _markAllRead(List<AppNotification> items) async {
@@ -169,17 +192,10 @@ class NotificationsScreen extends ConsumerWidget {
           .doc(n.id)
           .update({'read': true});
     }
-    switch (n.type) {
-      case 'order':
-        context.push('/dashboard/orders');
-      case 'order_update':
-        final orderId = n.data['orderId'] as String?;
-        context.push(orderId != null ? '/orders/$orderId' : '/orders');
-      case 'assignment':
-        context.push('/dashboard/inventory');
-      case 'network':
-        context.push('/dashboard');
-    }
+    // Same resolver the FCM handlers use, so a notification opened from this
+    // list lands exactly where tapping the system notification would.
+    final route = routeForNotification(n.type, n.data);
+    if (route != null) context.push(route);
   }
 
   String _timeAgo(DateTime? dt) {

@@ -11,17 +11,79 @@ Future<void> firebaseMessagingBackgroundHandler(RemoteMessage message) async {
 
 /// Converts a notification's `type` + `data` map to a go_router path.
 /// Returns null when there is no meaningful deep-link for the type.
+///
+/// This is the only place notification routing is decided — the FCM handlers
+/// below and `NotificationsScreen._open` both call it, so a tap behaves the
+/// same whether the app was open, backgrounded, or closed.
 String? routeForNotification(String? type, Map<String, dynamic> data) {
+  String? str(String key) {
+    final v = data[key];
+    if (v == null) return null;
+    final s = v.toString().trim();
+    return s.isEmpty ? null : s;
+  }
+
   switch (type) {
     case 'order':
       return '/dashboard/orders';
     case 'order_update':
-      final id = data['orderId'] as String?;
+      final id = str('orderId');
       return id != null ? '/orders/$id' : '/orders';
     case 'assignment':
-      return '/dashboard/inventory';
+      final productId = str('productId');
+      return productId != null
+          ? '/dashboard/inventory?product=${Uri.encodeComponent(productId)}'
+          : '/dashboard/inventory';
     case 'network':
       return '/dashboard';
+
+    // Seller added or was assigned a product, and low-stock alerts, both open
+    // the inventory list scrolled to (and editing) that product.
+    case 'inventory_added':
+    case 'low_stock':
+      final productId = str('productId');
+      return productId != null
+          ? '/dashboard/inventory?product=${Uri.encodeComponent(productId)}'
+          : '/dashboard/inventory';
+
+    // Weekly / monthly / yearly store report.
+    case 'analytics_digest':
+      final period = str('period') ?? 'week';
+      return '/dashboard/analytics?period=${Uri.encodeComponent(period)}';
+
+    // Anything that happened on a specific reel opens that reel.
+    case 'reel_like':
+    case 'reel_comment':
+    case 'reel_comment_tag':
+    case 'reel_repost':
+      final reelId = str('reelId');
+      return reelId != null ? '/reel/$reelId' : '/reels';
+
+    // A new follower is easiest to make sense of in the followers list.
+    case 'reel_follow':
+      return '/followers';
+
+    // Grouped engagement — the group doc holds the full actor list.
+    case 'engagement_group':
+      final groupId = str('groupId');
+      return groupId != null ? '/activity/$groupId' : '/notifications';
+
+    case 'profile_incomplete':
+      final missing = str('missing');
+      return missing != null
+          ? '/profile/edit?highlight=${Uri.encodeComponent(missing)}'
+          : '/profile/edit?highlight=1';
+
+    // Open the renewal screen with the existing plan already selected, so the
+    // user only has to pay.
+    case 'subscription_expiry':
+      final params = <String, String>{'reason': 'renewal'};
+      final seats = str('seats');
+      final months = str('months');
+      if (seats != null) params['seats'] = seats;
+      if (months != null) params['months'] = months;
+      return Uri(path: '/subscription', queryParameters: params).toString();
+
     default:
       return null;
   }

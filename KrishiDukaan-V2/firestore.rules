@@ -469,6 +469,17 @@ service cloud.firestore {
     match /retailers/{retailerId} {
       allow read: if true;
       allow create: if isAuthed();
+      // Storefront view counters: any signed-in shopper may bump these two
+      // fields and nothing else, the same narrowly-scoped counter exemption
+      // businessCodes uses. This is what feeds "store views" in the seller's
+      // analytics screen and in the weekly/monthly/yearly digest notification
+      // (collectStats in functions/src/notifications/digest.ts) — without it
+      // the write is denied for every visitor except the owner, which is
+      // precisely the visitor whose views must NOT be counted.
+      allow update: if isAuthed()
+                       && request.resource.data.diff(resource.data)
+                            .affectedKeys()
+                            .hasOnly(['storeViews', 'storeViewsByDay']);
       allow update: if isAdmin() || (isAuthed() && (
         resource.data.userId == request.auth.uid ||
         resource.data.retailerId == request.auth.uid ||
@@ -844,6 +855,23 @@ service cloud.firestore {
     match /follows/{followId} {
       allow read: if true;
       allow write: if isAuthed();
+    }
+
+    // ─── engagement_buffer ───────────────────────────────────────────────────
+    // Server-only. recordEngagement (Cloud Functions, admin SDK) writes here
+    // and flushEngagementNotifications drains it. No client has any business
+    // reading it — it would expose every like/follow across all sellers — and
+    // a client that could write to it could forge grouped notifications.
+    match /engagement_buffer/{eventId} {
+      allow read, write: if isAdmin();
+    }
+
+    // ─── engagement_groups ───────────────────────────────────────────────────
+    // The actor list behind one grouped notification. Only the seller it was
+    // built for may open it; writes stay server-side.
+    match /engagement_groups/{groupId} {
+      allow get: if isAdmin() || (isAuthed() && phoneMatches(resource.data.ownerPhone));
+      allow list, write: if isAdmin();
     }
 
     // ─── reel_reports ────────────────────────────────────────────────────────

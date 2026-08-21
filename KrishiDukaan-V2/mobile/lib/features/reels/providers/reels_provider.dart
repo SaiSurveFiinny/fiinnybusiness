@@ -1,5 +1,6 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:flutter_riverpod/legacy.dart';
 import '../../../core/models/reel_model.dart';
 import '../../../core/models/reel_comment_model.dart';
 import '../../../core/models/listing_model.dart';
@@ -78,6 +79,83 @@ final reelByIdProvider = FutureProvider.family<ReelModel?, String>((
 final followerCountProvider = FutureProvider.family<int, String>((ref, shopId) {
   return _repo.countFollowers(shopId);
 });
+
+/// The follower list behind [followerCountProvider] — powers `/followers`,
+/// which is where a `reel_follow` notification lands. Paginated.
+///
+/// A shop with a thousand followers used to load every one of them (and each
+/// one's profile) on open. This loads a page at a time and appends as the user
+/// scrolls, so the screen is responsive no matter how large the following is.
+class FollowersState {
+  final List<FollowerProfile> followers;
+  final bool isLoadingMore;
+  final bool hasMore;
+  final Object? error;
+
+  const FollowersState({
+    this.followers = const [],
+    this.isLoadingMore = false,
+    this.hasMore = true,
+    this.error,
+  });
+
+  FollowersState copyWith({
+    List<FollowerProfile>? followers,
+    bool? isLoadingMore,
+    bool? hasMore,
+    Object? error,
+  }) =>
+      FollowersState(
+        followers: followers ?? this.followers,
+        isLoadingMore: isLoadingMore ?? this.isLoadingMore,
+        hasMore: hasMore ?? this.hasMore,
+        error: error,
+      );
+}
+
+class FollowersNotifier extends StateNotifier<FollowersState> {
+  final String shopId;
+  DocumentSnapshot? _cursor;
+  bool _initialised = false;
+
+  FollowersNotifier(this.shopId) : super(const FollowersState()) {
+    loadMore();
+  }
+
+  /// Loads the next page. Safe to call repeatedly — overlapping calls and
+  /// calls past the end are ignored, so a fast scroller can't double-fetch.
+  Future<void> loadMore() async {
+    if (state.isLoadingMore || (!state.hasMore && _initialised)) return;
+    state = state.copyWith(isLoadingMore: true, error: null);
+    try {
+      final page = await _repo.fetchFollowersPage(shopId, startAfter: _cursor);
+      _cursor = page.cursor ?? _cursor;
+      _initialised = true;
+      state = FollowersState(
+        followers: [...state.followers, ...page.followers],
+        isLoadingMore: false,
+        hasMore: page.hasMore,
+      );
+    } catch (e) {
+      _initialised = true;
+      state = state.copyWith(isLoadingMore: false, error: e);
+    }
+  }
+
+  Future<void> refresh() async {
+    _cursor = null;
+    _initialised = false;
+    state = const FollowersState();
+    await loadMore();
+  }
+
+  /// True before the first page has resolved either way.
+  bool get isInitialLoad => !_initialised && state.isLoadingMore;
+}
+
+final followersProvider = StateNotifierProvider.family<FollowersNotifier,
+    FollowersState, String>((ref, shopId) => FollowersNotifier(shopId));
+
 
 final reelCommentsProvider =
     StreamProvider.family<List<ReelCommentModel>, String>(

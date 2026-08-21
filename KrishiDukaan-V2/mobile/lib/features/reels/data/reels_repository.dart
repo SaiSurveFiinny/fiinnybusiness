@@ -6,6 +6,36 @@ import '../../../core/models/reel_model.dart';
 import '../../../core/models/reel_comment_model.dart';
 import '../domain/ranking_context.dart';
 
+/// One follower row on the followers screen.
+class FollowerProfile {
+  final String phone;
+  final String name;
+  final String? photoUrl;
+  final DateTime? followedAt;
+
+  const FollowerProfile({
+    required this.phone,
+    required this.name,
+    this.photoUrl,
+    this.followedAt,
+  });
+}
+
+/// One page of followers plus the cursor needed to ask for the next.
+class FollowersPage {
+  final List<FollowerProfile> followers;
+  final DocumentSnapshot? cursor;
+  final bool hasMore;
+
+  const FollowersPage({
+    required this.followers,
+    required this.cursor,
+    required this.hasMore,
+  });
+
+  static const empty = FollowersPage(followers: [], cursor: null, hasMore: false);
+}
+
 class ReelsRepository {
   final _db = FirebaseFirestore.instance;
   final _storage = FirebaseStorage.instance;
@@ -225,6 +255,108 @@ class ReelsRepository {
         .count()
         .get();
     return agg.count ?? 0;
+  }
+
+  /// The people following [shopId], newest first.
+  ///
+  /// `follows` docs carry only the follower's phone, so each one is resolved
+  /// against `users` then `retailers` for a name and picture. A follower whose
+  /// profile is unreadable (permission rules on a stranger's doc) is still
+  /// returned — with their phone as the label — rather than dropped, matching
+  /// how ListingRepository handles unreadable seller profiles.
+  /// One page of followers, newest first.
+  ///
+  /// This used to fetch EVERY follow doc and then resolve each follower's name
+  /// and photo with two separate lookups, each scanning two collections — five
+  /// reads per follower, all issued at once. A shop with 1000 followers fired
+  /// ~5000 concurrent reads on open, which is what made the screen crawl.
+  ///
+  /// Now: [limit] follow docs per page (server-ordered via the deployed
+  /// follows(followedShopId, createdAt DESC) composite index), and ONE profile
+  /// read per follower per collection, stopping at the first hit.
+  Future<FollowersPage> fetchFollowersPage(
+    String shopId, {
+    int limit = 25,
+    DocumentSnapshot? startAfter,
+  }) async {
+    if (shopId.isEmpty) return FollowersPage.empty;
+
+    Query<Map<String, dynamic>> q = _db
+        .collection('follows')
+        .where('followedShopId', isEqualTo: shopId)
+        .orderBy('createdAt', descending: true)
+        .limit(limit);
+    if (startAfter != null) q = q.startAfterDocument(startAfter);
+
+    final snap = await q.get();
+    if (snap.docs.isEmpty) return FollowersPage.empty;
+
+    final followers = await Future.wait(snap.docs.map((doc) async {
+      final data = doc.data();
+      final phone = (data['followerId'] as String? ?? '').trim();
+      final brief = await _profileBrief(phone);
+      return FollowerProfile(
+        phone: phone,
+        name: brief.name,
+        photoUrl: brief.photoUrl,
+        followedAt: (data['createdAt'] as Timestamp?)?.toDate(),
+      );
+    }));
+
+    return FollowersPage(
+      followers: followers,
+      cursor: snap.docs.last,
+      hasMore: snap.docs.length == limit,
+    );
+  }
+
+  /// Display name + avatar for [phone] in a SINGLE read per collection.
+  ///
+  /// `profiles/{phone}` comes first: it's the unified public mirror (readable
+  /// by anyone per firestore.rules) and carries both fields, so it resolves for
+  /// shoppers who can't read a stranger's `users` doc at all.
+  ///
+  /// `logo` is included among the avatar keys because that is the field the
+  /// rest of the app actually writes and reads (StoreModel.logo, and web's
+  /// saveRetailerProfile/saveManufacturerProfile). Looking only at
+  /// profilePic/photoUrl/logoUrl meant a seller's uploaded logo was never
+  /// found and every follower fell back to a bare initial.
+  Future<({String name, String? photoUrl})> _profileBrief(String phone) async {
+    if (phone.isEmpty) return (name: 'Someone', photoUrl: null);
+
+    String? name;
+    String? photo;
+
+    for (final col in ['profiles', 'users', 'retailers']) {
+      if (name != null && photo != null) break;
+      try {
+        final doc = await _db.collection(col).doc(phone).get();
+        if (!doc.exists) continue;
+        final d = doc.data() ?? {};
+
+        if (name == null) {
+          final n = ((d['businessName'] ?? d['shopName'] ?? d['name'] ?? '')
+                  as Object)
+              .toString()
+              .trim();
+          if (n.isNotEmpty) name = n;
+        }
+        if (photo == null) {
+          final url = ((d['logo'] ??
+                      d['profilePic'] ??
+                      d['photoUrl'] ??
+                      d['logoUrl'] ??
+                      '') as Object)
+              .toString()
+              .trim();
+          if (url.isNotEmpty) photo = url;
+        }
+      } catch (_) {
+        // Unreadable stranger profile — try the next collection.
+      }
+    }
+
+    return (name: name ?? phone, photoUrl: photo);
   }
 
   /// shopOwnerIds [viewerPhone] follows — feeds the ranker's affinity signal.

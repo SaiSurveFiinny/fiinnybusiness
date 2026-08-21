@@ -409,6 +409,36 @@ export async function fetchMarketplaceProducts(): Promise<MarketplaceProduct[]> 
       sellerDiscountsByKey.set(key, map);
     };
 
+    /**
+     * Union of package sizes across the canonical product and a seller's copy.
+     *
+     * The PACKAGE SIZE chips read the merged card's own `variants`, which used
+     * to come from the canonical doc alone. A retailer who adds a size to their
+     * copy (5L on a catalogue product that only lists 1L) could never surface
+     * it — the chip was missing, so the size was unselectable and the stock
+     * invisible, no matter what their inventory said.
+     *
+     * Sizes are appended, never reordered: baseVariantIdx locates the base by
+     * matching product.price, and existing entries keep their index. Only
+     * {unit, price} is carried — per-store stock and pricing live on that
+     * store's availability entry, which resolveStoreVariant reads separately.
+     */
+    const unionVariants = (
+      base: MarketplaceProduct['variants'],
+      extra: MarketplaceProduct['variants'],
+    ): MarketplaceProduct['variants'] => {
+      if (!Array.isArray(extra) || extra.length === 0) return base;
+      const out = Array.isArray(base) ? [...base] : [];
+      const seen = new Set(out.map((v) => String(v.unit ?? '').trim().toLowerCase()));
+      for (const v of extra) {
+        const unit = String(v?.unit ?? '').trim();
+        if (!unit || seen.has(unit.toLowerCase())) continue;
+        seen.add(unit.toLowerCase());
+        out.push({ unit, price: Number(v.price) || 0 });
+      }
+      return out.length > 0 ? out : base;
+    };
+
     // Per-key tracker: is ANY seller listing online for this product?
     // Used to compute the merged card's sellMode/isOnline without letting one
     // offline listing contaminate all sellers.
@@ -480,6 +510,7 @@ export async function fetchMarketplaceProducts(): Promise<MarketplaceProduct[]> 
       byName.set(key, {
         ...canonical,
         availability: av.length > 0 ? av : undefined,
+        variants: unionVariants(canonical.variants, secondary.variants),
         maxDiscountPct: mergedMaxDiscount,
         effectiveDiscountPct: mergedMaxDiscount,
       });
@@ -541,7 +572,12 @@ export async function fetchMarketplaceProducts(): Promise<MarketplaceProduct[]> 
         });
       }
       const newMax = Math.max(canonical.maxDiscountPct ?? 0, copyDiscountPct);
-      byName.set(key, { ...canonical, availability: av, maxDiscountPct: newMax });
+      byName.set(key, {
+        ...canonical,
+        availability: av,
+        variants: unionVariants(canonical.variants, copy.variants),
+        maxDiscountPct: newMax,
+      });
     }
 
     // Compute lowestPrice + ratings + corrected sellMode across all merged sources.
@@ -2474,10 +2510,18 @@ export async function adminManualActivate(
  * dedup, NO source exclusion, and NO image requirement. Sorted newest-first.
  */
 export async function fetchAllProductsForAdmin(): Promise<MarketplaceProduct[]> {
-  const snapshot = await getDocs(collection(db, 'products'));
-  return snapshot.docs
+  return mapAdminProductDocs(await fetchAllSellerProducts());
+}
+
+/**
+ * Pure shape-mapper behind fetchAllProductsForAdmin(). Split out so callers that
+ * already hold a cached raw `products` snapshot (see app/admin/_lib/admin-data.ts)
+ * can render the admin table without triggering a second collection scan.
+ */
+export function mapAdminProductDocs(docs: RawProductDoc[]): MarketplaceProduct[] {
+  return docs
     .map((item) => {
-      const data = item.data();
+      const data = item as Record<string, any>;
       const images = Array.isArray(data.images) ? data.images : undefined;
       const ts = (data.updatedAt ?? data.createdAt) as { toMillis?: () => number } | undefined;
       return {
@@ -3011,7 +3055,7 @@ export type UserProduct = MarketplaceProduct & {
   assignedDocIds: string[];
 };
 
-type RawProductDoc = Record<string, unknown> & { id: string };
+export type RawProductDoc = Record<string, unknown> & { id: string };
 
 /** Every owner identifier a product doc can be keyed by. */
 function productOwnerKeys(d: RawProductDoc): string[] {

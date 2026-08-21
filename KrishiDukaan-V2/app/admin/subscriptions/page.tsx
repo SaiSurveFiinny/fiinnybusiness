@@ -7,11 +7,12 @@ import {
   UserPlus, Trash2, Ban,
 } from "lucide-react";
 import {
-  fetchAllSubscriptions, fetchAllUsers, fetchAllPlans, auth,
+  auth,
   adminRevokeSubscription, adminExtendSubscription, adminSetSubscriptionExpiry, adminManualActivate,
   adminUpdateSubscriptionSeats, fetchFailedPayments
 } from "../../firebase";
 import { SearchableDropdown } from "../_components/searchable-dropdown";
+import { getSubscriptions, getUsers, getPlans, invalidateUsers, invalidateSubscriptions } from "../_lib/admin-data";
 import { PLAN_FEATURE_CATALOG, featureLabel } from "../_lib/plan-features";
 
 // Thin wrapper around the new server-validated admin routes (plan CRUD,
@@ -158,11 +159,19 @@ export default function AdminSubscriptionsPage() {
     };
   }, [anyModalOpen]);
 
-  const load = async () => {
+  /**
+   * `force` bypasses the shared admin cache — used by the Refresh buttons and after
+   * every write on this tab. A plain mount reuses the cached users/subscriptions
+   * snapshot the other admin tabs may already have paid for.
+   */
+  const load = async (force = false) => {
+    if (force) { invalidateUsers(); invalidateSubscriptions(); }
     setLoading(true);
     setFailedPaymentsError(null);
     try {
-      const [subsData, usersData, plansData] = await Promise.all([fetchAllSubscriptions(), fetchAllUsers(), fetchAllPlans()]);
+      const [subsData, usersData, plansData] = await Promise.all([
+        getSubscriptions({ force }), getUsers({ force }), getPlans({ force }),
+      ]);
       setSubs(subsData);
       setUsers(usersData);
       setPlans(plansData);
@@ -257,7 +266,7 @@ export default function AdminSubscriptionsPage() {
     }
     // Refresh after the loading state is cleared so setLoading(true) inside load()
     // doesn't remount the list while revoking is still set, causing a stuck spinner.
-    void load();
+    void load(true);
   };
 
   const handleExtend = async (sub: any) => {
@@ -272,7 +281,7 @@ export default function AdminSubscriptionsPage() {
     } finally {
       setConfirming(null);   // always clears the button state
     }
-    void load();
+    void load(true);
   };
 
   const handleSetExpiry = async (sub: any) => {
@@ -291,7 +300,7 @@ export default function AdminSubscriptionsPage() {
     } finally {
       setConfirming(null);
     }
-    void load();
+    void load(true);
   };
 
   const filteredUsers = users.filter(u =>
@@ -313,7 +322,7 @@ export default function AdminSubscriptionsPage() {
     } finally {
       setSavingSeats(false);
     }
-    void load();
+    void load(true);
   };
 
   const handleManualActivate = async (e: React.FormEvent) => {
@@ -335,7 +344,7 @@ export default function AdminSubscriptionsPage() {
       setManualSuccess(true);
       setManualForm(EMPTY_MANUAL);
       setUserSearch("");
-      await load();
+      await load(true);
     } catch (e) {
       setManualError(e instanceof Error ? e.message : "Activation failed.");
     } finally {
@@ -389,7 +398,7 @@ export default function AdminSubscriptionsPage() {
         await callAdminApi("/api/admin/plans", "POST", body);
       }
       setShowPlanModal(false);
-      await load();
+      await load(true);
     } catch (e) {
       setPlanError(e instanceof Error ? e.message : "Failed to save plan.");
     } finally {
@@ -401,7 +410,7 @@ export default function AdminSubscriptionsPage() {
     setPlanActionError(null);
     try {
       await callAdminApi(`/api/admin/plans/${plan.id}`, "PATCH", { status });
-      await load();
+      await load(true);
     } catch (e) {
       setPlanActionError(e instanceof Error ? e.message : "Failed to update plan status.");
     }
@@ -413,7 +422,7 @@ export default function AdminSubscriptionsPage() {
     setPlanActionError(null);
     try {
       await callAdminApi(`/api/admin/plans/${plan.id}`, "DELETE");
-      await load();
+      await load(true);
     } catch (e) {
       setPlanActionError(e instanceof Error ? e.message : "Failed to delete plan.");
     } finally {
@@ -465,7 +474,7 @@ export default function AdminSubscriptionsPage() {
         notes: assignForm.notes.trim() || undefined,
       });
       setAssignSuccess(true);
-      await load();
+      await load(true);
     } catch (e) {
       setAssignError(e instanceof Error ? e.message : "Failed to assign subscription.");
     } finally {
@@ -501,7 +510,7 @@ export default function AdminSubscriptionsPage() {
         notes: editSubForm.notes.trim() || null,
       });
       setEditingSub(null);
-      await load();
+      await load(true);
     } catch (e) {
       setEditSubError(e instanceof Error ? e.message : "Failed to update subscription.");
     } finally {
@@ -515,7 +524,7 @@ export default function AdminSubscriptionsPage() {
     setActionError(null);
     try {
       await callAdminApi(`/api/admin/subscriptions/${sub.id}`, "PATCH", { action: "cancel" });
-      await load();
+      await load(true);
     } catch (e) {
       setActionError(e instanceof Error ? e.message : "Failed to cancel subscription.");
     } finally {
@@ -608,7 +617,7 @@ export default function AdminSubscriptionsPage() {
           <p className="text-xs sm:text-sm text-on-surface-variant ml-7 sm:ml-9">Manage subscriptions — extend, revoke, or activate.</p>
         </div>
         <div className="grid grid-cols-3 gap-2 shrink-0 sm:flex">
-          <button onClick={() => load()} className="flex items-center justify-center gap-1.5 border border-outline-variant/40 text-xs sm:text-sm font-medium px-2.5 sm:px-3 py-2 rounded-xl hover:bg-surface-container transition-colors">
+          <button onClick={() => load(true)} className="flex items-center justify-center gap-1.5 border border-outline-variant/40 text-xs sm:text-sm font-medium px-2.5 sm:px-3 py-2 rounded-xl hover:bg-surface-container transition-colors">
             <RefreshCw className="h-3.5 w-3.5 sm:h-4 sm:w-4" /> Refresh
           </button>
           <button onClick={() => openAssign()}
@@ -1034,7 +1043,7 @@ export default function AdminSubscriptionsPage() {
               </h2>
               <p className="text-xs text-on-surface-variant mt-0.5">All payment attempts that were declined or cancelled.</p>
             </div>
-            <button onClick={() => load()} className="flex items-center gap-1.5 border border-outline-variant/40 text-xs font-medium px-3 py-2 rounded-xl hover:bg-surface-container transition-colors">
+            <button onClick={() => load(true)} className="flex items-center gap-1.5 border border-outline-variant/40 text-xs font-medium px-3 py-2 rounded-xl hover:bg-surface-container transition-colors">
               <RefreshCw className="h-3.5 w-3.5" /> Refresh
             </button>
           </div>

@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { Loader2, Mail, RefreshCw, Search, Send, SendHorizonal, Users } from "lucide-react";
-import { fetchAllUsers } from "../../firebase";
+import { getUsers, invalidateUsers } from "../_lib/admin-data";
 import { buildReportDataClientSide } from "../../lib/reports/build-report-client";
 
 type Manufacturer = {
@@ -25,10 +25,11 @@ export default function AdminReportsPage() {
   const [sendAllState, setSendAllState] = useState<SendState>("idle");
   const [sendAllResult, setSendAllResult] = useState<string | null>(null);
 
-  const loadManufacturers = useCallback(async () => {
+  const loadManufacturers = useCallback(async (force = false) => {
+    if (force) invalidateUsers();
     setLoading(true);
     try {
-      const users = await fetchAllUsers();
+      const users = await getUsers({ force });
       setManufacturers(users.filter((u: any) => u.role === "manufacturer") as Manufacturer[]);
     } finally {
       setLoading(false);
@@ -156,7 +157,7 @@ export default function AdminReportsPage() {
         <div className="flex items-center gap-2 shrink-0">
           <button
             type="button"
-            onClick={loadManufacturers}
+            onClick={() => loadManufacturers(true)}
             className="inline-flex items-center gap-2 rounded-xl border border-outline-variant/40 px-3 py-2 text-sm font-medium text-on-surface hover:bg-surface-container"
           >
             <RefreshCw className="h-4 w-4" />

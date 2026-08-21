@@ -29,3 +29,46 @@ double parseVariantWeightKg(String? variantUnit) {
 
   return 0;
 }
+
+/// Canonicalises a package-size label so spelling/spacing differences compare
+/// equal: "2L", "2 l", "2ltr", "2 Liter" all normalise to "2l".
+///
+/// Direct port of web's `normalizeUnit()` in `app/utils/weight.ts`. Size
+/// matching MUST use this on both sides — a retailer typing "5 Ltr" where the
+/// catalogue says "5L" is the same size, and a raw string compare would treat
+/// the store as not stocking it and silently drop it from the buy options.
+String normalizeUnit(String? unit) {
+  if (unit == null) return '';
+  final s = unit.trim().toLowerCase();
+  if (s.isEmpty) return '';
+
+  final measured = RegExp(
+    r'^(\d+(?:\.\d+)?)\s*(kilograms?|kilogram|kgs?|kg|grams?|gms?|gm|g|millilitres?|milliliters?|mls?|ml|litres?|liters?|ltrs?|ltr|ls?|l)$',
+  ).firstMatch(s);
+
+  if (measured != null) {
+    var num = measured.group(1)!;
+    if (num.contains('.')) {
+      num = num.replaceAll(RegExp(r'\.0+$'), '').replaceAllMapped(
+            RegExp(r'(\.\d*?)0+$'),
+            (m) => m.group(1)!,
+          );
+    }
+    final raw = measured.group(2)!;
+    final String canon;
+    if (RegExp(r'^(kilograms?|kilogram|kgs?|kg)$').hasMatch(raw)) {
+      canon = 'kg';
+    } else if (RegExp(r'^(millilitres?|milliliters?|mls?|ml)$').hasMatch(raw)) {
+      canon = 'ml';
+    } else if (RegExp(r'^(grams?|gms?|gm|g)$').hasMatch(raw)) {
+      canon = 'g';
+    } else {
+      canon = 'l'; // litres
+    }
+    return '$num$canon';
+  }
+
+  // Non-measured unit (bottle, pcs, pkt…): strip internal whitespace so
+  // spacing differences still match.
+  return s.replaceAll(RegExp(r'\s+'), '');
+}
