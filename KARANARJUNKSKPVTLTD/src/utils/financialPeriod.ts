@@ -4,10 +4,11 @@
  * Returns [fromStr, toStr] or null for "All Time".
  */
 
-export type FinancialPeriod = 'all' | 'week' | 'month' | 'fy' | 'custom';
+export type FinancialPeriod = 'all' | 'today' | 'week' | 'month' | 'fy' | 'custom';
 
 export const FINANCIAL_PERIOD_LABELS: [FinancialPeriod, string][] = [
     ['all',    'All Time'],
+    ['today',  'Today'],
     ['week',   'This Week'],
     ['month',  'This Month'],
     ['fy',     'This FY'],
@@ -22,6 +23,9 @@ export function getFinancialDateRange(
     if (period === 'all') return null;
     const now = new Date();
     const todayStr = now.toISOString().slice(0, 10);
+    if (period === 'today') {
+        return [todayStr, todayStr];
+    }
     if (period === 'week') {
         const day = now.getDay();
         const diff = day === 0 ? -6 : 1 - day; // roll back to Monday

@@ -508,7 +508,7 @@ export default function AdminPage() {
                 ) : (
                     <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
                         {users.map((user, i) => (
-                            <div key={user.id} className={`animate-fade-in delay-${(i % 5)}00`} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '1.25rem', background: 'var(--surface-base)', border: '1px solid var(--surface-border)', borderRadius: '10px' }}>
+                            <div key={user.id} className={`animate-fade-in delay-${(i % 5)}00`} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '1.25rem', background: 'var(--surface-base)', border: '1px solid var(--surface-border)', borderRadius: '10px', animationFillMode: 'forwards' }}>
                                 <div style={{ display: 'flex', gap: '1.25rem', alignItems: 'center' }}>
                                     <div style={{ width: '48px', height: '48px', borderRadius: '12px', background: 'var(--surface-raised)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--primary-light)' }}>
                                         <UserCog size={24} />
