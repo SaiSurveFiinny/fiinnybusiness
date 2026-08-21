@@ -8,11 +8,11 @@ import OrderHistoryPage from './OrderHistoryPage';
 // 'Link' was only used by the Returns quick-access link, now disabled below (2026-07-03).
 // import { Link } from 'react-router-dom';
 import {
-    Save, Loader2, Printer, Search, ShoppingCart, Plus, Minus, Trash2,
-    CreditCard, Banknote, History, ExternalLink, Target, Pencil,
+    Save, Loader2, Printer, ShoppingCart, Plus, Minus, Trash2,
+    CreditCard, Banknote, ExternalLink, Target, Pencil,
     Zap, CheckCircle2, ChevronRight, X, Phone, User, QrCode, Package, BookOpen, AlertTriangle,
     // RotateCcw removed — was only used by the Returns quick-access link, now disabled below (2026-07-03).
-    Star, Smartphone, Columns, PlusCircle, FileText,
+    Star, PlusCircle, FileText,
 } from 'lucide-react';
 import UpiQrCode from '../components/UpiQrCode';
 import ModuleGate from '../components/ModuleGate';
@@ -30,8 +30,7 @@ import { prepareStockDeduction, recordStockMovements, formatLowStockAlert } from
 import { getInvoiceProductCategories, getAllConfiguredLicenses } from '../utils/invoiceCategories';
 import { logAudit } from '../utils/auditLog';
 import { PosInvoicePreview, numberToWords, toMonthYear } from '../components/PosInvoicePreview';
-import { resolveDateRange, DATE_RANGE_PERIODS, type DateRangePeriod } from '../utils/dateRanges';
-import { AGRI_CATEGORIES } from '../utils/constants';
+import { AGRI_CATEGORIES, INVOICE_CONTACT_LABEL } from '../utils/constants';
 import { fetchInvoiceTemplate, fetchInvoiceBranding } from '../services/invoiceTemplateService';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useTranslation } from 'react-i18next';
@@ -118,16 +117,6 @@ function getTierMultiplier(points: number, tiers: { name: string; minPoints: num
     const match = sorted.find(t => points >= (t.minPoints || 0));
     const multiplier = match?.multiplier;
     return typeof multiplier === 'number' && multiplier > 0 ? multiplier : 1;
-}
-
-// salesOrders is shared by several modules (B2B Invoice, Quotations, Sales
-// Order, Retailer Portal self-serve, POS). Only POS's generateBillNumber()
-// (and the legacy pre-writeBatch POS form it replaced) ever produces the
-// "KA-####" orderNumber format — every other writer uses its own counter and
-// prefix (SIPL/…, SO-YYYY-####, ORD-######). This is the one reliable,
-// already-existing signal for "this salesOrders doc came from POS Billing."
-function isPosOrder(order: any): boolean {
-    return typeof order?.orderNumber === 'string' && /^KA-\d+$/i.test(order.orderNumber.trim());
 }
 
 // Live outstanding lookup — mirrors Digital Khata's own calculation exactly
@@ -219,9 +208,6 @@ export default function POSPage() {
     const [isProcessing, setIsProcessing] = useState(false);
 
     // View States
-    const [searchQuery, setSearchQuery] = useState('');
-    const [selectedCategory, setSelectedCategory] = useState('All');
-    const searchRef = useRef<HTMLInputElement>(null);
 
     // ── Keyboard nav & draft refs ────────────────────────────────────────────
     const draftLoadedRef = useRef(false);
@@ -323,6 +309,9 @@ export default function POSPage() {
     // for the name-autofill dropdown (mirrors B2B's retailer dropdown).
     const [farmers, setFarmers] = useState<any[]>([]);
     const [showFarmerDropdown, setShowFarmerDropdown] = useState(false);
+    // Keyboard-highlighted row in the Buyer suggestion dropdown — separate from
+    // highlightedProductIdx (product-search combobox) so the two never collide.
+    const [highlightedFarmerIdx, setHighlightedFarmerIdx] = useState(-1);
     // Which item row's product-search dropdown is open.
     const [activeRowIndex, setActiveRowIndex] = useState<number | null>(null);
     // Text typed into the "add product" search rows, keyed by visual row index.
@@ -351,29 +340,11 @@ export default function POSPage() {
     const [creditPaidNow, setCreditPaidNow] = useState(0);
     const [khataNote, setKhataNote] = useState('');
 
-    // ── V-Checkout pending sessions ──────────────────────────────────────────
-    const [vcheckoutSessions, setVcheckoutSessions] = useState<any[]>([]);
-    const [showVCheckoutPanel, setShowVCheckoutPanel] = useState(false);
-    const [vCheckoutSessionUrl, setVCheckoutSessionUrl] = useState('');
-    const [showVCheckoutQr, setShowVCheckoutQr] = useState(false);
-
     // ── Loyalty display ──────────────────────────────────────────────────────
     const [customerLoyalty, setCustomerLoyalty] = useState<any>(null);
     const [redeemPoints, setRedeemPoints] = useState(0);
 
-    // ── Insights panel (read-only; does not affect billing/checkout) ────────
-    const [showInsightsPanel, setShowInsightsPanel] = useState(false);
-    const [insightsTab, setInsightsTab] = useState<'bills' | 'customer' | 'today'>('bills');
-    const [recentOrders, setRecentOrders] = useState<any[]>([]);
-    const [customerRetailerDoc, setCustomerRetailerDoc] = useState<any>(null);
     const [reprintOrder, setReprintOrder] = useState<any>(null);
-
-    // Operations Analytics ("Today" tab) — period selector + the orders it resolves to.
-    const [analyticsPeriod, setAnalyticsPeriod] = useState<DateRangePeriod>('today');
-    const [analyticsCustomDate, setAnalyticsCustomDate] = useState('');
-    const [analyticsCustomFrom, setAnalyticsCustomFrom] = useState('');
-    const [analyticsCustomTo, setAnalyticsCustomTo] = useState('');
-    const [periodOrders, setPeriodOrders] = useState<any[]>([]);
 
     useEffect(() => {
         if (!tenantId) return;
@@ -439,23 +410,9 @@ export default function POSPage() {
 
         loadSettings();
 
-        // V-Checkout pending sessions
-        let unsubVCheckout: (() => void) | undefined;
-        if (hasModule('vcheckout')) {
-            unsubVCheckout = onSnapshot(
-                query(
-                    getTenantCollection(db, tenantId, 'vcheckoutSessions'),
-                    where('status', '==', 'submitted'),
-                    orderBy('createdAt', 'desc'),
-                ),
-                (snap) => setVcheckoutSessions(snap.docs.map(d => ({ id: d.id, ...d.data() }))),
-            );
-        }
-
         return () => {
             unsubProducts();
             unsubFarmers();
-            if (unsubVCheckout) unsubVCheckout();
         };
     }, [tenantId, hasModule]);
 
@@ -554,10 +511,6 @@ export default function POSPage() {
     // Keyboard shortcuts
     useEffect(() => {
         const handleKeyDown = (e: KeyboardEvent) => {
-            if (e.key === 'F2' || e.key === '/') {
-                e.preventDefault();
-                searchRef.current?.focus();
-            }
             if (e.ctrlKey && e.key === 'Enter') handleCheckout('Cash');
         };
         window.addEventListener('keydown', handleKeyDown);
@@ -575,51 +528,6 @@ export default function POSPage() {
             .then(snap => { if (snap.exists()) setCustomerLoyalty(snap.data()); else setCustomerLoyalty(null); })
             .catch(() => {});
     }, [customer.phone, tenantId, hasModule, loyaltyConfig]);
-
-    // ── Insights panel data — read-only listeners, isolated from checkout ───
-    // Recent Bills: latest 50 orders, reused for both the bill list and (client-
-    // filtered) the selected customer's purchase history/favourites.
-    useEffect(() => {
-        if (!tenantId || !showInsightsPanel) return;
-        const unsub = onSnapshot(
-            query(getTenantCollection(db, tenantId, 'salesOrders'), orderBy('createdAt', 'desc'), limit(50)),
-            (snap) => setRecentOrders(snap.docs.map(d => ({ id: d.id, ...d.data() })).filter(isPosOrder)),
-            () => setRecentOrders([]),
-        );
-        return () => unsub();
-    }, [tenantId, showInsightsPanel]);
-
-    // Operations Analytics ("Today" tab): date-scoped query so totals stay
-    // accurate even past the 50-doc window the Recent Bills list uses. Scope
-    // follows the selected period (defaults to today, preserving prior behavior).
-    useEffect(() => {
-        if (!tenantId || !showInsightsPanel) return;
-        const { start, end } = resolveDateRange(analyticsPeriod, analyticsCustomDate, analyticsCustomFrom, analyticsCustomTo);
-        const col = getTenantCollection(db, tenantId, 'salesOrders');
-        const q = start
-            ? query(col, where('createdAt', '>=', start), where('createdAt', '<=', end))
-            : query(col, where('createdAt', '<=', end));
-        const unsub = onSnapshot(
-            q,
-            (snap) => setPeriodOrders(snap.docs.map(d => ({ id: d.id, ...d.data() })).filter(isPosOrder)),
-            () => setPeriodOrders([]),
-        );
-        return () => unsub();
-    }, [tenantId, showInsightsPanel, analyticsPeriod, analyticsCustomDate, analyticsCustomFrom, analyticsCustomTo]);
-
-    // Selected customer's retailer record (outstanding balance) for the panel only —
-    // independent of handlePhoneLookup, which drives autofill at checkout time.
-    useEffect(() => {
-        if (!tenantId || !showInsightsPanel || customer.phone.length < 5) {
-            setCustomerRetailerDoc(null);
-            return;
-        }
-        let cancelled = false;
-        getDocs(query(getTenantCollection(db, tenantId, 'retailers'), where('number', '==', customer.phone), limit(1)))
-            .then(snap => { if (!cancelled) setCustomerRetailerDoc(snap.empty ? null : { id: snap.docs[0].id, ...snap.docs[0].data() }); })
-            .catch(() => { if (!cancelled) setCustomerRetailerDoc(null); });
-        return () => { cancelled = true; };
-    }, [tenantId, showInsightsPanel, customer.phone]);
 
     // ── Draft persistence (localStorage) ────────────────────────────────────
     // Load saved draft when tenantId first becomes available.
@@ -800,6 +708,20 @@ export default function POSPage() {
             setCustomer({ ...customer, name: '', address: '', pin: '', taluka: '', district: '', retailerId: undefined });
             setCustomerOutstanding(0);
         }
+    };
+
+    // Applies a farmer/customer suggestion to the active bill — shared by the
+    // Buyer dropdown's mouse click (onMouseDown) and keyboard selection (Enter),
+    // for both the A5 and A4 templates, so the four call sites can't drift.
+    const selectFarmer = (r: any) => {
+        lastMatchedPhoneRef.current = r.number || null;
+        setCustomer({ name: r.name || '', phone: r.number || '', address: r.atPost || '', pin: r.pin || '', taluka: r.taluka || '', district: r.district || '', retailerId: r.id });
+        // Live-computed so this can never diverge from the Digital Khata balance —
+        // written by tab id so a fast tab-switch mid-lookup can't leak in.
+        const lookupTabId = activeTabId;
+        if (tenantId) fetchLiveOutstanding(db, tenantId, r.name || '', r.number || '').then(amt => setOutstandingForTab(lookupTabId, amt));
+        setShowFarmerDropdown(false);
+        setHighlightedFarmerIdx(-1);
     };
 
     // Real-time auto-lookup: mirrors handlePhoneLookup's onBlur trigger but fires
@@ -1220,157 +1142,9 @@ export default function POSPage() {
         }
     };
 
-    // Accept a V-Checkout session into the active tab
-    const acceptVCheckoutSession = async (session: any) => {
-        if (!tenantId) return;
-        // Load session cart items as CartItem[]
-        const items: CartItem[] = (session.cart || []).map((ci: any) => {
-            const prod = products.find(p => p.id === ci.productId);
-            if (!prod) return null;
-            const rate = Number(ci.price) || posSellingRate(prod);
-            return { ...prod, sellingPrice: rate, cartQuantity: ci.quantity, cartTotal: ci.quantity * rate };
-        }).filter(Boolean);
-
-        updateActiveTab({ cart: items });
-        setShowVCheckoutPanel(false);
-
-        // Mark session as confirmed
-        await updateDoc(getTenantDoc(db, tenantId, 'vcheckoutSessions', session.id), {
-            status: 'confirmed', updatedAt: serverTimestamp(),
-        });
-    };
-
-    // Create a V-Checkout session QR
-    const handleCreateVCheckoutSession = async () => {
-        if (!tenantId) return;
-        const token = crypto.randomUUID();
-        const expiresAt = new Date(Date.now() + 30 * 60 * 1000);
-        await addDoc(getTenantCollection(db, tenantId, 'vcheckoutSessions'), {
-            tenantId, status: 'open', cart: [], qrToken: token,
-            createdAt: serverTimestamp(),
-            expiresAt,
-        });
-        setVCheckoutSessionUrl(`${window.location.origin}/v-checkout/${tenantId}/${token}`);
-        setShowVCheckoutQr(true);
-    };
-
-    const realProductsExist = products.some(p => p.purchasePrice !== 0 || !(p as any).sku?.startsWith('SKU-'));
-    const filteredProducts = products.filter(p => {
-        const isDummy = p.purchasePrice === 0 && (p as any).sku?.startsWith('SKU-');
-        if (realProductsExist && isDummy) return false;
-        return (selectedCategory === 'All' || (p.type || '').toLowerCase() === selectedCategory.toLowerCase()) &&
-            ((p.name || '').toLowerCase().includes(searchQuery.toLowerCase()) || p.barcode === searchQuery);
-    });
-
-    // Category tabs are data-driven: only show categories that actually exist in
-    // inventory (plus All), so there are never empty dead tabs.
-    const categories = ['All', ...Array.from(new Set(products.map(p => (p.type || '').trim()).filter(Boolean))).sort()];
-
     // Split payment helpers
     const splitTotal = splits.reduce((s, sp) => s + (Number(sp.amount) || 0), 0);
     const splitRemaining = grandTotal - splitTotal;
-
-    // ── Insights panel — derived values (read-only, no writes except Duplicate,
-    // which only stages a new bill tab the same way V-Checkout accept does) ──
-    const customerOrders = customer.phone.length >= 5
-        ? recentOrders.filter(o => o.phoneNumber === customer.phone)
-        : [];
-    const lastOrder = customerOrders[0]; // recentOrders is already createdAt desc
-    const favouriteProducts = (() => {
-        const counts = new Map<string, { name: string; qty: number }>();
-        customerOrders.forEach(o => (o.lineItems || []).forEach((li: any) => {
-            const key = li.productId || li.productName;
-            if (!key) return;
-            const cur = counts.get(key) || { name: li.productName || 'Unknown', qty: 0 };
-            cur.qty += Number(li.quantity) || 0;
-            counts.set(key, cur);
-        }));
-        return Array.from(counts.values()).sort((a, b) => b.qty - a.qty).slice(0, 3);
-    })();
-
-    // Every KPI below is derived from this single filtered dataset (periodOrders,
-    // already POS-only via isPosOrder and date-scoped by the effect above), so
-    // changing the period recomputes every card from the exact same records.
-    const periodSummary = (() => {
-        const validOrders = periodOrders.filter(o => o.status !== 'cancelled');
-        const cancelledCount = periodOrders.filter(o => o.status === 'cancelled').length;
-        const totalSales = validOrders.reduce((s, o) => s + (Number(o.grandTotal) || 0), 0);
-        const billCount = validOrders.length;
-        const sumByMethod = (method: string) => validOrders
-            .filter(o => (o.paymentMethod || '') === method)
-            .reduce((s, o) => s + (Number(o.amountPaid ?? o.grandTotal) || 0), 0);
-        // Split-payment bills contribute their per-method portions instead of the whole total.
-        const splitContribution = (method: string) => validOrders
-            .filter(o => o.paymentMethod === 'Split')
-            .reduce((s, o) => s + (Array.isArray(o.paymentSplits) ? o.paymentSplits
-                .filter((sp: any) => sp.method === method)
-                .reduce((s2: number, sp: any) => s2 + (Number(sp.amount) || 0), 0) : 0), 0);
-        const splitOrders = validOrders.filter(o => o.paymentMethod === 'Split');
-        const cashChangeOrders = validOrders.filter(o => Number(o.changeGiven) > 0);
-
-        const allLineItems = validOrders.flatMap(o => Array.isArray(o.lineItems) ? o.lineItems : []);
-        const totalItemsSold = allLineItems.reduce((s, li: any) => s + (Number(li.quantity) || 0), 0);
-        const taxCollected = allLineItems.reduce((s, li: any) => {
-            const amount = Number(li.amount) || 0;
-            const gstPct = Number(li.gstPct) || 0;
-            // amount is GST-inclusive line total; back out the tax portion.
-            return s + (gstPct > 0 ? amount - (amount / (1 + gstPct / 100)) : 0);
-        }, 0);
-
-        // Most Sold Product / Top Selling Category — category comes from a live
-        // join against the already-loaded `products` list (no extra query); a
-        // product no longer in inventory simply won't contribute a category.
-        const productQty = new Map<string, { name: string; qty: number }>();
-        const categoryQty = new Map<string, number>();
-        allLineItems.forEach((li: any) => {
-            const key = li.productId || li.productName;
-            if (key) {
-                const cur = productQty.get(key) || { name: li.productName || 'Unknown', qty: 0 };
-                cur.qty += Number(li.quantity) || 0;
-                productQty.set(key, cur);
-            }
-            const prod = products.find(p => p.id === li.productId);
-            const cat = (prod?.type || '').trim();
-            if (cat) categoryQty.set(cat, (categoryQty.get(cat) || 0) + (Number(li.quantity) || 0));
-        });
-        const mostSoldProduct = Array.from(productQty.values()).sort((a, b) => b.qty - a.qty)[0]?.name || null;
-        const topCategory = Array.from(categoryQty.entries()).sort((a, b) => b[1] - a[1])[0]?.[0] || null;
-
-        // Peak Billing Hour — hour (0-23) with the most bills.
-        const hourCounts = new Map<number, number>();
-        validOrders.forEach(o => {
-            const d = o.createdAt?.toDate?.();
-            if (!d) return;
-            hourCounts.set(d.getHours(), (hourCounts.get(d.getHours()) || 0) + 1);
-        });
-        const peakHourEntry = Array.from(hourCounts.entries()).sort((a, b) => b[1] - a[1])[0];
-        const peakHour = peakHourEntry
-            ? new Date(2000, 0, 1, peakHourEntry[0]).toLocaleTimeString('en-IN', { hour: 'numeric', hour12: true })
-            : null;
-
-        const billTotals = validOrders.map(o => Number(o.grandTotal) || 0);
-
-        return {
-            totalSales,
-            billCount,
-            avgBillValue: billCount > 0 ? totalSales / billCount : 0,
-            cashCollection: sumByMethod('Cash') + splitContribution('Cash'),
-            upiCollection: sumByMethod('UPI') + splitContribution('UPI'),
-            khataCollection: validOrders.filter(o => o.paymentMethod === 'Khata').reduce((s, o) => s + (Number(o.grandTotal) || 0), 0),
-            cancelledCount,
-            cashChangeCollection: cashChangeOrders.reduce((s, o) => s + (Number(o.changeGiven) || 0), 0),
-            splitPaymentCollection: splitOrders.reduce((s, o) => s + (Number(o.grandTotal) || 0), 0),
-            loyaltyRedemptions: validOrders.reduce((s, o) => s + (Number(o.loyaltyPointsRedeemed) || 0), 0),
-            discountGiven: validOrders.reduce((s, o) => s + (Number(o.discount) || 0), 0),
-            taxCollected,
-            avgItemsPerBill: billCount > 0 ? totalItemsSold / billCount : 0,
-            highestBill: billTotals.length > 0 ? Math.max(...billTotals) : 0,
-            lowestBill: billTotals.length > 0 ? Math.min(...billTotals) : 0,
-            peakHour,
-            mostSoldProduct,
-            topCategory,
-        };
-    })();
 
     // Isolate print to the bill portal so the app sidebar/nav never appears.
     //
@@ -1447,28 +1221,6 @@ export default function POSPage() {
             setNextBillNumber(`KA-${(seq + 1).toString().padStart(4, '0')}`);
         }).catch(() => {});
         showToast('Edit cancelled', 'success');
-    };
-
-    const duplicateBill = (order: any) => {
-        if (billTabs.length >= 5) { showToast('Close a bill tab first — max 5 open at once.', 'error'); return; }
-        const items: CartItem[] = (order.lineItems || []).map((li: any) => {
-            const prod = products.find(p => p.id === li.productId);
-            if (!prod) return null;
-            const rate = Number(li.mrp) || posSellingRate(prod);
-            const qty = Number(li.quantity) || 1;
-            return { ...prod, sellingPrice: rate, cartQuantity: qty, cartTotal: qty * rate };
-        }).filter(Boolean) as CartItem[];
-        if (items.length === 0) { showToast('Could not duplicate — none of these products are in inventory anymore.', 'error'); return; }
-        const newId = `tab${Date.now()}`;
-        const duplicatedCustomer = { name: order.retailerName || 'Walk-in Customer', phone: order.phoneNumber || '', address: order.address || '', pin: order.pin || '' };
-        setBillTabs(prev => [...prev, {
-            id: newId, cart: items, customer: duplicatedCustomer, customerOutstanding: 0,
-        }]);
-        setActiveTabId(newId);
-        setShowInsightsPanel(false);
-        showToast('Bill duplicated into a new tab', 'success');
-        // Fetch this specific customer's live balance into the new tab only.
-        if (tenantId) fetchLiveOutstanding(db, tenantId, duplicatedCustomer.name, duplicatedCustomer.phone).then(amt => setOutstandingForTab(newId, amt));
     };
 
     if (loading) return <div className="h-screen flex items-center justify-center"><Loader2 className="animate-spin text-emerald-600" size={48} /></div>;
@@ -1580,34 +1332,6 @@ export default function POSPage() {
                     <h1 style={{ fontSize: '1.15rem', fontWeight: 800, margin: 0 }}>POS Billing</h1>
                 </div>
 
-                <div style={{ flex: 1, position: 'relative', minWidth: '180px' }}>
-                    <Search style={{ position: 'absolute', left: '1rem', top: '50%', transform: 'translateY(-50%)', color: 'var(--text-tertiary)' }} size={18} />
-                    <input
-                        ref={searchRef}
-                        type="text"
-                        placeholder="Scan barcode or type product name, then Enter to add…"
-                        className="input-field"
-                        style={{ paddingLeft: '2.75rem', borderRadius: '12px', fontSize: '0.9rem' }}
-                        value={searchQuery}
-                        onChange={(e) => setSearchQuery(e.target.value)}
-                        onKeyDown={(e) => {
-                            // Preserve the counter's scan-to-add workflow now that the product
-                            // grid is gone: Enter adds the barcode/name match to the invoice.
-                            if (e.key !== 'Enter') return;
-                            const q = searchQuery.trim();
-                            if (!q) return;
-                            const match = products.find(p => p.barcode === q)
-                                || products.find(p => (p.name || '').toLowerCase() === q.toLowerCase())
-                                || products.find(p => (p.name || '').toLowerCase().includes(q.toLowerCase()));
-                            if (match) {
-                                addToCart(match);
-                                setSearchQuery('');
-                                setTimeout(() => qtyRefs.current[match.id]?.focus(), 50);
-                            } else showToast(`No product matches "${q}"`, 'error');
-                        }}
-                    />
-                </div>
-
                 {/* Returns quick access */}
                 {/* TEMPORARILY DISABLED (2026-07-03)
                     Returns & Exchanges module is incomplete.
@@ -1618,35 +1342,10 @@ export default function POSPage() {
                     </Link>
                 </ModuleGate> */}
 
-                {/* V-Checkout session QR */}
-                <ModuleGate moduleId="vcheckout" moduleName="V-Checkout" paywallVariant="badge">
-                    <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
-                        <button onClick={handleCreateVCheckoutSession} title="Generate customer self-scan QR"
-                            style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', padding: '0.45rem 1rem', borderRadius: '10px', border: '1px solid var(--surface-border)', background: 'var(--surface-base)', cursor: 'pointer', fontWeight: 600, fontSize: '0.875rem', color: 'var(--text-secondary)', transition: 'all var(--transition-fast)' }}>
-                            <Smartphone size={16} /> V-Checkout
-                        </button>
-                        {vcheckoutSessions.length > 0 && (
-                            <button onClick={() => setShowVCheckoutPanel(true)}
-                                style={{ position: 'relative', padding: '0.45rem 0.75rem', borderRadius: '10px', background: 'var(--primary)', color: 'white', border: 'none', cursor: 'pointer', fontWeight: 700 }}>
-                                <Smartphone size={16} />
-                                <span style={{ position: 'absolute', top: '-6px', right: '-6px', background: 'var(--danger)', color: 'white', borderRadius: '50%', width: '18px', height: '18px', fontSize: '0.7rem', display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 800 }}>
-                                    {vcheckoutSessions.length}
-                                </span>
-                            </button>
-                        )}
-                    </div>
-                </ModuleGate>
-
                 {/* Quick add a product to inventory without leaving billing */}
                 <button onClick={openAddProduct} title="Add a new product to inventory"
-                    style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', padding: '0.45rem 1rem', borderRadius: '10px', border: '1px solid var(--surface-border)', background: 'var(--surface-base)', cursor: 'pointer', fontWeight: 600, fontSize: '0.875rem', color: 'var(--text-secondary)', transition: 'all var(--transition-fast)' }}>
+                    style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', padding: '0.45rem 1rem', borderRadius: '10px', border: '1px solid var(--surface-border)', background: 'var(--surface-base)', cursor: 'pointer', fontWeight: 600, fontSize: '0.875rem', color: 'var(--text-secondary)', marginLeft: 'auto', transition: 'all var(--transition-fast)' }}>
                     <PlusCircle size={16} /> New Product
-                </button>
-
-                {/* Insights panel — recent bills, customer snapshot, today's summary */}
-                <button onClick={() => setShowInsightsPanel(v => !v)} title="POS Insights"
-                    style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', padding: '0.45rem 1rem', borderRadius: '10px', border: '1px solid var(--surface-border)', background: showInsightsPanel ? 'var(--primary)' : 'var(--surface-base)', cursor: 'pointer', fontWeight: 600, fontSize: '0.875rem', color: showInsightsPanel ? 'white' : 'var(--text-secondary)', transition: 'all var(--transition-fast)' }}>
-                    <History size={16} /> Insights
                 </button>
             </header>
 
@@ -1690,12 +1389,17 @@ export default function POSPage() {
                         .pinv-table th, .pinv-table td { border: 1px solid #222; padding: 4px 5px; font-size: 0.82rem; }
                         .pinv-table th { background: #f2f2f2; font-weight: 700; text-align: center; color: #000; }
                         .pinv-input { width: 100%; border: none; background: transparent; outline: none; font-family: inherit; color: inherit; font-size: inherit; }
+                        /* Keyboard-only focus ring — invisible to mouse clicks (:focus-visible),
+                           so Tab/Shift+Tab through the invoice always shows where keyboard focus
+                           is, on the dark app chrome as well as the white invoice paper. */
+                        .pinv-input:focus-visible { outline: 2px solid #2E7D32; outline-offset: 1px; border-radius: 2px; }
                         .pinv-label { font-weight: 700; font-size: 0.82rem; }
                         .pinv-dropdown { position: absolute; top: 100%; left: 0; min-width: 220px; max-height: 220px; overflow-y: auto; background: #fff; border: 1px solid #ccc; box-shadow: 0 4px 12px rgba(0,0,0,0.15); z-index: 1000; }
                         .pinv-dropdown-item { padding: 6px 10px; cursor: pointer; font-size: 0.85rem; border-bottom: 1px solid #eee; text-align: left; color: #000; }
                         .pinv-dropdown-item:hover { background: #e8f5e9; }
                         .pinv-fmt-btn { padding: 0.35rem 0.9rem; border-radius: 8px; font-weight: 700; font-size: 0.82rem; cursor: pointer; border: 1px solid var(--surface-border); background: var(--surface-base); color: var(--text-secondary); }
                         .pinv-fmt-btn.active { background: var(--primary); color: #fff; border-color: var(--primary); }
+                        .pinv-fmt-btn:focus-visible { outline: 2px solid #2E7D32; outline-offset: 2px; }
                     `}</style>
 
                     {/* Edit banner — saving updates this exact bill in place */}
@@ -1795,6 +1499,7 @@ export default function POSPage() {
                                                 {branding?.address && <div style={{ fontSize: '0.68rem', color: '#333', lineHeight: 1.4, textAlign: 'center' }}>{branding.address}</div>}
                                                 <div style={{ fontSize: '0.66rem', color: '#333', display: 'flex', gap: '8px', flexWrap: 'wrap', justifyContent: 'center' }}>
                                                     {branding?.gstin && <span><strong>GSTIN:</strong> {branding.gstin}</span>}
+                                                    <span>| <strong>Contact:</strong> {INVOICE_CONTACT_LABEL}</span>
                                                     {branding?.contact && <span>| <strong>Ph:</strong> {branding.contact}</span>}
                                                 </div>
                                             </div>
@@ -1822,35 +1527,42 @@ export default function POSPage() {
                                     {/* Buyer Name */}
                                     <div style={{ borderRight: '1px solid #ccc', padding: '4px 8px', display: 'flex', gap: '5px', alignItems: 'center', position: 'relative' }}>
                                         <span style={{ fontWeight: 700, color: '#555', whiteSpace: 'nowrap', flexShrink: 0, fontSize: '0.72rem' }}>Buyer:</span>
-                                        <input className="pinv-input" style={{ fontWeight: 700, fontSize: '0.82rem', flex: 1, minWidth: 0 }} placeholder={L('buyer_name_ph')} value={customer.name}
-                                            onChange={e => { setCustomer({ ...customer, name: e.target.value }); setShowFarmerDropdown(e.target.value.length > 0); }}
-                                            onFocus={() => customer.name.length > 0 && setShowFarmerDropdown(true)}
-                                            onBlur={() => setTimeout(() => setShowFarmerDropdown(false), 200)}
-                                            onKeyDown={e => { if (e.key === 'Enter' && !showFarmerDropdown) { e.preventDefault(); customerPhoneRef.current?.focus(); } }} />
-                                        {showFarmerDropdown && (
-                                            <div className="pinv-dropdown" style={{ width: '100%' }}>
-                                                {farmers.filter(r => (r.name || '').toLowerCase().includes(customer.name.toLowerCase()) && customer.name.toLowerCase() !== (r.name || '').toLowerCase())
-                                                    .sort((a, b) => (a.channel === 'pos' ? -1 : 1) - (b.channel === 'pos' ? -1 : 1)).slice(0, 10)
-                                                    .map(r => (
-                                                        <div key={r.id} className="pinv-dropdown-item" onMouseDown={() => {
-                                                            lastMatchedPhoneRef.current = r.number || null;
-                                                            setCustomer({ name: r.name || '', phone: r.number || '', address: r.atPost || '', pin: r.pin || '', taluka: r.taluka || '', district: r.district || '', retailerId: r.id });
-                                                            // Live-computed to match Digital Khata exactly — see fetchLiveOutstanding.
-                                                            // Written by tab id so a fast tab-switch mid-lookup can't leak in.
-                                                            const lookupTabId = activeTabId;
-                                                            if (tenantId) fetchLiveOutstanding(db, tenantId, r.name || '', r.number || '').then(amt => setOutstandingForTab(lookupTabId, amt));
-                                                            setShowFarmerDropdown(false);
-                                                        }}>
-                                                            <div style={{ fontWeight: 600 }}>{r.name}</div>
-                                                            <div style={{ fontSize: '0.75rem', color: '#666' }}>
-                                                                {r.number
-                                                                    ? <>{r.number}{r.atPost ? ` • ${r.atPost}` : ''}</>
-                                                                    : <>{r.atPost ? `${r.atPost} • ` : ''}<span style={{ fontStyle: 'italic' }}>No phone number</span></>}
+                                        {(() => {
+                                            const farmerMatches = farmers.filter(r => (r.name || '').toLowerCase().includes(customer.name.toLowerCase()) && customer.name.toLowerCase() !== (r.name || '').toLowerCase())
+                                                .sort((a, b) => (a.channel === 'pos' ? -1 : 1) - (b.channel === 'pos' ? -1 : 1)).slice(0, 10);
+                                            return (<>
+                                                <input className="pinv-input" style={{ fontWeight: 700, fontSize: '0.82rem', flex: 1, minWidth: 0 }} placeholder={L('buyer_name_ph')} value={customer.name}
+                                                    role="combobox" aria-expanded={showFarmerDropdown} aria-controls="pos-buyer-listbox-a5" aria-autocomplete="list"
+                                                    onChange={e => { setCustomer({ ...customer, name: e.target.value }); setShowFarmerDropdown(e.target.value.length > 0); setHighlightedFarmerIdx(-1); }}
+                                                    onFocus={() => customer.name.length > 0 && setShowFarmerDropdown(true)}
+                                                    onBlur={() => setTimeout(() => { setShowFarmerDropdown(false); setHighlightedFarmerIdx(-1); }, 200)}
+                                                    onKeyDown={e => {
+                                                        if (showFarmerDropdown && farmerMatches.length > 0) {
+                                                            if (e.key === 'ArrowDown') { e.preventDefault(); setHighlightedFarmerIdx(i => Math.min(i + 1, farmerMatches.length - 1)); return; }
+                                                            if (e.key === 'ArrowUp') { e.preventDefault(); setHighlightedFarmerIdx(i => Math.max(i - 1, -1)); return; }
+                                                            if (e.key === 'Enter' && highlightedFarmerIdx >= 0) { e.preventDefault(); selectFarmer(farmerMatches[highlightedFarmerIdx]); return; }
+                                                            if (e.key === 'Escape') { e.preventDefault(); setShowFarmerDropdown(false); setHighlightedFarmerIdx(-1); return; }
+                                                        }
+                                                        if (e.key === 'Enter' && !showFarmerDropdown) { e.preventDefault(); customerPhoneRef.current?.focus(); }
+                                                    }} />
+                                                {showFarmerDropdown && farmerMatches.length > 0 && (
+                                                    <div id="pos-buyer-listbox-a5" role="listbox" className="pinv-dropdown" style={{ width: '100%' }}>
+                                                        {farmerMatches.map((r, ri) => (
+                                                            <div key={r.id} role="option" aria-selected={ri === highlightedFarmerIdx} className="pinv-dropdown-item"
+                                                                style={{ background: ri === highlightedFarmerIdx ? '#e8f5e9' : undefined }}
+                                                                onMouseDown={() => selectFarmer(r)}>
+                                                                <div style={{ fontWeight: 600 }}>{r.name}</div>
+                                                                <div style={{ fontSize: '0.75rem', color: '#666' }}>
+                                                                    {r.number
+                                                                        ? <>{r.number}{r.atPost ? ` • ${r.atPost}` : ''}</>
+                                                                        : <>{r.atPost ? `${r.atPost} • ` : ''}<span style={{ fontStyle: 'italic' }}>No phone number</span></>}
+                                                                </div>
                                                             </div>
-                                                        </div>
-                                                    ))}
-                                            </div>
-                                        )}
+                                                        ))}
+                                                    </div>
+                                                )}
+                                            </>);
+                                        })()}
                                     </div>
                                     {/* Phone */}
                                     <div style={{ borderRight: '1px solid #ccc', padding: '4px 8px', display: 'flex', gap: '5px', alignItems: 'center' }}>
@@ -2122,6 +1834,7 @@ export default function POSPage() {
                                             <div style={{ fontSize: '0.78rem', color: '#444', marginTop: '2px' }}>
                                                 {branding?.address || 'Address'}<br />
                                                 {branding?.gstin && <><strong>GSTIN:</strong> {branding.gstin} &nbsp;</>}
+                                                <strong>Contact:</strong> {INVOICE_CONTACT_LABEL} &nbsp;
                                                 {branding?.contact && <>Contact No.: {branding.contact}</>}
                                             </div>
                                             {(() => {
@@ -2151,43 +1864,49 @@ export default function POSPage() {
                                     <div style={{ borderRight: '1px solid #222', padding: '8px' }}>
                                         <div className="pinv-label" style={{ marginBottom: '4px' }}>{L('buyer_title')}</div>
                                         <div style={{ position: 'relative' }}>
-                                            <input
-                                                className="pinv-input"
-                                                style={{ fontWeight: 700, fontSize: '0.88rem' }}
-                                                placeholder={L('buyer_name_ph')}
-                                                value={customer.name}
-                                                onChange={e => { setCustomer({ ...customer, name: e.target.value }); setShowFarmerDropdown(e.target.value.length > 0); }}
-                                                onFocus={() => customer.name.length > 0 && setShowFarmerDropdown(true)}
-                                                onBlur={() => setTimeout(() => setShowFarmerDropdown(false), 200)}
-                                                onKeyDown={e => { if (e.key === 'Enter' && !showFarmerDropdown) { e.preventDefault(); customerPhoneRef.current?.focus(); } }}
-                                            />
-                                            {showFarmerDropdown && (
-                                                <div className="pinv-dropdown" style={{ width: '100%' }}>
-                                                    {farmers
-                                                        .filter(r => (r.name || '').toLowerCase().includes(customer.name.toLowerCase()) && customer.name.toLowerCase() !== (r.name || '').toLowerCase())
-                                                        .sort((a, b) => (a.channel === 'pos' ? -1 : 1) - (b.channel === 'pos' ? -1 : 1))
-                                                        .slice(0, 10)
-                                                        .map(r => (
-                                                            <div key={r.id} className="pinv-dropdown-item"
-                                                                onMouseDown={() => {
-                                                                    lastMatchedPhoneRef.current = r.number || null;
-                                                                    setCustomer({ name: r.name || '', phone: r.number || '', address: r.atPost || '', pin: r.pin || '', taluka: r.taluka || '', district: r.district || '', retailerId: r.id });
-                                                                    // Live-computed to match Digital Khata exactly — see fetchLiveOutstanding.
-                                                                    // Written by tab id so a fast tab-switch mid-lookup can't leak in.
-                                                                    const lookupTabId = activeTabId;
-                                                                    if (tenantId) fetchLiveOutstanding(db, tenantId, r.name || '', r.number || '').then(amt => setOutstandingForTab(lookupTabId, amt));
-                                                                    setShowFarmerDropdown(false);
-                                                                }}>
-                                                                <div style={{ fontWeight: 600 }}>{r.name}</div>
-                                                                <div style={{ fontSize: '0.75rem', color: '#666' }}>
-                                                                    {r.number
-                                                                        ? <>{r.number}{r.atPost ? ` • ${r.atPost}` : ''}</>
-                                                                        : <>{r.atPost ? `${r.atPost} • ` : ''}<span style={{ fontStyle: 'italic' }}>No phone number</span></>}
+                                            {(() => {
+                                                const farmerMatches = farmers
+                                                    .filter(r => (r.name || '').toLowerCase().includes(customer.name.toLowerCase()) && customer.name.toLowerCase() !== (r.name || '').toLowerCase())
+                                                    .sort((a, b) => (a.channel === 'pos' ? -1 : 1) - (b.channel === 'pos' ? -1 : 1))
+                                                    .slice(0, 10);
+                                                return (<>
+                                                    <input
+                                                        className="pinv-input"
+                                                        style={{ fontWeight: 700, fontSize: '0.88rem' }}
+                                                        placeholder={L('buyer_name_ph')}
+                                                        value={customer.name}
+                                                        role="combobox" aria-expanded={showFarmerDropdown} aria-controls="pos-buyer-listbox-a4" aria-autocomplete="list"
+                                                        onChange={e => { setCustomer({ ...customer, name: e.target.value }); setShowFarmerDropdown(e.target.value.length > 0); setHighlightedFarmerIdx(-1); }}
+                                                        onFocus={() => customer.name.length > 0 && setShowFarmerDropdown(true)}
+                                                        onBlur={() => setTimeout(() => { setShowFarmerDropdown(false); setHighlightedFarmerIdx(-1); }, 200)}
+                                                        onKeyDown={e => {
+                                                            if (showFarmerDropdown && farmerMatches.length > 0) {
+                                                                if (e.key === 'ArrowDown') { e.preventDefault(); setHighlightedFarmerIdx(i => Math.min(i + 1, farmerMatches.length - 1)); return; }
+                                                                if (e.key === 'ArrowUp') { e.preventDefault(); setHighlightedFarmerIdx(i => Math.max(i - 1, -1)); return; }
+                                                                if (e.key === 'Enter' && highlightedFarmerIdx >= 0) { e.preventDefault(); selectFarmer(farmerMatches[highlightedFarmerIdx]); return; }
+                                                                if (e.key === 'Escape') { e.preventDefault(); setShowFarmerDropdown(false); setHighlightedFarmerIdx(-1); return; }
+                                                            }
+                                                            if (e.key === 'Enter' && !showFarmerDropdown) { e.preventDefault(); customerPhoneRef.current?.focus(); }
+                                                        }}
+                                                    />
+                                                    {showFarmerDropdown && farmerMatches.length > 0 && (
+                                                        <div id="pos-buyer-listbox-a4" role="listbox" className="pinv-dropdown" style={{ width: '100%' }}>
+                                                            {farmerMatches.map((r, ri) => (
+                                                                <div key={r.id} role="option" aria-selected={ri === highlightedFarmerIdx} className="pinv-dropdown-item"
+                                                                    style={{ background: ri === highlightedFarmerIdx ? '#e8f5e9' : undefined }}
+                                                                    onMouseDown={() => selectFarmer(r)}>
+                                                                    <div style={{ fontWeight: 600 }}>{r.name}</div>
+                                                                    <div style={{ fontSize: '0.75rem', color: '#666' }}>
+                                                                        {r.number
+                                                                            ? <>{r.number}{r.atPost ? ` • ${r.atPost}` : ''}</>
+                                                                            : <>{r.atPost ? `${r.atPost} • ` : ''}<span style={{ fontStyle: 'italic' }}>No phone number</span></>}
+                                                                    </div>
                                                                 </div>
-                                                            </div>
-                                                        ))}
-                                                </div>
-                                            )}
+                                                            ))}
+                                                        </div>
+                                                    )}
+                                                </>);
+                                            })()}
                                         </div>
                                         <div style={{ display: 'flex', gap: '8px', marginTop: '4px' }}>
                                             <span className="pinv-label">{L('contact')} :</span>
@@ -2612,214 +2331,6 @@ export default function POSPage() {
 
             </div>
 
-            {/* ── POS Insights Panel — read-only, does not touch billing state ────────── */}
-            {showInsightsPanel && (
-                <div className="no-print" style={{ position: 'fixed', inset: 0, background: 'hsla(220, 30%, 4%, 0.5)', zIndex: 900, display: 'flex', justifyContent: 'flex-end', animation: 'fadeIn 0.18s ease-out' }}
-                    onClick={() => setShowInsightsPanel(false)}>
-                    <div className="themed-scroll" style={{ width: '420px', maxWidth: '100%', background: 'var(--surface-base)', backdropFilter: 'blur(16px)', WebkitBackdropFilter: 'blur(16px)', borderLeft: '1px solid var(--surface-border)', height: '100%', overflowY: 'auto', padding: '1.5rem', animation: 'slideInRight 0.22s ease-out' }}
-                        onClick={e => e.stopPropagation()}>
-                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1.25rem' }}>
-                            <h3 style={{ margin: 0, display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
-                                <History size={20} /> POS Insights
-                            </h3>
-                            <button onClick={() => setShowInsightsPanel(false)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-tertiary)' }}><X size={20} /></button>
-                        </div>
-
-                        {/* Tabs */}
-                        <div style={{ display: 'flex', gap: '0.4rem', marginBottom: '1.25rem' }}>
-                            {([['bills', 'Recent Bills'], ['customer', 'Customer'], ['today', 'Analytics']] as const).map(([key, label]) => (
-                                <button key={key} onClick={() => setInsightsTab(key)}
-                                    style={{ flex: 1, padding: '0.4rem 0.5rem', borderRadius: '8px', fontWeight: 600, fontSize: '0.8rem', border: '1px solid', cursor: 'pointer',
-                                        background: insightsTab === key ? 'var(--primary)' : 'var(--surface-raised)',
-                                        color: insightsTab === key ? 'white' : 'var(--text-secondary)',
-                                        borderColor: insightsTab === key ? 'var(--primary)' : 'var(--surface-border)' }}>
-                                    {label}
-                                </button>
-                            ))}
-                        </div>
-
-                        {/* ── Recent Bills ─────────────────────────────────────────────── */}
-                        {insightsTab === 'bills' && (
-                            recentOrders.length === 0
-                                ? <p style={{ color: 'var(--text-tertiary)', textAlign: 'center', padding: '2rem 0' }}>No bills yet today or recently.</p>
-                                : recentOrders.map(order => (
-                                    <div key={order.id} style={{ background: 'var(--surface-raised)', border: '1px solid var(--surface-border)', borderRadius: '12px', padding: '0.9rem', marginBottom: '0.75rem' }}>
-                                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '0.4rem' }}>
-                                            <div>
-                                                <span style={{ fontWeight: 700, color: 'var(--text-primary)' }}>{order.orderNumber || 'N/A'}</span>
-                                                <span style={{ fontSize: '0.78rem', color: 'var(--text-tertiary)', marginLeft: '0.5rem' }}>{order.retailerName || 'Walk-in Customer'}</span>
-                                            </div>
-                                            <span style={{ fontWeight: 800, color: 'var(--primary)' }}>₹{Math.round(order.grandTotal || 0).toLocaleString('en-IN')}</span>
-                                        </div>
-                                        <div style={{ display: 'flex', gap: '0.4rem', alignItems: 'center', marginBottom: '0.6rem' }}>
-                                            <span style={{ fontSize: '0.72rem', padding: '2px 8px', borderRadius: '99px', background: order.paymentStatus === 'Pending' ? 'hsla(38,92%,50%,0.15)' : 'hsla(142,60%,40%,0.15)', color: order.paymentStatus === 'Pending' ? '#f59e0b' : '#22c55e', fontWeight: 700 }}>
-                                                {order.paymentStatus || '—'}
-                                            </span>
-                                            <span style={{ fontSize: '0.72rem', color: 'var(--text-tertiary)' }}>{order.paymentMethod || '—'}</span>
-                                            {order.status === 'cancelled' && (
-                                                <span style={{ fontSize: '0.72rem', padding: '2px 8px', borderRadius: '99px', background: 'hsla(0,84%,55%,0.15)', color: '#ef4444', fontWeight: 700 }}>Cancelled</span>
-                                            )}
-                                        </div>
-                                        <div style={{ display: 'flex', gap: '0.4rem', flexWrap: 'wrap' }}>
-                                            <button onClick={() => openReprint(order)} title="Reprint this bill"
-                                                style={{ display: 'flex', alignItems: 'center', gap: '0.25rem', padding: '0.3rem 0.6rem', background: 'hsla(152,60%,40%,0.12)', color: 'var(--primary)', border: '1px solid hsla(152,60%,40%,0.25)', borderRadius: '8px', cursor: 'pointer', fontSize: '0.75rem', fontWeight: 600 }}>
-                                                <Printer size={12} /> Reprint
-                                            </button>
-                                            <button onClick={() => duplicateBill(order)} title="Duplicate into a new bill tab"
-                                                style={{ display: 'flex', alignItems: 'center', gap: '0.25rem', padding: '0.3rem 0.6rem', background: 'hsla(220,70%,55%,0.12)', color: '#3b82f6', border: '1px solid hsla(220,70%,55%,0.25)', borderRadius: '8px', cursor: 'pointer', fontSize: '0.75rem', fontWeight: 600 }}>
-                                                <Columns size={12} /> Duplicate
-                                            </button>
-                                            {/* Refund — temporarily disabled system-wide (Returns module is unfinished).
-                                                Re-enable this button once Returns/Refund is ready; logic below is untouched.
-                                            <button onClick={() => showToast('Refunds are handled from the Returns module.', 'info')} title="Refund"
-                                                style={{ display: 'flex', alignItems: 'center', gap: '0.25rem', padding: '0.3rem 0.6rem', background: 'hsla(0,84%,55%,0.1)', color: '#f87171', border: '1px solid hsla(0,84%,55%,0.2)', borderRadius: '8px', cursor: 'pointer', fontSize: '0.75rem', fontWeight: 600 }}>
-                                                <ExternalLink size={12} /> Refund
-                                            </button>
-                                            */}
-                                        </div>
-                                    </div>
-                                ))
-                        )}
-
-                        {/* ── Customer Experience ──────────────────────────────────────── */}
-                        {insightsTab === 'customer' && (
-                            customer.phone.length < 5 ? (
-                                <p style={{ color: 'var(--text-tertiary)', textAlign: 'center', padding: '2rem 0' }}>
-                                    <User size={32} style={{ margin: '0 auto 0.75rem', opacity: 0.2, display: 'block' }} />
-                                    Enter a customer phone number on the bill to see their history here.
-                                </p>
-                            ) : (
-                                <div>
-                                    <h4 style={{ margin: '0 0 1rem', color: 'var(--text-primary)' }}>{customer.name || 'Customer'}</h4>
-
-                                    <div className="glass-panel" style={{ padding: '0.875rem', marginBottom: '0.9rem' }}>
-                                        <p style={{ margin: '0 0 0.3rem', fontSize: '0.78rem', color: 'var(--text-tertiary)' }}>Last Purchase</p>
-                                        <p style={{ margin: 0, fontWeight: 700, color: 'var(--text-primary)' }}>
-                                            {lastOrder ? `₹${Math.round(lastOrder.grandTotal || 0).toLocaleString('en-IN')} · ${lastOrder.orderNumber || ''}` : 'No prior purchases found'}
-                                        </p>
-                                        {lastOrder?.createdAt?.toDate && (
-                                            <p style={{ margin: '0.2rem 0 0', fontSize: '0.75rem', color: 'var(--text-tertiary)' }}>
-                                                Last visit: {lastOrder.createdAt.toDate().toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })}
-                                            </p>
-                                        )}
-                                    </div>
-
-                                    {customerRetailerDoc && Number(customerRetailerDoc.outstandingAmount) > 0 && (
-                                        <div className="glass-panel" style={{ padding: '0.875rem', marginBottom: '0.9rem', borderColor: 'hsla(0,84%,55%,0.3)' }}>
-                                            <p style={{ margin: '0 0 0.3rem', fontSize: '0.78rem', color: 'var(--text-tertiary)' }}>Outstanding Amount</p>
-                                            <p style={{ margin: 0, fontWeight: 800, color: '#ef4444', fontSize: '1.1rem' }}>
-                                                ₹{Math.round(customerRetailerDoc.outstandingAmount).toLocaleString('en-IN')}
-                                            </p>
-                                        </div>
-                                    )}
-
-                                    {loyaltyIsActive && (
-                                        <div className="glass-panel" style={{ padding: '0.875rem', marginBottom: '0.9rem' }}>
-                                            <p style={{ margin: '0 0 0.3rem', fontSize: '0.78rem', color: 'var(--text-tertiary)' }}>Loyalty Status</p>
-                                            {customerLoyalty ? (
-                                                <p style={{ margin: 0, fontWeight: 700, color: 'var(--secondary-dark)', display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
-                                                    <Star size={15} /> {customerLoyalty.points || 0} points
-                                                </p>
-                                            ) : (
-                                                <p style={{ margin: 0, color: 'var(--text-tertiary)', fontSize: '0.85rem' }}>Not enrolled yet</p>
-                                            )}
-                                        </div>
-                                    )}
-
-                                    <div className="glass-panel" style={{ padding: '0.875rem' }}>
-                                        <p style={{ margin: '0 0 0.5rem', fontSize: '0.78rem', color: 'var(--text-tertiary)' }}>Favourite Products</p>
-                                        {favouriteProducts.length === 0 ? (
-                                            <p style={{ margin: 0, color: 'var(--text-tertiary)', fontSize: '0.85rem' }}>Not enough purchase history yet</p>
-                                        ) : favouriteProducts.map((fp, i) => (
-                                            <div key={i} style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.85rem', padding: '0.25rem 0', color: 'var(--text-primary)' }}>
-                                                <span>{fp.name}</span>
-                                                <span style={{ color: 'var(--text-tertiary)' }}>×{fp.qty}</span>
-                                            </div>
-                                        ))}
-                                    </div>
-                                    <p style={{ fontSize: '0.72rem', color: 'var(--text-tertiary)', marginTop: '0.75rem' }}>
-                                        Based on the last {recentOrders.length} bills recorded for this store.
-                                    </p>
-                                </div>
-                            )
-                        )}
-
-                        {/* ── POS Operations Analytics (default: Today) ───────────────────── */}
-                        {insightsTab === 'today' && (
-                            <div>
-                                {/* Period selector */}
-                                <select
-                                    value={analyticsPeriod}
-                                    onChange={e => setAnalyticsPeriod(e.target.value as DateRangePeriod)}
-                                    style={{ width: '100%', padding: '0.5rem 0.6rem', borderRadius: '8px', border: '1px solid var(--surface-border)', background: 'var(--surface-raised)', color: 'var(--text-primary)', fontSize: '0.85rem', fontWeight: 600, marginBottom: '0.75rem' }}>
-                                    {DATE_RANGE_PERIODS.map(p => <option key={p.key} value={p.key}>{p.label}</option>)}
-                                </select>
-
-                                {analyticsPeriod === 'customDate' && (
-                                    <input type="date" value={analyticsCustomDate} onChange={e => setAnalyticsCustomDate(e.target.value)}
-                                        className="input-field" style={{ width: '100%', marginBottom: '0.75rem', fontSize: '0.85rem' }} />
-                                )}
-                                {analyticsPeriod === 'customRange' && (
-                                    <div style={{ display: 'flex', gap: '0.5rem', marginBottom: '0.75rem' }}>
-                                        <input type="date" value={analyticsCustomFrom} onChange={e => setAnalyticsCustomFrom(e.target.value)}
-                                            className="input-field" style={{ flex: 1, fontSize: '0.85rem' }} placeholder="From" />
-                                        <input type="date" value={analyticsCustomTo} onChange={e => setAnalyticsCustomTo(e.target.value)}
-                                            className="input-field" style={{ flex: 1, fontSize: '0.85rem' }} placeholder="To" />
-                                    </div>
-                                )}
-
-                                {/* Core KPIs */}
-                                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.75rem' }}>
-                                    {[
-                                        ['Total Sales', `₹${Math.round(periodSummary.totalSales).toLocaleString('en-IN')}`],
-                                        ['Total Bills', periodSummary.billCount.toString()],
-                                        ['Avg Bill Value', `₹${Math.round(periodSummary.avgBillValue).toLocaleString('en-IN')}`],
-                                        ['Cash Collection', `₹${Math.round(periodSummary.cashCollection).toLocaleString('en-IN')}`],
-                                        ['UPI Collection', `₹${Math.round(periodSummary.upiCollection).toLocaleString('en-IN')}`],
-                                        ['Khata Collection', `₹${Math.round(periodSummary.khataCollection).toLocaleString('en-IN')}`],
-                                        ['Cancelled Bills', periodSummary.cancelledCount.toString()],
-                                    ].map(([label, value]) => (
-                                        <div key={label} className="glass-panel" style={{ padding: '0.9rem' }}>
-                                            <p style={{ margin: '0 0 0.3rem', fontSize: '0.72rem', color: 'var(--text-tertiary)' }}>{label}</p>
-                                            <p style={{ margin: 0, fontWeight: 800, fontSize: '1.05rem', color: 'var(--text-primary)' }}>{value}</p>
-                                        </div>
-                                    ))}
-                                </div>
-
-                                {/* Additional operational KPIs — only shown when there's data to back them */}
-                                {periodSummary.billCount > 0 && (
-                                    <>
-                                        <p style={{ fontSize: '0.72rem', fontWeight: 700, color: 'var(--text-tertiary)', textTransform: 'uppercase', letterSpacing: '0.05em', margin: '1.1rem 0 0.6rem' }}>
-                                            More Details
-                                        </p>
-                                        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.75rem' }}>
-                                            {([
-                                                ['Cash+Change Collection', periodSummary.cashChangeCollection > 0 ? `₹${Math.round(periodSummary.cashChangeCollection).toLocaleString('en-IN')}` : null],
-                                                ['Split Payment Collection', periodSummary.splitPaymentCollection > 0 ? `₹${Math.round(periodSummary.splitPaymentCollection).toLocaleString('en-IN')}` : null],
-                                                ['Loyalty Redemptions', periodSummary.loyaltyRedemptions > 0 ? `${periodSummary.loyaltyRedemptions.toLocaleString('en-IN')} pts` : null],
-                                                ['Discount Given', periodSummary.discountGiven > 0 ? `₹${Math.round(periodSummary.discountGiven).toLocaleString('en-IN')}` : null],
-                                                ['Tax Collected', periodSummary.taxCollected > 0 ? `₹${Math.round(periodSummary.taxCollected).toLocaleString('en-IN')}` : null],
-                                                ['Avg Items / Bill', periodSummary.avgItemsPerBill.toFixed(1)],
-                                                ['Highest Bill', `₹${Math.round(periodSummary.highestBill).toLocaleString('en-IN')}`],
-                                                ['Lowest Bill', `₹${Math.round(periodSummary.lowestBill).toLocaleString('en-IN')}`],
-                                                ['Peak Billing Hour', periodSummary.peakHour],
-                                                ['Most Sold Product', periodSummary.mostSoldProduct],
-                                                ['Top Selling Category', periodSummary.topCategory],
-                                            ] as [string, string | null][]).filter(([, value]) => value !== null).map(([label, value]) => (
-                                                <div key={label} className="glass-panel" style={{ padding: '0.9rem' }}>
-                                                    <p style={{ margin: '0 0 0.3rem', fontSize: '0.72rem', color: 'var(--text-tertiary)' }}>{label}</p>
-                                                    <p style={{ margin: 0, fontWeight: 800, fontSize: '0.95rem', color: 'var(--text-primary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{value}</p>
-                                                </div>
-                                            ))}
-                                        </div>
-                                    </>
-                                )}
-                            </div>
-                        )}
-                    </div>
-                </div>
-            )}
-
             {/* ── V-Pay Dialog ──────────────────────────────────────────────────────── */}
             {showVPayDialog && (
                 <div style={{ position: 'fixed', inset: 0, background: 'hsla(220, 30%, 4%, 0.72)', backdropFilter: 'blur(4px)', WebkitBackdropFilter: 'blur(4px)', zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '1rem', animation: 'fadeIn 0.18s ease-out' }}
@@ -2973,68 +2484,13 @@ export default function POSPage() {
                 </div>
             )}
 
-            {/* ── V-Checkout Pending Sessions Panel ────────────────────────────────── */}
-            {showVCheckoutPanel && (
-                <div style={{ position: 'fixed', inset: 0, background: 'hsla(220, 30%, 4%, 0.72)', zIndex: 1000, display: 'flex', justifyContent: 'flex-end', animation: 'fadeIn 0.18s ease-out' }}
-                    onClick={() => setShowVCheckoutPanel(false)}>
-                    <div className="themed-scroll" style={{ width: '380px', background: 'var(--surface-base)', backdropFilter: 'blur(16px)', WebkitBackdropFilter: 'blur(16px)', borderLeft: '1px solid var(--surface-border)', height: '100%', overflowY: 'auto', padding: '1.5rem', animation: 'slideInRight 0.22s ease-out' }}
-                        onClick={e => e.stopPropagation()}>
-                        <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '1.25rem' }}>
-                            <h3 style={{ margin: 0, display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
-                                <Smartphone size={20} /> Pending V-Checkouts
-                            </h3>
-                            <button onClick={() => setShowVCheckoutPanel(false)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-tertiary)' }}><X size={20} /></button>
-                        </div>
-                        {vcheckoutSessions.length === 0
-                            ? <p style={{ color: 'var(--text-tertiary)', textAlign: 'center', padding: '2rem 0' }}>No pending sessions</p>
-                            : vcheckoutSessions.map(session => (
-                                <div key={session.id} style={{ background: 'var(--surface-raised)', borderRadius: '12px', padding: '1rem', marginBottom: '0.75rem' }}>
-                                    <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '0.5rem' }}>
-                                        <span style={{ fontWeight: 600 }}>{session.cart?.length || 0} items</span>
-                                        <span style={{ fontWeight: 700, color: 'var(--primary)' }}>₹{Math.round(session.grandTotal || 0)}</span>
-                                    </div>
-                                    {session.cart?.slice(0, 3).map((ci: any, i: number) => (
-                                        <p key={i} style={{ margin: '0 0 2px', fontSize: '0.8rem', color: 'var(--text-secondary)' }}>
-                                            {ci.productName} × {ci.quantity}
-                                        </p>
-                                    ))}
-                                    {(session.cart?.length || 0) > 3 && <p style={{ fontSize: '0.78rem', color: 'var(--text-tertiary)', margin: 0 }}>+{session.cart.length - 3} more</p>}
-                                    <button onClick={() => acceptVCheckoutSession(session)}
-                                        style={{ marginTop: '0.75rem', width: '100%', padding: '0.4rem', borderRadius: '8px', background: 'var(--primary)', color: 'white', border: 'none', cursor: 'pointer', fontWeight: 700 }}>
-                                        Accept → Load to Bill
-                                    </button>
-                                </div>
-                            ))
-                        }
-                    </div>
-                </div>
-            )}
-
-            {/* ── V-Checkout QR Dialog ─────────────────────────────────────────────── */}
-            {showVCheckoutQr && (
-                <div style={{ position: 'fixed', inset: 0, background: 'hsla(220, 30%, 4%, 0.72)', backdropFilter: 'blur(4px)', WebkitBackdropFilter: 'blur(4px)', zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '1rem', animation: 'fadeIn 0.18s ease-out' }}
-                    onClick={() => setShowVCheckoutQr(false)}>
-                    <div className="glass-panel" style={{ padding: '2rem', maxWidth: '340px', width: '100%', textAlign: 'center', borderRadius: '20px', animation: 'scaleUp 0.22s ease-out' }}
-                        onClick={e => e.stopPropagation()}>
-                        <h3 style={{ marginBottom: '0.5rem' }}>Customer Self-Scan</h3>
-                        <p style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', marginBottom: '1.25rem' }}>
-                            Customer scans this QR to browse and add items from their phone
-                        </p>
-                        <UpiQrCode upiId={vCheckoutSessionUrl} payeeName="" amount={0} size={200} />
-                        <p style={{ fontSize: '0.7rem', wordBreak: 'break-all', color: 'var(--text-tertiary)', margin: '0.75rem 0' }}>{vCheckoutSessionUrl}</p>
-                        <button onClick={() => setShowVCheckoutQr(false)} className="btn" style={{ background: 'var(--primary)', color: 'white', width: '100%' }}>
-                            Done
-                        </button>
-                    </div>
-                </div>
-            )}
 
             {/* ── Quick Add / Edit Product ─────────────────────────────────────────── */}
             {showProductModal && tenantId && (
                 <QuickProductModal
                     tenantId={tenantId}
                     product={editingProduct}
-                    defaultName={editingProduct ? '' : searchQuery}
+                    defaultName=""
                     products={products}
                     onClose={() => { setShowProductModal(false); setEditingProduct(null); }}
                 />

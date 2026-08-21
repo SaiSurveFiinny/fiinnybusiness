@@ -1,7 +1,8 @@
 import { describe, it, expect } from 'vitest';
 import {
     isPosOrder, classifySale, gstFromInclusive,
-    resolveSaleLine, openingStock, closesTo,
+    resolveSaleLine, openingStock, closesTo, balanceBefore, openingBalance,
+    type BalanceEvent,
 } from './stockReport';
 import { calcLineGST } from './gstCalculator';
 
@@ -99,5 +100,78 @@ describe('openingStock / reconciliation', () => {
         const opening = openingStock(current, purchases, sales, adjust);
         expect(opening).toBe(0);
         expect(closesTo(opening, purchases, sales, adjust)).toBe(current);
+    });
+});
+
+// ─── Historical opening-balance reconstruction ────────────────────────────────
+describe('balanceBefore', () => {
+    const evs: BalanceEvent[] = [
+        { date: '2026-01-10', ord: 1, balance: 100 },
+        { date: '2026-02-05', ord: 1, balance: 130 }, // purchase
+        { date: '2026-02-20', ord: 1, balance: 90 },  // sale
+    ];
+
+    it('returns the balance of the latest event strictly before the cutoff', () => {
+        // Opening for a range starting 2026-02-01 → last event in January
+        expect(balanceBefore(evs, '2026-02-01')).toBe(100);
+        // Range starting 2026-02-10 → the 2026-02-05 balance (130)
+        expect(balanceBefore(evs, '2026-02-10')).toBe(130);
+    });
+
+    it('is exclusive of the cutoff date itself', () => {
+        // An event ON 2026-02-05 must NOT count toward a range starting that day
+        expect(balanceBefore(evs, '2026-02-05')).toBe(100);
+    });
+
+    it('breaks same-day ties by ord (latest intra-day event wins)', () => {
+        const sameDay: BalanceEvent[] = [
+            { date: '2026-03-01', ord: 10, balance: 50 },
+            { date: '2026-03-01', ord: 30, balance: 20 },
+            { date: '2026-03-01', ord: 20, balance: 35 },
+        ];
+        expect(balanceBefore(sameDay, '2026-03-02')).toBe(20);
+    });
+
+    it('returns null when no event predates the cutoff (caller seeds/zeros)', () => {
+        expect(balanceBefore(evs, '2026-01-01')).toBeNull();
+        expect(balanceBefore([], '2026-01-01')).toBeNull();
+    });
+
+    it('opening + in-range flows closes to the last recorded balance', () => {
+        // Range Feb: opening = 100 (Jan close); Feb purchases +30, sales −40
+        const opening = balanceBefore(evs, '2026-02-01')!;
+        expect(opening).toBe(100);
+        expect(closesTo(opening, 30, 40, 0)).toBe(90); // matches the 2026-02-20 balance
+    });
+});
+
+describe('openingBalance', () => {
+    it('uses the recorded balance before the cutoff when present', () => {
+        const events: BalanceEvent[] = [
+            { date: '2026-01-10', ord: 1, balance: 100, pre: 60 },
+            { date: '2026-02-15', ord: 1, balance: 80,  pre: 100 },
+        ];
+        expect(openingBalance(events, '2026-02-01')).toBe(100);
+    });
+
+    it('reverses the earliest in-range event when no prior balance exists', () => {
+        // Batch existed (60) before the range but its first ledger event is a
+        // 20-unit sale inside the range → opening must reconstruct to 60, not 0.
+        const events: BalanceEvent[] = [
+            { date: '2026-02-10', ord: 1, balance: 40, pre: 60 }, // sold 20
+            { date: '2026-02-22', ord: 1, balance: 55, pre: 40 }, // bought 15
+        ];
+        expect(openingBalance(events, '2026-02-01')).toBe(60);
+        // closes back to the last recorded balance
+        expect(closesTo(60, 15, 20, 0)).toBe(55);
+    });
+
+    it('falls back to balance when pre is absent', () => {
+        const events: BalanceEvent[] = [{ date: '2026-02-10', ord: 1, balance: 40 }];
+        expect(openingBalance(events, '2026-02-01')).toBe(40);
+    });
+
+    it('returns null with no history (caller seeds from current stock)', () => {
+        expect(openingBalance([], '2026-02-01')).toBeNull();
     });
 });

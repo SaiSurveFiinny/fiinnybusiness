@@ -1,5 +1,6 @@
 import UpiQrCode from './UpiQrCode';
 import { getInvoiceProductCategories, getAllConfiguredLicenses } from '../utils/invoiceCategories';
+import { INVOICE_CONTACT_LABEL } from '../utils/constants';
 
 // ── English fallback for the L() translation helper ─────────────────────────
 // When the component is used without a translation function (e.g. from
@@ -117,6 +118,12 @@ export interface PosInvoiceBranding {
     fertilizerLicense?: string;
     pesticideLicense?: string;
     seedsLicense?: string;
+    // Presentation-only text-case preference for customer/product/company/
+    // batch/unit fields on the invoice (see `up()` below). Never mutates
+    // stored data — 'uppercase' only changes how it's rendered. Missing/
+    // undefined (existing tenants with no saved preference) behaves exactly
+    // like 'normal' — the original mixed-case display.
+    invoiceTextCase?: 'normal' | 'uppercase';
 }
 
 interface Props {
@@ -161,6 +168,15 @@ export function PosInvoicePreview({
     const fmt = (n: number) => (Number.isFinite(n) ? n : 0).toFixed(2);
     const lineGst = (i: PosInvoiceItem) => (typeof i.gstPct === 'number' ? i.gstPct : 5);
     const rate = (i: PosInvoiceItem) => Number(i.sellingPrice) || Number(i.maxRetailPrice) || 0;
+    // Presentation-only uppercasing for the printed invoice — never mutates the
+    // source cart/customer objects (POSPage state, salesOrders, Product Master
+    // all keep whatever casing was originally entered). Falsy/undefined values
+    // pass through untouched instead of becoming the string "undefined".
+    // Gated by the tenant's saved Invoice Text Format preference (Admin →
+    // Invoice Settings) — missing/undefined defaults to 'normal', so existing
+    // tenants who never touched this setting keep today's exact behavior.
+    const uppercaseEnabled = branding?.invoiceTextCase === 'uppercase';
+    const up = (v?: string | null) => (uppercaseEnabled && v ? v.toUpperCase() : v);
 
     const taxable = cart.reduce((s, i) => s + (i.cartTotal || 0) / (1 + lineGst(i) / 100), 0);
     const cgst = cart.reduce((s, i) => { const g = lineGst(i); return s + ((i.cartTotal || 0) / (1 + g / 100)) * (g / 2) / 100; }, 0);
@@ -214,6 +230,7 @@ export function PosInvoicePreview({
                             {branding?.address && <div style={{ fontSize: '0.50rem', color: '#333', lineHeight: 1.35 }}>{branding.address}</div>}
                             <div style={{ fontSize: '0.48rem', color: '#333', display: 'flex', gap: '5px', flexWrap: 'wrap' as const, justifyContent: 'center' }}>
                                 {branding?.gstin && <span><strong>GSTIN:</strong> {branding.gstin}</span>}
+                                <span>| <strong>Contact:</strong> {INVOICE_CONTACT_LABEL}</span>
                                 {branding?.contact && <span>| <strong>Ph:</strong> {branding.contact}</span>}
                             </div>
                         </div>
@@ -230,7 +247,7 @@ export function PosInvoicePreview({
                     <div style={{ display: 'grid', gridTemplateColumns: '1.4fr 0.75fr 0.85fr 0.85fr 1.0fr 0.45fr', borderBottom: '1px solid #aaa', fontSize: '0.57rem' }}>
                         <div style={{ borderRight: '1px solid #ccc', padding: '2px 6px', display: 'flex', gap: '3px', alignItems: 'baseline' }}>
                             <strong style={{ color: '#666', whiteSpace: 'nowrap', flexShrink: 0 }}>Buyer:</strong>
-                            <span style={{ fontWeight: 800, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{customer.name || '—'}</span>
+                            <span style={{ fontWeight: 800, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{up(customer.name) || '—'}</span>
                         </div>
                         <div style={{ borderRight: '1px solid #ccc', padding: '2px 6px', display: 'flex', gap: '3px', alignItems: 'baseline' }}>
                             <strong style={{ color: '#666', whiteSpace: 'nowrap', flexShrink: 0 }}>Ph:</strong>
@@ -238,15 +255,15 @@ export function PosInvoicePreview({
                         </div>
                         <div style={{ borderRight: '1px solid #ccc', padding: '2px 6px', display: 'flex', gap: '3px', alignItems: 'baseline' }}>
                             <strong style={{ color: '#666', whiteSpace: 'nowrap', flexShrink: 0 }}>Village:</strong>
-                            <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{customer.address || '—'}</span>
+                            <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{up(customer.address) || '—'}</span>
                         </div>
                         <div style={{ borderRight: '1px solid #ccc', padding: '2px 6px', display: 'flex', gap: '3px', alignItems: 'baseline' }}>
                             <strong style={{ color: '#666', whiteSpace: 'nowrap', flexShrink: 0 }}>Taluka:</strong>
-                            <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{customer.taluka || '—'}</span>
+                            <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{up(customer.taluka) || '—'}</span>
                         </div>
                         <div style={{ borderRight: '1px solid #ccc', padding: '2px 6px', display: 'flex', gap: '3px', alignItems: 'baseline' }}>
                             <strong style={{ color: '#666', whiteSpace: 'nowrap', flexShrink: 0 }}>District:</strong>
-                            <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{customer.district || '—'}</span>
+                            <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{up(customer.district) || '—'}</span>
                         </div>
                         <div style={{ padding: '2px 6px', display: 'flex', gap: '3px', alignItems: 'baseline' }}>
                             <strong style={{ color: '#666', whiteSpace: 'nowrap', flexShrink: 0 }}>PIN:</strong>
@@ -294,11 +311,15 @@ export function PosInvoicePreview({
                             {cart.map((item, i) => (
                                 <tr key={i}>
                                     <td style={{ border: '1px solid #e0e0e0', padding: '1.5px 1px', textAlign: 'center' as const }}>{i + 1}</td>
-                                    <td style={{ border: '1px solid #e0e0e0', padding: '1.5px 4px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontWeight: 600 }}>{item.name}</td>
-                                    <td style={{ border: '1px solid #e0e0e0', padding: '1.5px 2px', textAlign: 'center' as const, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{item.mfgCompany || ''}</td>
-                                    <td style={{ border: '1px solid #e0e0e0', padding: '1.5px 2px', textAlign: 'center' as const, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{item.batchNo || ''}</td>
+                                    <td style={{ border: '1px solid #e0e0e0', padding: '1.5px 4px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontWeight: 600 }}>{up(item.name)}</td>
+                                    {/* Company/Batch No. wrap within their existing fixed-width column
+                                        instead of clipping with an ellipsis — the column widths (colgroup
+                                        above) are unchanged, only the overflow behavior differs from the
+                                        other still-nowrap cells (Product name, Exp, Per) in this row. */}
+                                    <td style={{ border: '1px solid #e0e0e0', padding: '1.5px 2px', textAlign: 'center' as const, whiteSpace: 'normal', wordBreak: 'break-word', lineHeight: 1.15 }}>{up(item.mfgCompany) || ''}</td>
+                                    <td style={{ border: '1px solid #e0e0e0', padding: '1.5px 2px', textAlign: 'center' as const, whiteSpace: 'normal', wordBreak: 'break-word', lineHeight: 1.15 }}>{up(item.batchNo) || ''}</td>
                                     <td style={{ border: '1px solid #e0e0e0', padding: '1.5px 1px', textAlign: 'center' as const, whiteSpace: 'nowrap' }}>{toMonthYear(item.expDate || '')}</td>
-                                    <td style={{ border: '1px solid #e0e0e0', padding: '1.5px 1px', textAlign: 'center' as const, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{item.unit || item.baseUnit || ''}</td>
+                                    <td style={{ border: '1px solid #e0e0e0', padding: '1.5px 1px', textAlign: 'center' as const, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{up(item.unit || item.baseUnit) || ''}</td>
                                     <td style={{ border: '1px solid #e0e0e0', padding: '1.5px 1px', textAlign: 'center' as const, fontWeight: 700 }}>{item.cartQuantity}</td>
                                     <td style={{ border: '1px solid #e0e0e0', padding: '1.5px 3px', textAlign: 'right' as const }}>{rate(item)}</td>
                                     <td style={{ border: '1px solid #e0e0e0', padding: '1.5px 1px', textAlign: 'center' as const }}>{lineGst(item)}%</td>
@@ -420,7 +441,8 @@ export function PosInvoicePreview({
                                 <div style={{ fontSize: '0.78rem', color: '#333', marginTop: '2px' }}>
                                     {branding?.address || ''}<br />
                                     {branding?.gstin && <><strong>GSTIN:</strong> {branding.gstin} &nbsp;</>}
-                                    {branding?.contact && <>Contact: {branding.contact}</>}
+                                    <strong>Contact:</strong> {INVOICE_CONTACT_LABEL} &nbsp;
+                                    {branding?.contact && <>Contact No.: {branding.contact}</>}
                                 </div>
                                 {allLicenses.length > 0 && (
                                     <div style={{ fontSize: '0.70rem', color: '#555', marginTop: '2px', display: 'flex', gap: '10px', flexWrap: 'wrap' as const }}>
@@ -437,8 +459,8 @@ export function PosInvoicePreview({
                     <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', border: '1px solid #222', marginBottom: '8px' }}>
                         <div style={{ borderRight: '1px solid #222', padding: '6px' }}>
                             <div style={{ fontWeight: 700, marginBottom: '3px' }}>{L('buyer_title')}</div>
-                            <div style={{ fontWeight: 700 }}>{customer.name}</div>
-                            {customer.address && <div>{customer.address}{customer.pin ? ` - ${customer.pin}` : ''}</div>}
+                            <div style={{ fontWeight: 700 }}>{up(customer.name)}</div>
+                            {customer.address && <div>{up(customer.address)}{customer.pin ? ` - ${customer.pin}` : ''}</div>}
                             {customer.phone && <div>{L('contact')}: {customer.phone}</div>}
                         </div>
                         <div style={{ padding: '6px', display: 'flex', flexDirection: 'column', gap: '3px' }}>
@@ -462,12 +484,12 @@ export function PosInvoicePreview({
                             {cart.map((item, i) => (
                                 <tr key={i}>
                                     <td style={{ textAlign: 'center' as const }}>{i + 1}</td>
-                                    <td>{item.name}</td>
-                                    <td>{item.mfgCompany || ''}</td>
-                                    <td style={{ textAlign: 'center' as const }}>{item.batchNo || ''}</td>
+                                    <td>{up(item.name)}</td>
+                                    <td>{up(item.mfgCompany) || ''}</td>
+                                    <td style={{ textAlign: 'center' as const }}>{up(item.batchNo) || ''}</td>
                                     <td style={{ textAlign: 'center' as const }}>{toMonthYear(item.expDate || '')}</td>
                                     <td style={{ textAlign: 'center' as const }}>{lineGst(item)}</td>
-                                    <td style={{ textAlign: 'center' as const }}>{item.unit || item.baseUnit || ''}</td>
+                                    <td style={{ textAlign: 'center' as const }}>{up(item.unit || item.baseUnit) || ''}</td>
                                     <td style={{ textAlign: 'center' as const }}>{item.cartQuantity}</td>
                                     <td style={{ textAlign: 'center' as const }}>{rate(item)}</td>
                                     <td style={{ textAlign: 'center' as const }}>{fmt(item.cartTotal)}</td>

@@ -30,7 +30,7 @@ export default function InventoryPage() {
     const [activeTab, setActiveTab] = useHashTab<InventoryTab>(VALID_TABS, 'products', 'fiinny-tab-inventory');
 
     return (
-        <div className="animate-fade-in" style={{ maxWidth: '1400px', margin: '0 auto' }}>
+        <div className="animate-fade-in" style={{ width: '100%' }}>
 
             {/* ── Sticky Tab Bar ── */}
             <div

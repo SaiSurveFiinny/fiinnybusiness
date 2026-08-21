@@ -162,7 +162,7 @@ export default function PaymentRemindersPage() {
   };
 
   return (
-    <div className="animate-fade-in" style={{ maxWidth: '1200px', margin: '0 auto' }}>
+    <div className="animate-fade-in" style={{ width: '100%' }}>
 
       {/* Header */}
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '2rem', flexWrap: 'wrap', gap: '1rem' }}>

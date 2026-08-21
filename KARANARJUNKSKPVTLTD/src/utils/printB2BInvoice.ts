@@ -2,6 +2,7 @@ import { getDoc } from 'firebase/firestore';
 import { db } from '../firebase';
 import { getTenantDoc } from './tenantPath';
 import { fetchInvoiceBranding } from '../services/invoiceTemplateService';
+import { INVOICE_CONTACT_LABEL } from './constants';
 
 function numberToWords(num: number): string {
     if (num === 0) return 'Zero';
@@ -110,7 +111,8 @@ export async function printB2BInvoice(orderId: string, tenantId: string): Promis
         <div style="font-size:0.78rem;color:#444;margin-top:2px">
           ${esc(branding?.address)}<br>
           ${branding?.gstin ? `<strong>GSTIN:</strong> ${esc(branding.gstin)}&nbsp;` : ''}
-          ${branding?.contact ? `Contact No.: ${esc(branding.contact)}` : ''}
+          <strong>Contact:</strong> ${INVOICE_CONTACT_LABEL}
+          ${branding?.contact ? `&nbsp; Contact No.: ${esc(branding.contact)}` : ''}
           ${branding?.email ? `&nbsp; Email: ${esc(branding.email)}` : ''}
         </div>
       </div>

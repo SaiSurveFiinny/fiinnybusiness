@@ -19,3 +19,8 @@ export const AGRI_CATEGORIES = [
     'Bio Product',
     'Others',
 ];
+
+// Fixed contact numbers printed beside the GST details in the invoice header.
+// Shared by the B2B and POS/B2C invoice templates so both stay identical.
+export const INVOICE_CONTACT_NUMBERS = ['9307199040', '7232839475'];
+export const INVOICE_CONTACT_LABEL = INVOICE_CONTACT_NUMBERS.join(', ');

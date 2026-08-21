@@ -1,8 +1,8 @@
-import { useState, useEffect, useMemo, useRef, Fragment } from 'react';
+import { useState, useEffect, useMemo, Fragment } from 'react';
 import { useHashTab } from '../hooks/useHashTab';
 import { useNavigate } from 'react-router-dom';
 import {
-    Download, FileSpreadsheet, Store, Search, Filter, ArrowUpDown,
+    Download, Store, Search, Filter, ArrowUpDown,
     Users, Building2, UserPlus, TrendingUp, AlertCircle,
     CheckCircle2, Bell, ShoppingCart, Truck, Mail, MessageSquare, Wallet,
     X, Copy, CheckSquare, FileText, ChevronDown, ChevronRight, Phone, Clock,
@@ -10,12 +10,10 @@ import {
 import { useTranslation } from 'react-i18next';
 import { getDocs, orderBy, query, where, collectionGroup, collection } from 'firebase/firestore';
 import { db } from '../firebase';
-import Papa from 'papaparse';
 import { useAuth } from '../contexts/AuthContext';
 import { getTenantCollection } from '../utils/tenantPath';
 import UdhariUploadModal from '../components/UdhariUploadModal';
 import DatePeriodFilter from '../components/DatePeriodFilter';
-import { useSchema } from '../contexts/SchemaContext';
 import { type FinancialPeriod, getFinancialDateRange } from '../utils/financialPeriod';
 
 // Import sub-pages directly (WorklistPage itself is lazy-loaded by App.tsx)
@@ -110,20 +108,28 @@ export default function WorklistPage() {
     });
 
     return (
-        <div className="animate-fade-in" style={{ maxWidth: '1400px', margin: '0 auto' }}>
+        <div className="animate-fade-in" style={{ width: '100%' }}>
             {/* ── Tab Bar ── */}
             <div
             style={{
                 position: 'sticky',
-                top: '64px', // 👈 adjust based on your main navbar height
+                top: 0,
                 zIndex: 50,
-                background: 'var(--surface-base)', // 👈 IMPORTANT (avoid overlap issues)
+                background: 'var(--surface-base)',
+                backdropFilter: 'blur(12px)',
+                WebkitBackdropFilter: 'blur(12px)',
                 display: 'flex',
                 gap: '0.25rem',
-                marginBottom: '1.75rem',
                 borderBottom: '2px solid var(--surface-border)',
-                padding: '0.5rem 0 0 0',
                 overflowX: 'auto',
+                scrollbarWidth: 'none',
+                marginLeft: '-2rem',
+                marginRight: '-2rem',
+                paddingLeft: '2rem',
+                paddingRight: '2rem',
+                marginTop: '-2rem',
+                paddingTop: '0.75rem',
+                marginBottom: '1.75rem',
             }}
             >
                 {visibleTabs.map(tab => {
@@ -182,7 +188,6 @@ function PartnersTab() {
     const isRetailer = userRole === 'retailer';
     const isViewOnly = isSales || isRetailer;
     const { t } = useTranslation();
-    const { getSchema } = useSchema();
     const [retailers, setRetailers] = useState<Retailer[]>([]);
     const [loading, setLoading] = useState(true);
     const [showUdhariModal, setShowUdhariModal] = useState(false);
@@ -199,9 +204,6 @@ function PartnersTab() {
     const [colSort, setColSort] = useState<{ col: WLSortCol; dir: 'asc' | 'desc' }>({ col: 'date', dir: 'desc' });
     const [partnerView, setPartnerView] = useState<'all' | 'active' | 'cleared'>('all');
 
-    const paymentsFileRef = useRef<HTMLInputElement>(null);
-    const followupsFileRef = useRef<HTMLInputElement>(null);
-    const [uploadingCSV, setUploadingCSV] = useState(false);
 
     const [expandedRows, setExpandedRows] = useState<Set<string>>(new Set());
     const toggleExpand = (id: string, e: React.MouseEvent) => {
@@ -476,17 +478,31 @@ function PartnersTab() {
         return result;
     }, [retailers, searchTerm, filterSize, colSort, partnerView]);
 
+    // Escapes a value for CSV: wraps in quotes (and doubles any embedded quotes)
+    // whenever it contains a comma, quote, or line break, per RFC 4180.
+    const csvEscape = (val: string) =>
+        /[",\n\r]/.test(val) ? `"${val.replace(/"/g, '""')}"` : val;
+
+    // Exports exactly the rows/values currently shown in the table below \u2014 same
+    // processedRetailers array (already filtered by Outstanding/Size/search/sort)
+    // and the same per-cell values/formatting used in the <tbody> render.
     const handleExportCSV = () => {
-        const schema = getSchema('retailers');
-        if (!schema) return;
-        const exportFields = schema.fields.filter(f => f.visibleInExport).sort((a, b) => a.order - b.order);
-        const csvRows = processedRetailers.map(r =>
-            exportFields.map(field => {
-                const val = (r as unknown as Record<string, unknown>)[field.id];
-                return `"${val !== undefined && val !== null ? val : ''}"`;
-            }).join(',')
-        );
-        const csvContent = [exportFields.map(f => f.label).join(','), ...csvRows].join('\n');
+        const headers = ['Retailer Name', 'Contact', 'District', 'Salesperson', 'Portfolio', 'Outstanding'];
+        const csvRows = processedRetailers.map(r => {
+            const outstanding = r.computedOutstanding ?? 0;
+            const salesperson = (r.assignedSalespersons?.length ?? 0) > 0
+                ? r.assignedSalespersons!.join('; ')
+                : 'Unassigned';
+            return [
+                r.name || '\u2014',
+                r.number || '\u2014',
+                r.district || '\u2014',
+                salesperson,
+                r.portfolioSize || '\u2014',
+                `\u20B9${outstanding.toLocaleString('en-IN')}`,
+            ].map(v => csvEscape(String(v))).join(',');
+        });
+        const csvContent = [headers.join(','), ...csvRows].join('\r\n');
         const blob = new Blob(['\uFEFF' + csvContent], { type: 'text/csv;charset=utf-8;' });
         const link = document.createElement('a');
         link.setAttribute('href', URL.createObjectURL(blob));
@@ -495,57 +511,6 @@ function PartnersTab() {
         document.body.appendChild(link);
         link.click();
         document.body.removeChild(link);
-    };
-
-    const downloadTemplate = (type: 'payments' | 'followups') => {
-        const csvContent = type === 'payments'
-            ? 'Date,Stake holder,Amount,Payment Type,Pending Amount,Remarks\n2026-03-10,John Shop,5000,Cash,4000,Partial payment received\n'
-            : 'KSK Name,Shop Owners,Shop Mobile Numbers,Products,Total Amount,Amount Paid,Delta Amount\nKaranArjun KSK,Doe Shop,9876543210,Fertilizer X,15000,5000,10000\n';
-        const blob = new Blob(['\uFEFF' + csvContent], { type: 'text/csv;charset=utf-8;' });
-        const link = document.createElement('a');
-        link.setAttribute('href', URL.createObjectURL(blob));
-        link.setAttribute('download', type === 'payments' ? 'payments_import_template.csv' : 'amounts_followups_template.csv');
-        link.style.visibility = 'hidden';
-        document.body.appendChild(link);
-        link.click();
-        document.body.removeChild(link);
-    };
-
-    const handleCSVUpload = (event: React.ChangeEvent<HTMLInputElement>, type: 'payments' | 'followups') => {
-        const file = event.target.files?.[0];
-        if (!file || !tenantId) return;
-        setUploadingCSV(true);
-        Papa.parse(file, {
-            header: true,
-            skipEmptyLines: true,
-            complete: async (results) => {
-                try { alert(`Parsed ${results.data.length} ${type} records.`); }
-                catch { alert('Error processing CSV.'); }
-                finally {
-                    setUploadingCSV(false);
-                    if (type === 'payments' && paymentsFileRef.current) paymentsFileRef.current.value = '';
-                    if (type === 'followups' && followupsFileRef.current) followupsFileRef.current.value = '';
-                }
-            }
-        });
-    };
-
-    const handlePrintUdhari = () => {
-        const schema = getSchema('retailers');
-        if (!schema) return;
-        const printWindow = window.open('', '_blank', 'width=800,height=800');
-        if (!printWindow) return;
-        const exportFields = schema.fields.filter(f => f.visibleInExport).sort((a, b) => a.order - b.order);
-        const rows = processedRetailers.map(r =>
-            `<tr>${exportFields.map(f => { const v = (r as unknown as Record<string, unknown>)[f.id]; return `<td style="padding:8px;border:1px solid #ddd">${v ?? ''}</td>`; }).join('')}</tr>`
-        ).join('');
-        printWindow.document.write(`<html><head><title>Partner Worklist</title>
-            <style>body{font-family:sans-serif;padding:20px}table{width:100%;border-collapse:collapse;font-size:13px}th{padding:10px;border:1px solid #ddd;background:#f8f9fa;text-align:left}@media print{button{display:none}}</style>
-            </head><body><h2 style="text-align:center;margin:0">KaranArjun KSK - Partner Worklist</h2>
-            <p style="text-align:center;color:#555;font-size:13px">Generated: ${new Date().toLocaleString()} | ${processedRetailers.length} records</p>
-            <table><thead><tr>${exportFields.map(f => `<th>${f.label}</th>`).join('')}</tr></thead><tbody>${rows}</tbody></table>
-            <script>setTimeout(()=>window.print(),400)</script></body></html>`);
-        printWindow.document.close();
     };
 
     const kpi = useMemo(() => {
@@ -659,17 +624,6 @@ function PartnersTab() {
                     <p style={{ color: 'var(--text-secondary)' }}>B2B wholesale partners — orders, dues and follow-ups.</p>
                 </div>
                 <div style={{ display: 'flex', gap: '0.6rem', flexWrap: 'wrap', alignItems: 'center' }}>
-                    {!isViewOnly && (
-                        <>
-                            <input type="file" accept=".csv" ref={paymentsFileRef} style={{ display: 'none' }} onChange={e => handleCSVUpload(e, 'payments')} />
-                            <input type="file" accept=".csv" ref={followupsFileRef} style={{ display: 'none' }} onChange={e => handleCSVUpload(e, 'followups')} />
-                            <button className="btn btn-secondary btn-sm tooltip" data-tooltip="Payments CSV Template" onClick={() => downloadTemplate('payments')}><Download size={13} /> T1</button>
-                            <button className="btn btn-secondary btn-sm" disabled={uploadingCSV} onClick={() => paymentsFileRef.current?.click()}><FileSpreadsheet size={14} /> Payments</button>
-                            <button className="btn btn-secondary btn-sm tooltip" data-tooltip="Followups CSV Template" onClick={() => downloadTemplate('followups')}><Download size={13} /> T2</button>
-                            <button className="btn btn-secondary btn-sm" disabled={uploadingCSV} onClick={() => followupsFileRef.current?.click()}><FileSpreadsheet size={14} /> Followups</button>
-                        </>
-                    )}
-                    <button className="btn btn-secondary" onClick={handlePrintUdhari} disabled={processedRetailers.length === 0}><Download size={16} /> Print</button>
                     <button className="btn btn-secondary" onClick={handleExportCSV} disabled={processedRetailers.length === 0}><Download size={16} /> {t('worklist.export_csv')}</button>
                     {!isViewOnly && (
                         <button className="btn btn-primary" onClick={() => navigate('/onboarding')}><UserPlus size={16} /> {t('worklist.add_new')}</button>

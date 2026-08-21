@@ -99,3 +99,50 @@ export function openingStock(current: number, purchases: number, sales: number, 
 export function closesTo(opening: number, purchases: number, sales: number, adjust: number): number {
     return opening + purchases - sales + adjust;
 }
+
+// ── Historical balance reconstruction ────────────────────────────────────────
+/**
+ * A recorded stock-balance point: the absolute quantity *after* a movement or
+ * adjustment settled. `ord` breaks ties between events sharing the same `date`
+ * (typically the Firestore createdAt in ms).
+ */
+export interface BalanceEvent {
+    date: string;   // YYYY-MM-DD
+    ord: number;    // intra-day ordering (createdAt ms); 0 when unknown
+    balance: number; // stock AFTER the event settled
+    pre?: number;    // stock BEFORE the event settled (balance − net movement)
+}
+
+/**
+ * The balance recorded by the latest event strictly before `cutoff` (exclusive).
+ * Returns null when no event predates the cutoff. Reads *recorded historical
+ * balances* rather than reversing current inventory, so ranges ending in the
+ * past reconstruct correctly.
+ */
+export function balanceBefore(events: BalanceEvent[], cutoff: string): number | null {
+    let best: BalanceEvent | null = null;
+    for (const e of events) {
+        if (e.date >= cutoff) continue;
+        if (!best || e.date > best.date || (e.date === best.date && e.ord > best.ord)) best = e;
+    }
+    return best ? best.balance : null;
+}
+
+/**
+ * Opening stock at the start of a range, reconstructed from the ledger:
+ *   1. the recorded balance just before `cutoff`, if any; else
+ *   2. the *pre*-balance of the earliest event on/after `cutoff` — i.e. reverse
+ *      that first event, since nothing changed the stock between the range start
+ *      and it; else
+ *   3. null when there is no ledger history at all (caller hybrid-seeds from
+ *      current stock).
+ * Never derived from the current inventory value.
+ */
+export function openingBalance(events: BalanceEvent[], cutoff: string): number | null {
+    const before = balanceBefore(events, cutoff);
+    if (before != null) return before;
+    if (events.length === 0) return null;
+    let first = events[0];
+    for (const e of events) if (e.date < first.date || (e.date === first.date && e.ord < first.ord)) first = e;
+    return first.pre ?? first.balance;
+}

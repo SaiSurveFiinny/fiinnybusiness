@@ -80,29 +80,29 @@ export default function AdminHubPage() {
     const ActiveComp = active.Comp;
 
     return (
-        <div className="animate-fade-in" style={{ maxWidth: '1400px', margin: '0 auto' }}>
+        <div className="animate-fade-in" style={{ width: '100%', display: 'flex', gap: '1.75rem', alignItems: 'flex-start', flexWrap: 'wrap' }}>
 
-            {/* ── Sticky Tab Bar ── */}
+            {/* ── Sidebar Nav — same buttons/gating as before, laid out vertically.
+                 Sticky under the app's top nav; wraps to a full-width horizontal
+                 strip on narrow viewports instead of overflowing or hiding content. */}
             <div
                 style={{
                     position: 'sticky',
-                    top: 0,
+                    top: '1rem',
                     zIndex: 50,
                     background: 'var(--surface-base)',
                     backdropFilter: 'blur(12px)',
                     WebkitBackdropFilter: 'blur(12px)',
                     display: 'flex',
-                    gap: '0.25rem',
-                    borderBottom: '2px solid var(--surface-border)',
-                    overflowX: 'auto',
-                    scrollbarWidth: 'none',
-                    marginLeft: '-2rem',
-                    marginRight: '-2rem',
-                    paddingLeft: '2rem',
-                    paddingRight: '2rem',
-                    marginTop: '-2rem',
-                    paddingTop: '0.75rem',
-                    marginBottom: '1.75rem',
+                    flexDirection: 'column',
+                    gap: '0.15rem',
+                    border: '1px solid var(--surface-border)',
+                    borderRadius: '12px',
+                    padding: '0.6rem',
+                    width: '220px',
+                    flexShrink: 0,
+                    maxHeight: 'calc(100vh - 2rem)',
+                    overflowY: 'auto',
                 }}
             >
                 {visibleTabs.map(tab => {
@@ -114,25 +114,27 @@ export default function AdminHubPage() {
                             style={{
                                 display: 'flex',
                                 alignItems: 'center',
-                                gap: '0.5rem',
-                                padding: '0.65rem 1.25rem',
-                                background: 'transparent',
+                                gap: '0.6rem',
+                                padding: '0.65rem 0.85rem',
+                                background: isActive ? 'var(--surface-raised)' : 'transparent',
                                 border: 'none',
-                                borderBottom: isActive ? '2px solid var(--primary-light)' : '2px solid transparent',
-                                marginBottom: '-2px',
+                                borderLeft: isActive ? '2px solid var(--primary-light)' : '2px solid transparent',
+                                borderRadius: '8px',
                                 color: isActive ? 'var(--primary-light)' : 'var(--text-tertiary)',
                                 fontWeight: isActive ? 700 : 400,
                                 fontSize: '0.9rem',
                                 cursor: 'pointer',
                                 fontFamily: 'inherit',
                                 whiteSpace: 'nowrap',
-                                transition: 'color 0.15s ease, border-color 0.15s ease',
+                                textAlign: 'left',
+                                width: '100%',
+                                transition: 'color 0.15s ease, background 0.15s ease, border-color 0.15s ease',
                                 flexShrink: 0,
                             }}
                             onMouseEnter={e => { if (!isActive) (e.currentTarget as HTMLButtonElement).style.color = 'var(--text-primary)'; }}
                             onMouseLeave={e => { if (!isActive) (e.currentTarget as HTMLButtonElement).style.color = 'var(--text-tertiary)'; }}
                         >
-                            <span style={{ opacity: isActive ? 1 : 0.6, display: 'flex' }}>{tab.icon}</span>
+                            <span style={{ opacity: isActive ? 1 : 0.6, display: 'flex', flexShrink: 0 }}>{tab.icon}</span>
                             {tab.label}
                         </button>
                     );
@@ -140,9 +142,11 @@ export default function AdminHubPage() {
             </div>
 
             {/* ── Tab Content — wrapped in the same gate the sub-page had as a route ── */}
-            <ProtectedRoute requireRole={active.requireRole} appScreen={active.appScreen}>
-                <ActiveComp />
-            </ProtectedRoute>
+            <div style={{ flex: '1 1 480px', minWidth: 0 }}>
+                <ProtectedRoute requireRole={active.requireRole} appScreen={active.appScreen}>
+                    <ActiveComp />
+                </ProtectedRoute>
+            </div>
         </div>
     );
 }
