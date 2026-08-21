@@ -3,6 +3,7 @@ import { BrowserRouter, Routes, Route, Link, useLocation, Navigate, useNavigate 
 import { Home, Users, UserPlus, LogOut, ReceiptText, ShieldAlert, Calculator, Settings, Package, ChevronDown, Layers, Truck, ShoppingCart, BarChart3, Activity, Bell, ClipboardList, Star, Link2, Bot, Loader2, Menu, X, Target, Sun, Moon, Receipt, HelpCircle } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import LanguageSwitcher from './components/LanguageSwitcher';
+import EnvBadge from './components/EnvBadge';
 import OfflineBanner from './components/OfflineBanner';
 import CookieBanner from './components/CookieBanner';
 import ErrorBoundary from './components/ErrorBoundary';
@@ -256,6 +257,8 @@ function Layout({ children, currentTheme, toggleTheme }: { children: React.React
           <h2 className="primary-gradient-text" style={{ fontSize: '1.35rem', margin: 0, letterSpacing: '-0.03em' }}>
             {tenantData?.businessName || 'Your Business Name'}
           </h2>
+          {/* Dev-only deployment-environment badge (hidden on the hosted site) */}
+          <EnvBadge />
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: '1.5rem' }}>
           <LanguageSwitcher />
