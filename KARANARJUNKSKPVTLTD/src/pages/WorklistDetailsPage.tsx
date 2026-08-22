@@ -1245,7 +1245,7 @@ export default function WorklistDetailsPage() {
 
     return (
         <>
-        <div className="animate-fade-in" style={{ maxWidth: '1000px', margin: '0 auto' }}>
+        <div className="animate-fade-in" style={{ width: '100%' }}>
             <button
                 className="btn btn-secondary"
                 style={{ padding: '0.5rem 1rem', marginBottom: '1.5rem', display: 'flex', alignItems: 'center', gap: '0.5rem', fontSize: '0.875rem' }}

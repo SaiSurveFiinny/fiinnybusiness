@@ -7,6 +7,8 @@
 // render) so inputs keep focus while typing.
 // ─────────────────────────────────────────────────────────────────────────────
 
+import { useState, useRef, useEffect } from 'react';
+import { createPortal } from 'react-dom';
 import { Search, X, ChevronUp, ChevronDown } from 'lucide-react';
 
 // ── Numeric filter ────────────────────────────────────────────────────────────
@@ -145,5 +147,95 @@ export function ColumnSelectFilter({
             <option value="">{allLabel}</option>
             {options.map(o => <option key={o} value={o}>{o}</option>)}
         </select>
+    );
+}
+
+// ── Multi-select checklist filter ([] = show all) ─────────────────────────────
+// Compact trigger button + a fixed-position checkbox panel. Used where a column
+// must filter on several values at once (e.g. Salesperson, Portfolio). The panel
+// is position:fixed so it escapes the table's overflow container.
+
+export interface MultiOption { value: string; label: string }
+
+export function ColumnMultiSelectFilter({
+    selected, options, onChange, allLabel = 'All',
+}: {
+    selected: string[];
+    options: MultiOption[];
+    onChange: (next: string[]) => void;
+    allLabel?: string;
+}) {
+    const [open, setOpen] = useState(false);
+    const [pos, setPos] = useState<{ top: number; left: number; width: number } | null>(null);
+    const btnRef = useRef<HTMLButtonElement>(null);
+    const panelRef = useRef<HTMLDivElement>(null);
+
+    useEffect(() => {
+        if (!open) return;
+        const onDown = (e: MouseEvent) => {
+            const t = e.target as Node;
+            if (btnRef.current?.contains(t) || panelRef.current?.contains(t)) return;
+            setOpen(false);
+        };
+        const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setOpen(false); };
+        document.addEventListener('mousedown', onDown);
+        window.addEventListener('keydown', onKey);
+        return () => { document.removeEventListener('mousedown', onDown); window.removeEventListener('keydown', onKey); };
+    }, [open]);
+
+    const toggleOpen = () => {
+        const r = btnRef.current?.getBoundingClientRect();
+        if (r) setPos({ top: r.bottom + 4, left: r.left, width: Math.max(r.width, 180) });
+        setOpen(o => !o);
+    };
+    const toggleValue = (v: string) => {
+        const set = new Set(selected);
+        set.has(v) ? set.delete(v) : set.add(v);
+        onChange([...set]);
+    };
+
+    const active = selected.length > 0;
+    const summary = selected.length === 0
+        ? allLabel
+        : selected.length === 1
+            ? (options.find(o => o.value === selected[0])?.label ?? '1 selected')
+            : `${selected.length} selected`;
+
+    const rowStyle = (checked: boolean): React.CSSProperties => ({
+        display: 'flex', alignItems: 'center', gap: '0.5rem', width: '100%', textAlign: 'left',
+        padding: '0.4rem 0.5rem', background: checked ? 'hsla(263,70%,60%,0.10)' : 'none',
+        border: 'none', borderRadius: '7px', cursor: 'pointer', font: 'inherit',
+        fontSize: '0.8rem', color: 'var(--text-primary)',
+    });
+
+    return (
+        <>
+            <button ref={btnRef} type="button" onClick={e => { e.stopPropagation(); toggleOpen(); }}
+                className="input-field"
+                style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '0.3rem', margin: 0, width: '100%', minWidth: 0, padding: '0.25rem 0.4rem', fontSize: '0.75rem', fontWeight: 400, cursor: 'pointer', color: active ? 'var(--primary)' : 'var(--text-primary)', textAlign: 'left' }}>
+                <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{summary}</span>
+                <ChevronDown size={12} style={{ flexShrink: 0, opacity: 0.6 }} />
+            </button>
+            {open && pos && createPortal(
+                <div ref={panelRef} onClick={e => e.stopPropagation()}
+                    style={{ position: 'fixed', top: pos.top, left: Math.min(pos.left, window.innerWidth - pos.width - 8), width: pos.width, maxHeight: '260px', overflowY: 'auto', zIndex: 5001, background: 'var(--surface-raised)', border: '1px solid var(--surface-border)', borderRadius: '10px', boxShadow: '0 12px 40px rgba(0,0,0,0.22)', padding: '0.3rem' }}>
+                    <button type="button" onClick={() => onChange([])} style={{ ...rowStyle(selected.length === 0), fontWeight: 600 }}>
+                        <input type="checkbox" readOnly checked={selected.length === 0} style={{ pointerEvents: 'none', flexShrink: 0 }} />
+                        {allLabel}
+                    </button>
+                    {options.map(o => {
+                        const checked = selected.includes(o.value);
+                        return (
+                            <button key={o.value} type="button" onClick={() => toggleValue(o.value)} style={rowStyle(checked)}>
+                                <input type="checkbox" readOnly checked={checked} style={{ pointerEvents: 'none', flexShrink: 0 }} />
+                                <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{o.label}</span>
+                            </button>
+                        );
+                    })}
+                    {options.length === 0 && <div style={{ padding: '0.6rem', fontSize: '0.78rem', color: 'var(--text-tertiary)', textAlign: 'center' }}>No options</div>}
+                </div>,
+                document.body,
+            )}
+        </>
     );
 }

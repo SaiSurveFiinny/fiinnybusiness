@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useMemo } from 'react';
+import { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
 import {
@@ -192,7 +192,10 @@ export default function RateSheetPage() {
   const [imageBlob, setImageBlob] = useState<Blob | null>(null); // compressed photo pending upload
   const [existingImagePath, setExistingImagePath] = useState<string | null>(null); // for delete-on-replace
   const [dupWarning, setDupWarning] = useState<string | null>(null);
+  const [modalDirty, setModalDirty] = useState(false);
+  const [confirmModalDiscard, setConfirmModalDiscard] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const overlayRef = useRef<HTMLDivElement>(null);
 
   const canManage = userRole === 'admin' || userRole === 'analyst';
   // Editing the purchase rate stays admin-only (unchanged permission).
@@ -347,6 +350,8 @@ export default function RateSheetPage() {
     setImageBlob(null);
     setDupWarning(null);
     setImageError(null);
+    setModalDirty(false);
+    setConfirmModalDiscard(false);
     setIsModalOpen(true);
   };
 
@@ -446,6 +451,7 @@ export default function RateSheetPage() {
       }
       setImageBlob(compressed);
       setImagePreview(URL.createObjectURL(compressed));
+      setModalDirty(true);
     } catch (err) {
       console.error('Product photo compression failed:', err);
       setImageError('Could not process this image. Please try a different file.');
@@ -754,14 +760,30 @@ export default function RateSheetPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [products, batchSummaries, searchTerm, fBatch, fCategory, fMfg, fUnit, fSize, fGst, fMrp, fPurch, fRetail, fSales, fStock, sortCol, sortDir]);
 
+  const set = (patch: Partial<ReturnType<typeof emptyForm>>) => {
+    setFormData(f => ({ ...f, ...patch }));
+    setModalDirty(true);
+  };
+
+  const requestCloseModal = useCallback(() => {
+    if (modalDirty || imageBlob !== null) { setConfirmModalDiscard(true); return; }
+    handleCloseModal();
+  }, [modalDirty, imageBlob]);
+
+  // ESC key closes modal (with dirty guard)
+  useEffect(() => {
+    if (!isModalOpen) return;
+    const handler = (e: KeyboardEvent) => { if (e.key === 'Escape') requestCloseModal(); };
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  }, [isModalOpen, requestCloseModal]);
+
   // ── Render ──────────────────────────────────────────────────────────────────
   if (loading) return (
     <div style={{ textAlign: 'center', padding: '4rem', color: 'var(--text-secondary)' }}>
       <Loader2 className="animate-spin" style={{ margin: '0 auto 1rem' }} /> {t('common.loading')}
     </div>
   );
-
-  const set = (patch: Partial<ReturnType<typeof emptyForm>>) => setFormData(f => ({ ...f, ...patch }));
 
   // ── Dynamic column renderers (colOrder-driven, like the Stock Report) ────────
   const renderHeaderTh = (key: PMColKey, colIdx: number) => {
@@ -1065,7 +1087,12 @@ export default function RateSheetPage() {
 
       {/* Add/Edit Modal */}
       {isModalOpen && createPortal(
-        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.85)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000, backdropFilter: 'blur(8px)', padding: '1rem' }}>
+        <>
+        <div
+          ref={overlayRef}
+          onMouseDown={e => { if (e.target === overlayRef.current) requestCloseModal(); }}
+          style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.85)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000, backdropFilter: 'blur(8px)', padding: '1rem' }}
+        >
           <div className="glass-panel animate-scale-in" style={{ width: '95vw', maxWidth: '740px', maxHeight: '90vh', display: 'flex', flexDirection: 'column', overflow: 'hidden', boxShadow: 'var(--neon-glow)' }}>
 
             {/* Modal header */}
@@ -1076,7 +1103,7 @@ export default function RateSheetPage() {
                   This record is shared across POS, B2B Invoice, and Purchase Invoices.
                 </p>
               </div>
-              <button onClick={handleCloseModal} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-secondary)', display: 'flex' }}><X size={18} /></button>
+              <button onClick={requestCloseModal} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-secondary)', display: 'flex' }}><X size={18} /></button>
             </div>
 
             {/* Dedup warning */}
@@ -1243,7 +1270,34 @@ export default function RateSheetPage() {
               </button>
             </form>
           </div>
-        </div>,
+        </div>
+
+        {confirmModalDiscard && (
+          <div
+            style={{ position: 'fixed', inset: 0, zIndex: 1100, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '1rem', background: 'hsla(220, 30%, 4%, 0.6)' }}
+            role="alertdialog"
+            aria-modal="true"
+            aria-label="Discard changes confirmation"
+          >
+            <div className="glass-panel" style={{ padding: '1.5rem', borderRadius: '14px', maxWidth: '380px', width: '100%' }}>
+              <h3 style={{ fontSize: '1.05rem', fontWeight: 700, marginBottom: '0.5rem' }}>Discard changes?</h3>
+              <p style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', marginBottom: '1.25rem' }}>
+                You have unsaved changes. Are you sure you want to discard them?
+              </p>
+              <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '0.75rem' }}>
+                <button className="btn btn-secondary" onClick={() => setConfirmModalDiscard(false)}>Keep Editing</button>
+                <button
+                  className="btn btn-primary"
+                  onClick={() => { setConfirmModalDiscard(false); handleCloseModal(); }}
+                  style={{ background: 'hsla(0,72%,51%,0.85)', borderColor: 'hsla(0,72%,51%,0.5)' }}
+                >
+                  Discard
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+        </>,
         document.body,
       )}
     </div>

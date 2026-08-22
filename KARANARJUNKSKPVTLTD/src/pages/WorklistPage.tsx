@@ -1,8 +1,8 @@
-import { useState, useEffect, useMemo, useRef, Fragment } from 'react';
+import { useState, useEffect, useLayoutEffect, useMemo, useRef, Fragment } from 'react';
 import { useHashTab } from '../hooks/useHashTab';
 import { useNavigate } from 'react-router-dom';
 import {
-    Download, Store, Search, Filter, ArrowUpDown,
+    Download, Store, Filter,
     Users, Building2, UserPlus, Calendar,
     Bell, ShoppingCart, Truck, Mail, MessageSquare, Wallet,
     X, Copy, CheckSquare, FileText, ChevronDown, ChevronRight, Phone, Clock,
@@ -14,6 +14,11 @@ import { useAuth } from '../contexts/AuthContext';
 import { getTenantCollection } from '../utils/tenantPath';
 import UdhariUploadModal from '../components/UdhariUploadModal';
 import { type FinancialPeriod, getFinancialDateRange } from '../utils/financialPeriod';
+import { useColumnLayout } from '../hooks/useColumnLayout';
+import {
+    HDR_COL_STYLE, SortLabel, ColumnTextFilter, ColumnNumFilter, ColumnMultiSelectFilter,
+    EMPTY_NUM, isNumActive, matchNum, type NumFilter,
+} from '../components/tableFilters';
 
 // Import sub-pages directly (WorklistPage itself is lazy-loaded by App.tsx)
 import PaymentRemindersPage from './PaymentRemindersPage';
@@ -85,7 +90,44 @@ interface ReminderEntry {
 // drives the global All Payments view; Payment Reminders moved to the 'reminders' hash.
 type ModuleTab = 'partners' | 'invoices' | 'payments' | 'reminders' | 'tracking' | 'online-orders' /* | 'purchase-orders' */;
 const VALID_TABS: readonly ModuleTab[] = ['partners', 'invoices', 'payments', 'reminders', 'tracking', 'online-orders'];
-type WLSortCol = 'name' | 'district' | 'salesperson' | 'contact' | 'outstanding' | 'totalSales' | 'date';
+
+// ── Partners table column layout (resize / freeze / reorder / persistence) ──────
+// Same Google-Sheets-style table system as the Stock Report / Product Master
+// (useColumnLayout + tableFilters). 'select' (bulk checkbox) and 'expand' (detail
+// chevron) are utility columns; 'select' is dropped for view-only roles.
+type PartnerColKey =
+    | 'select' | 'name' | 'contact' | 'district' | 'salesperson'
+    | 'portfolio' | 'totalInvoice' | 'paymentReceived' | 'outstanding' | 'expand';
+
+const PARTNER_ALL_KEYS: PartnerColKey[] = [
+    'select', 'name', 'contact', 'district', 'salesperson',
+    'portfolio', 'totalInvoice', 'paymentReceived', 'outstanding', 'expand',
+];
+
+const PARTNER_LABELS: Record<PartnerColKey, string> = {
+    select: 'Select', name: 'Retailer Name', contact: 'Contact', district: 'District',
+    salesperson: 'Salesperson', portfolio: 'Portfolio', totalInvoice: 'Total Invoice Amount',
+    paymentReceived: 'Payment Received', outstanding: 'Outstanding', expand: 'Details',
+};
+
+const PARTNER_DEFAULT_WIDTHS: Record<PartnerColKey, number> = {
+    select: 44, name: 240, contact: 150, district: 140, salesperson: 180,
+    portfolio: 130, totalInvoice: 175, paymentReceived: 160, outstanding: 150, expand: 48,
+};
+
+const PARTNER_ALIGN: Record<PartnerColKey, 'left' | 'right' | 'center'> = {
+    select: 'center', name: 'left', contact: 'left', district: 'left', salesperson: 'left',
+    portfolio: 'left', totalInvoice: 'right', paymentReceived: 'right', outstanding: 'right', expand: 'center',
+};
+
+// Columns that support click-to-sort, and the value each sorts on.
+type PartnerSortKey =
+    | 'name' | 'contact' | 'district' | 'salesperson'
+    | 'portfolio' | 'totalInvoice' | 'paymentReceived' | 'outstanding';
+
+// Sentinel value for the Salesperson checklist's "Unassigned" option.
+const UNASSIGNED_SP = '__unassigned__';
+const PORTFOLIO_RANK: Record<string, number> = { Small: 1, Medium: 2, Big: 3 };
 
 // Partner Worklist's date filter — a subset of FinancialPeriod (no 'fy', which this
 // filter doesn't expose) driving both the dropdown options and its trigger label.
@@ -119,6 +161,8 @@ export default function WorklistPage() {
     const visibleTabs = MODULE_TABS.filter(tab => {
         if (userRole === 'sales' && tab.id === 'online-orders') return false;
         if (userRole === 'retailer' && (tab.id === 'online-orders' || tab.id === 'tracking')) return false;
+        // Analyst: hide the Payment Reminders sub-tab (route still works directly).
+        if (userRole === 'analyst' && tab.id === 'reminders') return false;
         return true;
     });
 
@@ -230,10 +274,45 @@ function PartnersTab() {
         return () => document.removeEventListener('mousedown', onDown);
     }, [showDateDropdown]);
 
-    const [searchTerm, setSearchTerm] = useState('');
-    const [filterSize, setFilterSize] = useState('All');
-    const [colSort, setColSort] = useState<{ col: WLSortCol; dir: 'asc' | 'desc' }>({ col: 'date', dir: 'desc' });
     const [partnerView, setPartnerView] = useState<'all' | 'active' | 'cleared'>('all');
+
+    // ── Per-column filters (AND-combined, all recompute processedRetailers) ──────
+    const [fName, setFName]                 = useState('');
+    const [fContact, setFContact]           = useState('');
+    const [fDistrict, setFDistrict]         = useState('');
+    const [fSalespersons, setFSalespersons] = useState<string[]>([]); // [] = all
+    const [fPortfolios, setFPortfolios]     = useState<string[]>([]); // [] = all
+    const [fTotalInvoice, setFTotalInvoice] = useState<NumFilter>(EMPTY_NUM);
+    const [fPayment, setFPayment]           = useState<NumFilter>(EMPTY_NUM);
+    const [fOutstanding, setFOutstanding]   = useState<NumFilter>(EMPTY_NUM);
+
+    // ── Column sort (null = default fetch order, i.e. newest retailer first) ─────
+    const [sortCol, setSortCol] = useState<PartnerSortKey | null>(null);
+    const [sortDir, setSortDir] = useState<'asc' | 'desc'>('asc');
+    const toggleSort = (col: PartnerSortKey) => {
+        if (sortCol === col) { if (sortDir === 'asc') setSortDir('desc'); else setSortCol(null); }
+        else { setSortCol(col); setSortDir(col === 'name' || col === 'contact' || col === 'district' || col === 'salesperson' || col === 'portfolio' ? 'asc' : 'desc'); }
+    };
+
+    // ── Column layout: resize / freeze / reorder / localStorage persistence ──────
+    // 'select' only exists for roles that can act on partners (bulk reminders).
+    const activeColKeys = useMemo(
+        () => PARTNER_ALL_KEYS.filter(k => k !== 'select' || !isViewOnly),
+        [isViewOnly],
+    );
+    const layout = useColumnLayout<PartnerColKey>({
+        keys: activeColKeys,
+        insertMissingAtDefaultIndex: true,
+        defaultWidths: PARTNER_DEFAULT_WIDTHS,
+        labels: PARTNER_LABELS,
+        storageKey: 'fiinny_partners',
+        tenantId,
+        minWidth: 44,
+    });
+
+    // Grand-total row sticks just below the (also sticky) header row.
+    const headerRowRef = useRef<HTMLTableRowElement>(null);
+    const [headerH, setHeaderH] = useState(0);
 
 
     const [expandedRows, setExpandedRows] = useState<Set<string>>(new Set());
@@ -499,46 +578,75 @@ function PartnersTab() {
 
     const processedRetailers = useMemo(() => {
         let result = [...dateFilteredRetailers];
-        // Outstanding filter — uses Total Sales − Amount Paid (matches profile page)
+        // Outstanding quick-filter — uses Total Sales − Amount Paid (matches profile page)
         if (partnerView === 'active')  result = result.filter(r => (r.computedOutstanding ?? 0) > 0);
         if (partnerView === 'cleared') result = result.filter(r => (r.computedOutstanding ?? 0) <= 0);
 
-        if (searchTerm) {
-            const ls = searchTerm.toLowerCase();
-            result = result.filter(r =>
-                r.name?.toLowerCase().includes(ls) ||
-                r.district?.toLowerCase().includes(ls) ||
-                r.taluka?.toLowerCase().includes(ls) ||
-                r.atPost?.toLowerCase().includes(ls) ||
-                r.number?.includes(searchTerm) ||
-                r.assignedSalespersons?.some(sp => sp.toLowerCase().includes(ls))
-            );
-        }
-        if (filterSize !== 'All') result = result.filter(r => r.portfolioSize === filterSize);
+        // ── Per-column filters (AND-combined) ────────────────────────────────────
+        if (fName.trim())     { const q = fName.trim().toLowerCase();     result = result.filter(r => (r.name || '').toLowerCase().includes(q)); }
+        if (fContact.trim())  { const q = fContact.trim().toLowerCase();  result = result.filter(r => (r.number || '').toLowerCase().includes(q) || (r.alternateNumber || '').toLowerCase().includes(q)); }
+        if (fDistrict.trim()) { const q = fDistrict.trim().toLowerCase(); result = result.filter(r => (r.district || '').toLowerCase().includes(q)); }
 
-        const { col, dir } = colSort;
-        const asc = dir === 'asc' ? 1 : -1;
-        result.sort((a, b) => {
-            switch (col) {
-                case 'name':
-                    return asc * (a.name || '').localeCompare(b.name || '');
-                case 'district':
-                    return asc * (a.district || '').localeCompare(b.district || '');
-                case 'salesperson':
-                    return asc * (a.assignedSalespersons?.[0] || '').localeCompare(b.assignedSalespersons?.[0] || '');
-                case 'contact':
-                    return asc * (a.number || '').localeCompare(b.number || '');
-                case 'outstanding':
-                    return asc * ((a.computedOutstanding ?? 0) - (b.computedOutstanding ?? 0));
-                case 'totalSales':
-                    return asc * ((a.totalSales ?? 0) - (b.totalSales ?? 0));
-                case 'date':
-                default:
-                    return asc * ((a.createdAt?.toMillis?.() ?? 0) - (b.createdAt?.toMillis?.() ?? 0));
-            }
-        });
+        if (fSalespersons.length > 0) {
+            const wantUnassigned = fSalespersons.includes(UNASSIGNED_SP);
+            const named = fSalespersons.filter(s => s !== UNASSIGNED_SP);
+            result = result.filter(r => {
+                const sps = r.assignedSalespersons ?? [];
+                if (wantUnassigned && sps.length === 0) return true;
+                return named.some(n => sps.includes(n));
+            });
+        }
+        if (fPortfolios.length > 0) result = result.filter(r => fPortfolios.includes(r.portfolioSize || ''));
+
+        if (isNumActive(fTotalInvoice)) result = result.filter(r => matchNum(r.computedTotalSales ?? 0, fTotalInvoice));
+        if (isNumActive(fPayment))      result = result.filter(r => matchNum(r.computedTotalPaid ?? 0, fPayment));
+        if (isNumActive(fOutstanding))  result = result.filter(r => matchNum(r.computedOutstanding ?? 0, fOutstanding));
+
+        // ── Column sort (null keeps default newest-first fetch order) ────────────
+        if (sortCol) {
+            const asc = sortDir === 'asc' ? 1 : -1;
+            result.sort((a, b) => {
+                switch (sortCol) {
+                    case 'name':            return asc * (a.name || '').localeCompare(b.name || '');
+                    case 'contact':         return asc * (a.number || '').localeCompare(b.number || '');
+                    case 'district':        return asc * (a.district || '').localeCompare(b.district || '');
+                    case 'salesperson':     return asc * (a.assignedSalespersons?.[0] || '').localeCompare(b.assignedSalespersons?.[0] || '');
+                    case 'portfolio':       return asc * ((PORTFOLIO_RANK[a.portfolioSize || ''] ?? 0) - (PORTFOLIO_RANK[b.portfolioSize || ''] ?? 0));
+                    case 'totalInvoice':    return asc * ((a.computedTotalSales ?? 0) - (b.computedTotalSales ?? 0));
+                    case 'paymentReceived': return asc * ((a.computedTotalPaid ?? 0) - (b.computedTotalPaid ?? 0));
+                    case 'outstanding':     return asc * ((a.computedOutstanding ?? 0) - (b.computedOutstanding ?? 0));
+                    default:                return 0;
+                }
+            });
+        }
         return result;
-    }, [dateFilteredRetailers, searchTerm, filterSize, colSort, partnerView]);
+    }, [dateFilteredRetailers, partnerView, fName, fContact, fDistrict, fSalespersons, fPortfolios, fTotalInvoice, fPayment, fOutstanding, sortCol, sortDir]);
+
+    // Salesperson checklist options — distinct assigned names plus an Unassigned
+    // bucket. Derived from the date-filtered set so the list reflects the range.
+    const salespersonOptions = useMemo(() => {
+        const set = new Set<string>();
+        dateFilteredRetailers.forEach(r => (r.assignedSalespersons ?? []).forEach(sp => set.add(sp)));
+        const named = [...set].sort((a, b) => a.localeCompare(b)).map(v => ({ value: v, label: v }));
+        return [...named, { value: UNASSIGNED_SP, label: 'Unassigned' }];
+    }, [dateFilteredRetailers]);
+
+    // Portfolio checklist — fixed sizes (matches onboarding).
+    const portfolioOptions = useMemo(
+        () => [{ value: 'Small', label: 'Small' }, { value: 'Medium', label: 'Medium' }, { value: 'Big', label: 'Big' }],
+        [],
+    );
+
+    const hasColumnFilter =
+        fName.trim() !== '' || fContact.trim() !== '' || fDistrict.trim() !== '' ||
+        fSalespersons.length > 0 || fPortfolios.length > 0 ||
+        isNumActive(fTotalInvoice) || isNumActive(fPayment) || isNumActive(fOutstanding);
+
+    const clearAllFilters = () => {
+        setFName(''); setFContact(''); setFDistrict('');
+        setFSalespersons([]); setFPortfolios([]);
+        setFTotalInvoice(EMPTY_NUM); setFPayment(EMPTY_NUM); setFOutstanding(EMPTY_NUM);
+    };
 
     // Grand-total summary for the currently visible (filtered/searched) rows —
     // sorting does not affect it since it aggregates the whole processedRetailers
@@ -601,29 +709,204 @@ function PartnersTab() {
         document.body.removeChild(link);
     };
 
-    // ── Column sort helpers (mirrors SupplierLedgerPage pattern) ──────────────
-    const handleSort = (col: WLSortCol) => {
-        setColSort(prev =>
-            prev.col === col
-                ? { col, dir: prev.dir === 'asc' ? 'desc' : 'asc' }
-                : { col, dir: col === 'name' || col === 'district' || col === 'salesperson' || col === 'contact' ? 'asc' : 'desc' }
+    // Measure the header row so the grand-total row sticks directly beneath it.
+    useLayoutEffect(() => {
+        const measure = () => setHeaderH(headerRowRef.current?.offsetHeight ?? 0);
+        measure();
+        window.addEventListener('resize', measure);
+        return () => window.removeEventListener('resize', measure);
+    }, [layout.colWidths, layout.colOrder, layout.freezeCount, loading]);
+
+    // ── Column renderers (colOrder-driven, like the Stock Report / Product Master) ─
+    const renderHeaderTh = (key: PartnerColKey, colIdx: number) => {
+        const align = PARTNER_ALIGN[key];
+        const thBase: React.CSSProperties = {
+            padding: '0.6rem 0.75rem', fontWeight: 600, fontSize: '0.78rem', textAlign: align,
+            verticalAlign: 'top', overflow: 'hidden', color: 'var(--text-secondary)',
+            position: 'sticky', top: 0, zIndex: 2, background: 'var(--surface-raised)',
+            ...layout.stickyStyle(colIdx, { header: true, rowBg: 'var(--surface-raised)' }),
+            ...(layout.isDragOver(key) ? { borderLeft: '3px solid var(--primary)' } : {}),
+        };
+        let inner: React.ReactNode;
+        switch (key) {
+            case 'select':
+                inner = (
+                    <input type="checkbox"
+                        checked={selectedIds.size === processedRetailers.length && processedRetailers.length > 0}
+                        onChange={e => e.target.checked ? handleSelectAll() : handleClearSelection()}
+                        onClick={e => e.stopPropagation()}
+                        style={{ cursor: 'pointer' }} />
+                );
+                break;
+            case 'name': inner = (
+                <div style={HDR_COL_STYLE}>
+                    <SortLabel label="Retailer Name" active={sortCol === 'name'} dir={sortDir} onClick={() => toggleSort('name')} />
+                    <ColumnTextFilter value={fName} onChange={setFName} placeholder="Search name…" />
+                </div>
+            ); break;
+            case 'contact': inner = (
+                <div style={HDR_COL_STYLE}>
+                    <SortLabel label="Contact" active={sortCol === 'contact'} dir={sortDir} onClick={() => toggleSort('contact')} />
+                    <ColumnTextFilter value={fContact} onChange={setFContact} placeholder="Search contact…" />
+                </div>
+            ); break;
+            case 'district': inner = (
+                <div style={HDR_COL_STYLE}>
+                    <SortLabel label="District" active={sortCol === 'district'} dir={sortDir} onClick={() => toggleSort('district')} />
+                    <ColumnTextFilter value={fDistrict} onChange={setFDistrict} placeholder="Search district…" />
+                </div>
+            ); break;
+            case 'salesperson': inner = (
+                <div style={HDR_COL_STYLE}>
+                    <SortLabel label="Salesperson" active={sortCol === 'salesperson'} dir={sortDir} onClick={() => toggleSort('salesperson')} />
+                    <ColumnMultiSelectFilter selected={fSalespersons} options={salespersonOptions} onChange={setFSalespersons} allLabel="All" />
+                </div>
+            ); break;
+            case 'portfolio': inner = (
+                <div style={HDR_COL_STYLE}>
+                    <SortLabel label="Portfolio" active={sortCol === 'portfolio'} dir={sortDir} onClick={() => toggleSort('portfolio')} />
+                    <ColumnMultiSelectFilter selected={fPortfolios} options={portfolioOptions} onChange={setFPortfolios} allLabel="All" />
+                </div>
+            ); break;
+            case 'totalInvoice': inner = (
+                <div style={HDR_COL_STYLE}>
+                    <SortLabel label="Total Invoice Amount" align="right" active={sortCol === 'totalInvoice'} dir={sortDir} onClick={() => toggleSort('totalInvoice')} />
+                    <ColumnNumFilter state={fTotalInvoice} onChange={setFTotalInvoice} />
+                </div>
+            ); break;
+            case 'paymentReceived': inner = (
+                <div style={HDR_COL_STYLE}>
+                    <SortLabel label="Payment Received" align="right" active={sortCol === 'paymentReceived'} dir={sortDir} onClick={() => toggleSort('paymentReceived')} />
+                    <ColumnNumFilter state={fPayment} onChange={setFPayment} />
+                </div>
+            ); break;
+            case 'outstanding': inner = (
+                <div style={HDR_COL_STYLE}>
+                    <SortLabel label="Outstanding" align="right" active={sortCol === 'outstanding'} dir={sortDir} onClick={() => toggleSort('outstanding')} />
+                    <ColumnNumFilter state={fOutstanding} onChange={setFOutstanding} />
+                </div>
+            ); break;
+            case 'expand': inner = ''; break;
+            default: inner = PARTNER_LABELS[key];
+        }
+        return (
+            <th key={key} style={thBase} {...layout.getDragProps(key)}>
+                {inner}
+                {layout.resizeHandle(key)}
+            </th>
         );
     };
-    const sortIndicator = (col: WLSortCol) =>
-        colSort.col === col ? (colSort.dir === 'asc' ? ' ↑' : ' ↓') : '';
-    const thStyle = (col: WLSortCol, align: 'left' | 'right' | 'center' = 'left'): React.CSSProperties => ({
-        padding: '0.7rem 0.75rem',
-        fontWeight: 600,
-        fontSize: '0.72rem',
-        textTransform: 'uppercase',
-        letterSpacing: '0.05em',
-        textAlign: align,
-        whiteSpace: 'nowrap',
-        cursor: 'pointer',
-        userSelect: 'none',
-        color: colSort.col === col ? 'var(--primary-light)' : 'var(--text-secondary)',
-        transition: 'color 0.15s',
-    });
+
+    interface PartnerRowCtx { rowBg: string; isSelected: boolean; isExpanded: boolean }
+
+    const renderBodyTd = (key: PartnerColKey, colIdx: number, r: Retailer, ctx: PartnerRowCtx): React.ReactNode => {
+        const align = PARTNER_ALIGN[key];
+        const tdBase: React.CSSProperties = {
+            padding: '0.8rem 0.75rem', textAlign: align, overflow: 'hidden',
+            ...layout.stickyStyle(colIdx, { rowBg: ctx.rowBg }),
+        };
+        const outstanding = r.computedOutstanding ?? 0;
+        switch (key) {
+            case 'select':
+                return (
+                    <td key={key} style={{ ...tdBase, padding: '0.8rem 0.5rem' }} onClick={e => e.stopPropagation()}>
+                        <input type="checkbox" checked={ctx.isSelected} onChange={e => handleSelectionChange(r.id, e.target.checked)} style={{ cursor: 'pointer' }} />
+                    </td>
+                );
+            case 'name':
+                return <td key={key} style={{ ...tdBase, whiteSpace: 'normal', wordBreak: 'break-word' }}><div style={{ fontWeight: 600, color: 'var(--text-primary)' }}>{r.name || '—'}</div></td>;
+            case 'contact':
+                return (
+                    <td key={key} style={tdBase} onClick={e => e.stopPropagation()}>
+                        {r.number
+                            ? <a href={`tel:${r.number}`} style={{ display: 'flex', alignItems: 'center', gap: '0.3rem', color: 'var(--primary-light)', textDecoration: 'none', fontSize: '0.83rem' }}><Phone size={12} />{r.number}</a>
+                            : <span style={{ color: 'var(--text-tertiary)' }}>—</span>}
+                    </td>
+                );
+            case 'district':
+                return <td key={key} style={{ ...tdBase, color: 'var(--text-secondary)', fontSize: '0.85rem' }}>{r.district || '—'}</td>;
+            case 'salesperson':
+                return (
+                    <td key={key} style={{ ...tdBase, fontSize: '0.85rem', position: 'relative', overflow: 'visible' }}
+                        onMouseEnter={() => (r.assignedSalespersons?.length ?? 0) > 1 && setSpTooltip(r.id)}
+                        onMouseLeave={() => setSpTooltip(null)}>
+                        {(r.assignedSalespersons?.length ?? 0) === 0 ? (
+                            <span style={{ color: 'var(--text-tertiary)' }}>Unassigned</span>
+                        ) : (
+                            <span style={{ display: 'inline-flex', alignItems: 'center', gap: '0.35rem', color: 'var(--text-primary)', fontWeight: 500 }}>
+                                <Users size={12} color="var(--primary-light)" />
+                                {r.assignedSalespersons![0]}
+                                {(r.assignedSalespersons!.length > 1) && (
+                                    <span style={{ fontSize: '0.68rem', fontWeight: 700, background: 'rgba(14,165,233,0.12)', color: '#0ea5e9', padding: '0.1rem 0.4rem', borderRadius: '99px' }}>
+                                        +{r.assignedSalespersons!.length - 1}
+                                    </span>
+                                )}
+                            </span>
+                        )}
+                        {spTooltip === r.id && (r.assignedSalespersons?.length ?? 0) > 1 && (
+                            <div style={{ position: 'absolute', top: '100%', left: 0, zIndex: 200, background: 'var(--surface-solid)', border: '1px solid var(--surface-border)', borderRadius: '8px', padding: '0.5rem 0.75rem', minWidth: '160px', boxShadow: '0 4px 16px rgba(0,0,0,0.18)', pointerEvents: 'none' }}>
+                                <p style={{ margin: '0 0 0.3rem', fontSize: '0.65rem', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em', color: 'var(--text-tertiary)' }}>Assigned Salespersons</p>
+                                {r.assignedSalespersons!.map(sp => (
+                                    <div key={sp} style={{ display: 'flex', alignItems: 'center', gap: '0.3rem', padding: '0.2rem 0', fontSize: '0.82rem', color: 'var(--text-primary)', fontWeight: 500 }}>
+                                        <Users size={11} color="var(--primary-light)" />{sp}
+                                    </div>
+                                ))}
+                            </div>
+                        )}
+                    </td>
+                );
+            case 'portfolio': {
+                const psBadge = ({ 'Big': { bg: '#0ea5e922', color: '#0ea5e9' }, 'Medium': { bg: '#8b5cf622', color: '#8b5cf6' }, 'Small': { bg: '#10b98122', color: '#10b981' } } as Record<string, { bg: string; color: string }>)[r.portfolioSize || ''] || { bg: 'var(--surface-raised)', color: 'var(--text-tertiary)' };
+                return (
+                    <td key={key} style={tdBase}>
+                        <span style={{ background: psBadge.bg, color: psBadge.color, padding: '0.15rem 0.55rem', borderRadius: '99px', fontSize: '0.72rem', fontWeight: 700, whiteSpace: 'nowrap' }}>
+                            {r.portfolioSize || '—'}
+                        </span>
+                    </td>
+                );
+            }
+            case 'totalInvoice':
+                return <td key={key} style={{ ...tdBase, whiteSpace: 'nowrap', color: 'var(--text-primary)' }}>₹{(r.computedTotalSales ?? 0).toLocaleString('en-IN')}</td>;
+            case 'paymentReceived':
+                return <td key={key} style={{ ...tdBase, whiteSpace: 'nowrap', color: '#10b981', fontWeight: 600 }}>₹{(r.computedTotalPaid ?? 0).toLocaleString('en-IN')}</td>;
+            case 'outstanding':
+                return (
+                    <td key={key} style={{ ...tdBase, whiteSpace: 'nowrap' }}>
+                        {outstanding > 0
+                            ? <span style={{ color: '#ef4444', fontWeight: 700 }}>₹{outstanding.toLocaleString('en-IN')}</span>
+                            : <span style={{ color: '#10b981', fontWeight: 700 }}>₹0</span>}
+                    </td>
+                );
+            case 'expand':
+                return (
+                    <td key={key} style={{ ...tdBase, padding: '0.8rem 0.5rem' }} onClick={e => toggleExpand(r.id, e)}>
+                        {ctx.isExpanded ? <ChevronDown size={15} color="var(--text-tertiary)" /> : <ChevronRight size={15} color="var(--text-tertiary)" />}
+                    </td>
+                );
+            default: return <td key={key} style={tdBase} />;
+        }
+    };
+
+    const renderGrandTd = (key: PartnerColKey, colIdx: number): React.ReactNode => {
+        const align = PARTNER_ALIGN[key];
+        const gBase: React.CSSProperties = {
+            padding: '0.75rem 0.75rem', textAlign: align, whiteSpace: 'nowrap', fontWeight: 700,
+            ...layout.stickyStyle(colIdx, { header: true, rowBg: 'var(--surface-raised)' }),
+        };
+        switch (key) {
+            case 'select':          return <td key={key} style={{ ...gBase, padding: '0.75rem 0.5rem' }} />;
+            case 'name':            return <td key={key} style={{ ...gBase, color: 'var(--text-primary)' }}>Total <span style={{ color: 'var(--text-tertiary)', fontWeight: 500 }}>({worklistSummary.retailerCount})</span></td>;
+            case 'contact':         return <td key={key} style={{ ...gBase, color: 'var(--text-secondary)', fontWeight: 500 }}>{worklistSummary.contactCount}</td>;
+            case 'district':        return <td key={key} style={gBase}>—</td>;
+            case 'salesperson':     return <td key={key} style={{ ...gBase, color: 'var(--text-secondary)', fontWeight: 500 }}>{worklistSummary.salespersonCount}</td>;
+            case 'portfolio':       return <td key={key} style={gBase}>—</td>;
+            case 'totalInvoice':    return <td key={key} style={{ ...gBase, color: 'var(--text-primary)' }}>₹{worklistSummary.totalInvoiceAmount.toLocaleString('en-IN')}</td>;
+            case 'paymentReceived': return <td key={key} style={{ ...gBase, color: '#10b981' }}>₹{worklistSummary.totalPaymentReceived.toLocaleString('en-IN')}</td>;
+            case 'outstanding':     return <td key={key} style={{ ...gBase, color: worklistSummary.totalOutstanding > 0 ? '#ef4444' : '#10b981' }}>₹{worklistSummary.totalOutstanding.toLocaleString('en-IN')}</td>;
+            case 'expand':          return <td key={key} style={{ ...gBase, padding: '0.75rem 0.5rem' }} />;
+            default:                return <td key={key} style={gBase} />;
+        }
+    };
 
     return (
         <div>
@@ -702,8 +985,10 @@ function PartnersTab() {
                 </div>
             </div>
 
-            {/* Filters Bar */}
-            <div className="glass-panel" style={{ padding: '1rem 1.25rem', marginBottom: '1.5rem', display: 'flex', gap: '1rem', flexWrap: 'wrap', alignItems: 'center' }}>
+            {/* Filters Bar — the Outstanding quick-filter lives here; per-column
+                search/filters (name, contact, district, salesperson, portfolio,
+                amounts) now live in the table column headers, like Stock Report. */}
+            <div className="glass-panel" style={{ padding: '0.85rem 1.25rem', marginBottom: '1.25rem', display: 'flex', gap: '1rem', flexWrap: 'wrap', alignItems: 'center' }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', background: 'var(--surface-base)', padding: '0.25rem 0.75rem', borderRadius: '10px', border: `1px solid ${partnerView !== 'all' ? 'var(--primary-light)' : 'var(--surface-border)'}` }}>
                     <Filter size={14} color={partnerView !== 'all' ? 'var(--primary-light)' : 'var(--text-secondary)'} />
                     <select
@@ -716,20 +1001,11 @@ function PartnersTab() {
                         <option value="cleared">Outstanding: Cleared</option>
                     </select>
                 </div>
-                <div style={{ flex: '1 1 240px', position: 'relative' }}>
-                    <Search size={16} style={{ position: 'absolute', left: '0.85rem', top: '50%', transform: 'translateY(-50%)', color: 'var(--text-tertiary)' }} />
-                    <input type="text" placeholder={t('worklist.search_worklist_placeholder')} className="input-field"
-                        style={{ paddingLeft: '2.2rem', margin: 0, height: '38px' }} value={searchTerm} onChange={e => setSearchTerm(e.target.value)} />
-                </div>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', background: 'var(--surface-base)', padding: '0.25rem 0.75rem', borderRadius: '10px', border: '1px solid var(--surface-border)' }}>
-                    <Filter size={14} color="var(--text-secondary)" />
-                    <select value={filterSize} onChange={e => setFilterSize(e.target.value)} style={{ background: 'transparent', color: 'var(--text-primary)', border: 'none', outline: 'none', padding: '0.35rem 0.25rem', cursor: 'pointer', fontSize: '0.85rem' }}>
-                        <option value="All">{t('worklist.all_sizes')}</option>
-                        <option value="Big">{t('onboarding.big_distributor')}</option>
-                        <option value="Medium">{t('onboarding.medium_retailer')}</option>
-                        <option value="Small">{t('onboarding.small_retailer')}</option>
-                    </select>
-                </div>
+                {hasColumnFilter && (
+                    <button onClick={clearAllFilters} className="btn btn-secondary" style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', fontSize: '0.82rem', color: 'var(--primary)' }}>
+                        <X size={14} /> Clear Filters
+                    </button>
+                )}
                 <span style={{ color: 'var(--text-tertiary)', fontSize: '0.82rem', marginLeft: 'auto' }}>{processedRetailers.length} partners</span>
             </div>
 
@@ -784,160 +1060,90 @@ function PartnersTab() {
                     )}
                 </div>
             ) : (
-                <div className="glass-panel" style={{ overflow: 'hidden', marginTop: '0.5rem' }}>
-                    <div style={{ overflowX: 'auto' }}>
-                        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.875rem' }}>
-                            <thead>
-                                <tr style={{ borderBottom: '2px solid var(--surface-border)', background: 'var(--surface-raised)', textAlign: 'left' }}>
-                                    {!isViewOnly && (
-                                        <th style={{ padding: '0.7rem 0.5rem 0.7rem 1rem', width: '36px' }}>
-                                            <input type="checkbox"
-                                                checked={selectedIds.size === processedRetailers.length && processedRetailers.length > 0}
-                                                onChange={e => e.target.checked ? handleSelectAll() : handleClearSelection()}
-                                                style={{ cursor: 'pointer' }}
-                                            />
-                                        </th>
-                                    )}
-                                    <th style={thStyle('name')}              onClick={() => handleSort('name')}>Retailer Name{sortIndicator('name')}</th>
-                                    <th style={thStyle('contact')}           onClick={() => handleSort('contact')}>Contact{sortIndicator('contact')}</th>
-                                    <th style={thStyle('district')}          onClick={() => handleSort('district')}>District{sortIndicator('district')}</th>
-                                    <th style={thStyle('salesperson')}       onClick={() => handleSort('salesperson')}>Salesperson{sortIndicator('salesperson')}</th>
-                                    <th style={{ padding: '0.7rem 0.75rem', fontWeight: 600, fontSize: '0.72rem', textTransform: 'uppercase', letterSpacing: '0.05em', color: 'var(--text-secondary)', whiteSpace: 'nowrap' }}>Portfolio</th>
-                                    <th style={{ padding: '0.7rem 0.75rem', fontWeight: 600, fontSize: '0.72rem', textTransform: 'uppercase', letterSpacing: '0.05em', textAlign: 'right', color: 'var(--text-secondary)', whiteSpace: 'nowrap' }}>Total Invoice Amount</th>
-                                    <th style={{ padding: '0.7rem 0.75rem', fontWeight: 600, fontSize: '0.72rem', textTransform: 'uppercase', letterSpacing: '0.05em', textAlign: 'right', color: 'var(--text-secondary)', whiteSpace: 'nowrap' }}>Payment Received</th>
-                                    <th style={thStyle('outstanding', 'right')} onClick={() => handleSort('outstanding')}>Outstanding{sortIndicator('outstanding')}</th>
-                                    <th style={{ width: '36px' }} />
-                                </tr>
-                            </thead>
-                            <tbody>
-                                <tr style={{ borderBottom: '2px solid var(--surface-border)', background: 'var(--surface-raised)', fontWeight: 700 }}>
-                                    {!isViewOnly && <td style={{ padding: '0.75rem 0.5rem 0.75rem 1rem' }} />}
-                                    <td style={{ padding: '0.75rem 0.75rem', color: 'var(--text-primary)' }}>
-                                        Total <span style={{ color: 'var(--text-tertiary)', fontWeight: 500 }}>({worklistSummary.retailerCount})</span>
-                                    </td>
-                                    <td style={{ padding: '0.75rem 0.75rem', color: 'var(--text-secondary)', fontWeight: 500 }}>{worklistSummary.contactCount}</td>
-                                    <td style={{ padding: '0.75rem 0.75rem' }}>—</td>
-                                    <td style={{ padding: '0.75rem 0.75rem', color: 'var(--text-secondary)', fontWeight: 500 }}>{worklistSummary.salespersonCount}</td>
-                                    <td style={{ padding: '0.75rem 0.75rem' }}>—</td>
-                                    <td style={{ padding: '0.75rem 0.75rem', textAlign: 'right', whiteSpace: 'nowrap', color: 'var(--text-primary)' }}>
-                                        ₹{worklistSummary.totalInvoiceAmount.toLocaleString('en-IN')}
-                                    </td>
-                                    <td style={{ padding: '0.75rem 0.75rem', textAlign: 'right', whiteSpace: 'nowrap', color: '#10b981' }}>
-                                        ₹{worklistSummary.totalPaymentReceived.toLocaleString('en-IN')}
-                                    </td>
-                                    <td style={{ padding: '0.75rem 0.75rem', textAlign: 'right', whiteSpace: 'nowrap', color: worklistSummary.totalOutstanding > 0 ? '#ef4444' : '#10b981' }}>
-                                        ₹{worklistSummary.totalOutstanding.toLocaleString('en-IN')}
-                                    </td>
-                                    <td style={{ padding: '0.75rem 0.5rem' }} />
-                                </tr>
-                                {processedRetailers.map(r => {
-                                    const outstanding = r.computedOutstanding ?? 0;
-                                    const isSelected = selectedIds.has(r.id);
-                                    const isExpanded = expandedRows.has(r.id);
-                                    const isHighRisk = outstanding > 100000;
-                                    const psBadge = ({ 'Big': { bg: '#0ea5e922', color: '#0ea5e9' }, 'Medium': { bg: '#8b5cf622', color: '#8b5cf6' }, 'Small': { bg: '#10b98122', color: '#10b981' } } as Record<string, { bg: string; color: string }>)[r.portfolioSize || ''] || { bg: 'var(--surface-raised)', color: 'var(--text-tertiary)' };
-                                    // checkbox + 8 data cols + chevron = 10; viewOnly skips checkbox = 9
-                                    const expandColSpan = isViewOnly ? 9 : 10;
-                                    const rowBg = isHighRisk
-                                        ? (isSelected ? 'hsla(0,84%,55%,0.16)' : 'hsla(0,84%,55%,0.09)')
-                                        : (isSelected ? 'hsla(210,100%,70%,0.07)' : 'transparent');
-                                    const rowBgHover = isHighRisk
-                                        ? 'hsla(0,84%,55%,0.2)'
-                                        : (isSelected ? 'hsla(210,100%,70%,0.1)' : 'var(--surface-raised)');
-                                    return (
-                                        <Fragment key={r.id}>
-                                            <tr
-                                                onClick={() => navigate(`/worklist/${r.id}`)}
-                                                style={{ borderBottom: '1px solid var(--surface-border)', cursor: 'pointer', background: rowBg, transition: 'background 0.12s' }}
-                                                onMouseEnter={e => { e.currentTarget.style.background = rowBgHover; }}
-                                                onMouseLeave={e => { e.currentTarget.style.background = rowBg; }}
-                                            >
-                                                {!isViewOnly && (
-                                                    <td style={{ padding: '0.8rem 0.5rem 0.8rem 1rem', textAlign: 'center' }} onClick={e => e.stopPropagation()}>
-                                                        <input type="checkbox" checked={isSelected} onChange={e => handleSelectionChange(r.id, e.target.checked)} style={{ cursor: 'pointer' }} />
-                                                    </td>
-                                                )}
-                                                <td style={{ padding: '0.8rem 0.75rem' }}>
-                                                    <div style={{ fontWeight: 600, color: 'var(--text-primary)' }}>{r.name || '—'}</div>
-                                                </td>
-                                                <td style={{ padding: '0.8rem 0.75rem' }} onClick={e => e.stopPropagation()}>
-                                                    {r.number
-                                                        ? <a href={`tel:${r.number}`} style={{ display: 'flex', alignItems: 'center', gap: '0.3rem', color: 'var(--primary-light)', textDecoration: 'none', fontSize: '0.83rem' }}><Phone size={12} />{r.number}</a>
-                                                        : <span style={{ color: 'var(--text-tertiary)' }}>—</span>}
-                                                </td>
-                                                <td style={{ padding: '0.8rem 0.75rem', color: 'var(--text-secondary)', fontSize: '0.85rem' }}>{r.district || '—'}</td>
-                                                <td
-                                                    style={{ padding: '0.8rem 0.75rem', fontSize: '0.85rem', position: 'relative' }}
-                                                    onMouseEnter={() => (r.assignedSalespersons?.length ?? 0) > 1 && setSpTooltip(r.id)}
-                                                    onMouseLeave={() => setSpTooltip(null)}
-                                                >
-                                                    {(r.assignedSalespersons?.length ?? 0) === 0 ? (
-                                                        <span style={{ color: 'var(--text-tertiary)' }}>Unassigned</span>
-                                                    ) : (
-                                                        <span style={{ display: 'inline-flex', alignItems: 'center', gap: '0.35rem', color: 'var(--text-primary)', fontWeight: 500 }}>
-                                                            <Users size={12} color="var(--primary-light)" />
-                                                            {r.assignedSalespersons![0]}
-                                                            {(r.assignedSalespersons!.length > 1) && (
-                                                                <span style={{ fontSize: '0.68rem', fontWeight: 700, background: 'rgba(14,165,233,0.12)', color: '#0ea5e9', padding: '0.1rem 0.4rem', borderRadius: '99px' }}>
-                                                                    +{r.assignedSalespersons!.length - 1}
-                                                                </span>
-                                                            )}
-                                                        </span>
-                                                    )}
-                                                    {spTooltip === r.id && (r.assignedSalespersons?.length ?? 0) > 1 && (
-                                                        <div style={{ position: 'absolute', top: '100%', left: 0, zIndex: 200, background: 'var(--surface-solid)', border: '1px solid var(--surface-border)', borderRadius: '8px', padding: '0.5rem 0.75rem', minWidth: '160px', boxShadow: '0 4px 16px rgba(0,0,0,0.18)', pointerEvents: 'none' }}>
-                                                            <p style={{ margin: '0 0 0.3rem', fontSize: '0.65rem', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em', color: 'var(--text-tertiary)' }}>Assigned Salespersons</p>
-                                                            {r.assignedSalespersons!.map(sp => (
-                                                                <div key={sp} style={{ display: 'flex', alignItems: 'center', gap: '0.3rem', padding: '0.2rem 0', fontSize: '0.82rem', color: 'var(--text-primary)', fontWeight: 500 }}>
-                                                                    <Users size={11} color="var(--primary-light)" />{sp}
-                                                                </div>
-                                                            ))}
-                                                        </div>
-                                                    )}
-                                                </td>
-                                                <td style={{ padding: '0.8rem 0.75rem' }}>
-                                                    <span style={{ background: psBadge.bg, color: psBadge.color, padding: '0.15rem 0.55rem', borderRadius: '99px', fontSize: '0.72rem', fontWeight: 700, whiteSpace: 'nowrap' }}>
-                                                        {r.portfolioSize || '—'}
-                                                    </span>
-                                                </td>
-                                                <td style={{ padding: '0.8rem 0.75rem', textAlign: 'right', whiteSpace: 'nowrap', color: 'var(--text-primary)' }}>
-                                                    ₹{(r.computedTotalSales ?? 0).toLocaleString('en-IN')}
-                                                </td>
-                                                <td style={{ padding: '0.8rem 0.75rem', textAlign: 'right', whiteSpace: 'nowrap', color: '#10b981', fontWeight: 600 }}>
-                                                    ₹{(r.computedTotalPaid ?? 0).toLocaleString('en-IN')}
-                                                </td>
-                                                <td style={{ padding: '0.8rem 0.75rem', textAlign: 'right', whiteSpace: 'nowrap' }}>
-                                                    {outstanding > 0
-                                                        ? <span style={{ color: '#ef4444', fontWeight: 700 }}>₹{outstanding.toLocaleString('en-IN')}</span>
-                                                        : <span style={{ color: '#10b981', fontWeight: 700 }}>₹0</span>}
-                                                </td>
-                                                <td style={{ padding: '0.8rem 0.5rem', textAlign: 'center' }} onClick={e => toggleExpand(r.id, e)}>
-                                                    {isExpanded ? <ChevronDown size={15} color="var(--text-tertiary)" /> : <ChevronRight size={15} color="var(--text-tertiary)" />}
-                                                </td>
-                                            </tr>
-                                            {isExpanded && (
-                                                <tr style={{ borderBottom: '1px solid var(--surface-border)', background: 'var(--surface-raised)' }}>
-                                                    <td colSpan={expandColSpan} style={{ padding: '0.5rem 1rem 0.65rem 3.5rem' }}>
-                                                        <div style={{ display: 'flex', gap: '2rem', fontSize: '0.82rem' }}>
-                                                            <div>
-                                                                <div style={{ fontSize: '0.65rem', fontWeight: 600, textTransform: 'uppercase', color: 'var(--text-tertiary)', letterSpacing: '0.05em' }}>Taluka</div>
-                                                                <div style={{ fontWeight: 500, color: 'var(--text-secondary)', marginTop: '0.1rem' }}>{r.taluka || '—'}</div>
-                                                            </div>
-                                                            <div>
-                                                                <div style={{ fontSize: '0.65rem', fontWeight: 600, textTransform: 'uppercase', color: 'var(--text-tertiary)', letterSpacing: '0.05em' }}>Village / At Post</div>
-                                                                <div style={{ fontWeight: 500, color: 'var(--text-secondary)', marginTop: '0.1rem' }}>{r.atPost || '—'}</div>
-                                                            </div>
-                                                        </div>
-                                                    </td>
-                                                </tr>
-                                            )}
-                                        </Fragment>
-                                    );
-                                })}
-                            </tbody>
-                        </table>
+                <>
+                    {/* Table customization hint (mirrors Stock Report / Product Master). */}
+                    <div style={{ display: 'flex', gap: '0.8rem', alignItems: 'center', marginBottom: '0.6rem', fontSize: '0.72rem', color: 'var(--text-tertiary)', flexWrap: 'wrap' }}>
+                        <span>Drag column headers to reorder.</span>
+                        <span>Drag column edges to resize.</span>
+                        <span>Right-click a header to freeze or reset.</span>
+                        {layout.freezeCount > 0 && (
+                            <span style={{ marginLeft: 'auto', color: 'var(--primary)', fontWeight: 600 }}>
+                                Frozen up to “{PARTNER_LABELS[layout.colOrder[layout.freezeCount - 1]]}”
+                            </span>
+                        )}
                     </div>
-                </div>
+
+                    {/* Full-screen capture div during column resize — prevents cursor flicker */}
+                    {layout.isResizing && <div style={{ position: 'fixed', inset: 0, zIndex: 9999, cursor: 'col-resize' }} />}
+
+                    {/* Right-click column context menu (freeze / reset widths / reset order) */}
+                    {layout.ContextMenu()}
+
+                    <div className="glass-panel" style={{ overflow: 'hidden', marginTop: '0.5rem' }}>
+                        <div style={{ overflowX: 'auto', maxHeight: '72vh', overflowY: 'auto' }} onContextMenu={layout.handleTableContextMenu}>
+                            <table style={{ width: layout.totalTableWidth, tableLayout: 'fixed', borderCollapse: 'collapse', fontSize: '0.875rem' }}>
+                                <colgroup>
+                                    {layout.colOrder.map(key => (
+                                        <col key={key} ref={layout.registerColEl(key)} style={{ width: layout.colWidths[key] }} />
+                                    ))}
+                                </colgroup>
+                                <thead>
+                                    <tr ref={headerRowRef} style={{ borderBottom: '2px solid var(--surface-border)', background: 'var(--surface-raised)' }}>
+                                        {layout.colOrder.map((key, colIdx) => renderHeaderTh(key, colIdx))}
+                                    </tr>
+                                    <tr style={{ position: 'sticky', top: headerH, zIndex: 3, background: 'var(--surface-raised)', fontWeight: 700, borderBottom: '2px solid var(--surface-border)' } as React.CSSProperties}>
+                                        {layout.colOrder.map((key, colIdx) => renderGrandTd(key, colIdx))}
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    {processedRetailers.map(r => {
+                                        const outstanding = r.computedOutstanding ?? 0;
+                                        const isSelected = selectedIds.has(r.id);
+                                        const isExpanded = expandedRows.has(r.id);
+                                        const isHighRisk = outstanding > 100000;
+                                        const rowBg = isHighRisk
+                                            ? (isSelected ? 'hsla(0,84%,55%,0.16)' : 'hsla(0,84%,55%,0.09)')
+                                            : (isSelected ? 'hsla(210,100%,70%,0.07)' : 'transparent');
+                                        const rowBgHover = isHighRisk
+                                            ? 'hsla(0,84%,55%,0.2)'
+                                            : (isSelected ? 'hsla(210,100%,70%,0.1)' : 'var(--surface-raised)');
+                                        // Frozen cells need an opaque background so scrolled content
+                                        // doesn't show through the sticky column.
+                                        const stickyBg = rowBg === 'transparent' ? 'var(--surface-base)' : rowBg;
+                                        return (
+                                            <Fragment key={r.id}>
+                                                <tr
+                                                    onClick={() => navigate(`/worklist/${r.id}`)}
+                                                    style={{ borderBottom: '1px solid var(--surface-border)', cursor: 'pointer', background: rowBg, transition: 'background 0.12s' }}
+                                                    onMouseEnter={e => { e.currentTarget.style.background = rowBgHover; }}
+                                                    onMouseLeave={e => { e.currentTarget.style.background = rowBg; }}
+                                                >
+                                                    {layout.colOrder.map((key, colIdx) => renderBodyTd(key, colIdx, r, { rowBg: stickyBg, isSelected, isExpanded }))}
+                                                </tr>
+                                                {isExpanded && (
+                                                    <tr style={{ borderBottom: '1px solid var(--surface-border)', background: 'var(--surface-raised)' }}>
+                                                        <td colSpan={layout.colOrder.length} style={{ padding: '0.5rem 1rem 0.65rem 3.5rem' }}>
+                                                            <div style={{ display: 'flex', gap: '2rem', fontSize: '0.82rem' }}>
+                                                                <div>
+                                                                    <div style={{ fontSize: '0.65rem', fontWeight: 600, textTransform: 'uppercase', color: 'var(--text-tertiary)', letterSpacing: '0.05em' }}>Taluka</div>
+                                                                    <div style={{ fontWeight: 500, color: 'var(--text-secondary)', marginTop: '0.1rem' }}>{r.taluka || '—'}</div>
+                                                                </div>
+                                                                <div>
+                                                                    <div style={{ fontSize: '0.65rem', fontWeight: 600, textTransform: 'uppercase', color: 'var(--text-tertiary)', letterSpacing: '0.05em' }}>Village / At Post</div>
+                                                                    <div style={{ fontWeight: 500, color: 'var(--text-secondary)', marginTop: '0.1rem' }}>{r.atPost || '—'}</div>
+                                                                </div>
+                                                            </div>
+                                                        </td>
+                                                    </tr>
+                                                )}
+                                            </Fragment>
+                                        );
+                                    })}
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </>
             )}
 
             <UdhariUploadModal isOpen={showUdhariModal} onClose={() => setShowUdhariModal(false)} onSuccess={() => window.location.reload()} />
