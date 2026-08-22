@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { createPortal } from 'react-dom';
 import {
   Plus, Pencil, X, CheckCircle2, Loader2, AlertCircle, ChevronDown, ChevronRight,
@@ -11,13 +11,14 @@ import { getTenantCollection, getTenantDoc } from '../utils/tenantPath';
 import { logAudit } from '../utils/auditLog';
 import {
   checkMobile, checkGstin, checkPan, checkIfsc, checkEmail,
-  checkNonNegativeNumber, checkWebsite, findDuplicateName,
+  checkNonNegativeNumber, checkWebsite, checkPinCode, findDuplicateName,
 } from '../utils/supplierValidators';
 
 /** Shape of a supplier document as far as this form cares about it. */
 export interface SupplierLike {
   name?: string;
   address?: string;
+  pinCode?: string;
   email?: string;
   phone?: string;
   gstin?: string;
@@ -59,7 +60,7 @@ const PAYMENT_TERMS = ['Advance', 'Cash on Delivery', 'Net 7', 'Net 15', 'Net 30
 
 const emptyForm = {
   // Step 1 — required information
-  name: '', supplierType: '', contactPerson: '', mobile: '', address: '', gstin: '', paymentTerms: '',
+  name: '', supplierType: '', contactPerson: '', mobile: '', address: '', pinCode: '', gstin: '', paymentTerms: '',
   // Step 2 — Business
   email: '', pan: '', website: '',
   // Step 2 — Banking
@@ -82,6 +83,7 @@ function toFormState(s: SupplierLike): Form {
     contactPerson: s.contactPerson ?? '',
     mobile: s.phone ?? '',
     address: s.address ?? '',
+    pinCode: s.pinCode ?? '',
     gstin: s.gstin ?? '',
     paymentTerms: s.paymentTerms ?? '',
     email: s.email ?? '',
@@ -112,21 +114,64 @@ const groupTitle: React.CSSProperties = {
   color: 'var(--text-tertiary)', margin: '0.25rem 0 0.6rem', display: 'flex', alignItems: 'center', gap: '0.4rem',
 };
 
+const DRAFT_KEY_PREFIX = 'fiinny_supplier_draft_';
+
 export default function SupplierFormModal(props: SupplierFormModalProps) {
   const { mode, onClose } = props;
   const isEdit = mode === 'edit';
   const { tenantId, currentUser, userName, userRole } = useAuth();
 
-  const [form, setForm] = useState<Form>(() => (isEdit ? toFormState(props.initial) : emptyForm));
+  const draftKey = !isEdit && tenantId ? `${DRAFT_KEY_PREFIX}${tenantId}` : null;
+
+  const [form, setForm] = useState<Form>(() => {
+    if (isEdit) return toFormState(props.initial);
+    // Restore localStorage draft in create mode
+    if (tenantId) {
+      try {
+        const saved = localStorage.getItem(`${DRAFT_KEY_PREFIX}${tenantId}`);
+        if (saved) return { ...emptyForm, ...JSON.parse(saved) };
+      } catch { /* ignore parse errors */ }
+    }
+    return emptyForm;
+  });
   const [errors, setErrors] = useState<Errors>({});
   const [dupWarning, setDupWarning] = useState(false);
   // In edit mode, default the "additional info" section open so the user sees all fields.
   const [moreOpen, setMoreOpen] = useState(isEdit);
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
+  const [confirmDiscard, setConfirmDiscard] = useState(false);
 
   const overlayRef = useRef<HTMLDivElement>(null);
   const firstFieldRef = useRef<HTMLInputElement>(null);
+  const initialFormRef = useRef<Form>(isEdit ? toFormState(props.initial) : emptyForm);
+
+  const isDirty = useMemo(() => {
+    const keys = Object.keys(form) as (keyof Form)[];
+    return keys.some(k => form[k] !== initialFormRef.current[k]);
+  }, [form]);
+
+  // Persist draft to localStorage on every form change (create mode only)
+  useEffect(() => {
+    if (!draftKey || !isDirty) return;
+    try { localStorage.setItem(draftKey, JSON.stringify(form)); } catch { /* ignore */ }
+  }, [form, draftKey, isDirty]);
+
+  const clearDraft = useCallback(() => {
+    if (draftKey) try { localStorage.removeItem(draftKey); } catch { /* ignore */ }
+  }, [draftKey]);
+
+  const requestClose = useCallback(() => {
+    if (saving) return;
+    if (isDirty) { setConfirmDiscard(true); return; }
+    onClose();
+  }, [saving, isDirty, onClose]);
+
+  const handleDiscard = useCallback(() => {
+    clearDraft();
+    setConfirmDiscard(false);
+    onClose();
+  }, [clearDraft, onClose]);
 
   // Autofocus the first field on mount. State starts fresh/pre-filled because the
   // parent remounts this component on each open, so no reset effect is needed.
@@ -135,12 +180,12 @@ export default function SupplierFormModal(props: SupplierFormModalProps) {
     return () => clearTimeout(t);
   }, []);
 
-  // ESC to close
+  // ESC to close (respects unsaved-changes guard)
   useEffect(() => {
-    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape' && !saving) onClose(); };
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape' && !saving) requestClose(); };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [saving, onClose]);
+  }, [saving, requestClose]);
 
   // Lock background scroll while modal is open
   useEffect(() => {
@@ -161,6 +206,7 @@ export default function SupplierFormModal(props: SupplierFormModalProps) {
     if (!form.address.trim()) e.address = 'Address is required';
 
     const m = checkMobile(form.mobile); if (!m.valid) e.mobile = m.error;
+    const pc = checkPinCode(form.pinCode); if (!pc.valid) e.pinCode = pc.error;
     const g = checkGstin(form.gstin); if (!g.valid) e.gstin = g.error;
     const p = checkPan(form.pan); if (!p.valid) e.pan = p.error;
     const i = checkIfsc(form.ifsc); if (!i.valid) e.ifsc = i.error;
@@ -182,6 +228,7 @@ export default function SupplierFormModal(props: SupplierFormModalProps) {
     // Legacy/base fields — unchanged semantics, read by list + detail pages.
     name: form.name.trim(),
     address: form.address.trim(),
+    pinCode: form.pinCode.trim(),
     email: form.email.trim(),
     phone: form.mobile.trim(),            // Mobile maps to existing `phone` field
     gstin: form.gstin.trim().toUpperCase(),
@@ -235,6 +282,7 @@ export default function SupplierFormModal(props: SupplierFormModalProps) {
           createdBy: currentUser?.email ?? '',
         });
         logAudit({ db, tenantId: tenantId!, userId: currentUser?.uid || '', userName: userName || currentUser?.email || 'Unknown', userRole: userRole || 'unknown', module: 'Supplier Ledger', action: 'Create', entityName: form.name.trim(), entityId: ref.id, description: `New supplier added` });
+        clearDraft();
         props.onCreated(openAfter ? ref.id : undefined);
       }
     } catch (err) {
@@ -267,9 +315,10 @@ export default function SupplierFormModal(props: SupplierFormModalProps) {
   );
 
   return createPortal(
+    <>
     <div
       ref={overlayRef}
-      onMouseDown={e => { if (e.target === overlayRef.current && !saving) onClose(); }}
+      onMouseDown={e => { if (e.target === overlayRef.current && !saving) requestClose(); }}
       style={{
         position: 'fixed', inset: 0, zIndex: 1100,
         display: 'flex', alignItems: 'center', justifyContent: 'center',
@@ -290,7 +339,7 @@ export default function SupplierFormModal(props: SupplierFormModalProps) {
         }}
       >
         <button
-          onClick={() => !saving && onClose()}
+          onClick={() => requestClose()}
           className="btn-icon"
           aria-label="Close"
           style={{ position: 'absolute', top: '1rem', right: '1rem', background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-tertiary)' }}
@@ -346,6 +395,9 @@ export default function SupplierFormModal(props: SupplierFormModalProps) {
             aria-invalid={!!errors.address}
           />
           {errors.address && <div style={errStyle}><AlertCircle size={12} /> {errors.address}</div>}
+        </div>
+        <div style={{ marginTop: '0.75rem', maxWidth: '200px' }}>
+          {field('pinCode', 'PIN Code', '400001', { required: true })}
         </div>
 
         {dupWarning && (
@@ -429,7 +481,7 @@ export default function SupplierFormModal(props: SupplierFormModalProps) {
 
         {/* ── Actions ─────────────────────────────────────────────────── */}
         <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '0.75rem', marginTop: '1.75rem', flexWrap: 'wrap' }}>
-          <button className="btn btn-secondary" onClick={() => !saving && onClose()} disabled={saving}>Cancel</button>
+          <button className="btn btn-secondary" onClick={() => requestClose()} disabled={saving}>Cancel</button>
           {isEdit ? (
             <button className="btn btn-primary" onClick={() => save(false)} disabled={saving} style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
               {saving ? <><Loader2 size={15} className="animate-spin" /> Saving…</> : <><CheckCircle2 size={15} /> Save Changes</>}
@@ -446,7 +498,44 @@ export default function SupplierFormModal(props: SupplierFormModalProps) {
           )}
         </div>
       </div>
-    </div>,
+    </div>
+
+    {/* ── Discard confirmation dialog ──────────────────────────────── */}
+    {confirmDiscard && (
+      <div
+        style={{
+          position: 'fixed', inset: 0, zIndex: 1200,
+          display: 'flex', alignItems: 'center', justifyContent: 'center',
+          padding: '1rem', background: 'hsla(220, 30%, 4%, 0.6)',
+        }}
+        role="alertdialog"
+        aria-modal="true"
+        aria-label="Discard changes confirmation"
+      >
+        <div
+          className="glass-panel"
+          style={{ padding: '1.5rem', borderRadius: '14px', maxWidth: '380px', width: '100%' }}
+        >
+          <h3 style={{ fontSize: '1.05rem', fontWeight: 700, marginBottom: '0.5rem' }}>Discard changes?</h3>
+          <p style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', marginBottom: '1.25rem' }}>
+            You have unsaved changes. Are you sure you want to discard them?
+          </p>
+          <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '0.75rem' }}>
+            <button className="btn btn-secondary" onClick={() => setConfirmDiscard(false)}>
+              Keep Editing
+            </button>
+            <button
+              className="btn btn-primary"
+              onClick={handleDiscard}
+              style={{ background: 'hsla(0,72%,51%,0.85)', borderColor: 'hsla(0,72%,51%,0.5)' }}
+            >
+              Discard
+            </button>
+          </div>
+        </div>
+      </div>
+    )}
+    </>,
     document.body
   );
 }

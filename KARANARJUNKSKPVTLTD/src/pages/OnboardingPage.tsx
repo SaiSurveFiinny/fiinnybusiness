@@ -1,31 +1,81 @@
-import { useState } from 'react';
+import { useState, useMemo, useEffect, useRef } from 'react';
 import { Save, AlertCircle, CheckCircle2 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
+import { useNavigate } from 'react-router-dom';
 import { addDoc, serverTimestamp } from 'firebase/firestore';
 import { db } from '../firebase';
 import { useAuth } from '../contexts/AuthContext';
 import { getTenantCollection } from '../utils/tenantPath';
 import { LOCATION_DATA, STATES } from '../utils/locationData';
 
+const INITIAL_FORM = {
+    name: '',
+    number: '',
+    email: '',
+    country: 'India',
+    state: 'Maharashtra',
+    district: '',
+    taluka: '',
+    atPost: '',
+    fullAddress: '',
+    gstin: '',
+    licenseNumber: '',
+    portfolioSize: 'Small',
+};
+
 export default function OnboardingPage() {
-    const [formData, setFormData] = useState({
-        name: '',
-        number: '',
-        email: '',
-        country: 'India',
-        state: 'Maharashtra',
-        district: '',
-        taluka: '',
-        atPost: '',
-        fullAddress: '',
-        gstin: '',
-        licenseNumber: '',
-        portfolioSize: 'Small'
-    });
+    const [formData, setFormData] = useState({ ...INITIAL_FORM });
 
     const [isSubmitting, setIsSubmitting] = useState(false);
     const [submitStatus, setSubmitStatus] = useState<'idle' | 'success' | 'error'>('idle');
     const { t } = useTranslation();
+
+    const navigate = useNavigate();
+    const [showDiscardConfirm, setShowDiscardConfirm] = useState(false);
+    const pendingHref = useRef<string | null>(null);
+
+    const isDirty = useMemo(() => {
+        const keys = Object.keys(formData) as (keyof typeof INITIAL_FORM)[];
+        return keys.some(k => formData[k] !== INITIAL_FORM[k]);
+    }, [formData]);
+
+    // Keep a ref so the capture listener always sees the latest dirty state without
+    // needing to re-subscribe on every form change.
+    const isDirtyRef = useRef(false);
+    isDirtyRef.current = isDirty;
+
+    // Intercept sidebar / nav link clicks while the form has unsaved data.
+    // Runs once; uses isDirtyRef to avoid stale closures.
+    useEffect(() => {
+        const handleClick = (e: MouseEvent) => {
+            if (!isDirtyRef.current) return;
+            const anchor = (e.target as Element).closest('a[href]');
+            if (!anchor) return;
+            const href = anchor.getAttribute('href');
+            if (!href || /^(https?:|mailto:|#)/.test(href)) return;
+            e.preventDefault();
+            e.stopPropagation();
+            pendingHref.current = href;
+            setShowDiscardConfirm(true);
+        };
+        document.addEventListener('click', handleClick, true);
+        return () => document.removeEventListener('click', handleClick, true);
+    }, []);
+
+    // Block browser-level refresh / tab close
+    useEffect(() => {
+        const handler = (e: BeforeUnloadEvent) => { if (isDirty) e.preventDefault(); };
+        window.addEventListener('beforeunload', handler);
+        return () => window.removeEventListener('beforeunload', handler);
+    }, [isDirty]);
+
+    const handleDiscard = () => {
+        setShowDiscardConfirm(false);
+        if (pendingHref.current) {
+            navigate(pendingHref.current);
+            pendingHref.current = null;
+        }
+    };
 
     const handleChange = (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => {
         const { name, value } = e.target;
@@ -50,13 +100,7 @@ export default function OnboardingPage() {
                 outstandingAmount: 0
             });
             setSubmitStatus('success');
-            setFormData({
-                name: '', number: '', email: '',
-                country: 'India', state: 'Maharashtra',
-                district: '', taluka: '', atPost: '',
-                fullAddress: '', gstin: '', licenseNumber: '',
-                portfolioSize: 'Small'
-            });
+            setFormData({ ...INITIAL_FORM });
         } catch (err) {
             console.error("Error adding document: ", err);
             setSubmitStatus('error');
@@ -66,6 +110,7 @@ export default function OnboardingPage() {
     };
 
     return (
+        <>
         <div className="animate-fade-in" style={{ maxWidth: '600px', margin: '0 auto' }}>
             <div style={{ marginBottom: '2rem' }}>
                 <h1 className="primary-gradient-text" style={{ fontSize: '2rem' }}>{t('onboarding.onboarding_title')}</h1>
@@ -233,5 +278,32 @@ export default function OnboardingPage() {
                 </form>
             </div>
         </div>
+
+        {showDiscardConfirm && (
+            <div
+                style={{ position: 'fixed', inset: 0, zIndex: 9999, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '1rem', background: 'hsla(220, 30%, 4%, 0.72)', backdropFilter: 'blur(4px)', WebkitBackdropFilter: 'blur(4px)' }}
+                role="alertdialog"
+                aria-modal="true"
+                aria-label="Discard changes confirmation"
+            >
+                <div className="glass-panel" style={{ padding: '1.5rem', borderRadius: '14px', maxWidth: '380px', width: '100%' }}>
+                    <h3 style={{ fontSize: '1.05rem', fontWeight: 700, marginBottom: '0.5rem' }}>Discard changes?</h3>
+                    <p style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', marginBottom: '1.25rem' }}>
+                        You have unsaved changes. Are you sure you want to discard them?
+                    </p>
+                    <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '0.75rem' }}>
+                        <button className="btn btn-secondary" onClick={() => setShowDiscardConfirm(false)}>Keep Editing</button>
+                        <button
+                            className="btn btn-primary"
+                            onClick={handleDiscard}
+                            style={{ background: 'hsla(0,72%,51%,0.85)', borderColor: 'hsla(0,72%,51%,0.5)' }}
+                        >
+                            Discard
+                        </button>
+                    </div>
+                </div>
+            </div>
+        )}
+        </>
     );
 }

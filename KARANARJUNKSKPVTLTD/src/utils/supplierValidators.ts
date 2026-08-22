@@ -81,6 +81,14 @@ export function checkWebsite(raw: string): FieldCheck {
   return ok;
 }
 
+/** Indian 6-digit PIN code. Required. */
+export function checkPinCode(raw: string): FieldCheck {
+  const v = (raw || '').trim();
+  if (!v) return { valid: false, error: 'PIN code is required' };
+  if (!/^\d{6}$/.test(v)) return { valid: false, error: 'Enter a valid 6-digit PIN code' };
+  return ok;
+}
+
 /**
  * Case-insensitive duplicate-name check against the already-loaded supplier list.
  * Returns a warning (not a hard error) — caller decides whether to allow override.
