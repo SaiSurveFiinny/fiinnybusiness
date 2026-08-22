@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import {
     FileText, Search, Loader2, ExternalLink, Printer,
     Receipt, IndianRupee, AlertCircle, Clock,
-    CheckSquare, X, Trash2, BadgeCheck, CalendarDays,
+    CheckSquare, X, Trash2, BadgeCheck, CalendarDays, Lock,
 } from 'lucide-react';
 import { query, onSnapshot, orderBy, updateDoc, writeBatch, serverTimestamp, getDocs, where } from 'firebase/firestore';
 import { db } from '../firebase';
@@ -60,7 +60,10 @@ const paidOf = (o: B2BInvoice) =>
     Number(o.amountPaid ?? (String(o.paymentStatus).toLowerCase() === 'paid' ? amountOf(o) : 0));
 const outstandingOf = (o: B2BInvoice) => Math.max(0, amountOf(o) - paidOf(o));
 
-const ORDER_STATUSES = ['pending', 'confirmed', 'dispatched', 'delivered', 'cancelled'];
+const ORDER_STATUSES = ['confirmed', 'dispatched', 'delivered'];
+
+const isOrderLocked = (o: B2BInvoice): boolean =>
+    o.status !== 'delivered' && !(o as any).manuallyUnlocked;
 const PAYMENT_MODES = ['Cash', 'UPI', 'Cheque', 'NEFT', 'RTGS', 'Credit', 'Online'];
 
 // ─── Component ──────────────────────────────────────────────────────────────
@@ -417,6 +420,13 @@ export default function B2BInvoiceWorklistPage() {
                                                     title="Print invoice"
                                                     style={{ display: 'inline-flex', alignItems: 'center', gap: '0.3rem', padding: '0.3rem 0.75rem', background: 'rgba(16,185,129,0.1)', color: '#10b981', border: '1px solid rgba(16,185,129,0.25)', borderRadius: '8px', cursor: 'pointer', fontSize: '0.8rem', fontWeight: 600, fontFamily: 'inherit' }}>
                                                     <Printer size={13} /> Print Invoice
+                                                </button>
+                                            ) : isOrderLocked(o) ? (
+                                                <button
+                                                    onClick={() => navigate(`/b2b-invoice?orderId=${o.id}${o.retailerId ? `&retailerId=${o.retailerId}` : ''}`)}
+                                                    title="Order locked — view only until Delivered or manually unlocked"
+                                                    style={{ display: 'inline-flex', alignItems: 'center', gap: '0.3rem', padding: '0.3rem 0.75rem', background: 'rgba(245,158,11,0.1)', color: '#f59e0b', border: '1px solid rgba(245,158,11,0.25)', borderRadius: '8px', cursor: 'pointer', fontSize: '0.8rem', fontWeight: 600, fontFamily: 'inherit' }}>
+                                                    <Lock size={13} /> View Invoice
                                                 </button>
                                             ) : (
                                                 <button

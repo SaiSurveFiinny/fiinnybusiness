@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { createPortal } from 'react-dom';
 import { useParams, useNavigate } from 'react-router-dom';
-import { ArrowLeft, User, Phone, MapPin, Calendar, MessageCircle, FileText, CheckSquare, ShoppingCart, Loader2, Trash2, Mic, TrendingUp, X, AlertTriangle, FilePen, Printer, PlusCircle, Square, Wallet, Pencil, Paperclip, Link2, Download, Package, Search } from 'lucide-react';
+import { ArrowLeft, User, Phone, MapPin, Calendar, MessageCircle, FileText, CheckSquare, ShoppingCart, Loader2, Trash2, Mic, TrendingUp, X, AlertTriangle, FilePen, Printer, PlusCircle, Square, Wallet, Pencil, Paperclip, Link2, Download, Package, Search, Lock, LockOpen } from 'lucide-react';
 import { ResponsiveContainer, BarChart, Bar, XAxis, YAxis, Tooltip, CartesianGrid, PieChart, Pie, Cell } from 'recharts';
 import { useTranslation } from 'react-i18next';
 import { getDoc, getDocs, query, orderBy, onSnapshot, addDoc, serverTimestamp, deleteDoc, updateDoc, where, writeBatch, arrayUnion, arrayRemove, doc as fsDoc, collection } from 'firebase/firestore';
@@ -106,6 +106,17 @@ interface Payment {
     attachmentType?: string;
     createdAt?: any;
 }
+
+// ─── Order status helpers ───────────────────────────────────────────────────
+const SO_STATUS_LABELS: Record<string, string> = {
+    confirmed:  'Order Placed',
+    dispatched: 'Dispatched',
+    delivered:  'Delivered',
+    cancelled:  'Cancelled',
+};
+
+const isOrderLocked = (so: any): boolean =>
+    so.status !== 'delivered' && !so.manuallyUnlocked;
 
 export default function WorklistDetailsPage() {
     const { id } = useParams();
@@ -474,6 +485,8 @@ export default function WorklistDetailsPage() {
     const updateOrderStatus = async (soId: string, field: 'status' | 'paymentStatus' | 'modeOfPayment', value: string, so: any) => {
         if (!tenantId || !id) return;
         const update: Record<string, any> = { [field]: value };
+        // Delivered automatically removes the edit lock; manual unlock is no longer needed.
+        if (field === 'status' && value === 'delivered') update.manuallyUnlocked = false;
 
         // When marking payment as done, adjust retailer outstanding / paid
         if (field === 'paymentStatus') {
@@ -514,6 +527,11 @@ export default function WorklistDetailsPage() {
         // Retailer card will auto-refresh via onSnapshot
         const updatedSnap = await getDoc(getTenantDoc(db, tenantId, 'retailers', id));
         setRetailer({ id: updatedSnap.id, ...updatedSnap.data() } as Retailer);
+    };
+
+    const handleUnlockOrder = async (soId: string) => {
+        if (!tenantId) return;
+        await updateDoc(getTenantDoc(db, tenantId, 'salesOrders', soId), { manuallyUnlocked: true });
     };
 
     const handleDeleteOrder = async (order: Order) => {
@@ -2138,8 +2156,9 @@ export default function WorklistDetailsPage() {
                                     <p style={{ margin: '0.5rem 0 0', fontSize: '0.85rem', color: 'var(--text-tertiary)' }}>{salesOrders.length === 0 ? 'Use the buttons above to create one.' : 'Change the date filter above to see more orders.'}</p>
                                 </div>
                             ) : displaySalesOrders.map((so: any) => {
-                                const statusColor: Record<string, string> = { confirmed: '#10b981', draft: '#f59e0b', dispatched: '#38bdf8', cancelled: '#ef4444' };
+                                const statusColor: Record<string, string> = { confirmed: '#f59e0b', dispatched: '#38bdf8', delivered: '#10b981', cancelled: '#ef4444' };
                                 const color = statusColor[so.status?.toLowerCase()] || '#94a3b8';
+                                const locked = isOrderLocked(so);
                                 const date = so.invoiceDate
                                     ? new Date(so.invoiceDate).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: '2-digit' })
                                     : (so.createdAt?.toDate ? new Date(so.createdAt.toDate()).toLocaleDateString('en-IN', { day:'2-digit', month:'short', year:'2-digit' }) : '—');
@@ -2171,8 +2190,18 @@ export default function WorklistDetailsPage() {
                                                     )}
                                                     <span style={{ fontWeight: 700, color: 'var(--primary-light)', fontSize: '1rem' }}>{so.orderNumber || so.invoiceNumber || so.id.slice(-8).toUpperCase()}</span>
                                                     <span style={{ background: `${color}22`, color, padding: '0.15rem 0.6rem', borderRadius: '99px', fontSize: '0.72rem', fontWeight: 700 }}>
-                                                        {so.status?.toUpperCase() || 'DRAFT'}
+                                                        {(SO_STATUS_LABELS[so.status] || so.status || 'DRAFT').toUpperCase()}
                                                     </span>
+                                                    {locked && (
+                                                        <span title="Locked for editing" style={{ display: 'flex', alignItems: 'center', gap: '0.2rem', fontSize: '0.7rem', color: '#f59e0b', background: 'rgba(245,158,11,0.1)', border: '1px solid rgba(245,158,11,0.3)', borderRadius: '99px', padding: '0.12rem 0.45rem' }}>
+                                                            <Lock size={10} /> Locked
+                                                        </span>
+                                                    )}
+                                                    {so.manuallyUnlocked && so.status !== 'delivered' && (
+                                                        <span title="Manually unlocked for editing" style={{ display: 'flex', alignItems: 'center', gap: '0.2rem', fontSize: '0.7rem', color: '#10b981', background: 'rgba(16,185,129,0.1)', border: '1px solid rgba(16,185,129,0.3)', borderRadius: '99px', padding: '0.12rem 0.45rem' }}>
+                                                            <LockOpen size={10} /> Unlocked
+                                                        </span>
+                                                    )}
                                                     {so.invoiceType === 'B2B_GST' && (
                                                         <span style={{ background: '#8b5cf622', color: '#8b5cf6', padding: '0.15rem 0.5rem', borderRadius: '99px', fontSize: '0.7rem', fontWeight: 600 }}>GST Invoice</span>
                                                     )}
@@ -2228,15 +2257,11 @@ export default function WorklistDetailsPage() {
                                             <div style={{ marginTop: '0.85rem', display: 'flex', flexDirection: 'column', gap: '0.6rem' }}>
                                                 <div style={{ display: 'flex', gap: '0.6rem', flexWrap: 'wrap', alignItems: 'center' }}>
                                                     <label style={{ fontSize: '0.72rem', color: 'var(--text-tertiary)', fontWeight: 600, whiteSpace: 'nowrap' }}>Quick update:</label>
-                                                    <select value={so.status || 'pending'} onChange={e => updateOrderStatus(so.id, 'status', e.target.value, so)}
+                                                    <select value={so.status || 'confirmed'} onChange={e => updateOrderStatus(so.id, 'status', e.target.value, so)}
                                                         style={{ fontSize: '0.78rem', padding: '0.25rem 0.5rem', borderRadius: '8px', border: '1px solid var(--surface-border)', background: 'var(--surface-raised)', color: 'var(--text-primary)', cursor: 'pointer' }}>
-                                                        <option value="draft">📋 Draft</option>
-                                                        <option value="confirmed">✅ Confirmed</option>
-                                                        <option value="in_transit">🚛 In Transit</option>
+                                                        <option value="confirmed">📋 Order Placed</option>
                                                         <option value="dispatched">📦 Dispatched</option>
                                                         <option value="delivered">🏠 Delivered</option>
-                                                        <option value="cancelled">❌ Cancelled</option>
-                                                        <option value="pending">⏳ Pending</option>
                                                     </select>
                                                     <select value={so.paymentStatus || 'Pending'} onChange={e => updateOrderStatus(so.id, 'paymentStatus', e.target.value, so)}
                                                         style={{ fontSize: '0.78rem', padding: '0.25rem 0.5rem', borderRadius: '8px', border: '1px solid var(--surface-border)', background: so.paymentStatus === 'Paid' ? 'rgba(16,185,129,0.1)' : 'rgba(239,68,68,0.08)', color: so.paymentStatus === 'Paid' ? '#10b981' : '#ef4444', cursor: 'pointer' }}>
@@ -2296,13 +2321,21 @@ export default function WorklistDetailsPage() {
                                                 </button>
                                             )}
                                             {!isSales && (
-                                                <button className="btn btn-secondary"
-                                                    onClick={() => so.invoiceType === 'B2B_GST'
-                                                        ? navigate(`/b2b-invoice?orderId=${so.id}&retailerId=${id}`)
-                                                        : navigate(`/sales-order/${so.id}`)}
-                                                    style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', padding: '0.45rem 1rem', fontSize: '0.82rem' }}>
-                                                    <FilePen size={14} /> Edit Order
-                                                </button>
+                                                locked ? (
+                                                    <button className="btn btn-secondary" disabled
+                                                        title="Order is locked for editing until Delivered or manually unlocked"
+                                                        style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', padding: '0.45rem 1rem', fontSize: '0.82rem', opacity: 0.5, cursor: 'not-allowed' }}>
+                                                        <Lock size={14} /> Edit Order
+                                                    </button>
+                                                ) : (
+                                                    <button className="btn btn-secondary"
+                                                        onClick={() => so.invoiceType === 'B2B_GST'
+                                                            ? navigate(`/b2b-invoice?orderId=${so.id}&retailerId=${id}`)
+                                                            : navigate(`/sales-order/${so.id}`)}
+                                                        style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', padding: '0.45rem 1rem', fontSize: '0.82rem' }}>
+                                                        <FilePen size={14} /> Edit Order
+                                                    </button>
+                                                )
                                             )}
                                             {isSales ? (
                                                 <button className="btn btn-secondary"
@@ -2310,11 +2343,25 @@ export default function WorklistDetailsPage() {
                                                     style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', padding: '0.45rem 1rem', fontSize: '0.82rem' }}>
                                                     <Printer size={14} /> Print Invoice
                                                 </button>
+                                            ) : locked ? (
+                                                <button className="btn btn-secondary"
+                                                    onClick={() => navigate(`/b2b-invoice?orderId=${so.id}&retailerId=${id}`)}
+                                                    style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', padding: '0.45rem 1rem', fontSize: '0.82rem' }}>
+                                                    <Printer size={14} /> View Invoice
+                                                </button>
                                             ) : (
                                                 <button className="btn btn-secondary"
                                                     onClick={() => navigate(`/b2b-invoice?orderId=${so.id}&retailerId=${id}`)}
                                                     style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', padding: '0.45rem 1rem', fontSize: '0.82rem' }}>
                                                     <Printer size={14} /> View / Edit Invoice
+                                                </button>
+                                            )}
+                                            {!isSales && locked && (
+                                                <button className="btn btn-secondary"
+                                                    onClick={() => handleUnlockOrder(so.id)}
+                                                    title="Manually unlock this order for editing"
+                                                    style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', padding: '0.45rem 1rem', fontSize: '0.82rem', color: '#f59e0b', borderColor: 'rgba(245,158,11,0.4)' }}>
+                                                    <LockOpen size={14} /> Unlock Order
                                                 </button>
                                             )}
                                             {!isSales && (so.linkedPaymentIds?.length ?? 0) > 0 && (

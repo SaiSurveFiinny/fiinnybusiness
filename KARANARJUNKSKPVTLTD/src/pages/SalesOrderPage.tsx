@@ -5,7 +5,7 @@ import { db } from '../firebase';
 import { useAuth } from '../contexts/AuthContext';
 import { getTenantCollection, getTenantDoc } from '../utils/tenantPath';
 import { useToast } from '../contexts/ToastContext';
-import { ArrowLeft, Plus, Trash2, Save, CheckCircle, Package, Truck, MessageCircle } from 'lucide-react';
+import { ArrowLeft, Plus, Trash2, Save, CheckCircle, Package, Truck, MessageCircle, Lock, LockOpen } from 'lucide-react';
 
 interface LineItem {
     productId: string;
@@ -39,6 +39,15 @@ export default function SalesOrderPage() {
     const [existingOrder, setExistingOrder] = useState<any>(null);
 
     const retailerId = searchParams.get('retailerId') || existingOrder?.retailerId;
+
+    const isLocked = !isNew && !!existingOrder && existingOrder.status !== 'delivered' && !existingOrder.manuallyUnlocked;
+
+    const handleUnlock = async () => {
+        if (!tenantId || !orderId) return;
+        await updateDoc(getTenantDoc(db, tenantId, 'salesOrders', orderId), { manuallyUnlocked: true });
+        const snap = await getDoc(getTenantDoc(db, tenantId, 'salesOrders', orderId));
+        if (snap.exists()) setExistingOrder({ id: snap.id, ...snap.data() });
+    };
 
     useEffect(() => {
         if (!tenantId) return;
@@ -108,6 +117,7 @@ export default function SalesOrderPage() {
     const grandTotal = subtotal;
 
     const handleSave = async (newStatus: 'draft' | 'confirmed') => {
+        if (isLocked) { showToast('This order is locked for editing.', 'error'); return; }
         if (!tenantId || !retailerId || !retailer) { showToast('Retailer info missing.', 'error'); return; }
         if (lineItems.some(l => !l.productId)) { showToast('Please select a product for each line item.', 'error'); return; }
         setSaving(true);
@@ -269,12 +279,29 @@ export default function SalesOrderPage() {
                 )}
             </div>
 
+            {/* Lock banner */}
+            {isLocked && (
+                <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', padding: '0.75rem 1.25rem', background: 'rgba(245,158,11,0.1)', border: '1px solid rgba(245,158,11,0.4)', borderRadius: '10px', marginBottom: '1rem' }}>
+                    <Lock size={16} color="#f59e0b" />
+                    <span style={{ flex: 1, fontSize: '0.9rem', color: '#f59e0b', fontWeight: 600 }}>This order is locked for editing until status is Delivered, or unlocked manually.</span>
+                    <button onClick={handleUnlock}
+                        style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', padding: '0.4rem 1rem', background: 'rgba(245,158,11,0.2)', color: '#f59e0b', border: '1px solid rgba(245,158,11,0.5)', borderRadius: '8px', cursor: 'pointer', fontWeight: 700, fontSize: '0.82rem', fontFamily: 'inherit' }}>
+                        <LockOpen size={14} /> Unlock Order
+                    </button>
+                </div>
+            )}
+            {existingOrder?.manuallyUnlocked && existingOrder?.status !== 'delivered' && (
+                <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', padding: '0.5rem 1rem', background: 'rgba(16,185,129,0.08)', border: '1px solid rgba(16,185,129,0.3)', borderRadius: '8px', marginBottom: '1rem', fontSize: '0.85rem', color: '#10b981', fontWeight: 600 }}>
+                    <LockOpen size={14} /> Order manually unlocked — editing allowed
+                </div>
+            )}
+
             {/* Action Buttons */}
             <div style={{ display: 'flex', gap: '1rem', justifyContent: 'flex-end', flexWrap: 'wrap' }}>
-                <button className="btn btn-secondary" onClick={() => handleSave('draft')} disabled={saving} style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                <button className="btn btn-secondary" onClick={() => handleSave('draft')} disabled={saving || isLocked} style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', opacity: isLocked ? 0.5 : 1, cursor: isLocked ? 'not-allowed' : undefined }}>
                     <Save size={16} /> Save as Draft
                 </button>
-                <button className="btn btn-primary animate-pulse" onClick={() => handleSave('confirmed')} disabled={saving} style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                <button className="btn btn-primary animate-pulse" onClick={() => handleSave('confirmed')} disabled={saving || isLocked} style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', opacity: isLocked ? 0.5 : 1, cursor: isLocked ? 'not-allowed' : undefined }}>
                     <CheckCircle size={16} /> {saving ? 'Saving...' : 'Confirm Order'}
                 </button>
             </div>
