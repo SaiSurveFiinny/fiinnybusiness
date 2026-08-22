@@ -1,5 +1,6 @@
 import { FileText, BarChart3, Package2 } from 'lucide-react';
 import { useHashTab } from '../hooks/useHashTab';
+import { useAuth } from '../contexts/AuthContext';
 import FinancialReportsPage from './FinancialReportsPage';
 import GSTReportsPage from './GSTReportsPage';
 import StockReportPage from './StockReportPage';
@@ -15,6 +16,13 @@ const TABS: { id: ReportTab; label: string; icon: React.ReactNode }[] = [
 
 export default function ReportsPage() {
     const [active, setActive] = useHashTab<ReportTab>(VALID_TABS, 'stock', 'fiinny-tab-reports');
+    const { userRole } = useAuth();
+
+    // Analyst: hide the Financial + GST sub-tabs (Stock Report stays visible).
+    // Routes/functionality are unchanged; direct routes still work for all roles.
+    const visibleTabs = TABS.filter(tab =>
+        !(userRole === 'analyst' && (tab.id === 'financial' || tab.id === 'gst')),
+    );
 
     return (
         <div className="animate-fade-in" style={{ width: '100%' }}>
@@ -32,7 +40,7 @@ export default function ReportsPage() {
                 marginTop: '-2rem', paddingTop: '0.75rem',
                 marginBottom: '1.75rem',
             }}>
-                {TABS.map(tab => {
+                {visibleTabs.map(tab => {
                     const isActive = active === tab.id;
                     return (
                         <button
