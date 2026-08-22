@@ -1239,14 +1239,19 @@ export default function POSPage() {
 
     return (
         <>
-        {/* ── Module Tab Bar ── */}
+        {/* ── Module Tab Bar (matches the Worklist sub-navbar: breaks out of the
+            2rem page padding to sit flush against the main navbar) ── */}
         <div className="no-print" style={{
+            position: 'sticky', top: 0, zIndex: 50,
+            background: 'var(--surface-base)',
+            backdropFilter: 'blur(12px)', WebkitBackdropFilter: 'blur(12px)',
             display: 'flex', gap: '0.25rem',
             borderBottom: '2px solid var(--surface-border)',
-            background: 'var(--surface-base)',
             overflowX: 'auto', scrollbarWidth: 'none',
-            paddingLeft: '1.5rem', paddingRight: '1.5rem',
-            paddingTop: '0.5rem',
+            marginLeft: '-2rem', marginRight: '-2rem',
+            paddingLeft: '2rem', paddingRight: '2rem',
+            marginTop: '-2rem', paddingTop: '0.75rem',
+            marginBottom: '1.75rem',
         }}>
             {POS_MODULE_TABS.map(tab => {
                 const isActive = posModuleTab === tab.id;
@@ -1256,15 +1261,15 @@ export default function POSPage() {
                         onClick={() => setPosModuleTab(tab.id)}
                         style={{
                             display: 'flex', alignItems: 'center', gap: '0.5rem',
-                            padding: '0.6rem 1.1rem',
+                            padding: '0.65rem 1.25rem',
                             background: 'transparent', border: 'none',
                             borderBottom: isActive ? '2px solid var(--primary-light)' : '2px solid transparent',
                             marginBottom: '-2px',
                             color: isActive ? 'var(--primary-light)' : 'var(--text-tertiary)',
                             fontWeight: isActive ? 700 : 400,
-                            fontSize: '0.88rem', cursor: 'pointer', fontFamily: 'inherit',
-                            whiteSpace: 'nowrap',
-                            transition: 'color 0.15s ease, border-color 0.15s ease',
+                            fontSize: '0.9rem', cursor: 'pointer', fontFamily: 'inherit',
+                            whiteSpace: 'nowrap', borderRadius: '0',
+                            transition: 'all 0.15s ease',
                         }}
                         onMouseEnter={e => { if (!isActive) (e.currentTarget as HTMLButtonElement).style.color = 'var(--text-primary)'; }}
                         onMouseLeave={e => { if (!isActive) (e.currentTarget as HTMLButtonElement).style.color = 'var(--text-tertiary)'; }}
