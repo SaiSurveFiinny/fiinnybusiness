@@ -75,7 +75,7 @@ export default function OnboardingPage() {
             <div className="glass-panel" style={{ padding: '2rem' }}>
                 <form onSubmit={handleSubmit}>
 
-                    <div className="input-group animate-slide-in delay-100">
+                    <div className="input-group animate-slide-in delay-100" style={{ animationFillMode: 'forwards' }}>
                         <label htmlFor="name">{t('onboarding.business_name_label')}</label>
                         <input
                             required
@@ -90,7 +90,7 @@ export default function OnboardingPage() {
                     </div>
 
                     <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem' }}>
-                        <div className="input-group animate-slide-in delay-200">
+                        <div className="input-group animate-slide-in delay-200" style={{ animationFillMode: 'forwards' }}>
                             <label htmlFor="number">{t('onboarding.contact_number')}</label>
                             <input
                                 required
@@ -104,7 +104,7 @@ export default function OnboardingPage() {
                             />
                         </div>
 
-                        <div className="input-group animate-slide-in delay-200">
+                        <div className="input-group animate-slide-in delay-200" style={{ animationFillMode: 'forwards' }}>
                             <label htmlFor="email">{t('auth.email')} ({t('common.optional')})</label>
                             <input
                                 type="email"
@@ -193,7 +193,7 @@ export default function OnboardingPage() {
                         </div>
                     </div>
 
-                    <div className="input-group animate-slide-in delay-400" style={{ marginBottom: '2rem' }}>
+                    <div className="input-group animate-slide-in delay-400" style={{ marginBottom: '2rem', animationFillMode: 'forwards' }}>
                         <label htmlFor="portfolioSize">{t('onboarding.portfolio_size')}</label>
                         <select
                             id="portfolioSize"

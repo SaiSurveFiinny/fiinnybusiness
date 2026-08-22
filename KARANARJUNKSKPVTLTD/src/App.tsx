@@ -3,6 +3,7 @@ import { BrowserRouter, Routes, Route, Link, useLocation, Navigate, useNavigate 
 import { Home, Users, UserPlus, LogOut, ReceiptText, ShieldAlert, Calculator, Settings, Package, ChevronDown, Layers, Truck, ShoppingCart, BarChart3, Activity, Bell, ClipboardList, Star, Link2, Bot, Loader2, Menu, X, Target, Sun, Moon, Receipt, HelpCircle } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import LanguageSwitcher from './components/LanguageSwitcher';
+import EnvBadge from './components/EnvBadge';
 import OfflineBanner from './components/OfflineBanner';
 import CookieBanner from './components/CookieBanner';
 import ErrorBoundary from './components/ErrorBoundary';
@@ -151,6 +152,9 @@ function Layout({ children, currentTheme, toggleTheme }: { children: React.React
   // Paths sales role is allowed to see in the sidebar nav
   const SALES_NAV_PATHS = ['/sales-targets', '/worklist'];
 
+  // Analyst sees exactly these five items in the drawer — nothing more
+  const ANALYST_NAV_PATHS = ['/reports', '/worklist', '/pos', '/supplier-ledger', '/rates'];
+
   const mainNavItems = [
     { path: '/reports', icon: <BarChart3 size={19} />, label: 'Reports', screenKey: 'analytics' },
     { path: '/dashboard', icon: <Home size={19} />, label: 'B2B Dashboard', screenKey: 'dashboard' },
@@ -205,6 +209,7 @@ function Layout({ children, currentTheme, toggleTheme }: { children: React.React
 
   const navItems = mainNavItems.filter(item => {
     if (isSalesUser) return SALES_NAV_PATHS.includes(item.path);
+    if (userRole === 'analyst') return ANALYST_NAV_PATHS.includes(item.path);
     if (!isOwner && !isShopkeeper) return false;
     if (isShopkeeper && BASIC_PLAN_HIDDEN_PATHS.includes(item.path)) return false;
     if (userRole && permissions && !permissions[userRole]?.[item.screenKey as AppScreen]) return false;
@@ -256,6 +261,8 @@ function Layout({ children, currentTheme, toggleTheme }: { children: React.React
           <h2 className="primary-gradient-text" style={{ fontSize: '1.35rem', margin: 0, letterSpacing: '-0.03em' }}>
             {tenantData?.businessName || 'Your Business Name'}
           </h2>
+          {/* Dev-only deployment-environment badge (hidden on the hosted site) */}
+          <EnvBadge />
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: '1.5rem' }}>
           <LanguageSwitcher />
@@ -277,10 +284,10 @@ function Layout({ children, currentTheme, toggleTheme }: { children: React.React
       {/* Horizontal priority nav */}
       <HorizontalNavbar />
 
-      {/* Main Content — Reports, Admin, and Inventory (wide sub-navbar + data
-          tables need the extra width) use the full viewport width instead of
-          the centered 1200px column. */}
-      <main className={`main-content${(location.pathname.startsWith('/reports') || location.pathname.startsWith('/admin') || location.pathname.startsWith('/inventory') || location.pathname.startsWith('/worklist') || location.pathname.startsWith('/payment-reminders') || location.pathname.startsWith('/dispatch') || location.pathname.startsWith('/online-orders')) ? ' main-content--full' : ''}`}>{children}</main>
+      {/* Main Content — Reports, Admin, Inventory, POS, and Worklist (wide
+          sub-navbar + data tables need the extra width) use the full viewport
+          width instead of the centered 1200px column. */}
+      <main className={`main-content${(location.pathname.startsWith('/reports') || location.pathname.startsWith('/admin') || location.pathname.startsWith('/inventory') || location.pathname.startsWith('/worklist') || location.pathname.startsWith('/pos') || location.pathname.startsWith('/payment-reminders') || location.pathname.startsWith('/dispatch') || location.pathname.startsWith('/online-orders')) ? ' main-content--full' : ''}`}>{children}</main>
 
       {/* Drawer Overlay */}
       {drawerOpen && (

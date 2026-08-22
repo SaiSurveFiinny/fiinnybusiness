@@ -23,7 +23,6 @@ const EN: Record<string, string> = {
     discount: 'Discount',
     transport_charges: 'Transport',
     labor_charges: 'Labour',
-    round_off: 'Round Off',
     net_amount: 'NET AMOUNT',
     amount_paid: 'Amount Paid',
     credit_amount: 'Credit Amount',
@@ -182,8 +181,12 @@ export function PosInvoicePreview({
     const cgst = cart.reduce((s, i) => { const g = lineGst(i); return s + ((i.cartTotal || 0) / (1 + g / 100)) * (g / 2) / 100; }, 0);
     const sgst = cgst;
     const tax = cgst + sgst;
-    const net = Math.round(grandTotal || 0);
-    const roundOff = net - (taxable + tax + (transportCharges || 0) + (laborCharges || 0) - (discount || 0));
+    // The POS bill has no Round Off adjustment. `grandTotal` is the NET AMOUNT
+    // (Bill Total + charges − discount, discount applied here). Total Payable
+    // adds Previous Outstanding to it — the discount is never subtracted again.
+    const payable = grandTotal || 0;
+    const billTotal = taxable + tax;
+    const hasAdjustments = (transportCharges || 0) > 0 || (laborCharges || 0) > 0 || (discount || 0) > 0;
     const sellerName = branding?.businessName || 'Your Business Name';
     const isA5 = billFormat === 'A5';
     const baseFont = isA5 ? '0.65rem' : '0.82rem';
@@ -368,10 +371,8 @@ export function PosInvoicePreview({
                         {/* Col 2: Net Amount + Words + Categories */}
                         <div style={{ borderRight: '1px solid #aaa', display: 'flex', flexDirection: 'column' }}>
                             <div style={{ padding: '3px 6px', flex: 1, fontSize: '0.56rem', display: 'flex', flexDirection: 'column', gap: '1.5px' }}>
-                                {discount > 0 && (
-                                    <div style={{ display: 'flex', justifyContent: 'space-between', color: '#2E7D32' }}>
-                                        <span>{L('discount')}</span><span>-{fmt(discount)}</span>
-                                    </div>
+                                {hasAdjustments && (
+                                    <div style={{ display: 'flex', justifyContent: 'space-between' }}><span>{L('bill_total')}</span><span>₹{billTotal.toLocaleString('en-IN')}</span></div>
                                 )}
                                 {transportCharges > 0 && (
                                     <div style={{ display: 'flex', justifyContent: 'space-between' }}><span>{L('transport_charges')}</span><span>+{fmt(transportCharges)}</span></div>
@@ -379,11 +380,13 @@ export function PosInvoicePreview({
                                 {laborCharges > 0 && (
                                     <div style={{ display: 'flex', justifyContent: 'space-between' }}><span>{L('labor_charges')}</span><span>+{fmt(laborCharges)}</span></div>
                                 )}
-                                <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                                    <span>{L('round_off')}</span><span>{fmt(roundOff)}</span>
-                                </div>
+                                {discount > 0 && (
+                                    <div style={{ display: 'flex', justifyContent: 'space-between', color: '#2E7D32' }}>
+                                        <span>{L('discount')}</span><span>-₹{fmt(discount)}</span>
+                                    </div>
+                                )}
                                 <div style={{ borderTop: '1.5px solid #333', paddingTop: '1.5px', display: 'flex', justifyContent: 'space-between', fontWeight: 900, fontSize: '0.70rem' }}>
-                                    <span>{L('net_amount')}</span><span>₹{net.toLocaleString('en-IN')}</span>
+                                    <span>{L('net_amount')}</span><span>₹{payable.toLocaleString('en-IN')}</span>
                                 </div>
                                 {(modeOfPayment === 'Khata' || modeOfPayment === 'Credit') && (<>
                                     <div style={{ display: 'flex', justifyContent: 'space-between', color: '#2E7D32' }}>
@@ -398,12 +401,12 @@ export function PosInvoicePreview({
                                         <span>{L('previous_outstanding')} (Dr)</span><span>₹{Number(previousOutstanding).toLocaleString('en-IN')}</span>
                                     </div>
                                     <div style={{ borderTop: '1.5px solid #333', paddingTop: '1.5px', display: 'flex', justifyContent: 'space-between', fontWeight: 900 }}>
-                                        <span>{L('total_payable')}</span><span>₹{(net + Number(previousOutstanding)).toLocaleString('en-IN')}</span>
+                                        <span>{L('total_payable')}</span><span>₹{(payable + Number(previousOutstanding)).toLocaleString('en-IN')}</span>
                                     </div>
                                 </>)}
                             </div>
                             <div style={{ borderTop: '1px solid #ddd', padding: '2px 6px', fontSize: '0.48rem', lineHeight: 1.3 }}>
-                                <strong>{L('amount_in_words')}:</strong> <span style={{ fontStyle: 'italic' }}>INR {numberToWords(net)}</span>
+                                <strong>{L('amount_in_words')}:</strong> <span style={{ fontStyle: 'italic' }}>INR {numberToWords(payable)}</span>
                             </div>
                         </div>
 
@@ -422,7 +425,7 @@ export function PosInvoicePreview({
                             </div>
                             {branding?.upiId && (
                                 <div style={{ borderTop: '1px solid #ddd', textAlign: 'center' as const, padding: '2px 5px' }}>
-                                    <UpiQrCode upiId={branding.upiId} payeeName={sellerName} amount={net} transactionNote={billNumber} size={38} />
+                                    <UpiQrCode upiId={branding.upiId} payeeName={sellerName} amount={payable} transactionNote={billNumber} size={38} />
                                     <div style={{ fontSize: '6px' }}>{L('scan_to_pay')}</div>
                                 </div>
                             )}
@@ -528,12 +531,12 @@ export function PosInvoicePreview({
                         <div style={{ padding: '6px', display: 'flex', flexDirection: 'column', gap: '2px' }}>
                             <div style={{ display: 'flex', justifyContent: 'space-between' }}><span>{L('output_cgst')}@2.5%</span><span>{fmt(cgst)}</span></div>
                             <div style={{ display: 'flex', justifyContent: 'space-between' }}><span>{L('output_sgst')}@2.5%</span><span>{fmt(sgst)}</span></div>
-                            <div style={{ display: 'flex', justifyContent: 'space-between' }}><span>{L('round_off')}</span><span>{fmt(roundOff)}</span></div>
-                            {discount > 0 && <div style={{ display: 'flex', justifyContent: 'space-between', color: '#2E7D32' }}><span>{L('discount')}</span><span>-{fmt(discount)}</span></div>}
+                            {hasAdjustments && <div style={{ display: 'flex', justifyContent: 'space-between' }}><span>{L('bill_total')}</span><span>₹{billTotal.toLocaleString('en-IN')}</span></div>}
                             {transportCharges > 0 && <div style={{ display: 'flex', justifyContent: 'space-between' }}><span>{L('transport_charges')}</span><span>+{fmt(transportCharges)}</span></div>}
                             {laborCharges > 0 && <div style={{ display: 'flex', justifyContent: 'space-between' }}><span>{L('labor_charges')}</span><span>+{fmt(laborCharges)}</span></div>}
+                            {discount > 0 && <div style={{ display: 'flex', justifyContent: 'space-between', color: '#2E7D32' }}><span>{L('discount')}</span><span>-₹{fmt(discount)}</span></div>}
                             <div style={{ borderTop: '2px solid #111', marginTop: '3px', paddingTop: '3px', display: 'flex', justifyContent: 'space-between', fontWeight: 900, fontSize: '1rem' }}>
-                                <span>{L('net_amount')}</span><span>₹{net.toLocaleString('en-IN')}</span>
+                                <span>{L('net_amount')}</span><span>₹{payable.toLocaleString('en-IN')}</span>
                             </div>
                             {(modeOfPayment === 'Khata' || modeOfPayment === 'Credit') && (<>
                                 <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: '2px', color: '#2E7D32' }}>
@@ -548,7 +551,7 @@ export function PosInvoicePreview({
                                     <span>{L('previous_outstanding')} (Dr)</span><span>₹{Number(previousOutstanding).toLocaleString('en-IN')}</span>
                                 </div>
                                 <div style={{ borderTop: '1px solid #111', paddingTop: '2px', display: 'flex', justifyContent: 'space-between', fontWeight: 900 }}>
-                                    <span>{L('total_payable')}</span><span>₹{(net + Number(previousOutstanding)).toLocaleString('en-IN')}</span>
+                                    <span>{L('total_payable')}</span><span>₹{(payable + Number(previousOutstanding)).toLocaleString('en-IN')}</span>
                                 </div>
                             </>)}
                         </div>
@@ -556,7 +559,7 @@ export function PosInvoicePreview({
 
                     <div style={{ border: '1px solid #222', marginBottom: '8px', display: 'grid', gridTemplateColumns: '90px 1fr' }}>
                         <div style={{ borderRight: '1px solid #222', padding: '5px', fontWeight: 700, display: 'flex', alignItems: 'center' }}>{L('amount_in_words')}</div>
-                        <div style={{ padding: '5px', fontWeight: 600, fontStyle: 'italic' }}>INR {numberToWords(net)}</div>
+                        <div style={{ padding: '5px', fontWeight: 600, fontStyle: 'italic' }}>INR {numberToWords(payable)}</div>
                     </div>
 
                     {/* Category omitted from printed invoice */}
@@ -567,7 +570,7 @@ export function PosInvoicePreview({
                         </div>
                         {branding?.upiId && (
                             <div style={{ textAlign: 'center' as const }}>
-                                <UpiQrCode upiId={branding.upiId} payeeName={sellerName} amount={net} transactionNote={billNumber} size={80} />
+                                <UpiQrCode upiId={branding.upiId} payeeName={sellerName} amount={payable} transactionNote={billNumber} size={80} />
                                 <div style={{ fontSize: '9px' }}>{L('scan_to_pay')}</div>
                             </div>
                         )}

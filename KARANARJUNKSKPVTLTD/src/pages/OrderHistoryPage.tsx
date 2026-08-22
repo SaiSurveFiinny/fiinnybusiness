@@ -46,7 +46,11 @@ function getAmount(order: SalesOrder): number {
 
 const PAYMENT_MODES = ['Cash', 'Credit', 'UPI', 'NEFT', 'RTGS', 'Cheque', 'Online'];
 
-export default function OrderHistoryPage() {
+// `fullWidth` is set when this page is embedded as a POS sub-tab, where it
+// should span the full-width POS layout instead of the standalone /order-history
+// route's centered 1400px column. Defaults false so the standalone route is
+// unchanged.
+export default function OrderHistoryPage({ fullWidth = false }: { fullWidth?: boolean } = {}) {
     const { tenantId, currentUser, userName, userRole } = useAuth();
     const navigate = useNavigate();
     const [orders, setOrders] = useState<SalesOrder[]>([]);
@@ -163,7 +167,7 @@ export default function OrderHistoryPage() {
     }
 
     return (
-        <div className="animate-fade-in" style={{ maxWidth: '1400px', margin: '0 auto' }}>
+        <div className="animate-fade-in" style={{ maxWidth: fullWidth ? 'none' : '1400px', margin: '0 auto' }}>
             <div style={{ marginBottom: '2rem', display: 'flex', flexWrap: 'wrap', gap: '1rem', justifyContent: 'space-between', alignItems: 'flex-start' }}>
                 <div>
                     <h1 className="primary-gradient-text" style={{ fontSize: '2rem', display: 'flex', alignItems: 'center', gap: '0.75rem', marginBottom: '0.5rem' }}>

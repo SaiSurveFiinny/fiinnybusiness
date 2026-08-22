@@ -25,10 +25,20 @@ export interface UseColumnLayoutOptions<K extends string> {
     storageKey: string;
     tenantId: string | null | undefined;
     minWidth?: number;
+    /**
+     * When merging a persisted order with the current keys, place keys that are
+     * missing from the saved order at their canonical index in `keys` (i.e. their
+     * default position) instead of appending them at the end.
+     *
+     * Off by default so existing consumers keep the original append-at-end
+     * behaviour. Opt in when a column can become newly visible (e.g. a
+     * role-gated column) and must land in its intended slot rather than the end.
+     */
+    insertMissingAtDefaultIndex?: boolean;
 }
 
 export function useColumnLayout<K extends string>(opts: UseColumnLayoutOptions<K>) {
-    const { keys, defaultWidths, labels, storageKey, tenantId, minWidth = 50 } = opts;
+    const { keys, defaultWidths, labels, storageKey, tenantId, minWidth = 50, insertMissingAtDefaultIndex = false } = opts;
 
     const LS_WIDTHS = (tid: string) => `${storageKey}_widths_${tid}`;
     const LS_FREEZE = (tid: string) => `${storageKey}_freeze_${tid}`;
@@ -66,10 +76,26 @@ export function useColumnLayout<K extends string>(opts: UseColumnLayoutOptions<K
             if (!Array.isArray(saved)) return [...keys];
             const valid = saved.filter(k => (keys as readonly string[]).includes(k)) as K[];
             const missing = (keys as readonly K[]).filter(k => !valid.includes(k));
-            return [...valid, ...missing];
+            if (missing.length === 0) return valid;
+            if (!insertMissingAtDefaultIndex) return [...valid, ...missing];
+            // Insert each missing key at its canonical position: before the first
+            // already-placed key whose default index is greater. `missing` is
+            // derived from `keys`, so it is already in canonical order and
+            // multiple missing keys keep their relative default ordering.
+            const canonicalIndex = new Map<K, number>((keys as readonly K[]).map((k, i) => [k, i]));
+            const result = [...valid];
+            for (const k of missing) {
+                const kIdx = canonicalIndex.get(k)!;
+                let insertAt = result.length;
+                for (let i = 0; i < result.length; i++) {
+                    if (canonicalIndex.get(result[i])! > kIdx) { insertAt = i; break; }
+                }
+                result.splice(insertAt, 0, k);
+            }
+            return result;
         } catch { return [...keys]; }
         // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [keys, storageKey]);
+    }, [keys, storageKey, insertMissingAtDefaultIndex]);
 
     const [colWidths, setColWidths]   = useState<Record<K, number>>({ ...defaultWidths });
     const [freezeCount, setFreezeCount] = useState(0);

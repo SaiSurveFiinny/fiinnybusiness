@@ -3,7 +3,7 @@ import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
 import {
   Package, Plus, Edit2, Trash2, Loader2, Save, X, Download,
-  FileSpreadsheet, FileDown, Search, AlertTriangle,
+  FileSpreadsheet, FileDown, AlertTriangle,
 } from 'lucide-react';
 import { query, onSnapshot, addDoc, updateDoc, serverTimestamp, getDocs, where } from 'firebase/firestore';
 import { ref as storageRef, uploadBytes, getDownloadURL, deleteObject } from 'firebase/storage';
@@ -134,23 +134,28 @@ const emptyForm = () => ({
 // ── Column sort ───────────────────────────────────────────────────────────────
 type SortCol =
   | 'batchNumber' | 'name' | 'type' | 'mfgCompany' | 'unitSize' | 'unitMeasure'
-  | 'gstPct' | 'mrp' | 'purchase' | 'retail' | 'sales' | 'stock' | 'batches';
+  | 'gstPct' | 'mrp' | 'purchase' | 'retail' | 'sales' | 'stock';
 
 // ── Column layout config (drives resize / freeze / reorder / persistence) ──────
 type PMColKey =
   | 'sr' | 'photo' | 'batchNumber' | 'name' | 'category' | 'mfg' | 'size' | 'unit'
-  | 'gst' | 'mrp' | 'purchase' | 'retail' | 'sales' | 'stock' | 'batches' | 'actions';
+  | 'gst' | 'mrp' | 'purchase' | 'retail' | 'sales' | 'stock' | 'actions';
 
+// Order: # → Photo → Product Name → Category → Manufacturer → Batch No. → Size →
+// Unit → GST % → MRP → Purch Rate → Retail Price → Sales Rate → Stock → Actions.
+// Batch No. (a single reference string on the product master) sits after
+// Manufacturer. The old "Batches" count column (an aggregate over the separate
+// inventoryBatches collection) was removed to avoid conflating the two concepts.
 const PM_ALL_KEYS: PMColKey[] = [
-  'sr', 'photo', 'batchNumber', 'name', 'category', 'mfg', 'size', 'unit',
-  'gst', 'mrp', 'purchase', 'retail', 'sales', 'stock', 'batches', 'actions',
+  'sr', 'photo', 'name', 'category', 'mfg', 'batchNumber', 'size', 'unit',
+  'gst', 'mrp', 'purchase', 'retail', 'sales', 'stock', 'actions',
 ];
 
 const PM_LABELS: Record<PMColKey, string> = {
   sr: '#', photo: 'Photo', batchNumber: 'Batch No.', name: 'Product Name',
   category: 'Category', mfg: 'Manufacturer', size: 'Size', unit: 'Unit',
   gst: 'GST %', mrp: 'MRP', purchase: 'Purch Rate', retail: 'Retail Price',
-  sales: 'Sales Rate', stock: 'Stock', batches: 'Batches', actions: 'Actions',
+  sales: 'Sales Rate', stock: 'Stock', actions: 'Actions',
 };
 
 // Batch No. kept intentionally compact (task requirement); the rest are sized to
@@ -158,14 +163,14 @@ const PM_LABELS: Record<PMColKey, string> = {
 const PM_DEFAULT_WIDTHS: Record<PMColKey, number> = {
   sr: 56, photo: 68, batchNumber: 112, name: 220, category: 150, mfg: 165,
   size: 105, unit: 115, gst: 105, mrp: 120, purchase: 120, retail: 120,
-  sales: 120, stock: 115, batches: 120, actions: 96,
+  sales: 120, stock: 115, actions: 96,
 };
 
 const PM_ALIGN: Record<PMColKey, 'left' | 'right'> = {
   sr: 'left', photo: 'left', batchNumber: 'left', name: 'left', category: 'left',
   mfg: 'left', size: 'left', unit: 'left', gst: 'left', mrp: 'right',
   purchase: 'right', retail: 'right', sales: 'right', stock: 'right',
-  batches: 'left', actions: 'left',
+  actions: 'left',
 };
 
 // ── Component ─────────────────────────────────────────────────────────────────
@@ -190,7 +195,12 @@ export default function RateSheetPage() {
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const canManage = userRole === 'admin' || userRole === 'analyst';
+  // Editing the purchase rate stays admin-only (unchanged permission).
   const canSeeCost = userRole === 'admin';
+  // Viewing the Purchase Rate column is allowed for Admin and Analyst. This is a
+  // display-only flag — it never gates editing/writing the value (see canSeeCost
+  // in the modal + save path), so no underlying permission or calculation changes.
+  const canSeePurchaseRate = userRole === 'admin' || userRole === 'analyst';
   const canDelete = userRole === 'admin';
 
   // ── Column filters + sort ─────────────────────────────────────────────────
@@ -205,7 +215,6 @@ export default function RateSheetPage() {
   const [fRetail, setFRetail]     = useState<NumFilter>(EMPTY_NUM);
   const [fSales, setFSales]       = useState<NumFilter>(EMPTY_NUM);
   const [fStock, setFStock]       = useState<NumFilter>(EMPTY_NUM);
-  const [fBatches, setFBatches]   = useState<NumFilter>(EMPTY_NUM);
 
   const [sortCol, setSortCol] = useState<SortCol | null>(null);
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('asc');
@@ -216,11 +225,17 @@ export default function RateSheetPage() {
 
   // ── Column layout (resize / freeze / reorder / persistence) ────────────────
   const activeColKeys = useMemo(
-    () => PM_ALL_KEYS.filter(k => (k !== 'purchase' || canSeeCost) && (k !== 'actions' || canManage)),
-    [canSeeCost, canManage],
+    () => PM_ALL_KEYS.filter(k => (k !== 'purchase' || canSeePurchaseRate) && (k !== 'actions' || canManage)),
+    [canSeePurchaseRate, canManage],
   );
   const layout = useColumnLayout<PMColKey>({
     keys: activeColKeys,
+    // Place a newly-visible/absent column (e.g. Purchase Rate when it becomes
+    // visible for Analyst, or an older saved order that predates it) at its
+    // default position — after MRP — instead of appending it at the end. Keeps
+    // the intended MRP → Purch Rate → Retail Price → Sales Rate sequence while
+    // preserving the rest of a user's saved custom order.
+    insertMissingAtDefaultIndex: true,
     defaultWidths: PM_DEFAULT_WIDTHS,
     labels: PM_LABELS,
     storageKey: 'fiinny_pm',
@@ -660,7 +675,6 @@ export default function RateSheetPage() {
 
   // ── Column-filter helpers ───────────────────────────────────────────────────
   const rowStock = (p: Product) => batchSummaries.get(p.id)?.totalQty ?? totalStock(p);
-  const rowBatches = (p: Product) => batchSummaries.get(p.id)?.count ?? 0;
 
   // Distinct Category / Unit values for the header dropdown filters
   const categoryOptions = useMemo(
@@ -674,7 +688,7 @@ export default function RateSheetPage() {
 
   const anyColumnFilter =
     fBatch.trim() !== '' || fCategory !== '' || fMfg.trim() !== '' || fUnit !== '' ||
-    [fSize, fGst, fMrp, fPurch, fRetail, fSales, fStock, fBatches].some(isNumActive);
+    [fSize, fGst, fMrp, fPurch, fRetail, fSales, fStock].some(isNumActive);
 
   // ── Filter + sort ───────────────────────────────────────────────────────────
   const visibleProducts = useMemo(() => {
@@ -702,7 +716,6 @@ export default function RateSheetPage() {
       if (!matchNum(p.retailerPrice || 0, fRetail)) return false;
       if (!matchNum(p.sellingPrice || 0, fSales)) return false;
       if (!matchNum(rowStock(p), fStock)) return false;
-      if (!matchNum(rowBatches(p), fBatches)) return false;
       return true;
     });
 
@@ -728,7 +741,6 @@ export default function RateSheetPage() {
         case 'retail':   return p.retailerPrice || 0;
         case 'sales':    return p.sellingPrice || 0;
         case 'stock':    return rowStock(p);
-        case 'batches':  return rowBatches(p);
         default:         return NaN;
       }
     };
@@ -740,7 +752,7 @@ export default function RateSheetPage() {
         : strOf(a).localeCompare(strOf(b)) * dir,
     );
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [products, batchSummaries, searchTerm, fBatch, fCategory, fMfg, fUnit, fSize, fGst, fMrp, fPurch, fRetail, fSales, fStock, fBatches, sortCol, sortDir]);
+  }, [products, batchSummaries, searchTerm, fBatch, fCategory, fMfg, fUnit, fSize, fGst, fMrp, fPurch, fRetail, fSales, fStock, sortCol, sortDir]);
 
   // ── Render ──────────────────────────────────────────────────────────────────
   if (loading) return (
@@ -772,7 +784,13 @@ export default function RateSheetPage() {
         </div>
       ); break;
       case 'name': inner = (
-        <SortLabel label="Product Name" active={sortCol === 'name'} dir={sortDir} onClick={() => toggleSort('name')} />
+        <div style={HDR_COL_STYLE}>
+          <SortLabel label="Product Name" active={sortCol === 'name'} dir={sortDir} onClick={() => toggleSort('name')} />
+          {/* Global product search now lives in this column. Same multi-field
+              logic as before (name / SKU / manufacturer / category) — see the
+              `q` filter in visibleProducts. */}
+          <ColumnTextFilter value={searchTerm} onChange={setSearchTerm} placeholder="Search products…" />
+        </div>
       ); break;
       case 'category': inner = (
         <div style={HDR_COL_STYLE}>
@@ -834,12 +852,6 @@ export default function RateSheetPage() {
           <ColumnNumFilter state={fStock} onChange={setFStock} />
         </div>
       ); break;
-      case 'batches': inner = (
-        <div style={HDR_COL_STYLE}>
-          <SortLabel label="Batches" active={sortCol === 'batches'} dir={sortDir} onClick={() => toggleSort('batches')} />
-          <ColumnNumFilter state={fBatches} onChange={setFBatches} />
-        </div>
-      ); break;
       case 'actions': inner = 'Actions'; break;
       default: inner = PM_LABELS[key];
     }
@@ -852,9 +864,7 @@ export default function RateSheetPage() {
   };
 
   interface RowCtx {
-    bs?: { count: number; totalQty: number; soonest: string };
     stock: number; isLow: boolean;
-    isExpired: boolean; isExpiring: boolean; soonestExpiry?: string;
     rowExpiring: boolean; index: number;
   }
 
@@ -889,9 +899,11 @@ export default function RateSheetPage() {
           </td>
         );
       case 'name':
+        // Wrap long product names so they're fully readable within the column
+        // (overrides tdBase's ellipsis/nowrap for this cell only).
         return (
-          <td key={key} style={tdBase}>
-            <div style={{ fontWeight: 600, color: 'var(--text-primary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{p.name}</div>
+          <td key={key} style={{ ...tdBase, whiteSpace: 'normal', overflow: 'visible', textOverflow: 'clip' }}>
+            <div style={{ fontWeight: 600, color: 'var(--text-primary)', whiteSpace: 'normal', wordBreak: 'break-word' }}>{p.name}</div>
             {p.productNumber && <div style={{ fontSize: '0.72rem', color: 'var(--text-tertiary)' }}>{p.productNumber}</div>}
           </td>
         );
@@ -920,18 +932,6 @@ export default function RateSheetPage() {
             {ctx.isLow && (
               <span style={{ marginLeft: '0.35rem', fontSize: '0.65rem', padding: '0.1rem 0.35rem', borderRadius: '999px', background: 'hsla(0,84%,60%,0.12)', color: '#ef4444', fontWeight: 700 }}>LOW</span>
             )}
-          </td>
-        );
-      case 'batches':
-        return (
-          <td key={key} style={tdBase}>
-            {ctx.bs ? (
-              <span style={{ fontSize: '0.75rem', padding: '0.2rem 0.55rem', borderRadius: '999px', fontWeight: 600, whiteSpace: 'nowrap', background: ctx.isExpired ? 'hsla(0,84%,60%,0.12)' : ctx.isExpiring ? 'hsla(38,92%,50%,0.12)' : 'hsla(152,60%,40%,0.12)', color: ctx.isExpired ? '#ef4444' : ctx.isExpiring ? '#f59e0b' : 'var(--primary-light)' }}>
-                {ctx.bs.count} batch{ctx.bs.count !== 1 ? 'es' : ''}
-                {ctx.isExpired && ' · ⚠ expired'}
-                {!ctx.isExpired && ctx.isExpiring && ` · exp ${fmtDate(ctx.soonestExpiry)}`}
-              </span>
-            ) : <span style={{ color: 'var(--text-tertiary)', fontSize: '0.78rem' }}>—</span>}
           </td>
         );
       case 'actions':
@@ -983,25 +983,11 @@ export default function RateSheetPage() {
         </div>
       </div>
 
-      {/* Search */}
-      <div style={{ position: 'relative', marginBottom: '1.25rem' }}>
-        <Search size={18} style={{ position: 'absolute', left: '1rem', top: '50%', transform: 'translateY(-50%)', color: 'var(--text-tertiary)' }} />
-        <input
-          className="input-field"
-          placeholder={`Search by name, SKU, manufacturer, category… (${visibleProducts.length} of ${products.length} products)`}
-          value={searchTerm}
-          onChange={e => setSearchTerm(e.target.value)}
-          style={{ paddingLeft: '2.75rem', paddingRight: '2.5rem', margin: 0, height: '48px', fontSize: '0.95rem', width: '100%', boxSizing: 'border-box' }}
-        />
-        {searchTerm && (
-          <button onClick={() => setSearchTerm('')} style={{ position: 'absolute', right: '0.75rem', top: '50%', transform: 'translateY(-50%)', background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-tertiary)' }}>
-            <X size={16} />
-          </button>
-        )}
-      </div>
-
-      {/* Table customization hint */}
+      {/* Table customization hint. Product search now lives in the Product Name
+          column header (ColumnTextFilter), so the old top search bar was removed. */}
       <div style={{ display: 'flex', gap: '0.8rem', alignItems: 'center', marginBottom: '0.6rem', fontSize: '0.72rem', color: 'var(--text-tertiary)', flexWrap: 'wrap' }}>
+        <span style={{ fontWeight: 600, color: 'var(--text-secondary)' }}>{visibleProducts.length} of {products.length} products</span>
+        <span>Search products in the Product Name column.</span>
         <span>Drag column headers to reorder.</span>
         <span>Drag column edges to resize.</span>
         <span>Right-click a header to freeze or reset.</span>
@@ -1034,21 +1020,18 @@ export default function RateSheetPage() {
             </thead>
             <tbody>
               {visibleProducts.map((p, i) => {
-                const bs = batchSummaries.get(p.id);
-                const stock = bs?.totalQty ?? totalStock(p);
+                // Stock rolls up the separate inventoryBatches collection when it
+                // has records for this product, else falls back to the product's
+                // own loose/box counts.
+                const stock = batchSummaries.get(p.id)?.totalQty ?? totalStock(p);
                 const isLow = stock < LOW_STOCK;
-                const soonestExpiry = bs?.soonest;
-                const expDays = soonestExpiry ? daysUntil(soonestExpiry) : 999;
-                const isExpired = expDays < 0;
-                const isExpiring = expDays >= 0 && expDays <= EXPIRY_WARN_DAYS;
 
-                // Product-level expiry (from the Add/Edit Product form) — distinct
-                // from `bs`/batchSummaries above, which comes from the separate
-                // Inventory Batches collection. Drives the whole-row warning only.
+                // Product-level expiry (from the Add/Edit Product form) drives the
+                // whole-row warning and the "Exp …" sub-line under Batch No.
                 const productExpDays = p.expiryDate ? daysUntil(p.expiryDate) : null;
                 const rowExpiring = productExpDays !== null && productExpDays <= EXPIRY_WARN_DAYS;
 
-                const ctx: RowCtx = { bs, stock, isLow, isExpired, isExpiring, soonestExpiry, rowExpiring, index: i };
+                const ctx: RowCtx = { stock, isLow, rowExpiring, index: i };
 
                 return (
                   <tr

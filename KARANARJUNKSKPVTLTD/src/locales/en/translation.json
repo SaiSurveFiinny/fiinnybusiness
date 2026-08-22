@@ -666,6 +666,7 @@
         "output_sgst": "Output SGST",
         "round_off": "Round Off",
         "discount": "Discount",
+        "bill_total": "Bill Total",
         "net_amount": "NET AMOUNT",
         "amount_in_words": "Amount in Words",
         "declaration": "Declaration",
