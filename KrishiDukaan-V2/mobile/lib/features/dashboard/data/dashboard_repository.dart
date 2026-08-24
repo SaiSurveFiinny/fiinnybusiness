@@ -229,7 +229,11 @@ class DashboardRepository {
     double? gstRate,
   }) async {
     final uid = FirebaseAuth.instance.currentUser?.uid;
-    await _db.collection('products').add({
+    final productRef = _db.collection('products').doc();
+    final inventoryRef = _db.collection('inventory').doc();
+    final batch = _db.batch();
+
+    batch.set(productRef, {
       // Legacy field names used by security rules for update/delete ownership checks
       'retailerPhone': sellerPhone,
       'retailerId': uid,
@@ -260,6 +264,30 @@ class DashboardRepository {
       'createdAt': FieldValue.serverTimestamp(),
       'updatedAt': FieldValue.serverTimestamp(),
     });
+
+    // Web's dashboard inventory table joins products <-> inventory by
+    // productId and silently drops any product with no matching inventory
+    // doc (no error shown). This path used to only write the product doc,
+    // so anything added via mobile was invisible on the web dashboard even
+    // though it showed up fine in the marketplace and on mobile itself,
+    // which both read the product doc directly. Mirrors what web's own
+    // createProductAndInventory already does correctly.
+    batch.set(inventoryRef, {
+      'id': inventoryRef.id,
+      'ownerId': uid,
+      'ownerPhone': sellerPhone,
+      'ownerType': 'retailer',
+      'retailerId': uid,
+      'retailerPhone': sellerPhone,
+      'productId': productRef.id,
+      'stockQuantity': stockQuantity,
+      'sellingPrice': price,
+      'reorderThreshold': 5,
+      'isAvailable': stockQuantity > 0,
+      'updatedAt': FieldValue.serverTimestamp(),
+    });
+
+    await batch.commit();
   }
 
   Future<void> updateListing(
@@ -506,6 +534,49 @@ class DashboardRepository {
         .collection('deliverySettings')
         .doc(sellerPhone)
         .set(settings, SetOptions(merge: true));
+  }
+
+  /// Turns on the ACCOUNT-level online-delivery flag for a seller.
+  ///
+  /// Distinct from a product's own `sellMode`/`isOnline`: the web dashboard's
+  /// Delivery Settings page gates its whole charges/slabs UI on
+  /// `users/{phone}.onlineDelivery`, and a MISSING field reads as false. Mobile
+  /// never wrote this field anywhere, so a retailer who ticked "online
+  /// delivery" while adding a product on mobile still saw "Online delivery
+  /// disabled" on web with no way to reach their delivery charges.
+  ///
+  /// Web sets the same flag from its Profile save (app/firebase.ts
+  /// saveBusinessProfile) across users/, retailers|manufacturers/ and
+  /// profiles/, so all three are mirrored here to keep the platforms agreeing.
+  /// users/{phone} is the one the gate actually reads, so it is written first
+  /// and allowed to throw; the two mirrors are best-effort.
+  Future<void> enableAccountOnlineDelivery(
+    String sellerPhone, {
+    required bool isManufacturer,
+  }) async {
+    if (sellerPhone.isEmpty) return;
+
+    await _db.collection('users').doc(sellerPhone).set({
+      'onlineDelivery': true,
+      'updatedAt': FieldValue.serverTimestamp(),
+    }, SetOptions(merge: true));
+
+    final profileCollection = isManufacturer ? 'manufacturers' : 'retailers';
+    for (final path in [profileCollection, 'profiles']) {
+      try {
+        // update(), not set(merge:) — these are mirrors of a profile the seller
+        // creates elsewhere. A set() would CREATE a near-empty public profile
+        // doc for a seller who has none, which storefront readers would then
+        // pick up as a real (nameless) profile.
+        await _db.collection(path).doc(sellerPhone).update({
+          'onlineDelivery': true,
+          'updatedAt': FieldValue.serverTimestamp(),
+        });
+      } catch (_) {
+        // Mirror doesn't exist yet, or isn't writable — the gate reads
+        // users/{phone}, which was already written above.
+      }
+    }
   }
 
   // ── Seller orders ─────────────────────────────────────────────────────────

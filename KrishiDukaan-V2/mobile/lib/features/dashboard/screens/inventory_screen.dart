@@ -1524,6 +1524,20 @@ class _AddListingSheetState extends ConsumerState<_AddListingSheet> {
         gstApplicable: _gstApplicable,
         gstRate: _gstRate,
       );
+
+      // Choosing online delivery for a product must also switch the
+      // ACCOUNT-level flag on, otherwise the web dashboard's Delivery Settings
+      // page stays locked ("Online delivery disabled") and the seller can never
+      // reach their delivery charges — it gates on users/{phone}.onlineDelivery,
+      // which nothing on mobile used to write.
+      if (_sellMode != 'offline_store_only') {
+        await DashboardRepository().enableAccountOnlineDelivery(
+          widget.sellerPhone,
+          isManufacturer:
+              ref.read(currentUserProvider).value?.isManufacturer ?? false,
+        );
+      }
+
       if (mounted) Navigator.pop(context);
     } catch (e) {
       if (mounted) {
@@ -2157,6 +2171,19 @@ class _EditListingSheetState extends State<_EditListingSheet> {
           effectiveDiscountPct: effectiveDiscountPct,
         );
       }
+
+      // Switching a product to online delivery must also turn the
+      // ACCOUNT-level flag on — see enableAccountOnlineDelivery. Without it the
+      // web Delivery Settings page stays locked and the seller never sees their
+      // delivery charges.
+      if (_sellMode != 'offline_store_only' &&
+          widget.listing.sellerPhone.isNotEmpty) {
+        await repo.enableAccountOnlineDelivery(
+          widget.listing.sellerPhone,
+          isManufacturer: widget.listing.sellerType == 'manufacturer',
+        );
+      }
+
       if (mounted) Navigator.pop(context);
     } finally {
       if (mounted) setState(() => _saving = false);

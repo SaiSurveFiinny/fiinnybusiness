@@ -2865,6 +2865,11 @@ export async function adminUpdateProductSellMode(
     await Promise.all([
       rSnap.exists() ? setDoc(doc(db, "retailers", sellerPhone), { onlineDelivery: true, updatedAt: serverTimestamp() }, { merge: true }) : null,
       mSnap.exists() ? setDoc(doc(db, "manufacturers", sellerPhone), { onlineDelivery: true, updatedAt: serverTimestamp() }, { merge: true }) : null,
+      // users/{phone} too: the Delivery Settings page gates its whole
+      // charges/slabs UI on THIS copy of the flag (getUserProfile →
+      // users/{phone}.onlineDelivery), so writing only the profile mirrors
+      // above left the page locked even after an admin enabled delivery.
+      setDoc(doc(db, "users", sellerPhone), { onlineDelivery: true, updatedAt: serverTimestamp() }, { merge: true }),
     ].filter(Boolean) as Promise<void>[]);
   }
 }
