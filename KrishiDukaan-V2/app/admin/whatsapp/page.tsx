@@ -39,6 +39,7 @@ import {
   CheckCheck,
 } from "lucide-react";
 import { cn } from "../../dashboard/_lib/cn";
+import { WaSubNav } from "./_components/wa-sub-nav";
 
 // ── Role display ───────────────────────────────────────────────────────────────
 
@@ -475,23 +476,22 @@ export default function WhatsAppInboxPage() {
   return (
     <div className="flex flex-col gap-3">
       {/* Page header */}
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="flex items-center gap-2 text-2xl font-black text-on-surface">
-            <MessageSquare className="h-6 w-6 text-primary" />
-            WhatsApp Support Inbox
-          </h1>
-          <p className="mt-0.5 text-sm text-on-surface-variant">
-            Real-time customer conversations via WhatsApp Business
-          </p>
-        </div>
-        <div className="flex items-center gap-2 text-xs text-on-surface-variant">
-          {loadingIncoming && <RefreshCw className="h-3.5 w-3.5 animate-spin text-primary" />}
-          <span className="font-medium">
-            {conversationList.length}{" "}
-            conversation{conversationList.length !== 1 ? "s" : ""}
-          </span>
-        </div>
+      <div>
+        <h1 className="flex items-center gap-2 text-2xl font-black text-on-surface">
+          <MessageSquare className="h-6 w-6 text-primary" />
+          WhatsApp
+        </h1>
+        <p className="mt-0.5 text-sm text-on-surface-variant">
+          Customer conversations &amp; template messaging via WhatsApp Business
+        </p>
+      </div>
+      <WaSubNav />
+      <div className="flex items-center justify-end gap-2 text-xs text-on-surface-variant">
+        {loadingIncoming && <RefreshCw className="h-3.5 w-3.5 animate-spin text-primary" />}
+        <span className="font-medium">
+          {conversationList.length}{" "}
+          conversation{conversationList.length !== 1 ? "s" : ""}
+        </span>
       </div>
 
       {/* Two-panel layout */}

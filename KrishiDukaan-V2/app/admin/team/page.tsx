@@ -39,7 +39,7 @@ const SECTION_LABELS: Record<AdminSection, string> = {
   hubs: "Hubs",
   reports: "Reports",
   messages: "Messages",
-  whatsapp: "WA Inbox",
+  whatsapp: "WhatsApp",
   blog: "Blog",
   team: "Team",
 };
