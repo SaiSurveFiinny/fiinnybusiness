@@ -4249,12 +4249,15 @@ export interface WaIncomingMessage {
   timestamp: any;
   receivedAt: any;
   rawPayload?: any;
+  mediaId?: string | null;
+  mimeType?: string | null;
 }
 
 export interface WaResolvedUser {
   name: string;
   businessName: string;
-  role: "retailer" | "manufacturer" | "salesExecutive" | "admin" | "customer" | "unknown";
+  // "consumer" (mobile app) is normalised to "customer" before this reaches the UI
+  role: "retailer" | "manufacturer" | "salesExecutive" | "admin" | "customer" | "farmer" | "unknown";
 }
 
 export interface WaConvMeta {
@@ -4278,6 +4281,11 @@ export interface WaOutMessage {
   messageId: string;
   status: "sent" | "delivered" | "read" | "failed";
   sentBy: string;
+  // document-specific (optional)
+  fileName?: string | null;
+  mimeType?: string | null;
+  fileSize?: number | null;
+  mediaId?: string | null;
 }
 
 export interface WaNote {
@@ -4287,19 +4295,55 @@ export interface WaNote {
   createdBy: string;
 }
 
+// Normalise any role string coming out of Firestore to a known WaResolvedUser role.
+// "consumer" is the mobile-app alias for "customer" and must resolve the same way.
+function normalizeWaRole(raw: string): WaResolvedUser["role"] {
+  switch (raw.toLowerCase().trim()) {
+    case "retailer":       return "retailer";
+    case "manufacturer":   return "manufacturer";
+    case "salesexecutive": return "salesExecutive";
+    case "admin":          return "admin";
+    case "customer":
+    case "consumer":       return "customer";
+    case "farmer":         return "farmer";
+    default:               return "unknown";
+  }
+}
+
 export async function resolveWaUserByPhone(phone: string): Promise<WaResolvedUser | null> {
-  const tenDigit = phone.replace(/^91/, "");
-  const candidates = Array.from(new Set([phone, tenDigit]));
+  // Build the full candidate set.
+  //
+  // The critical addition is `+${digits}` — saveUserProfile() calls toE164() which
+  // returns "+91XXXXXXXXXX" (WITH the leading plus), so user documents are stored
+  // at users/+919876543210, not users/919876543210. Without this candidate the
+  // lookup always misses for consumers/customers and any web-onboarded user.
+  const digits = phone.replace(/\D/g, "");
+  const tenDigit = digits.startsWith("91") && digits.length === 12 ? digits.slice(2) : digits;
+  const withPlus = `+${digits}`;
+  const withPlusFull = `+91${tenDigit}`;
+
+  const candidates = Array.from(new Set([
+    phone,          // as-is from Meta webhook ("919876543210")
+    digits,         // stripped of non-digits (same as above for Meta format)
+    withPlus,       // "+919876543210" — what saveUserProfile/toE164 writes ← KEY FIX
+    withPlusFull,   // "+91" + 10-digit — handles edge-case format variance
+    tenDigit,       // "9876543210" — 10-digit for admin-pre-created accounts
+  ]));
+
+  console.log(`[WA Resolve] phone="${phone}" candidates:`, candidates);
 
   for (const p of candidates) {
     const userSnap = await getDoc(doc(db, "users", p));
     if (userSnap.exists()) {
       const d = userSnap.data() as any;
-      return {
-        name: d.name || d.ownerName || "",
+      const rawRole = String(d.role ?? "");
+      const result: WaResolvedUser = {
+        name: d.name || d.ownerName || d.fullName || "",
         businessName: d.shopName || d.businessName || "",
-        role: (d.role as WaResolvedUser["role"]) || "unknown",
+        role: normalizeWaRole(rawRole),
       };
+      console.log(`[WA Resolve] HIT users/${p} → name="${result.name}" role="${rawRole}"→"${result.role}"`);
+      return result;
     }
   }
 
@@ -4307,11 +4351,13 @@ export async function resolveWaUserByPhone(phone: string): Promise<WaResolvedUse
     const retailerSnap = await getDoc(doc(db, "retailers", p));
     if (retailerSnap.exists()) {
       const d = retailerSnap.data() as any;
-      return {
+      const result: WaResolvedUser = {
         name: d.name || d.ownerName || "",
         businessName: d.shopName || d.businessName || "",
         role: "retailer",
       };
+      console.log(`[WA Resolve] HIT retailers/${p} → name="${result.name}"`);
+      return result;
     }
   }
 
@@ -4319,14 +4365,17 @@ export async function resolveWaUserByPhone(phone: string): Promise<WaResolvedUse
     const mfrSnap = await getDoc(doc(db, "manufacturers", p));
     if (mfrSnap.exists()) {
       const d = mfrSnap.data() as any;
-      return {
+      const result: WaResolvedUser = {
         name: d.name || d.ownerName || "",
         businessName: d.businessName || d.shopName || "",
         role: "manufacturer",
       };
+      console.log(`[WA Resolve] HIT manufacturers/${p} → name="${result.name}"`);
+      return result;
     }
   }
 
+  console.log(`[WA Resolve] MISS — no document found for any candidate`);
   return null;
 }
 

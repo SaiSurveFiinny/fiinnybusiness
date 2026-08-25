@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { JSX } from "react";
 import {
   collection,
   onSnapshot,
@@ -37,30 +38,166 @@ import {
   AlertCircle,
   Check,
   CheckCheck,
+  ImageOff,
+  Paperclip,
+  FileText,
+  X,
+  Download,
 } from "lucide-react";
 import { cn } from "../../dashboard/_lib/cn";
 import { WaSubNav } from "./_components/wa-sub-nav";
 
+// ── Authenticated image proxy component ──────────────────────────────────────
+
+function WaImageMsg({ mediaId, caption }: { mediaId: string; caption?: string | null }): JSX.Element {
+  const [blobUrl, setBlobUrl] = useState<string | null>(null);
+  const [state, setState] = useState<"loading" | "ok" | "error">("loading");
+
+  useEffect(() => {
+    let revoked = false;
+    let objectUrl: string | null = null;
+
+    async function load() {
+      try {
+        const token = await auth.currentUser?.getIdToken();
+        const res = await fetch(`/api/wa/media/${mediaId}`, {
+          headers: token ? { Authorization: `Bearer ${token}` } : {},
+        });
+        if (!res.ok) { setState("error"); return; }
+        const blob = await res.blob();
+        if (revoked) return;
+        objectUrl = URL.createObjectURL(blob);
+        setBlobUrl(objectUrl);
+        setState("ok");
+      } catch {
+        if (!revoked) setState("error");
+      }
+    }
+
+    void load();
+    return () => {
+      revoked = true;
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
+    };
+  }, [mediaId]);
+
+  return (
+    <div className="space-y-1">
+      {state === "loading" && (
+        <div className="flex h-36 w-56 items-center justify-center rounded-xl bg-black/5">
+          <RefreshCw className="h-5 w-5 animate-spin text-on-surface-variant/40" />
+        </div>
+      )}
+      {state === "error" && (
+        <div className="flex h-36 w-56 flex-col items-center justify-center gap-1.5 rounded-xl border border-dashed border-on-surface-variant/20 bg-black/5 text-on-surface-variant/50">
+          <ImageOff className="h-5 w-5" />
+          <span className="text-[10px] font-medium">Image unavailable</span>
+        </div>
+      )}
+      {state === "ok" && blobUrl && (
+        <img
+          src={blobUrl}
+          alt={caption ?? "image"}
+          className="max-h-64 max-w-[280px] cursor-pointer rounded-xl object-cover shadow-sm"
+          onClick={() => window.open(blobUrl, "_blank")}
+        />
+      )}
+      {caption && (
+        <p className="text-xs leading-snug text-on-surface/80">{caption}</p>
+      )}
+    </div>
+  );
+}
+
+// ── Document message component ────────────────────────────────────────────────
+
+function WaDocMsg({
+  fileName,
+  fileSize,
+  mediaId,
+  caption,
+}: {
+  fileName: string;
+  fileSize: number | null;
+  mediaId: string | null;
+  caption?: string | null;
+}): JSX.Element {
+  function fmtBytes(b: number) {
+    if (b < 1024) return `${b} B`;
+    if (b < 1024 * 1024) return `${(b / 1024).toFixed(1)} KB`;
+    return `${(b / (1024 * 1024)).toFixed(1)} MB`;
+  }
+
+  async function handleDownload() {
+    if (!mediaId) return;
+    try {
+      const token = await auth.currentUser?.getIdToken();
+      const res = await fetch(`/api/wa/media/${mediaId}`, {
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+      });
+      if (!res.ok) { alert("Could not download file — it may have expired."); return; }
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = fileName;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch {
+      alert("Download failed.");
+    }
+  }
+
+  return (
+    <div className="space-y-1 min-w-[180px]">
+      <div className="flex items-center gap-2.5">
+        <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-primary/10">
+          <FileText className="h-5 w-5 text-primary" />
+        </div>
+        <div className="min-w-0 flex-1">
+          <p className="truncate text-sm font-medium leading-tight text-on-surface">{fileName}</p>
+          {fileSize != null && (
+            <p className="text-[10px] text-on-surface-variant/60">{fmtBytes(fileSize)}</p>
+          )}
+        </div>
+        {mediaId && (
+          <button
+            type="button"
+            onClick={handleDownload}
+            title="Download"
+            className="shrink-0 rounded-full p-1.5 hover:bg-black/5 text-on-surface-variant/60 hover:text-primary transition-colors"
+          >
+            <Download className="h-3.5 w-3.5" />
+          </button>
+        )}
+      </div>
+      {caption && <p className="text-xs leading-snug text-on-surface/80 pt-0.5">{caption}</p>}
+    </div>
+  );
+}
+
 // ── Role display ───────────────────────────────────────────────────────────────
 
 const ROLE_LABEL: Record<string, string> = {
-  retailer: "Retailer",
-  manufacturer: "Manufacturer",
+  retailer:       "Retailer",
+  manufacturer:   "Manufacturer",
   salesExecutive: "Sales Exec",
-  farmer: "Farmer",
-  admin: "Admin",
-  customer: "Customer",
-  unknown: "Unknown",
+  farmer:         "Farmer",
+  admin:          "Admin",
+  customer:       "Customer",
+  consumer:       "Customer",   // mobile-app alias — normalised server-side but kept as safety net
+  unknown:        "Unknown",
 };
 
 const ROLE_BADGE: Record<string, string> = {
-  retailer: "bg-green-100 text-green-700 border-green-200",
-  manufacturer: "bg-blue-100 text-blue-700 border-blue-200",
+  retailer:       "bg-green-100 text-green-700 border-green-200",
+  manufacturer:   "bg-blue-100 text-blue-700 border-blue-200",
   salesExecutive: "bg-purple-100 text-purple-700 border-purple-200",
-  farmer: "bg-teal-100 text-teal-700 border-teal-200",
-  admin: "bg-red-100 text-red-700 border-red-200",
-  customer: "bg-gray-100 text-gray-600 border-gray-200",
-  unknown: "bg-amber-50 text-amber-700 border-amber-200",
+  farmer:         "bg-teal-100 text-teal-700 border-teal-200",
+  admin:          "bg-red-100 text-red-700 border-red-200",
+  customer:       "bg-gray-100 text-gray-600 border-gray-200",
+  consumer:       "bg-gray-100 text-gray-600 border-gray-200",
+  unknown:        "bg-amber-50 text-amber-700 border-amber-200",
 };
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -124,6 +261,10 @@ interface ChatMsg {
   messageType: string;
   timestamp: any;
   status?: string | null;
+  mediaId?: string | null;
+  mimeType?: string | null;
+  fileName?: string | null;
+  fileSize?: number | null;
 }
 
 interface ConvRow {
@@ -159,8 +300,12 @@ export default function WhatsAppInboxPage() {
   const [draftNote, setDraftNote] = useState("");
   const [addingNote, setAddingNote] = useState(false);
 
+  const [pendingFile, setPendingFile] = useState<File | null>(null);
+  const [sendingDoc, setSendingDoc] = useState(false);
+
   const chatBottomRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   // ── Listeners ────────────────────────────────────────────────────────────────
 
@@ -243,16 +388,23 @@ export default function WhatsAppInboxPage() {
     };
   }, [selectedPhone]);
 
-  // Resolve user identity for new phones
+  // Resolve user identity for new phones.
+  // Only skip phones that already resolved to a non-null result — a null entry
+  // means the previous lookup missed (e.g. stale cache before the +91 fix) and
+  // should be retried on the next incoming-messages snapshot.
   useEffect(() => {
     const phones = Array.from(new Set(incoming.map((m) => m.phone).filter(Boolean)));
-    const pending = phones.filter((p) => !(p in userCache));
+    const pending = phones.filter((p) => !(p in userCache) || userCache[p] === null);
     if (!pending.length) return;
     Promise.all(pending.map(async (p) => [p, await resolveWaUserByPhone(p)] as const)).then(
       (results) =>
         setUserCache((prev) => {
           const next = { ...prev };
-          results.forEach(([p, u]) => { next[p] = u; });
+          results.forEach(([p, u]) => {
+            // Only update the cache when we get a positive result, so we don't
+            // permanently cache null for phones that just haven't arrived yet.
+            if (u !== null) next[p] = u;
+          });
           return next;
         })
     );
@@ -331,12 +483,19 @@ export default function WhatsAppInboxPage() {
         direction: "incoming",
         text: m.messageText,
         messageType: m.messageType,
-        timestamp: m.timestamp, // use Meta send timestamp for ordering
+        timestamp: m.timestamp,
         status: null,
+        // mediaId may come from the explicit field (new docs) or rawPayload (legacy)
+        mediaId: m.mediaId ?? (m.rawPayload?.image as any)?.id ?? null,
+        mimeType: m.mimeType ?? (m.rawPayload?.image as any)?.mime_type ?? null,
       }));
 
     const outMsgs: ChatMsg[] = outgoing.map((m) => ({
       id: m.id,
+      mediaId: m.mediaId ?? null,
+      mimeType: m.mimeType ?? null,
+      fileName: m.fileName ?? null,
+      fileSize: m.fileSize ?? null,
       direction: "outgoing",
       text: m.text,
       messageType: m.messageType,
@@ -379,6 +538,7 @@ export default function WhatsAppInboxPage() {
     setMobileChatOpen(true);
     setNotesOpen(false);
     setDraftText("");
+    setPendingFile(null);
     // Reset unread count when admin opens the conversation
     setDoc(doc(db, "waConversations", phone), { unreadCount: 0 }, { merge: true }).catch(() => {});
   }, []);
@@ -414,7 +574,43 @@ export default function WhatsAppInboxPage() {
   function handleKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>) {
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
-      void handleSend();
+      if (pendingFile) void handleSendDocument();
+      else void handleSend();
+    }
+  }
+
+  async function handleSendDocument() {
+    if (!selectedPhone || !pendingFile || sendingDoc || !canReply) return;
+    const file = pendingFile;
+    setPendingFile(null);
+    const caption = draftText.trim();
+    setDraftText("");
+    setSendingDoc(true);
+    try {
+      const idToken = await auth.currentUser?.getIdToken();
+      if (!idToken) throw new Error("Not authenticated");
+
+      const form = new FormData();
+      form.append("phone", selectedPhone);
+      form.append("file", file);
+      if (caption) form.append("caption", caption);
+
+      const res = await fetch("/api/wa/send-document", {
+        method: "POST",
+        headers: { Authorization: `Bearer ${idToken}` },
+        body: form,
+      });
+
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ error: `HTTP ${res.status}` }));
+        throw new Error((err as { error?: string }).error ?? `HTTP ${res.status}`);
+      }
+    } catch (err) {
+      setPendingFile(file); // restore file on failure
+      setDraftText(caption);
+      alert(err instanceof Error ? err.message : "Failed to send document");
+    } finally {
+      setSendingDoc(false);
     }
   }
 
@@ -459,16 +655,25 @@ export default function WhatsAppInboxPage() {
 
   // ── Display helpers ───────────────────────────────────────────────────────────
 
+  function fmtFileSize(bytes: number): string {
+    if (bytes < 1024) return `${bytes} B`;
+    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  }
+
   function displayName(conv: ConvRow): string {
     const u = conv.user;
     return u?.businessName || u?.name || conv.phone;
   }
 
-  function ownerName(conv: ConvRow): string {
-    const u = conv.user;
-    if (!u) return "";
-    if (u.businessName && u.name) return u.name;
-    return "";
+  function fmtPhone(raw: string): string {
+    // "919876543210" → "+91 98765 43210"
+    const digits = raw.replace(/\D/g, "");
+    if (digits.length === 12 && digits.startsWith("91")) {
+      const local = digits.slice(2);
+      return `+91 ${local.slice(0, 5)} ${local.slice(5)}`;
+    }
+    return `+${digits}`;
   }
 
   // ── Render ────────────────────────────────────────────────────────────────────
@@ -580,9 +785,16 @@ export default function WhatsAppInboxPage() {
 
                       <div className="min-w-0 flex-1">
                         <div className="flex items-start justify-between gap-1">
-                          <span className="truncate text-sm font-semibold leading-tight text-on-surface">
-                            {displayName(conv)}
-                          </span>
+                          <div className="min-w-0 flex-1">
+                            <span className="block truncate text-sm font-semibold leading-tight text-on-surface">
+                              {conv.user?.businessName || conv.user?.name || conv.phone}
+                            </span>
+                            {conv.user?.businessName && conv.user?.name && (
+                              <span className="block truncate text-[10px] leading-tight text-on-surface-variant/60">
+                                {conv.user.name}
+                              </span>
+                            )}
+                          </div>
                           <div className="flex shrink-0 flex-col items-end gap-0.5">
                             <span className="whitespace-nowrap text-[10px] text-on-surface-variant/60">
                               {fmtListTime(conv.lastActivityTs)}
@@ -613,7 +825,9 @@ export default function WhatsAppInboxPage() {
                         </div>
 
                         <p className="mt-1 truncate text-xs leading-snug text-on-surface-variant/60">
-                          {conv.lastIncoming.messageText || `[${conv.lastIncoming.messageType}]`}
+                          {conv.lastIncoming.messageType === "image" && !conv.lastIncoming.messageText
+                            ? "📷 Image"
+                            : conv.lastIncoming.messageText || `[${conv.lastIncoming.messageType}]`}
                         </p>
                       </div>
                     </div>
@@ -653,50 +867,68 @@ export default function WhatsAppInboxPage() {
 
                 {/* Identity */}
                 <div className="min-w-0 flex-1">
-                  <div className="flex flex-wrap items-center gap-1.5">
-                    <p className="text-sm font-bold leading-tight text-on-surface">
-                      {displayName(selectedConv)}
-                    </p>
-
-                    {selectedConv.user && (
-                      <span
-                        className={cn(
-                          "inline-flex items-center rounded-full border px-1.5 py-px text-[9px] font-semibold uppercase tracking-wide",
-                          ROLE_BADGE[selectedConv.user.role] ?? ROLE_BADGE.unknown
-                        )}
-                      >
-                        {ROLE_LABEL[selectedConv.user.role] ?? selectedConv.user.role}
-                      </span>
-                    )}
-
-                    {/* 24-hour service window badge */}
-                    {canReply ? (
-                      <span className="inline-flex items-center gap-1 rounded-full border border-emerald-200 bg-emerald-50 px-2 py-px text-[9px] font-semibold text-emerald-700">
-                        <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-emerald-500" />
-                        Window open · {windowLabel}
-                      </span>
-                    ) : (
-                      <span className="inline-flex items-center gap-1 rounded-full border border-red-200 bg-red-50 px-2 py-px text-[9px] font-semibold text-red-700">
-                        <span className="h-1.5 w-1.5 rounded-full bg-red-500" />
-                        Window closed
-                      </span>
-                    )}
-                  </div>
-
-                  <div className="mt-0.5 flex items-center gap-1.5">
-                    <Phone className="h-3 w-3 text-on-surface-variant/50" />
-                    <span className="text-xs text-on-surface-variant/60">
-                      {selectedConv.phone}
-                    </span>
-                    {ownerName(selectedConv) && (
+                  {(() => {
+                    const u = selectedConv.user;
+                    const business = u?.businessName || "";
+                    const person   = u?.name || "";
+                    return (
                       <>
-                        <span className="text-on-surface-variant/30">·</span>
-                        <span className="truncate text-xs text-on-surface-variant/60">
-                          {ownerName(selectedConv)}
-                        </span>
+                        {/* Business name — prominent when present */}
+                        {business ? (
+                          <p className="truncate text-sm font-bold leading-tight text-on-surface">
+                            {business}
+                          </p>
+                        ) : null}
+
+                        {/* Personal name — bold when no business, secondary otherwise */}
+                        {person ? (
+                          <p className={cn(
+                            "truncate leading-tight",
+                            business
+                              ? "text-xs text-on-surface-variant/80"
+                              : "text-sm font-bold text-on-surface"
+                          )}>
+                            {person}
+                          </p>
+                        ) : !business ? (
+                          <p className="truncate text-sm font-bold text-on-surface">
+                            {selectedConv.phone}
+                          </p>
+                        ) : null}
+
+                        {/* Role + window badges */}
+                        <div className="mt-0.5 flex flex-wrap items-center gap-1.5">
+                          {u && (
+                            <span className={cn(
+                              "inline-flex items-center rounded-full border px-1.5 py-px text-[9px] font-semibold uppercase tracking-wide",
+                              ROLE_BADGE[u.role] ?? ROLE_BADGE.unknown
+                            )}>
+                              {ROLE_LABEL[u.role] ?? u.role}
+                            </span>
+                          )}
+
+                          {/* Phone */}
+                          <span className="flex items-center gap-1 text-[10px] text-on-surface-variant/60">
+                            <Phone className="h-2.5 w-2.5" />
+                            {fmtPhone(selectedConv.phone)}
+                          </span>
+
+                          {/* 24-hour window */}
+                          {canReply ? (
+                            <span className="inline-flex items-center gap-1 rounded-full border border-emerald-200 bg-emerald-50 px-2 py-px text-[9px] font-semibold text-emerald-700">
+                              <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-emerald-500" />
+                              Window open · {windowLabel}
+                            </span>
+                          ) : (
+                            <span className="inline-flex items-center gap-1 rounded-full border border-red-200 bg-red-50 px-2 py-px text-[9px] font-semibold text-red-700">
+                              <span className="h-1.5 w-1.5 rounded-full bg-red-500" />
+                              Window closed
+                            </span>
+                          )}
+                        </div>
                       </>
-                    )}
-                  </div>
+                    );
+                  })()}
                 </div>
 
                 {/* Action buttons */}
@@ -814,23 +1046,41 @@ export default function WhatsAppInboxPage() {
                           );
                         }
                         const isOut = msg.direction === "outgoing";
+                        const isImage = !isOut && msg.messageType === "image" && msg.mediaId;
+                        const isDoc = msg.messageType === "document" && msg.fileName;
                         els.push(
                           <div key={msg.id} className={cn("flex", isOut ? "justify-end" : "justify-start")}>
                             <div
                               className={cn(
-                                "max-w-[72%] rounded-2xl px-3.5 py-2 shadow-sm",
+                                "max-w-[72%] rounded-2xl shadow-sm",
+                                isImage ? "overflow-hidden p-1.5 pb-0" : "px-3.5 py-2",
                                 isOut ? "rounded-tr-sm bg-[#dcf8c6]" : "rounded-tl-sm bg-white"
                               )}
                             >
-                              {!isOut && msg.messageType !== "text" && (
-                                <p className="mb-1 text-[9px] font-semibold uppercase tracking-wide text-on-surface-variant/60">
-                                  [{msg.messageType}]
-                                </p>
+                              {isImage ? (
+                                <div className="pb-1.5">
+                                  <WaImageMsg mediaId={msg.mediaId!} caption={msg.text} />
+                                </div>
+                              ) : isDoc ? (
+                                <WaDocMsg
+                                  fileName={msg.fileName!}
+                                  fileSize={msg.fileSize ?? null}
+                                  mediaId={msg.mediaId ?? null}
+                                  caption={msg.text}
+                                />
+                              ) : (
+                                <>
+                                  {!isOut && msg.messageType !== "text" && (
+                                    <p className="mb-1 text-[9px] font-semibold uppercase tracking-wide text-on-surface-variant/60">
+                                      [{msg.messageType}]
+                                    </p>
+                                  )}
+                                  <p className="break-words text-sm leading-relaxed text-on-surface">
+                                    {msg.text || "(empty)"}
+                                  </p>
+                                </>
                               )}
-                              <p className="break-words text-sm leading-relaxed text-on-surface">
-                                {msg.text || "(empty)"}
-                              </p>
-                              <div className="mt-0.5 flex items-center justify-end gap-1">
+                              <div className={cn("flex items-center justify-end gap-1", isImage ? "px-2 pb-1" : "mt-0.5")}>
                                 <span className="text-[10px] text-on-surface-variant/60">
                                   {fmtMsgTime(msg.timestamp)}
                                 </span>
@@ -860,33 +1110,83 @@ export default function WhatsAppInboxPage() {
               {/* Composer */}
               <div className="shrink-0 border-t border-outline-variant/20 bg-surface-container-lowest p-3">
                 {canReply ? (
-                  <div className="flex items-end gap-2">
-                    <textarea
-                      ref={textareaRef}
-                      rows={1}
-                      placeholder="Type a message… (Enter to send, Shift+Enter for newline)"
-                      value={draftText}
-                      onChange={(e) => setDraftText(e.target.value)}
-                      onKeyDown={handleKeyDown}
-                      onInput={(e) => {
-                        const el = e.currentTarget;
-                        el.style.height = "auto";
-                        el.style.height = `${Math.min(el.scrollHeight, 112)}px`;
-                      }}
-                      className="min-h-[40px] max-h-28 flex-1 resize-none rounded-2xl border border-outline-variant/30 bg-white px-3.5 py-2.5 text-sm focus:border-primary/40 focus:outline-none focus:ring-1 focus:ring-primary/30"
-                    />
-                    <button
-                      type="button"
-                      onClick={handleSend}
-                      disabled={!draftText.trim() || sending}
-                      className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-primary text-white shadow-sm transition-all hover:bg-primary/90 disabled:opacity-40"
-                    >
-                      {sending ? (
-                        <RefreshCw className="h-4 w-4 animate-spin" />
-                      ) : (
-                        <Send className="h-4 w-4" />
-                      )}
-                    </button>
+                  <div className="space-y-2">
+                    {/* File chip */}
+                    {pendingFile && (
+                      <div className="flex items-center gap-2 rounded-xl border border-primary/20 bg-primary/5 px-3 py-2">
+                        <FileText className="h-4 w-4 shrink-0 text-primary" />
+                        <div className="min-w-0 flex-1">
+                          <p className="truncate text-xs font-medium text-on-surface">{pendingFile.name}</p>
+                          <p className="text-[10px] text-on-surface-variant/60">{fmtFileSize(pendingFile.size)}</p>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => { setPendingFile(null); setDraftText(""); }}
+                          className="shrink-0 rounded-full p-0.5 text-on-surface-variant/50 hover:bg-red-100 hover:text-red-600 transition-colors"
+                        >
+                          <X className="h-3.5 w-3.5" />
+                        </button>
+                      </div>
+                    )}
+
+                    {/* Input row */}
+                    <div className="flex items-end gap-2">
+                      {/* Hidden file input */}
+                      <input
+                        ref={fileInputRef}
+                        type="file"
+                        accept=".pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.txt,.csv"
+                        className="hidden"
+                        onChange={(e) => {
+                          const f = e.target.files?.[0] ?? null;
+                          setPendingFile(f);
+                          e.target.value = "";
+                        }}
+                      />
+
+                      {/* Attachment button */}
+                      <button
+                        type="button"
+                        onClick={() => fileInputRef.current?.click()}
+                        title="Attach file"
+                        className={cn(
+                          "flex h-10 w-10 shrink-0 items-center justify-center rounded-full border transition-colors",
+                          pendingFile
+                            ? "border-primary/30 bg-primary/10 text-primary"
+                            : "border-outline-variant/30 bg-white text-on-surface-variant hover:bg-surface-container"
+                        )}
+                      >
+                        <Paperclip className="h-4 w-4" />
+                      </button>
+
+                      <textarea
+                        ref={textareaRef}
+                        rows={1}
+                        placeholder={pendingFile ? "Add a caption… (optional)" : "Type a message… (Enter to send, Shift+Enter for newline)"}
+                        value={draftText}
+                        onChange={(e) => setDraftText(e.target.value)}
+                        onKeyDown={handleKeyDown}
+                        onInput={(e) => {
+                          const el = e.currentTarget;
+                          el.style.height = "auto";
+                          el.style.height = `${Math.min(el.scrollHeight, 112)}px`;
+                        }}
+                        className="min-h-[40px] max-h-28 flex-1 resize-none rounded-2xl border border-outline-variant/30 bg-white px-3.5 py-2.5 text-sm focus:border-primary/40 focus:outline-none focus:ring-1 focus:ring-primary/30"
+                      />
+
+                      <button
+                        type="button"
+                        onClick={pendingFile ? handleSendDocument : handleSend}
+                        disabled={pendingFile ? sendingDoc : (!draftText.trim() || sending)}
+                        className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-primary text-white shadow-sm transition-all hover:bg-primary/90 disabled:opacity-40"
+                      >
+                        {(sending || sendingDoc) ? (
+                          <RefreshCw className="h-4 w-4 animate-spin" />
+                        ) : (
+                          <Send className="h-4 w-4" />
+                        )}
+                      </button>
+                    </div>
                   </div>
                 ) : (
                   <div className="flex items-center justify-center gap-2 py-1 text-center">

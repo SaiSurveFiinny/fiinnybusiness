@@ -120,24 +120,32 @@ async function saveIncomingMessage(
     (msg.button as Record<string, string> | undefined)?.text ??
     null;
 
+  // Extract media identity for image/video/document so the inbox can proxy them
+  const imageMedia  = msg.image    as Record<string, string> | undefined;
+  const videoMedia  = msg.video    as Record<string, string> | undefined;
+  const docMedia    = msg.document as Record<string, string> | undefined;
+  const mediaId   = imageMedia?.id   ?? videoMedia?.id   ?? docMedia?.id   ?? null;
+  const mimeType  = imageMedia?.mime_type ?? videoMedia?.mime_type ?? docMedia?.mime_type ?? null;
+
   const msgTs = Timestamp.fromMillis(parseInt(String(msg.timestamp ?? "0"), 10) * 1000);
+
+  const msgDoc: Record<string, unknown> = {
+    phone: waId,
+    waId: sender?.wa_id ?? waId,
+    messageId: msg.id,
+    messageType: msg.type,
+    messageText: text,
+    timestamp: msgTs,
+    receivedAt: FieldValue.serverTimestamp(),
+    rawPayload: msg,
+  };
+  if (mediaId)  msgDoc.mediaId  = mediaId;
+  if (mimeType) msgDoc.mimeType = mimeType;
 
   await db
     .collection("waIncomingMessages")
     .doc(String(msg.id ?? ""))
-    .set(
-      {
-        phone: waId,
-        waId: sender?.wa_id ?? waId,
-        messageId: msg.id,
-        messageType: msg.type,
-        messageText: text,
-        timestamp: msgTs,
-        receivedAt: FieldValue.serverTimestamp(),
-        rawPayload: msg,
-      },
-      { merge: false }
-    );
+    .set(msgDoc, { merge: false });
 
   // Update conversation metadata so the admin inbox has unread counts and window tracking.
   // Wrapped in try/catch so a failure here never blocks the primary write above.
@@ -149,7 +157,7 @@ async function saveIncomingMessage(
         {
           phone: waId,
           lastIncomingAt: msgTs,
-          lastIncomingText: text ?? "",
+          lastIncomingText: text ?? (mediaId ? `[${String(msg.type ?? "media")}]` : ""),
           status: "open",
           unreadCount: FieldValue.increment(1),
           updatedAt: FieldValue.serverTimestamp(),
