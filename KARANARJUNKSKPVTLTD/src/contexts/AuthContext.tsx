@@ -8,7 +8,20 @@ import { DEFAULT_FEATURE_PERMISSIONS, type FeaturePermissions } from '../utils/f
 // 'retailer' is a read-only portal for shops that buy FROM this tenant (see
 // RETAILER_ALLOWED_PATHS in App.tsx). 'shopkeeper' is the opposite: a shop owner
 // running their own tenant on the KrishiDukan basic plan.
-export type UserRole = 'admin' | 'analyst' | 'retailer' | 'shopkeeper' | 'manufacturer' | 'customer' | 'sales';
+export type BuiltInRole = 'admin' | 'analyst' | 'retailer' | 'shopkeeper' | 'manufacturer' | 'customer' | 'sales';
+// Admins can define custom, tenant-scoped roles (see settings/customRoles). Their
+// ids are arbitrary strings, so UserRole widens to accept any string while keeping
+// autocomplete for the built-ins. 'admin' is never a custom/assignable-as-custom role.
+export type UserRole = BuiltInRole | (string & {});
+
+// A tenant-defined custom role. Permissions live in the existing
+// settings/rolePermissions and settings/featurePermissions docs keyed by `id`.
+export interface CustomRole {
+    id: string;
+    label: string;
+    template?: BuiltInRole;
+    createdAt?: any;
+}
 
 interface TenantData {
     businessName: string;
@@ -81,6 +94,10 @@ interface AuthContextType {
     userName: string | null;
     permissions: RolePermissions;
     featurePermissions: FeaturePermissions;
+    customRoles: CustomRole[];
+    // Per-role landing page after login (path), configurable by admins. Empty/missing
+    // means "use the built-in default" (see App.tsx role-based redirect).
+    roleLandingPages: Record<string, string>;
     loading: boolean;
     logout: () => Promise<void>;
     // District-based and retailer-based access for sales role
@@ -102,6 +119,8 @@ const AuthContext = createContext<AuthContextType>({
     userName: null,
     permissions: defaultPermissions,
     featurePermissions: DEFAULT_FEATURE_PERMISSIONS,
+    customRoles: [],
+    roleLandingPages: {},
     loading: true,
     logout: async () => { },
     assignedDistricts: [],
@@ -125,6 +144,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     const [userName, setUserName] = useState<string | null>(null);
     const [permissions, setPermissions] = useState<RolePermissions>(defaultPermissions);
     const [featurePermissions, setFeaturePermissions] = useState<FeaturePermissions>(DEFAULT_FEATURE_PERMISSIONS);
+    const [customRoles, setCustomRoles] = useState<CustomRole[]>([]);
+    const [roleLandingPages, setRoleLandingPages] = useState<Record<string, string>>({});
     const [loading, setLoading] = useState(true);
     const [assignedDistricts, setAssignedDistricts] = useState<string[]>([]);
     const [assignedRetailers, setAssignedRetailers] = useState<string[]>([]);
@@ -243,6 +264,27 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
                             }, (_err) => {
                                 setFeaturePermissions(DEFAULT_FEATURE_PERMISSIONS);
                             });
+
+                            // Tenant-defined custom roles (admin-created). Their granular
+                            // + module permissions live in the featurePermissions /
+                            // rolePermissions docs above, keyed by the custom role id.
+                            const customRolesDocRef = getTenantDoc(db, tId, 'settings', 'customRoles');
+                            onSnapshot(customRolesDocRef, (snap) => {
+                                const list = (snap.exists() ? snap.data()?.roles : null);
+                                setCustomRoles(Array.isArray(list) ? (list as CustomRole[]) : []);
+                            }, (_err) => {
+                                setCustomRoles([]);
+                            });
+
+                            // Per-role landing pages (admin-configurable).
+                            const landingDocRef = getTenantDoc(db, tId, 'settings', 'roleLandingPages');
+                            onSnapshot(landingDocRef, (snap) => {
+                                const data = (snap.exists() ? snap.data() : null) || {};
+                                const { updatedAt: _ua, ...map } = data as Record<string, any>;
+                                setRoleLandingPages(map as Record<string, string>);
+                            }, (_err) => {
+                                setRoleLandingPages({});
+                            });
                         } catch (permErr) {
                             console.error("Error fetching permissions", permErr);
                             setPermissions(defaultPermissions);
@@ -311,6 +353,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
                 setAssignedRetailers([]);
                 setPermissions(defaultPermissions);
                 setFeaturePermissions(DEFAULT_FEATURE_PERMISSIONS);
+                setCustomRoles([]);
+                setRoleLandingPages({});
             }
             setCurrentUser(user);
             setLoading(false);
@@ -338,6 +382,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         userName,
         permissions,
         featurePermissions,
+        customRoles,
+        roleLandingPages,
         loading,
         logout,
         assignedDistricts,

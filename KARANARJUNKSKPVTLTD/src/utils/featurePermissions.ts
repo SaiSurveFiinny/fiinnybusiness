@@ -40,6 +40,7 @@ export const PERMISSION_MODULES: PermissionModule[] = [
             { id: 'navbar.pos',            label: 'POS Billing',     actions: [{ id: 'navbar.pos.view',            label: 'Show in navbar' }] },
             { id: 'navbar.supplierLedger', label: 'Supplier Ledger', actions: [{ id: 'navbar.supplierLedger.view', label: 'Show in navbar' }] },
             { id: 'navbar.inventory',      label: 'Inventory',       actions: [{ id: 'navbar.inventory.view',      label: 'Show in navbar' }] },
+            { id: 'navbar.teamPerformance', label: 'Team Performance', actions: [{ id: 'navbar.teamPerformance.view', label: 'Show in navbar' }] },
             { id: 'navbar.reports',        label: 'Reports',         actions: [{ id: 'navbar.reports.view',        label: 'Show in navbar' }] },
             { id: 'navbar.expenses',       label: 'Expenses',        actions: [{ id: 'navbar.expenses.view',       label: 'Show in navbar' }] },
             { id: 'navbar.barcode',        label: 'Barcode Labels',  actions: [{ id: 'navbar.barcode.view',        label: 'Show in navbar' }] },

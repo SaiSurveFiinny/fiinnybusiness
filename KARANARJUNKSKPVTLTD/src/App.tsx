@@ -23,6 +23,7 @@ const DashboardPage          = lazy(() => import('./pages/DashboardPage'));
 const B2CDashboardPage       = lazy(() => import('./pages/B2CDashboardPage'));
 const LoginPage              = lazy(() => import('./pages/LoginPage'));
 const AdminHubPage           = lazy(() => import('./pages/AdminHubPage'));
+const TeamPerformancePage    = lazy(() => import('./pages/TeamPerformancePage'));
 const StorefrontPage         = lazy(() => import('./pages/StorefrontPage'));
 const ErpHandoffPage         = lazy(() => import('./pages/ErpHandoffPage'));
 const RateSheetPage          = lazy(() => import('./pages/RateSheetPage'));
@@ -462,7 +463,7 @@ function App() {
 }
 
 function AppRoutes() {
-  const { currentUser, tenantId, userRole, loading } = useAuth();
+  const { currentUser, tenantId, userRole, loading, roleLandingPages } = useAuth();
   const locationHook = useLocation();
 
   if (loading) return null;
@@ -488,27 +489,41 @@ function AppRoutes() {
     );
   }
 
-  // Role-based auto-redirect after login
+  // Role-based auto-redirect after login. The landing page per role is admin-
+  // configurable (settings/roleLandingPages, surfaced via AuthContext); each role
+  // falls back to a built-in default when unset. Confined roles (retailer / sales)
+  // only honour a configured landing that stays inside their allowed paths.
   const RETAILER_ALLOWED_PATHS = ['/worklist', '/settings', '/help'];
+  const SALES_ALLOWED_PATHS = ['/sales-targets', '/worklist', '/help'];
+  const DEFAULT_LANDING: Record<string, string> = {
+    admin: '/dashboard', analyst: '/dashboard', shopkeeper: '/pos',
+    sales: '/sales-targets', retailer: '/worklist', manufacturer: '/manufacturer-portal',
+  };
+  const landingFor = (role: string | null, allowed?: string[]): string => {
+    const configured = (role && roleLandingPages?.[role]) || '';
+    const fallback = (role && DEFAULT_LANDING[role]) || '/dashboard';
+    if (!configured) return fallback;
+    // For confined roles, ignore a configured landing outside their allowed paths.
+    if (allowed && !allowed.some(p => configured.startsWith(p))) return fallback;
+    return configured;
+  };
+  const onEntryPage = locationHook.pathname === '/' || locationHook.pathname === '/login';
+
   if (currentUser && tenantId) {
     if (userRole === 'retailer' && !RETAILER_ALLOWED_PATHS.some(p => locationHook.pathname.startsWith(p))) {
-      return <Navigate to="/worklist" replace />;
+      return <Navigate to={landingFor('retailer', RETAILER_ALLOWED_PATHS)} replace />;
     }
     if (userRole === 'manufacturer' && !locationHook.pathname.startsWith('/manufacturer-portal')) {
       return <Navigate to="/manufacturer-portal" replace />;
     }
-    // If Admin/Analyst visits landing page but is already logged in, go to dashboard
-    if ((userRole === 'admin' || userRole === 'analyst') && (locationHook.pathname === '/' || locationHook.pathname === '/login')) {
-      return <Navigate to="/dashboard" replace />;
+    // Sales users are confined to /sales-targets, /worklist and /help.
+    if (userRole === 'sales' && !SALES_ALLOWED_PATHS.some(p => locationHook.pathname.startsWith(p))) {
+      return <Navigate to={landingFor('sales', SALES_ALLOWED_PATHS)} replace />;
     }
-    // Shopkeepers open on the till, not the distributor dashboard. They are not confined
-    // to a path list like retailers/sales — tenantId already isolates them to their own shop.
-    if (userRole === 'shopkeeper' && (locationHook.pathname === '/' || locationHook.pathname === '/login')) {
-      return <Navigate to="/pos" replace />;
-    }
-    // Sales users are confined to /sales-targets and /worklist
-    if (userRole === 'sales' && !locationHook.pathname.startsWith('/sales-targets') && !locationHook.pathname.startsWith('/worklist') && !locationHook.pathname.startsWith('/help')) {
-      return <Navigate to="/sales-targets" replace />;
+    // Every other logged-in tenant user (admin / analyst / shopkeeper / custom roles)
+    // lands on their configured page when hitting the marketing/login entry pages.
+    if (onEntryPage && userRole !== 'retailer' && userRole !== 'manufacturer' && userRole !== 'sales') {
+      return <Navigate to={landingFor(userRole)} replace />;
     }
   }
 
@@ -615,6 +630,10 @@ function AppRoutes() {
       {/* Admin — single hash-based hub. Sub-tabs live at /admin#<tab>; each
           tab's own role/permission gate is enforced inside AdminHubPage. */}
       <Route path="/admin" element={<ProtectedRoute requireRole={['admin', 'analyst']}><AdminHubPage /></ProtectedRoute>} />
+      {/* Team Performance — also a standalone navbar destination; navbar visibility
+          is driven by the Main Navbar Feature Matrix (navbar.teamPerformance.view).
+          The Admin sub-tab at /admin#team-performance remains intact. */}
+      <Route path="/team-performance" element={<ProtectedRoute requireRole={['admin', 'analyst']}><TeamPerformancePage /></ProtectedRoute>} />
       <Route path="/customers" element={<ProtectedRoute requireRole={['admin', 'analyst', 'shopkeeper']} appScreen="customers"><CustomersPage /></ProtectedRoute>} />
       <Route path="/customers/:id" element={<ProtectedRoute requireRole={['admin', 'analyst', 'shopkeeper']} appScreen="customers"><CustomerProfilePage /></ProtectedRoute>} />
       {/* Legacy /admin/* deep links → hash equivalents (bookmarks stay working) */}

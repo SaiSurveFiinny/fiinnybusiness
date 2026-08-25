@@ -3,7 +3,7 @@ import { Link, useLocation } from 'react-router-dom';
 import {
   Home, BarChart3, Layers, ReceiptText, Activity, FileText, ClipboardList,
   Package, Calculator, Target, Receipt, ChevronLeft,
-  ChevronRight, HelpCircle, Settings, RotateCcw,
+  ChevronRight, HelpCircle, Settings, RotateCcw, TrendingUp,
 } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 import type { AppScreen } from '../contexts/AuthContext';
@@ -25,6 +25,7 @@ const PRIORITY_NAV: NavItem[] = [
   { path: '/admin',           label: 'Admin',             icon: <Settings size={15} />,      screenKey: 'admin' },
   { path: '/supplier-ledger', label: 'Supplier Ledger',  icon: <ClipboardList size={15} />, screenKey: 'worklist' },
   { path: '/inventory',       label: 'Inventory',         icon: <Package size={15} />,       screenKey: 'inventory' },
+  { path: '/team-performance', label: 'Team Performance', icon: <TrendingUp size={15} />,   screenKey: 'admin' },
   { path: '/sales-targets',   label: 'Sales Targets',    icon: <Target size={15} />,        screenKey: 'worklist' },
   { path: '/expenses',        label: 'Expenses',          icon: <Receipt size={15} />,       screenKey: 'expenses' },
   { path: '/barcode',         label: 'Barcode Labels',   icon: <Activity size={15} />,      screenKey: 'inventory' },
@@ -42,6 +43,7 @@ const NAV_PERM: Record<string, string> = {
   '/pos':             'navbar.pos.view',
   '/supplier-ledger': 'navbar.supplierLedger.view',
   '/inventory':       'navbar.inventory.view',
+  '/team-performance': 'navbar.teamPerformance.view',
   '/reports':         'navbar.reports.view',
   '/expenses':        'navbar.expenses.view',
   '/barcode':         'navbar.barcode.view',

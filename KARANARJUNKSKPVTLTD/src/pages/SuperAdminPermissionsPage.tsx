@@ -1,9 +1,9 @@
 import { useState, useEffect } from 'react';
-import { Save, ChevronDown, ChevronRight, ShieldCheck, Info } from 'lucide-react';
+import { Save, ChevronDown, ChevronRight, ShieldCheck, Info, Plus, Trash2, X } from 'lucide-react';
 import { setDoc, serverTimestamp } from 'firebase/firestore';
 import { db } from '../firebase';
-import { useAuth } from '../contexts/AuthContext';
-import type { UserRole } from '../contexts/AuthContext';
+import { useAuth, defaultPermissions } from '../contexts/AuthContext';
+import type { UserRole, BuiltInRole } from '../contexts/AuthContext';
 import {
     PERMISSION_MODULES,
     DEFAULT_FEATURE_PERMISSIONS,
@@ -15,14 +15,39 @@ import {
 import { getTenantDoc } from '../utils/tenantPath';
 import { useToast } from '../contexts/ToastContext';
 
-const EDITABLE_ROLES: { key: UserRole; label: string }[] = [
-    { key: 'admin',        label: 'Admin' },
+// Admin is intentionally NOT editable here — it is a privileged system role that
+// always has full access (see useFeaturePermissions). These are the built-in roles
+// whose feature permissions can be configured, and which can seed custom roles.
+const EDITABLE_ROLES: { key: BuiltInRole; label: string }[] = [
     { key: 'analyst',      label: 'Analyst' },
     { key: 'sales',        label: 'Sales' },
     { key: 'retailer',     label: 'Retailer' },
     { key: 'shopkeeper',   label: 'Shopkeeper' },
     { key: 'manufacturer', label: 'Manufacturer' },
     { key: 'customer',     label: 'Customer' },
+];
+
+// Ids that a tenant admin may never claim for a custom role.
+const RESERVED_ROLE_IDS = new Set<string>([
+    'admin', 'superadmin', 'super_admin', 'super-admin', 'owner',
+    ...EDITABLE_ROLES.map(r => r.key),
+]);
+
+// Pages an admin can pick as a role's landing page after login. '' = automatic
+// (use the built-in per-role default).
+const LANDING_OPTIONS: { path: string; label: string }[] = [
+    { path: '',                  label: 'Automatic (default)' },
+    { path: '/dashboard',        label: 'B2B Dashboard' },
+    { path: '/b2c-dashboard',    label: 'B2C Dashboard' },
+    { path: '/reports',          label: 'Reports' },
+    { path: '/analytics',        label: 'Analytics' },
+    { path: '/worklist',         label: 'Worklist' },
+    { path: '/pos',              label: 'POS Billing' },
+    { path: '/inventory',        label: 'Inventory' },
+    { path: '/team-performance', label: 'Team Performance' },
+    { path: '/supplier-ledger',  label: 'Supplier Ledger' },
+    { path: '/sales-targets',    label: 'Sales Targets' },
+    { path: '/expenses',         label: 'Expenses' },
 ];
 
 // ─── Recursive section renderer ───────────────────────────────────────────────
@@ -130,21 +155,92 @@ function SectionRow({ section, roleMap, expanded, onToggleExpand, onToggleAction
 // ─── Page ─────────────────────────────────────────────────────────────────────
 
 export default function SuperAdminPermissionsPage() {
-    const { tenantId, userRole, featurePermissions } = useAuth();
+    const { tenantId, userRole, featurePermissions, customRoles, permissions, roleLandingPages } = useAuth();
     const { showToast } = useToast();
 
     const [selectedRole, setSelectedRole] = useState<UserRole>('analyst');
     const [matrix, setMatrix] = useState<FeaturePermissions>(featurePermissions || DEFAULT_FEATURE_PERMISSIONS);
+    const [landingMap, setLandingMap] = useState<Record<string, string>>(roleLandingPages || {});
     const [expandedSections, setExpandedSections] = useState<Set<string>>(new Set());
     const [saving, setSaving] = useState(false);
+
+    // Create-role UI state
+    const [showCreate, setShowCreate] = useState(false);
+    const [newRoleName, setNewRoleName] = useState('');
+    const [newRoleTemplate, setNewRoleTemplate] = useState<BuiltInRole>('analyst');
+    const [creating, setCreating] = useState(false);
 
     useEffect(() => {
         if (featurePermissions) setMatrix(featurePermissions);
     }, [featurePermissions]);
 
+    useEffect(() => {
+        setLandingMap(roleLandingPages || {});
+    }, [roleLandingPages]);
+
     if (userRole !== 'admin') {
         return <div style={{ padding: '2rem', color: 'var(--danger)', textAlign: 'center' }}>Access Denied. Only Admins can manage feature permissions.</div>;
     }
+
+    // Built-in editable roles + this tenant's custom roles.
+    const roleTabs: { key: UserRole; label: string; custom?: boolean }[] = [
+        ...EDITABLE_ROLES,
+        ...customRoles.map(r => ({ key: r.id, label: r.label, custom: true })),
+    ];
+
+    const createCustomRole = async () => {
+        if (!tenantId) return;
+        const label = newRoleName.trim();
+        if (!label) { showToast('Enter a role name.', 'error'); return; }
+        const id = 'role_' + Date.now();
+        // Guard: never allow a reserved id or a duplicate label/id (case-insensitive).
+        const normalized = label.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '');
+        if (RESERVED_ROLE_IDS.has(normalized)) {
+            showToast('That role name is reserved. Choose another.', 'error');
+            return;
+        }
+        if (customRoles.some(r => r.label.toLowerCase() === label.toLowerCase())) {
+            showToast('A role with that name already exists.', 'error');
+            return;
+        }
+        setCreating(true);
+        try {
+            // Clone the template's feature + module permissions into the new role id.
+            const templateFeatureMap = (matrix[newRoleTemplate] ?? DEFAULT_FEATURE_PERMISSIONS[newRoleTemplate] ?? {});
+            const templateModuleMap = (permissions[newRoleTemplate] ?? defaultPermissions[newRoleTemplate] ?? {});
+
+            const rolesDocRef = getTenantDoc(db, tenantId, 'settings', 'customRoles');
+            const nextRoles = [...customRoles, { id, label, template: newRoleTemplate, createdAt: Date.now() }];
+            await setDoc(rolesDocRef, { roles: nextRoles, updatedAt: serverTimestamp() }, { merge: true });
+
+            await setDoc(getTenantDoc(db, tenantId, 'settings', 'featurePermissions'),
+                { [id]: { ...templateFeatureMap } }, { merge: true });
+            await setDoc(getTenantDoc(db, tenantId, 'settings', 'rolePermissions'),
+                { [id]: { ...templateModuleMap } }, { merge: true });
+
+            setNewRoleName('');
+            setShowCreate(false);
+            setSelectedRole(id);
+            showToast(`Role "${label}" created. Configure its permissions below.`, 'success');
+        } catch {
+            showToast('Failed to create role.', 'error');
+        } finally {
+            setCreating(false);
+        }
+    };
+
+    const deleteCustomRole = async (id: string, label: string) => {
+        if (!tenantId) return;
+        if (!window.confirm(`Delete the role "${label}"? Users still assigned to it will keep the name until you reassign them.`)) return;
+        try {
+            const rolesDocRef = getTenantDoc(db, tenantId, 'settings', 'customRoles');
+            await setDoc(rolesDocRef, { roles: customRoles.filter(r => r.id !== id), updatedAt: serverTimestamp() }, { merge: true });
+            if (selectedRole === id) setSelectedRole('analyst');
+            showToast(`Role "${label}" deleted.`, 'success');
+        } catch {
+            showToast('Failed to delete role.', 'error');
+        }
+    };
 
     const roleMap: FeaturePermissionMap = matrix[selectedRole] ?? {};
 
@@ -182,6 +278,9 @@ export default function SuperAdminPermissionsPage() {
         try {
             const ref = getTenantDoc(db, tenantId, 'settings', 'featurePermissions');
             await setDoc(ref, { ...matrix, updatedAt: serverTimestamp() });
+            // Persist per-role landing pages alongside (separate doc).
+            await setDoc(getTenantDoc(db, tenantId, 'settings', 'roleLandingPages'),
+                { ...landingMap, updatedAt: serverTimestamp() }, { merge: true });
             showToast('Feature permissions saved. Changes apply immediately.', 'success');
         } catch {
             showToast('Failed to save feature permissions.', 'error');
@@ -199,7 +298,8 @@ export default function SuperAdminPermissionsPage() {
                         <ShieldCheck size={28} /> Feature Permissions
                     </h1>
                     <p style={{ color: 'var(--text-secondary)', fontSize: '0.9rem', margin: 0 }}>
-                        Granular action-level access control per role. Module-level access is managed in Role Matrix.
+                        Granular action-level access control per role. Create custom roles for your business and
+                        configure their permissions here. Module-level access is managed in Role Matrix.
                     </p>
                 </div>
                 <button onClick={handleSave} disabled={saving} className="btn btn-primary" style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
@@ -217,17 +317,78 @@ export default function SuperAdminPermissionsPage() {
             </div>
 
             {/* Role selector */}
-            <div style={{ marginBottom: '1.5rem', display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
-                {EDITABLE_ROLES.map(r => (
-                    <button
-                        key={r.key}
-                        onClick={() => setSelectedRole(r.key)}
-                        className={selectedRole === r.key ? 'btn btn-primary' : 'btn btn-secondary'}
-                        style={{ fontSize: '0.85rem', padding: '0.4rem 1rem' }}
-                    >
-                        {r.label}
-                    </button>
+            <div style={{ marginBottom: '1.5rem', display: 'flex', gap: '0.5rem', flexWrap: 'wrap', alignItems: 'center' }}>
+                {roleTabs.map(r => (
+                    <span key={r.key} style={{ display: 'inline-flex', alignItems: 'center' }}>
+                        <button
+                            onClick={() => setSelectedRole(r.key)}
+                            className={selectedRole === r.key ? 'btn btn-primary' : 'btn btn-secondary'}
+                            style={{ fontSize: '0.85rem', padding: '0.4rem 1rem', display: 'inline-flex', alignItems: 'center', gap: '0.4rem' }}
+                        >
+                            {r.label}
+                            {r.custom && (
+                                <Trash2
+                                    size={13}
+                                    onClick={(e) => { e.stopPropagation(); deleteCustomRole(r.key, r.label); }}
+                                    style={{ opacity: 0.7, cursor: 'pointer' }}
+                                    role="button"
+                                    aria-label={`Delete role ${r.label}`}
+                                />
+                            )}
+                        </button>
+                    </span>
                 ))}
+                <button
+                    onClick={() => setShowCreate(v => !v)}
+                    className="btn btn-secondary"
+                    style={{ fontSize: '0.85rem', padding: '0.4rem 0.9rem', display: 'inline-flex', alignItems: 'center', gap: '0.4rem' }}
+                >
+                    {showCreate ? <X size={15} /> : <Plus size={15} />} {showCreate ? 'Cancel' : 'New Role'}
+                </button>
+            </div>
+
+            {/* Create custom role */}
+            {showCreate && (
+                <div className="glass-panel" style={{ padding: '1rem 1.25rem', marginBottom: '1.5rem', display: 'flex', gap: '0.75rem', flexWrap: 'wrap', alignItems: 'flex-end' }}>
+                    <div className="input-group" style={{ marginBottom: 0, flex: '1 1 220px' }}>
+                        <label style={{ fontSize: '0.8rem' }}>Role name</label>
+                        <input
+                            type="text"
+                            className="input-field"
+                            placeholder="e.g. Store Manager"
+                            value={newRoleName}
+                            onChange={e => setNewRoleName(e.target.value)}
+                            maxLength={40}
+                        />
+                    </div>
+                    <div className="input-group" style={{ marginBottom: 0, flex: '0 1 200px' }}>
+                        <label style={{ fontSize: '0.8rem' }}>Copy permissions from</label>
+                        <select className="input-field" value={newRoleTemplate} onChange={e => setNewRoleTemplate(e.target.value as BuiltInRole)}>
+                            {EDITABLE_ROLES.map(r => <option key={r.key} value={r.key}>{r.label}</option>)}
+                        </select>
+                    </div>
+                    <button onClick={createCustomRole} disabled={creating} className="btn btn-primary" style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+                        <Plus size={16} /> {creating ? 'Creating…' : 'Create Role'}
+                    </button>
+                </div>
+            )}
+
+            {/* Landing page after login — per selected role */}
+            <div className="glass-panel" style={{ padding: '1rem 1.25rem', marginBottom: '1.5rem', display: 'flex', gap: '0.75rem', alignItems: 'center', flexWrap: 'wrap' }}>
+                <div style={{ flex: '1 1 260px', minWidth: 0 }}>
+                    <div style={{ fontWeight: 600, fontSize: '0.9rem', marginBottom: '0.15rem' }}>Landing page after login</div>
+                    <div style={{ fontSize: '0.8rem', color: 'var(--text-tertiary)' }}>
+                        Where a <strong>{roleTabs.find(r => r.key === selectedRole)?.label ?? selectedRole}</strong> user lands after signing in. Saved with the button above.
+                    </div>
+                </div>
+                <select
+                    className="input-field"
+                    style={{ flex: '0 1 240px' }}
+                    value={landingMap[selectedRole] ?? ''}
+                    onChange={e => setLandingMap(prev => ({ ...prev, [selectedRole]: e.target.value }))}
+                >
+                    {LANDING_OPTIONS.map(o => <option key={o.path || 'auto'} value={o.path}>{o.label}</option>)}
+                </select>
             </div>
 
             {/* Permission tree */}
