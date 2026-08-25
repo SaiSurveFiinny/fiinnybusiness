@@ -1,7 +1,7 @@
 import { useEffect } from 'react';
 import {
     UserCog, Shield, TrendingUp, Target, Lock, ShieldAlert, Users,
-    Palette, Store, Factory, Layers, Database,
+    Palette, Store, Factory, Layers, Database, KeyRound,
 } from 'lucide-react';
 import { useHashTab } from '../hooks/useHashTab';
 import { useAuth } from '../contexts/AuthContext';
@@ -17,6 +17,7 @@ import TeamPerformancePage from './TeamPerformancePage';
 import SalesTargetsAdminPage from './SalesTargetsAdminPage';
 import DataSecurityPage from './DataSecurityPage';
 import ManageRolesPage from './ManageRolesPage';
+import SuperAdminPermissionsPage from './SuperAdminPermissionsPage';
 import ManageRetailersPage from './ManageRetailersPage';
 import InvoiceSettingsPage from './InvoiceSettingsPage';
 import AdminStoreProductsPage from './AdminStoreProductsPage';
@@ -44,6 +45,7 @@ const ADMIN_TABS: AdminTab[] = [
     { id: 'sales-target',      label: 'Sales Target',      icon: <Target size={16} />,      requireRole: ['admin'],            appScreen: 'admin',             Comp: SalesTargetsAdminPage },
     { id: 'data-security',     label: 'Data Security',     icon: <Lock size={16} />,        requireRole: ['admin'],            appScreen: 'admin',             Comp: DataSecurityPage },
     { id: 'role-matrix',       label: 'Role Matrix',       icon: <ShieldAlert size={16} />, requireRole: ['admin'],            appScreen: 'admin',             Comp: ManageRolesPage },
+    { id: 'feature-permissions', label: 'Feature Permissions', icon: <KeyRound size={16} />,  requireRole: ['admin'],            appScreen: 'admin',             Comp: SuperAdminPermissionsPage },
     { id: 'manage-retailers',  label: 'Manage Retailers',  icon: <Users size={16} />,       requireRole: ['admin', 'analyst'], appScreen: 'manage_retailers',  Comp: ManageRetailersPage },
     { id: 'invoice-branding',  label: 'Invoice Branding',  icon: <Palette size={16} />,     requireRole: ['admin', 'analyst'], appScreen: 'invoice_settings',  Comp: InvoiceSettingsPage },
     { id: 'manage-store',      label: 'Manage Store',      icon: <Store size={16} />,       requireRole: ['admin', 'analyst'], appScreen: 'manage_store',      Comp: AdminStoreProductsPage },

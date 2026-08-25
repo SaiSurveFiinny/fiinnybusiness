@@ -11,6 +11,7 @@ import { useTranslation } from 'react-i18next';
 import { getDocs, orderBy, query, where, collectionGroup, collection } from 'firebase/firestore';
 import { db } from '../firebase';
 import { useAuth } from '../contexts/AuthContext';
+import { useFeaturePermissions } from '../hooks/useFeaturePermissions';
 import { getTenantCollection } from '../utils/tenantPath';
 import UdhariUploadModal from '../components/UdhariUploadModal';
 import { type FinancialPeriod, getFinancialDateRange } from '../utils/financialPeriod';
@@ -154,17 +155,23 @@ const MODULE_TABS: { id: ModuleTab; label: string; icon: React.ReactNode }[] = [
 
 // ─── Main Component ───────────────────────────────────────────────────────────
 
+const TAB_PERM: Record<ModuleTab, string> = {
+    'partners':      'worklist.partners.view',
+    'invoices':      'worklist.invoices.view',
+    'payments':      'worklist.payments.view',
+    'reminders':     'worklist.reminders.view',
+    'tracking':      'worklist.tracking.view',
+    'online-orders': 'worklist.onlineOrders.view',
+};
+
 export default function WorklistPage() {
     const [moduleTab, setModuleTab] = useHashTab<ModuleTab>(VALID_TABS, 'partners', 'fiinny-tab-worklist');
-    const { userRole } = useAuth();
+    const can = useFeaturePermissions();
 
-    const visibleTabs = MODULE_TABS.filter(tab => {
-        if (userRole === 'sales' && tab.id === 'online-orders') return false;
-        if (userRole === 'retailer' && (tab.id === 'online-orders' || tab.id === 'tracking')) return false;
-        // Analyst: hide the Payment Reminders sub-tab (route still works directly).
-        if (userRole === 'analyst' && tab.id === 'reminders') return false;
-        return true;
-    });
+    // Sub-tab visibility is driven SOLELY by the Feature Matrix (single source of
+    // truth). Per-role denials (sales/retailer/analyst) now live in
+    // DEFAULT_FEATURE_PERMISSIONS instead of hardcoded page guards.
+    const visibleTabs = MODULE_TABS.filter(tab => can(TAB_PERM[tab.id]));
 
     return (
         <div className="animate-fade-in" style={{ width: '100%' }}>
@@ -243,6 +250,7 @@ export default function WorklistPage() {
 function PartnersTab() {
     const navigate = useNavigate();
     const { tenantId, userRole, assignedDistricts, assignedRetailers } = useAuth();
+    const can = useFeaturePermissions();
     const isSales = userRole === 'sales';
     const isRetailer = userRole === 'retailer';
     const isViewOnly = isSales || isRetailer;
@@ -978,8 +986,10 @@ function PartnersTab() {
                             </div>
                         )}
                     </div>
-                    <button className="btn btn-secondary" onClick={handleExportCSV} disabled={processedRetailers.length === 0}><Download size={16} /> {t('worklist.export_csv')}</button>
-                    {!isViewOnly && (
+                    {can('worklist.partners.export') && (
+                        <button className="btn btn-secondary" onClick={handleExportCSV} disabled={processedRetailers.length === 0}><Download size={16} /> {t('worklist.export_csv')}</button>
+                    )}
+                    {can('worklist.partners.create') && !isViewOnly && (
                         <button className="btn btn-primary" onClick={() => navigate('/onboarding')}><UserPlus size={16} /> {t('worklist.add_new')}</button>
                     )}
                 </div>
@@ -1035,13 +1045,15 @@ function PartnersTab() {
                             <X size={13} /> Clear
                         </button>
                     </div>
-                    <button
-                        onClick={handleSendReminder}
-                        disabled={loadingReminders}
-                        style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: '0.45rem', padding: '0.35rem 1rem', borderRadius: '6px', border: '1px solid rgba(255,255,255,0.7)', background: 'rgba(255,255,255,0.15)', color: '#fff', fontWeight: 700, fontSize: '0.85rem', cursor: loadingReminders ? 'wait' : 'pointer', fontFamily: 'inherit' }}
-                    >
-                        <Mail size={15} /> {loadingReminders ? 'Loading…' : 'Send Reminder Email'}
-                    </button>
+                    {can('worklist.partners.sendReminder') && (
+                        <button
+                            onClick={handleSendReminder}
+                            disabled={loadingReminders}
+                            style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: '0.45rem', padding: '0.35rem 1rem', borderRadius: '6px', border: '1px solid rgba(255,255,255,0.7)', background: 'rgba(255,255,255,0.15)', color: '#fff', fontWeight: 700, fontSize: '0.85rem', cursor: loadingReminders ? 'wait' : 'pointer', fontFamily: 'inherit' }}
+                        >
+                            <Mail size={15} /> {loadingReminders ? 'Loading…' : 'Send Reminder Email'}
+                        </button>
+                    )}
                 </div>
             )}
 
@@ -1113,8 +1125,8 @@ function PartnersTab() {
                                         return (
                                             <Fragment key={r.id}>
                                                 <tr
-                                                    onClick={() => navigate(`/worklist/${r.id}`)}
-                                                    style={{ borderBottom: '1px solid var(--surface-border)', cursor: 'pointer', background: rowBg, transition: 'background 0.12s' }}
+                                                    onClick={() => can('worklist.retailerProfile.view') && navigate(`/worklist/${r.id}`)}
+                                                    style={{ borderBottom: '1px solid var(--surface-border)', cursor: can('worklist.retailerProfile.view') ? 'pointer' : 'default', background: rowBg, transition: 'background 0.12s' }}
                                                     onMouseEnter={e => { e.currentTarget.style.background = rowBgHover; }}
                                                     onMouseLeave={e => { e.currentTarget.style.background = rowBg; }}
                                                 >

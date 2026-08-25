@@ -102,12 +102,32 @@ function PageLoader() {
 
 import ProtectedRoute from './components/ProtectedRoute';
 import HorizontalNavbar from './components/HorizontalNavbar';
+import { useFeaturePermissions } from './hooks/useFeaturePermissions';
+
+// Drawer nav paths that are governed by the Main Navbar Feature Matrix
+// (Super Admin → Feature Permissions → Main Navbar). This mirrors NAV_PERM in
+// HorizontalNavbar so the drawer and the top nav follow the same single source of
+// truth. Any path NOT listed here has no matrix toggle and stays governed solely
+// by module-level role permissions.
+const DRAWER_NAV_PERM: Record<string, string> = {
+  '/reports':         'navbar.reports.view',
+  '/dashboard':       'navbar.dashboard.view',
+  '/b2c-dashboard':   'navbar.b2cDashboard.view',
+  '/analytics':       'navbar.analytics.view',
+  '/worklist':        'navbar.worklist.view',
+  '/pos':             'navbar.pos.view',
+  '/supplier-ledger': 'navbar.supplierLedger.view',
+  '/expenses':        'navbar.expenses.view',
+  '/barcode':         'navbar.barcode.view',
+  '/rates':           'navbar.inventory.view',
+};
 
 function Layout({ children, currentTheme, toggleTheme }: { children: React.ReactNode; currentTheme: 'light' | 'dark'; toggleTheme: () => void }) {
   const location = useLocation();
   const navigate = useNavigate();
   const { t } = useTranslation();
   const { currentUser, userRole, tenantData, permissions, logout } = useAuth();
+  const can = useFeaturePermissions();
 
   const handleLogout = () => {
     logout().then(() => navigate('/login', { replace: true }));
@@ -151,9 +171,6 @@ function Layout({ children, currentTheme, toggleTheme }: { children: React.React
 
   // Paths sales role is allowed to see in the sidebar nav
   const SALES_NAV_PATHS = ['/sales-targets', '/worklist'];
-
-  // Analyst sees exactly these five items in the drawer — nothing more
-  const ANALYST_NAV_PATHS = ['/reports', '/worklist', '/pos', '/supplier-ledger', '/rates'];
 
   const mainNavItems = [
     { path: '/reports', icon: <BarChart3 size={19} />, label: 'Reports', screenKey: 'analytics' },
@@ -209,10 +226,15 @@ function Layout({ children, currentTheme, toggleTheme }: { children: React.React
 
   const navItems = mainNavItems.filter(item => {
     if (isSalesUser) return SALES_NAV_PATHS.includes(item.path);
-    if (userRole === 'analyst') return ANALYST_NAV_PATHS.includes(item.path);
     if (!isOwner && !isShopkeeper) return false;
     if (isShopkeeper && BASIC_PLAN_HIDDEN_PATHS.includes(item.path)) return false;
+    // Module-level role permission gate (existing behaviour).
     if (userRole && permissions && !permissions[userRole]?.[item.screenKey as AppScreen]) return false;
+    // Main Navbar Feature Matrix — single source of truth for the tabs it covers.
+    // Admin bypasses (useFeaturePermissions returns true for admin). Items without a
+    // matrix mapping stay governed solely by the module-level check above.
+    const perm = DRAWER_NAV_PERM[item.path];
+    if (perm && !can(perm)) return false;
     return true;
   });
 

@@ -3,6 +3,7 @@ import type { User } from 'firebase/auth';
 import { onAuthStateChanged, signOut } from 'firebase/auth';
 import { doc, getDoc, setDoc, serverTimestamp, onSnapshot, collection } from 'firebase/firestore';
 import { auth, db } from '../firebase';
+import { DEFAULT_FEATURE_PERMISSIONS, type FeaturePermissions } from '../utils/featurePermissions';
 
 // 'retailer' is a read-only portal for shops that buy FROM this tenant (see
 // RETAILER_ALLOWED_PATHS in App.tsx). 'shopkeeper' is the opposite: a shop owner
@@ -79,6 +80,7 @@ interface AuthContextType {
     linkedId: string | null;
     userName: string | null;
     permissions: RolePermissions;
+    featurePermissions: FeaturePermissions;
     loading: boolean;
     logout: () => Promise<void>;
     // District-based and retailer-based access for sales role
@@ -99,6 +101,7 @@ const AuthContext = createContext<AuthContextType>({
     linkedId: null,
     userName: null,
     permissions: defaultPermissions,
+    featurePermissions: DEFAULT_FEATURE_PERMISSIONS,
     loading: true,
     logout: async () => { },
     assignedDistricts: [],
@@ -121,6 +124,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     const [linkedId, setLinkedId] = useState<string | null>(null);
     const [userName, setUserName] = useState<string | null>(null);
     const [permissions, setPermissions] = useState<RolePermissions>(defaultPermissions);
+    const [featurePermissions, setFeaturePermissions] = useState<FeaturePermissions>(DEFAULT_FEATURE_PERMISSIONS);
     const [loading, setLoading] = useState(true);
     const [assignedDistricts, setAssignedDistricts] = useState<string[]>([]);
     const [assignedRetailers, setAssignedRetailers] = useState<string[]>([]);
@@ -219,6 +223,26 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
                             }, (_err) => {
                                 setPermissions(defaultPermissions);
                             });
+
+                            // Feature-level permissions (granular action/section control)
+                            const featPermDocRef = getTenantDoc(db, tId, 'settings', 'featurePermissions');
+                            onSnapshot(featPermDocRef, async (snap) => {
+                                if (snap.exists() && Object.keys(snap.data() || {}).length > 0) {
+                                    const fetched = snap.data() as FeaturePermissions;
+                                    const merged: FeaturePermissions = { ...DEFAULT_FEATURE_PERMISSIONS };
+                                    for (const [r, pMap] of Object.entries(fetched)) {
+                                        merged[r as UserRole] = {
+                                            ...(DEFAULT_FEATURE_PERMISSIONS[r as UserRole] || {}),
+                                            ...(pMap as Record<string, boolean>),
+                                        };
+                                    }
+                                    setFeaturePermissions(merged);
+                                } else {
+                                    await setDoc(featPermDocRef, DEFAULT_FEATURE_PERMISSIONS);
+                                }
+                            }, (_err) => {
+                                setFeaturePermissions(DEFAULT_FEATURE_PERMISSIONS);
+                            });
                         } catch (permErr) {
                             console.error("Error fetching permissions", permErr);
                             setPermissions(defaultPermissions);
@@ -286,6 +310,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
                 setAssignedDistricts([]);
                 setAssignedRetailers([]);
                 setPermissions(defaultPermissions);
+                setFeaturePermissions(DEFAULT_FEATURE_PERMISSIONS);
             }
             setCurrentUser(user);
             setLoading(false);
@@ -312,6 +337,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         linkedId,
         userName,
         permissions,
+        featurePermissions,
         loading,
         logout,
         assignedDistricts,

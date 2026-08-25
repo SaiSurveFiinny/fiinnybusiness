@@ -2,6 +2,7 @@ import { useState, useEffect, useRef, useCallback } from 'react';
 import { createPortal } from 'react-dom';
 import { useSearchParams, useLocation, Link } from 'react-router-dom';
 import { useHashTab } from '../hooks/useHashTab';
+import { useFeaturePermissions } from '../hooks/useFeaturePermissions';
 import DigitalKhataPage from './DigitalKhataPage';
 import CustomersPage from './CustomersPage';
 import OrderHistoryPage from './OrderHistoryPage';
@@ -196,8 +197,27 @@ const POS_MODULE_TABS: { id: PosModuleTab; label: string }[] = [
 ];
 const VALID_POS_TABS: readonly PosModuleTab[] = ['billing', 'khata', 'customers', 'order-history'];
 
+// Feature-permission id per sub-tab (Super Admin → Feature Permissions).
+const TAB_PERM: Record<PosModuleTab, string> = {
+    billing:         'posBilling.billing.view',
+    khata:           'posBilling.khata.view',
+    customers:       'posBilling.customers.view',
+    'order-history': 'posBilling.orderHistory.view',
+};
+
 export default function POSPage() {
     const [posModuleTab, setPosModuleTab] = useHashTab<PosModuleTab>(VALID_POS_TABS, 'billing', 'fiinny-tab-pos');
+    const can = useFeaturePermissions();
+
+    // Only show sub-tabs the current role is permitted to view.
+    const visiblePosTabs = POS_MODULE_TABS.filter(tab => can(TAB_PERM[tab.id]));
+
+    // If the active tab is not permitted, fall back to the first visible one so
+    // denied content is never shown on load.
+    const activeAllowed = visiblePosTabs.some(t => t.id === posModuleTab);
+    useEffect(() => {
+        if (!activeAllowed && visiblePosTabs.length > 0) setPosModuleTab(visiblePosTabs[0].id);
+    }, [activeAllowed, visiblePosTabs, setPosModuleTab]);
     const { t, i18n } = useTranslation();
     const [searchParams] = useSearchParams();
     const location = useLocation();
@@ -1253,7 +1273,7 @@ export default function POSPage() {
             marginTop: '-2rem', paddingTop: '0.75rem',
             marginBottom: '1.75rem',
         }}>
-            {POS_MODULE_TABS.map(tab => {
+            {visiblePosTabs.map(tab => {
                 const isActive = posModuleTab === tab.id;
                 return (
                     <button
@@ -1281,9 +1301,9 @@ export default function POSPage() {
         </div>
 
         {/* ── Non-billing sub-pages ── */}
-        {posModuleTab === 'khata'         && <DigitalKhataPage fullWidth />}
-        {posModuleTab === 'customers'     && <CustomersPage fullWidth />}
-        {posModuleTab === 'order-history' && <OrderHistoryPage fullWidth />}
+        {activeAllowed && posModuleTab === 'khata'         && <DigitalKhataPage fullWidth />}
+        {activeAllowed && posModuleTab === 'customers'     && <CustomersPage fullWidth />}
+        {activeAllowed && posModuleTab === 'order-history' && <OrderHistoryPage fullWidth />}
 
         {/* Bill print portal — rendered directly on <body> so body.pos-printing CSS
             can hide everything else (sidebar, nav, app wrapper) without any className
@@ -1342,7 +1362,7 @@ export default function POSPage() {
         )}
 
         {/* ── POS Billing (existing content) ── */}
-        {posModuleTab === 'billing' && <div style={{ background: 'var(--bg-color)', minHeight: '100vh', display: 'flex', flexDirection: 'column' }}>
+        {activeAllowed && posModuleTab === 'billing' && <div style={{ background: 'var(--bg-color)', minHeight: '100vh', display: 'flex', flexDirection: 'column' }}>
 
             {/* Header */}
             <header className="no-print" style={{ background: 'var(--surface-base)', backdropFilter: 'blur(12px)', WebkitBackdropFilter: 'blur(12px)', borderBottom: '1px solid var(--surface-border)', padding: '0.75rem 1.5rem', display: 'flex', alignItems: 'center', gap: '1.25rem', flexWrap: 'wrap' }}>

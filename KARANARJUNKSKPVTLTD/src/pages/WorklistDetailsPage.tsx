@@ -12,6 +12,7 @@ import { uploadPaymentProof } from '../utils/uploadPaymentProof';
 import PaymentAttachmentField from '../components/PaymentAttachmentField';
 import { db } from '../firebase';
 import { useAuth } from '../contexts/AuthContext';
+import { useFeaturePermissions } from '../hooks/useFeaturePermissions';
 import { getTenantDoc, getTenantCollection } from '../utils/tenantPath';
 import { useSchema } from '../contexts/SchemaContext';
 import DynamicForm from '../components/DynamicForm';
@@ -122,6 +123,7 @@ export default function WorklistDetailsPage() {
     const { id } = useParams();
     const navigate = useNavigate();
     const { userRole, tenantId, currentUser, userName } = useAuth();
+    const can = useFeaturePermissions();
     const isSales = userRole === 'sales';
     const { t } = useTranslation();
     const { getSchema: _getSchema } = useSchema(); // kept for schema referencing
@@ -483,6 +485,7 @@ export default function WorklistDetailsPage() {
 
     // ─── Quick status update for B2B sales orders ───
     const updateOrderStatus = async (soId: string, field: 'status' | 'paymentStatus' | 'modeOfPayment', value: string, so: any) => {
+        if (!can('worklist.retailerProfile.b2bOrders.editOrder')) return;
         if (!tenantId || !id) return;
         const update: Record<string, any> = { [field]: value };
         // Delivered automatically removes the edit lock; manual unlock is no longer needed.
@@ -581,6 +584,7 @@ export default function WorklistDetailsPage() {
     // Mirrors the financial bookkeeping applied when the order was created/paid:
     // reverse its contribution to retailer totalSales / totalPaid / outstandingAmount.
     const handleDeleteSalesOrder = async (so: SalesOrder) => {
+        if (!can('worklist.retailerProfile.b2bOrders.deleteOrder')) return;
         if (!id || !tenantId || !so) return;
         setDeletingSO(true);
         try {
@@ -633,6 +637,7 @@ export default function WorklistDetailsPage() {
 
     // Bulk delete: sequentially apply the same financial reversal as single delete
     const handleBulkDeleteConfirm = async () => {
+        if (!can('worklist.retailerProfile.b2bOrders.deleteOrder')) return;
         if (!id || !tenantId) return;
         setBulkDeleting(true);
         try {
@@ -893,6 +898,7 @@ export default function WorklistDetailsPage() {
     };
 
     const handleDeletePayment = async (p: Payment) => {
+        if (!can('worklist.retailerProfile.payments.edit')) return;
         if (!id || !tenantId) return;
 
         // If payment has linked order allocations, route through the confirmation modal
@@ -1307,20 +1313,22 @@ export default function WorklistDetailsPage() {
                 </div>
 
                 <div style={{ display: 'flex', gap: '0.75rem', flexWrap: 'wrap' }}>
-                    {!isSales && (
+                    {can('worklist.partners.recordPayment') && !isSales && (
                         <button onClick={() => setShowPaymentModal(true)} className="btn btn-primary animate-pulse" style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', padding: '0.5rem 1rem', fontSize: '0.875rem' }}>
                             ₹ {t('worklist_details.record_payment')}
                         </button>
                     )}
-                    {retailer?.number && (
+                    {can('worklist.partners.call') && retailer?.number && (
                         <a href={`tel:${retailer.number}`} className="btn btn-secondary" style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', padding: '0.5rem 1rem', fontSize: '0.875rem', textDecoration: 'none' }}>
                             <Phone size={16} /> {t('worklist_details.call')}
                         </a>
                     )}
-                    <button onClick={handleWhatsApp} className="btn" style={{ background: '#25D366', color: 'white', padding: '0.5rem 1rem', fontSize: '0.875rem' }}>
-                        <MessageCircle size={16} /> {t('worklist_details.whatsapp')}
-                    </button>
-                    {userRole === 'admin' && (
+                    {can('worklist.partners.whatsapp') && (
+                        <button onClick={handleWhatsApp} className="btn" style={{ background: '#25D366', color: 'white', padding: '0.5rem 1rem', fontSize: '0.875rem' }}>
+                            <MessageCircle size={16} /> {t('worklist_details.whatsapp')}
+                        </button>
+                    )}
+                    {can('worklist.partners.delete') && (
                         <button onClick={handleDeleteRetailer} className="btn" style={{ background: 'hsla(0, 84%, 60%, 0.1)', color: 'var(--danger)', padding: '0.5rem 1rem', fontSize: '0.875rem', border: '1px solid hsla(0, 84%, 60%, 0.2)' }}>
                             <Trash2 size={16} /> {t('worklist_details.delete')}
                         </button>
@@ -1541,11 +1549,11 @@ export default function WorklistDetailsPage() {
             {/* Tabs Navigation */}
             <div style={{ display: 'flex', gap: '0.5rem', borderBottom: '1px solid var(--surface-border)', marginBottom: '2rem', overflowX: 'auto', paddingBottom: '0.5rem' }}>
                 {[
-                    { id: 'orders', label: 'B2B Orders', icon: ShoppingCart, count: displaySalesOrders.length },
-                    { id: 'payments', label: 'Payments', icon: Wallet, count: displayPayments.length },
-                    { id: 'productSales', label: 'Product Sales', icon: Package },
-                    { id: 'overview', label: 'Overview', icon: User },
-                ].map(tab => (
+                    { id: 'orders',       label: 'B2B Orders',    icon: ShoppingCart, count: displaySalesOrders.length, perm: 'worklist.retailerProfile.b2bOrders.view' },
+                    { id: 'payments',     label: 'Payments',      icon: Wallet, count: displayPayments.length,          perm: 'worklist.retailerProfile.payments.view' },
+                    { id: 'productSales', label: 'Product Sales', icon: Package,                                         perm: 'worklist.retailerProfile.productSalesOverview.view' },
+                    { id: 'overview',     label: 'Overview',      icon: User,                                            perm: null },
+                ].filter(tab => tab.perm === null || can(tab.perm)).map(tab => (
                     <button
                         key={tab.id}
                         onClick={() => setActiveTab(tab.id as any)}
@@ -1740,7 +1748,7 @@ export default function WorklistDetailsPage() {
                                     </span>
                                 </div>
                             </div>
-                            {!isSales && (
+                            {!isSales && can('worklist.retailerProfile.payments.edit') && (
                                 <button onClick={() => setShowPaymentModal(true)} className="btn btn-primary" style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', padding: '0.5rem 1rem', fontSize: '0.85rem' }}>
                                     <PlusCircle size={16} /> Add Payment
                                 </button>
@@ -1902,7 +1910,7 @@ export default function WorklistDetailsPage() {
                                                             )}
                                                         </div>
                                                     </td>
-                                                    {!isSales && (
+                                                    {!isSales && can('worklist.retailerProfile.payments.edit') && (
                                                         <td style={{ padding: '0.7rem 0.75rem', whiteSpace: 'nowrap' }}>
                                                             <div style={{ display: 'flex', gap: '0.3rem' }}>
                                                                 <button onClick={() => openEditPayment(p)} title="Edit" className="btn btn-secondary" style={{ display: 'flex', alignItems: 'center', gap: '0.25rem', padding: '0.3rem 0.6rem', fontSize: '0.75rem' }}>
@@ -2074,22 +2082,26 @@ export default function WorklistDetailsPage() {
                             >
                                 <AlertTriangle size={16} /> Outstanding Statement
                             </button>
-                            {!isSales && (
+                            {!isSales && (can('worklist.partners.newSalesOrder') || can('worklist.partners.newB2BInvoice')) && (
                                 <div style={{ display: 'flex', gap: '0.75rem', flexWrap: 'wrap' }}>
-                                    <button
-                                        className="btn btn-secondary"
-                                        onClick={() => navigate(`/sales-order/new?retailerId=${id}`)}
-                                        style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', fontSize: '0.9rem', padding: '0.55rem 1.25rem' }}
-                                    >
-                                        <PlusCircle size={16} /> + New Sales Order
-                                    </button>
-                                    <button
-                                        className="btn btn-primary animate-pulse"
-                                        onClick={() => navigate(`/b2b-invoice?retailerId=${id}`)}
-                                        style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', fontSize: '0.9rem', padding: '0.55rem 1.25rem' }}
-                                    >
-                                        <FilePen size={16} /> + New B2B GST Invoice
-                                    </button>
+                                    {can('worklist.partners.newSalesOrder') && (
+                                        <button
+                                            className="btn btn-secondary"
+                                            onClick={() => navigate(`/sales-order/new?retailerId=${id}`)}
+                                            style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', fontSize: '0.9rem', padding: '0.55rem 1.25rem' }}
+                                        >
+                                            <PlusCircle size={16} /> + New Sales Order
+                                        </button>
+                                    )}
+                                    {can('worklist.partners.newB2BInvoice') && (
+                                        <button
+                                            className="btn btn-primary animate-pulse"
+                                            onClick={() => navigate(`/b2b-invoice?retailerId=${id}`)}
+                                            style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', fontSize: '0.9rem', padding: '0.55rem 1.25rem' }}
+                                        >
+                                            <FilePen size={16} /> + New B2B GST Invoice
+                                        </button>
+                                    )}
                                 </div>
                             )}
                         </div>
@@ -2137,7 +2149,7 @@ export default function WorklistDetailsPage() {
                                         </button>
                                     </div>
                                     <div style={{ display: 'flex', gap: '0.4rem', marginLeft: 'auto' }}>
-                                        {userRole === 'admin' && (
+                                        {can('worklist.retailerProfile.b2bOrders.deleteOrder') && (
                                             <button
                                                 onClick={() => setShowBulkDeleteModal(true)}
                                                 style={{ display: 'flex', alignItems: 'center', gap: '0.35rem', padding: '0.32rem 0.9rem', borderRadius: '6px', border: '1px solid rgba(255,100,100,0.7)', background: 'rgba(239,68,68,0.2)', color: '#fff', fontWeight: 600, fontSize: '0.82rem', cursor: 'pointer', fontFamily: 'inherit' }}
@@ -2231,8 +2243,8 @@ export default function WorklistDetailsPage() {
                                                 )}
                                             </div>
                                         </div>
-                                        {/* Order status — interactive for editors, read-only for sales */}
-                                        {isSales ? (
+                                        {/* Order status — interactive for editors, read-only for sales/restricted */}
+                                        {isSales || !can('worklist.retailerProfile.b2bOrders.editOrder') ? (
                                             <div style={{ marginTop: '0.65rem', display: 'flex', gap: '0.4rem', flexWrap: 'wrap', alignItems: 'center' }}>
                                                 {so.status && (
                                                     <span style={{ fontSize: '0.72rem', padding: '0.2rem 0.55rem', borderRadius: '8px', background: 'var(--surface-raised)', color: 'var(--text-secondary)', border: '1px solid var(--surface-border)', fontWeight: 600 }}>
@@ -2304,7 +2316,7 @@ export default function WorklistDetailsPage() {
                                         )}
                                         {/* Action buttons */}
                                         <div style={{ display: 'flex', gap: '0.6rem', marginTop: '0.75rem', paddingTop: '0.75rem', borderTop: '1px solid var(--surface-border)', flexWrap: 'wrap' }}>
-                                            {!isSales && outstanding > 0 && (
+                                            {!isSales && can('worklist.retailerProfile.b2bOrders.addPayment') && outstanding > 0 && (
                                                 <button className="btn btn-primary"
                                                     onClick={() => { setPayOrder(so); setPayOrderAmount(outstanding); setPayOrderNote(''); }}
                                                     title="Record a new payment against this invoice"
@@ -2312,7 +2324,7 @@ export default function WorklistDetailsPage() {
                                                     <PlusCircle size={14} /> Add Payment
                                                 </button>
                                             )}
-                                            {!isSales && outstanding > 0 && availablePayments.length > 0 && (
+                                            {!isSales && can('worklist.retailerProfile.b2bOrders.addPayment') && outstanding > 0 && availablePayments.length > 0 && (
                                                 <button className="btn btn-secondary"
                                                     onClick={() => { setLinkPaymentOrder(so); setLinkAllocations({}); }}
                                                     title="Link an existing unallocated payment to this invoice"
@@ -2320,7 +2332,7 @@ export default function WorklistDetailsPage() {
                                                     <Link2 size={14} /> Link Payment
                                                 </button>
                                             )}
-                                            {!isSales && (
+                                            {!isSales && can('worklist.retailerProfile.b2bOrders.editOrder') && (
                                                 locked ? (
                                                     <button className="btn btn-secondary" disabled
                                                         title="Order is locked for editing until Delivered or manually unlocked"
@@ -2356,7 +2368,7 @@ export default function WorklistDetailsPage() {
                                                     <Printer size={14} /> View / Edit Invoice
                                                 </button>
                                             )}
-                                            {!isSales && locked && (
+                                            {!isSales && can('worklist.retailerProfile.b2bOrders.editOrder') && locked && (
                                                 <button className="btn btn-secondary"
                                                     onClick={() => handleUnlockOrder(so.id)}
                                                     title="Manually unlock this order for editing"
@@ -2364,7 +2376,7 @@ export default function WorklistDetailsPage() {
                                                     <LockOpen size={14} /> Unlock Order
                                                 </button>
                                             )}
-                                            {!isSales && (so.linkedPaymentIds?.length ?? 0) > 0 && (
+                                            {!isSales && can('worklist.retailerProfile.b2bOrders.addPayment') && (so.linkedPaymentIds?.length ?? 0) > 0 && (
                                                 <button className="btn btn-secondary"
                                                     onClick={() => handleOpenUnlinkModal(so)}
                                                     title="View and unlink payments from this order"
@@ -2372,7 +2384,7 @@ export default function WorklistDetailsPage() {
                                                     <Link2 size={14} /> Unlink Payments ({so.linkedPaymentIds.length})
                                                 </button>
                                             )}
-                                            {userRole === 'admin' && (
+                                            {can('worklist.retailerProfile.b2bOrders.deleteOrder') && (
                                                 <button className="btn" onClick={() => setSoToDelete(so)}
                                                     title="Delete this sales order"
                                                     style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', padding: '0.45rem 1rem', fontSize: '0.82rem', background: 'hsla(0, 84%, 60%, 0.1)', color: 'var(--danger)', border: '1px solid hsla(0, 84%, 60%, 0.3)' }}>

@@ -10,6 +10,7 @@ import { ref as storageRef, uploadBytes, getDownloadURL, deleteObject } from 'fi
 import { softDelete } from '../utils/softDelete';
 import { db, storage } from '../firebase';
 import { useAuth } from '../contexts/AuthContext';
+import { useFeaturePermissions } from '../hooks/useFeaturePermissions';
 import { getTenantCollection, getTenantDoc } from '../utils/tenantPath';
 import { logAudit } from '../utils/auditLog';
 import { AGRI_CATEGORIES } from '../utils/constants';
@@ -198,6 +199,16 @@ export default function RateSheetPage() {
   const overlayRef = useRef<HTMLDivElement>(null);
 
   const canManage = userRole === 'admin' || userRole === 'analyst';
+
+  // Feature-permission layer (Super Admin → Feature Permissions → Inventory →
+  // Product Master). ANDed with the existing role gates so nothing is loosened.
+  const can = useFeaturePermissions();
+  const canAddProduct  = canManage && can('inventory.productMaster.add');
+  const canEditProduct = canManage && can('inventory.productMaster.edit');
+  const canExportCsv   = can('inventory.productMaster.csv.export');
+  const canCsvTemplate = canManage && can('inventory.productMaster.csv.template');
+  const canUploadCsv   = canManage && can('inventory.productMaster.csv.upload');
+
   // Editing the purchase rate stays admin-only (unchanged permission).
   const canSeeCost = userRole === 'admin';
   // Viewing the Purchase Rate column is allowed for Admin and Analyst. This is a
@@ -960,7 +971,9 @@ export default function RateSheetPage() {
         return (
           <td key={key} style={tdBase}>
             <div style={{ display: 'flex', gap: '0.4rem' }}>
-              <button onClick={() => handleOpenModal(p)} className="btn btn-secondary" style={{ padding: '0.35rem' }}><Edit2 size={13} /></button>
+              {canEditProduct && (
+                <button onClick={() => handleOpenModal(p)} className="btn btn-secondary" style={{ padding: '0.35rem' }}><Edit2 size={13} /></button>
+              )}
               {canDelete && (
                 <button onClick={() => handleDelete(p.id)} className="btn" style={{ padding: '0.35rem', background: 'hsla(0,84%,60%,0.08)', color: '#ef4444', border: '1px solid hsla(0,84%,60%,0.2)' }}><Trash2 size={13} /></button>
               )}
@@ -985,22 +998,28 @@ export default function RateSheetPage() {
           </p>
         </div>
         <div style={{ display: 'flex', gap: '0.65rem', flexWrap: 'wrap' }}>
-          <button onClick={handleExport} className="btn btn-secondary" style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', fontSize: '0.85rem' }}>
-            <FileDown size={15} /> Export CSV
-          </button>
-          {canManage && (
-            <>
-              <input type="file" accept=".csv" ref={fileInputRef} style={{ display: 'none' }} onChange={handleFileUpload} />
-              <button onClick={handleDownloadTemplate} className="btn btn-secondary" style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', fontSize: '0.85rem' }}>
-                <Download size={15} /> CSV Template
-              </button>
-              <button onClick={() => fileInputRef.current?.click()} className="btn btn-secondary" style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', fontSize: '0.85rem' }}>
-                <FileSpreadsheet size={15} /> Upload CSV
-              </button>
-              <button onClick={() => handleOpenModal()} className="btn btn-primary" style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
-                <Plus size={16} /> Add Product
-              </button>
-            </>
+          {canExportCsv && (
+            <button onClick={handleExport} className="btn btn-secondary" style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', fontSize: '0.85rem' }}>
+              <FileDown size={15} /> Export CSV
+            </button>
+          )}
+          {canUploadCsv && (
+            <input type="file" accept=".csv" ref={fileInputRef} style={{ display: 'none' }} onChange={handleFileUpload} />
+          )}
+          {canCsvTemplate && (
+            <button onClick={handleDownloadTemplate} className="btn btn-secondary" style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', fontSize: '0.85rem' }}>
+              <Download size={15} /> CSV Template
+            </button>
+          )}
+          {canUploadCsv && (
+            <button onClick={() => fileInputRef.current?.click()} className="btn btn-secondary" style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', fontSize: '0.85rem' }}>
+              <FileSpreadsheet size={15} /> Upload CSV
+            </button>
+          )}
+          {canAddProduct && (
+            <button onClick={() => handleOpenModal()} className="btn btn-primary" style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+              <Plus size={16} /> Add Product
+            </button>
           )}
         </div>
       </div>
@@ -1072,7 +1091,7 @@ export default function RateSheetPage() {
                   <td colSpan={layout.colOrder.length} style={{ padding: '3rem', textAlign: 'center', color: 'var(--text-secondary)' }}>
                     <Package size={36} style={{ margin: '0 auto 0.75rem', opacity: 0.25, display: 'block' }} />
                     {searchTerm ? `No products match "${searchTerm}".` : anyColumnFilter ? 'No products match the active column filters.' : 'No products yet.'}
-                    {canManage && !searchTerm && !anyColumnFilter && (
+                    {canAddProduct && !searchTerm && !anyColumnFilter && (
                       <button onClick={() => handleOpenModal()} className="btn btn-primary" style={{ marginTop: '1rem', display: 'inline-flex', alignItems: 'center', gap: '0.5rem' }}>
                         <Plus size={15} /> Add First Product
                       </button>
