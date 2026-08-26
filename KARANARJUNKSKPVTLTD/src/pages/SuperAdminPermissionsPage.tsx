@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { Save, ChevronDown, ChevronRight, ShieldCheck, Info, Plus, Trash2, X } from 'lucide-react';
+import { Save, ChevronDown, ChevronRight, ShieldCheck, Info, Plus, Trash2, X, ArrowLeft } from 'lucide-react';
 import { setDoc, serverTimestamp } from 'firebase/firestore';
 import { db } from '../firebase';
 import { useAuth, defaultPermissions } from '../contexts/AuthContext';
@@ -158,7 +158,9 @@ export default function SuperAdminPermissionsPage() {
     const { tenantId, userRole, featurePermissions, customRoles, permissions, roleLandingPages } = useAuth();
     const { showToast } = useToast();
 
-    const [selectedRole, setSelectedRole] = useState<UserRole>('analyst');
+    // null = show the lightweight role list. A role key = show that role's detail
+    // view (its permission tree is only rendered/edited once the role is opened).
+    const [selectedRole, setSelectedRole] = useState<UserRole | null>(null);
     const [matrix, setMatrix] = useState<FeaturePermissions>(featurePermissions || DEFAULT_FEATURE_PERMISSIONS);
     const [landingMap, setLandingMap] = useState<Record<string, string>>(roleLandingPages || {});
     const [expandedSections, setExpandedSections] = useState<Set<string>>(new Set());
@@ -235,23 +237,27 @@ export default function SuperAdminPermissionsPage() {
         try {
             const rolesDocRef = getTenantDoc(db, tenantId, 'settings', 'customRoles');
             await setDoc(rolesDocRef, { roles: customRoles.filter(r => r.id !== id), updatedAt: serverTimestamp() }, { merge: true });
-            if (selectedRole === id) setSelectedRole('analyst');
+            if (selectedRole === id) setSelectedRole(null);
             showToast(`Role "${label}" deleted.`, 'success');
         } catch {
             showToast('Failed to delete role.', 'error');
         }
     };
 
-    const roleMap: FeaturePermissionMap = matrix[selectedRole] ?? {};
+    const roleMap: FeaturePermissionMap = selectedRole ? (matrix[selectedRole] ?? {}) : {};
 
     const toggleAction = (permId: string) => {
+        if (!selectedRole) return;
+        const role = selectedRole;
         setMatrix(prev => ({
             ...prev,
-            [selectedRole]: { ...(prev[selectedRole] ?? {}), [permId]: !(prev[selectedRole]?.[permId] ?? false) },
+            [role]: { ...(prev[role] ?? {}), [permId]: !(prev[role]?.[permId] ?? false) },
         }));
     };
 
     const toggleSection = (sectionId: string, value: boolean) => {
+        if (!selectedRole) return;
+        const role = selectedRole;
         // Find the section anywhere in the tree and toggle all its actions.
         const allSections = PERMISSION_MODULES.flatMap(m => m.sections).flatMap(flattenSections);
         const target = allSections.find(s => s.id === sectionId);
@@ -260,7 +266,7 @@ export default function SuperAdminPermissionsPage() {
         for (const action of collectSectionActions(target)) updates[action.id] = value;
         setMatrix(prev => ({
             ...prev,
-            [selectedRole]: { ...(prev[selectedRole] ?? {}), ...updates },
+            [role]: { ...(prev[role] ?? {}), ...updates },
         }));
     };
 
@@ -289,17 +295,132 @@ export default function SuperAdminPermissionsPage() {
         }
     };
 
-    return (
-        <div className="animate-fade-in" style={{ maxWidth: '860px', margin: '0 auto', padding: '1rem' }}>
-            {/* Header */}
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1.5rem', flexWrap: 'wrap', gap: '1rem' }}>
-                <div>
+    const selectedRoleLabel = roleTabs.find(r => r.key === selectedRole)?.label ?? selectedRole;
+
+    // ── Role list view ────────────────────────────────────────────────────────
+    // Opened first. Only lightweight role metadata is shown — a role's full
+    // permission tree is not rendered until the admin opens that role.
+    if (!selectedRole) {
+        return (
+            <div className="animate-fade-in" style={{ maxWidth: '860px', margin: '0 auto', padding: '1rem' }}>
+                {/* Header */}
+                <div style={{ marginBottom: '1.5rem' }}>
                     <h1 className="primary-gradient-text" style={{ fontSize: '1.75rem', display: 'flex', alignItems: 'center', gap: '0.6rem', marginBottom: '0.3rem' }}>
                         <ShieldCheck size={28} /> Feature Permissions
                     </h1>
                     <p style={{ color: 'var(--text-secondary)', fontSize: '0.9rem', margin: 0 }}>
-                        Granular action-level access control per role. Create custom roles for your business and
-                        configure their permissions here. Module-level access is managed in Role Matrix.
+                        Granular action-level access control per role. Select a role to view and edit its
+                        permissions. Create custom roles for your business here. Module-level access is
+                        managed in Role Matrix.
+                    </p>
+                </div>
+
+                {/* Info banner */}
+                <div className="glass-panel" style={{ padding: '0.75rem 1rem', marginBottom: '1.5rem', display: 'flex', gap: '0.75rem', alignItems: 'flex-start', background: 'hsla(210,100%,50%,0.05)', border: '1px solid hsla(210,100%,50%,0.2)' }}>
+                    <Info size={18} style={{ color: 'var(--primary-light)', flexShrink: 0, marginTop: '2px' }} />
+                    <p style={{ margin: 0, fontSize: '0.85rem', color: 'var(--text-secondary)', lineHeight: 1.5 }}>
+                        Changes here control which tabs, buttons, and actions each role can see and use.
+                        The <strong>Admin</strong> role always has full access regardless of these settings.
+                    </p>
+                </div>
+
+                {/* Role list */}
+                <div className="glass-panel" style={{ marginBottom: '1.5rem', overflow: 'hidden' }}>
+                    {roleTabs.map(r => (
+                        <div
+                            key={r.key}
+                            onClick={() => setSelectedRole(r.key)}
+                            style={{
+                                display: 'flex',
+                                alignItems: 'center',
+                                gap: '0.75rem',
+                                padding: '0.9rem 1.25rem',
+                                cursor: 'pointer',
+                                userSelect: 'none',
+                                borderBottom: '1px solid var(--surface-border)',
+                            }}
+                        >
+                            <span style={{ fontWeight: 600, fontSize: '0.95rem', flex: 1 }}>{r.label}</span>
+                            {r.custom && (
+                                <>
+                                    <span style={{ fontSize: '0.68rem', color: 'var(--text-tertiary)', border: '1px solid var(--surface-border)', borderRadius: '999px', padding: '0.1rem 0.5rem' }}>
+                                        Custom
+                                    </span>
+                                    <Trash2
+                                        size={15}
+                                        onClick={(e) => { e.stopPropagation(); deleteCustomRole(r.key, r.label); }}
+                                        style={{ opacity: 0.7, cursor: 'pointer', color: 'var(--text-tertiary)' }}
+                                        role="button"
+                                        aria-label={`Delete role ${r.label}`}
+                                    />
+                                </>
+                            )}
+                            <ChevronRight size={18} style={{ color: 'var(--text-tertiary)', flexShrink: 0 }} />
+                        </div>
+                    ))}
+                </div>
+
+                {/* New role */}
+                <button
+                    onClick={() => setShowCreate(v => !v)}
+                    className="btn btn-secondary"
+                    style={{ fontSize: '0.85rem', padding: '0.4rem 0.9rem', display: 'inline-flex', alignItems: 'center', gap: '0.4rem', marginBottom: '1.5rem' }}
+                >
+                    {showCreate ? <X size={15} /> : <Plus size={15} />} {showCreate ? 'Cancel' : 'New Role'}
+                </button>
+
+                {/* Create custom role */}
+                {showCreate && (
+                    <div className="glass-panel" style={{ padding: '1rem 1.25rem', marginBottom: '1.5rem', display: 'flex', gap: '0.75rem', flexWrap: 'wrap', alignItems: 'flex-end' }}>
+                        <div className="input-group" style={{ marginBottom: 0, flex: '1 1 220px' }}>
+                            <label style={{ fontSize: '0.8rem' }}>Role name</label>
+                            <input
+                                type="text"
+                                className="input-field"
+                                placeholder="e.g. Store Manager"
+                                value={newRoleName}
+                                onChange={e => setNewRoleName(e.target.value)}
+                                maxLength={40}
+                            />
+                        </div>
+                        <div className="input-group" style={{ marginBottom: 0, flex: '0 1 200px' }}>
+                            <label style={{ fontSize: '0.8rem' }}>Copy permissions from</label>
+                            <select className="input-field" value={newRoleTemplate} onChange={e => setNewRoleTemplate(e.target.value as BuiltInRole)}>
+                                {EDITABLE_ROLES.map(r => <option key={r.key} value={r.key}>{r.label}</option>)}
+                            </select>
+                        </div>
+                        <button onClick={createCustomRole} disabled={creating} className="btn btn-primary" style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+                            <Plus size={16} /> {creating ? 'Creating…' : 'Create Role'}
+                        </button>
+                    </div>
+                )}
+            </div>
+        );
+    }
+
+    // ── Role detail view ──────────────────────────────────────────────────────
+    // Opened on demand when a role is selected. Renders that role's full
+    // permission tree; edits stay in local state until Save is pressed.
+    return (
+        <div className="animate-fade-in" style={{ maxWidth: '860px', margin: '0 auto', padding: '1rem' }}>
+            {/* Back to roles */}
+            <button
+                onClick={() => setSelectedRole(null)}
+                className="btn btn-secondary"
+                style={{ fontSize: '0.85rem', padding: '0.35rem 0.8rem', display: 'inline-flex', alignItems: 'center', gap: '0.4rem', marginBottom: '1rem' }}
+            >
+                <ArrowLeft size={15} /> Back to Roles
+            </button>
+
+            {/* Header */}
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1.5rem', flexWrap: 'wrap', gap: '1rem' }}>
+                <div>
+                    <h1 className="primary-gradient-text" style={{ fontSize: '1.75rem', display: 'flex', alignItems: 'center', gap: '0.6rem', marginBottom: '0.3rem' }}>
+                        <ShieldCheck size={28} /> {selectedRoleLabel}
+                    </h1>
+                    <p style={{ color: 'var(--text-secondary)', fontSize: '0.9rem', margin: 0 }}>
+                        Configure which tabs, buttons, and actions this role can see and use.
+                        Changes apply after you press Save.
                     </p>
                 </div>
                 <button onClick={handleSave} disabled={saving} className="btn btn-primary" style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
@@ -307,78 +428,12 @@ export default function SuperAdminPermissionsPage() {
                 </button>
             </div>
 
-            {/* Info banner */}
-            <div className="glass-panel" style={{ padding: '0.75rem 1rem', marginBottom: '1.5rem', display: 'flex', gap: '0.75rem', alignItems: 'flex-start', background: 'hsla(210,100%,50%,0.05)', border: '1px solid hsla(210,100%,50%,0.2)' }}>
-                <Info size={18} style={{ color: 'var(--primary-light)', flexShrink: 0, marginTop: '2px' }} />
-                <p style={{ margin: 0, fontSize: '0.85rem', color: 'var(--text-secondary)', lineHeight: 1.5 }}>
-                    Changes here control which tabs, buttons, and actions each role can see and use.
-                    The <strong>Admin</strong> role always has full access regardless of these settings.
-                </p>
-            </div>
-
-            {/* Role selector */}
-            <div style={{ marginBottom: '1.5rem', display: 'flex', gap: '0.5rem', flexWrap: 'wrap', alignItems: 'center' }}>
-                {roleTabs.map(r => (
-                    <span key={r.key} style={{ display: 'inline-flex', alignItems: 'center' }}>
-                        <button
-                            onClick={() => setSelectedRole(r.key)}
-                            className={selectedRole === r.key ? 'btn btn-primary' : 'btn btn-secondary'}
-                            style={{ fontSize: '0.85rem', padding: '0.4rem 1rem', display: 'inline-flex', alignItems: 'center', gap: '0.4rem' }}
-                        >
-                            {r.label}
-                            {r.custom && (
-                                <Trash2
-                                    size={13}
-                                    onClick={(e) => { e.stopPropagation(); deleteCustomRole(r.key, r.label); }}
-                                    style={{ opacity: 0.7, cursor: 'pointer' }}
-                                    role="button"
-                                    aria-label={`Delete role ${r.label}`}
-                                />
-                            )}
-                        </button>
-                    </span>
-                ))}
-                <button
-                    onClick={() => setShowCreate(v => !v)}
-                    className="btn btn-secondary"
-                    style={{ fontSize: '0.85rem', padding: '0.4rem 0.9rem', display: 'inline-flex', alignItems: 'center', gap: '0.4rem' }}
-                >
-                    {showCreate ? <X size={15} /> : <Plus size={15} />} {showCreate ? 'Cancel' : 'New Role'}
-                </button>
-            </div>
-
-            {/* Create custom role */}
-            {showCreate && (
-                <div className="glass-panel" style={{ padding: '1rem 1.25rem', marginBottom: '1.5rem', display: 'flex', gap: '0.75rem', flexWrap: 'wrap', alignItems: 'flex-end' }}>
-                    <div className="input-group" style={{ marginBottom: 0, flex: '1 1 220px' }}>
-                        <label style={{ fontSize: '0.8rem' }}>Role name</label>
-                        <input
-                            type="text"
-                            className="input-field"
-                            placeholder="e.g. Store Manager"
-                            value={newRoleName}
-                            onChange={e => setNewRoleName(e.target.value)}
-                            maxLength={40}
-                        />
-                    </div>
-                    <div className="input-group" style={{ marginBottom: 0, flex: '0 1 200px' }}>
-                        <label style={{ fontSize: '0.8rem' }}>Copy permissions from</label>
-                        <select className="input-field" value={newRoleTemplate} onChange={e => setNewRoleTemplate(e.target.value as BuiltInRole)}>
-                            {EDITABLE_ROLES.map(r => <option key={r.key} value={r.key}>{r.label}</option>)}
-                        </select>
-                    </div>
-                    <button onClick={createCustomRole} disabled={creating} className="btn btn-primary" style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
-                        <Plus size={16} /> {creating ? 'Creating…' : 'Create Role'}
-                    </button>
-                </div>
-            )}
-
             {/* Landing page after login — per selected role */}
             <div className="glass-panel" style={{ padding: '1rem 1.25rem', marginBottom: '1.5rem', display: 'flex', gap: '0.75rem', alignItems: 'center', flexWrap: 'wrap' }}>
                 <div style={{ flex: '1 1 260px', minWidth: 0 }}>
                     <div style={{ fontWeight: 600, fontSize: '0.9rem', marginBottom: '0.15rem' }}>Landing page after login</div>
                     <div style={{ fontSize: '0.8rem', color: 'var(--text-tertiary)' }}>
-                        Where a <strong>{roleTabs.find(r => r.key === selectedRole)?.label ?? selectedRole}</strong> user lands after signing in. Saved with the button above.
+                        Where a <strong>{selectedRoleLabel}</strong> user lands after signing in. Saved with the button above.
                     </div>
                 </div>
                 <select

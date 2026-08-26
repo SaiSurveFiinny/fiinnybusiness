@@ -5,7 +5,7 @@ import {
     Download, Store, Filter,
     Users, Building2, UserPlus, Calendar,
     Bell, ShoppingCart, Truck, Mail, MessageSquare, Wallet,
-    X, Copy, CheckSquare, FileText, ChevronDown, ChevronRight, Phone, Clock,
+    X, Copy, CheckSquare, FileText, ChevronDown, ChevronRight, Phone, Clock, Columns3,
 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { getDocs, orderBy, query, where, collectionGroup, collection } from 'firebase/firestore';
@@ -281,6 +281,19 @@ function PartnersTab() {
         document.addEventListener('mousedown', onDown);
         return () => document.removeEventListener('mousedown', onDown);
     }, [showDateDropdown]);
+
+    // Column-visibility ("Columns") dropdown.
+    const [showColumnsDropdown, setShowColumnsDropdown] = useState(false);
+    const columnsDropdownRef = useRef<HTMLDivElement>(null);
+    useEffect(() => {
+        if (!showColumnsDropdown) return;
+        const onDown = (e: MouseEvent) => {
+            if (columnsDropdownRef.current?.contains(e.target as Node)) return;
+            setShowColumnsDropdown(false);
+        };
+        document.addEventListener('mousedown', onDown);
+        return () => document.removeEventListener('mousedown', onDown);
+    }, [showColumnsDropdown]);
 
     const [partnerView, setPartnerView] = useState<'all' | 'active' | 'cleared'>('all');
 
@@ -723,7 +736,7 @@ function PartnersTab() {
         measure();
         window.addEventListener('resize', measure);
         return () => window.removeEventListener('resize', measure);
-    }, [layout.colWidths, layout.colOrder, layout.freezeCount, loading]);
+    }, [layout.colWidths, layout.visibleOrder, layout.freezeCount, loading]);
 
     // ── Column renderers (colOrder-driven, like the Stock Report / Product Master) ─
     const renderHeaderTh = (key: PartnerColKey, colIdx: number) => {
@@ -1060,7 +1073,10 @@ function PartnersTab() {
             {/* List */}
             {loading ? (
                 <div style={{ textAlign: 'center', padding: '3rem', color: 'var(--text-secondary)' }}>{t('common.loading')}</div>
-            ) : processedRetailers.length === 0 ? (
+            ) : retailers.length === 0 ? (
+                // Genuinely empty — no partners exist yet. When partners DO exist but a
+                // filter/search matches nothing, we keep the table (with its header,
+                // filter inputs and grand-total row) and show a compact in-body message.
                 <div className="glass-panel" style={{ textAlign: 'center', padding: '4rem 2rem', color: 'var(--text-secondary)' }}>
                     <Store size={48} color="var(--surface-border)" style={{ margin: '0 auto 1rem auto', display: 'block' }} />
                     <h3>{t('worklist.no_retailers_found')}</h3>
@@ -1079,10 +1095,58 @@ function PartnersTab() {
                         <span>Drag column edges to resize.</span>
                         <span>Right-click a header to freeze or reset.</span>
                         {layout.freezeCount > 0 && (
-                            <span style={{ marginLeft: 'auto', color: 'var(--primary)', fontWeight: 600 }}>
-                                Frozen up to “{PARTNER_LABELS[layout.colOrder[layout.freezeCount - 1]]}”
+                            <span style={{ color: 'var(--primary)', fontWeight: 600 }}>
+                                Frozen up to “{PARTNER_LABELS[layout.visibleOrder[layout.freezeCount - 1]]}”
                             </span>
                         )}
+
+                        {/* Column visibility control */}
+                        <div ref={columnsDropdownRef} style={{ position: 'relative', marginLeft: 'auto' }}>
+                            <button
+                                onClick={() => setShowColumnsDropdown(v => !v)}
+                                style={{ display: 'inline-flex', alignItems: 'center', gap: '0.35rem', padding: '0.3rem 0.7rem', borderRadius: '6px', border: '1px solid var(--surface-border)', background: 'var(--surface-raised)', color: 'var(--text-secondary)', fontSize: '0.75rem', fontWeight: 600, cursor: 'pointer', fontFamily: 'inherit' }}
+                            >
+                                <Columns3 size={14} /> Columns
+                                {layout.hidden.size > 0 && (
+                                    <span style={{ fontSize: '0.65rem', color: 'var(--primary)', fontWeight: 700 }}>({layout.hidden.size} hidden)</span>
+                                )}
+                                <ChevronDown size={13} />
+                            </button>
+                            {showColumnsDropdown && (
+                                <div
+                                    role="menu"
+                                    style={{ position: 'absolute', top: 'calc(100% + 4px)', right: 0, zIndex: 5001, minWidth: '220px', background: 'var(--surface-raised)', border: '1px solid var(--surface-border)', borderRadius: '10px', padding: '0.4rem', boxShadow: '0 12px 40px rgba(0,0,0,0.22)' }}
+                                >
+                                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '0.2rem 0.5rem 0.4rem', borderBottom: '1px solid var(--surface-border)', marginBottom: '0.25rem' }}>
+                                        <span style={{ fontSize: '0.72rem', fontWeight: 700, color: 'var(--text-tertiary)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Columns</span>
+                                        {layout.hidden.size > 0 && (
+                                            <button
+                                                onClick={layout.showAllColumns}
+                                                style={{ background: 'none', border: 'none', color: 'var(--primary)', fontSize: '0.72rem', fontWeight: 600, cursor: 'pointer', fontFamily: 'inherit', padding: 0 }}
+                                            >
+                                                Show all
+                                            </button>
+                                        )}
+                                    </div>
+                                    {layout.colOrder
+                                        .filter(key => key !== 'select' && key !== 'expand')
+                                        .map(key => (
+                                            <label
+                                                key={key}
+                                                style={{ display: 'flex', alignItems: 'center', gap: '0.55rem', padding: '0.35rem 0.5rem', borderRadius: '6px', cursor: 'pointer', fontSize: '0.82rem', color: 'var(--text-primary)' }}
+                                            >
+                                                <input
+                                                    type="checkbox"
+                                                    checked={!layout.isHidden(key)}
+                                                    onChange={() => layout.toggleColumn(key)}
+                                                    style={{ width: '0.95rem', height: '0.95rem', cursor: 'pointer', accentColor: 'var(--primary-light)' }}
+                                                />
+                                                {PARTNER_LABELS[key]}
+                                            </label>
+                                        ))}
+                                </div>
+                            )}
+                        </div>
                     </div>
 
                     {/* Full-screen capture div during column resize — prevents cursor flicker */}
@@ -1095,19 +1159,27 @@ function PartnersTab() {
                         <div style={{ overflowX: 'auto', maxHeight: '72vh', overflowY: 'auto' }} onContextMenu={layout.handleTableContextMenu}>
                             <table style={{ width: layout.totalTableWidth, tableLayout: 'fixed', borderCollapse: 'collapse', fontSize: '0.875rem' }}>
                                 <colgroup>
-                                    {layout.colOrder.map(key => (
+                                    {layout.visibleOrder.map(key => (
                                         <col key={key} ref={layout.registerColEl(key)} style={{ width: layout.colWidths[key] }} />
                                     ))}
                                 </colgroup>
                                 <thead>
                                     <tr ref={headerRowRef} style={{ borderBottom: '2px solid var(--surface-border)', background: 'var(--surface-raised)' }}>
-                                        {layout.colOrder.map((key, colIdx) => renderHeaderTh(key, colIdx))}
+                                        {layout.visibleOrder.map((key, colIdx) => renderHeaderTh(key, colIdx))}
                                     </tr>
                                     <tr style={{ position: 'sticky', top: headerH, zIndex: 3, background: 'var(--surface-raised)', fontWeight: 700, borderBottom: '2px solid var(--surface-border)' } as React.CSSProperties}>
-                                        {layout.colOrder.map((key, colIdx) => renderGrandTd(key, colIdx))}
+                                        {layout.visibleOrder.map((key, colIdx) => renderGrandTd(key, colIdx))}
                                     </tr>
                                 </thead>
                                 <tbody>
+                                    {processedRetailers.length === 0 && (
+                                        <tr>
+                                            <td colSpan={layout.visibleOrder.length} style={{ padding: '2.5rem 1rem', textAlign: 'center', color: 'var(--text-secondary)' }}>
+                                                <div style={{ fontWeight: 600, fontSize: '0.95rem', marginBottom: '0.25rem' }}>No matching results</div>
+                                                <div style={{ fontSize: '0.82rem', color: 'var(--text-tertiary)' }}>Try adjusting or clearing your filters.</div>
+                                            </td>
+                                        </tr>
+                                    )}
                                     {processedRetailers.map(r => {
                                         const outstanding = r.computedOutstanding ?? 0;
                                         const isSelected = selectedIds.has(r.id);
@@ -1130,11 +1202,11 @@ function PartnersTab() {
                                                     onMouseEnter={e => { e.currentTarget.style.background = rowBgHover; }}
                                                     onMouseLeave={e => { e.currentTarget.style.background = rowBg; }}
                                                 >
-                                                    {layout.colOrder.map((key, colIdx) => renderBodyTd(key, colIdx, r, { rowBg: stickyBg, isSelected, isExpanded }))}
+                                                    {layout.visibleOrder.map((key, colIdx) => renderBodyTd(key, colIdx, r, { rowBg: stickyBg, isSelected, isExpanded }))}
                                                 </tr>
                                                 {isExpanded && (
                                                     <tr style={{ borderBottom: '1px solid var(--surface-border)', background: 'var(--surface-raised)' }}>
-                                                        <td colSpan={layout.colOrder.length} style={{ padding: '0.5rem 1rem 0.65rem 3.5rem' }}>
+                                                        <td colSpan={layout.visibleOrder.length} style={{ padding: '0.5rem 1rem 0.65rem 3.5rem' }}>
                                                             <div style={{ display: 'flex', gap: '2rem', fontSize: '0.82rem' }}>
                                                                 <div>
                                                                     <div style={{ fontSize: '0.65rem', fontWeight: 600, textTransform: 'uppercase', color: 'var(--text-tertiary)', letterSpacing: '0.05em' }}>Taluka</div>
