@@ -15,6 +15,7 @@ import '../models/store_model.dart';
 import '../../features/cart/screens/cart_screen.dart';
 import '../../features/cart/screens/checkout_screen.dart';
 import '../../features/orders/screens/customer_orders_screen.dart';
+import '../../features/orders/screens/invoice_screen.dart';
 import '../../features/orders/screens/order_detail_screen.dart';
 import '../../features/hubs/screens/hubs_screen.dart';
 import '../../features/hubs/screens/hub_detail_screen.dart';
@@ -32,6 +33,7 @@ import '../../features/manufacturer/screens/retailer_network_screen.dart';
 import '../../features/manufacturer/screens/manufacturer_catalog_screen.dart';
 import '../../features/manufacturer/screens/assign_product_screen.dart';
 import '../../features/manufacturer/screens/brand_editor_screen.dart';
+import '../../features/profile/screens/about_screen.dart';
 import '../../features/profile/screens/profile_screen.dart';
 import '../../features/profile/screens/profile_edit_screen.dart';
 import '../../features/profile/screens/settings_screen.dart';
@@ -43,6 +45,7 @@ import '../../features/welcome/screens/welcome_screen.dart';
 import '../../features/reels/screens/reels_feed_screen.dart';
 import '../../features/reels/screens/reel_deep_link_screen.dart';
 import '../../features/reels/screens/reel_upload_screen.dart';
+import '../../features/reels/screens/shop_products_screen.dart';
 import '../../features/reels/screens/shop_profile_screen.dart';
 import '../../features/reels/screens/followers_screen.dart';
 import '../../features/reels/providers/reels_provider.dart';
@@ -380,6 +383,24 @@ final routerProvider = Provider<GoRouter>((ref) {
         parentNavigatorKey: _rootKey,
         builder: (_, _) => const _RootBackFallback(child: SupportScreen()),
       ),
+      GoRoute(
+        path: '/about',
+        parentNavigatorKey: _rootKey,
+        builder: (_, _) => const _RootBackFallback(child: AboutScreen()),
+      ),
+      // krishidukan.com is a verified Android App Link / iOS Universal Link
+      // (see AndroidManifest.xml), so a WhatsApp invoice link
+      // (https://krishidukan.com/invoice/{orderId}) opens straight into this
+      // app rather than a browser. Without a matching route this crashed
+      // with "GoException: no routes for location" and stranded the customer
+      // on a blank error screen — see invoice_screen.dart for the fix.
+      GoRoute(
+        path: '/invoice/:orderId',
+        parentNavigatorKey: _rootKey,
+        builder: (_, state) => _RootBackFallback(
+          child: InvoiceScreen(orderId: state.pathParameters['orderId'] ?? ''),
+        ),
+      ),
       // Profile is now a full-screen pushed route (not a shell tab).
       // Access it via the brand icon in the top bar or context.push('/profile').
       GoRoute(
@@ -426,6 +447,18 @@ final routerProvider = Provider<GoRouter>((ref) {
         builder: (_, state) => _RootBackFallback(
           child: ShopProfileScreen(
             shopPhone: state.pathParameters['phone']!,
+          ),
+        ),
+      ),
+      // Full product catalogue for one shop, reached from the shop profile's
+      // Products stat / "View All" tile.
+      GoRoute(
+        path: '/shop/:phone/products',
+        parentNavigatorKey: _rootKey,
+        builder: (_, state) => _RootBackFallback(
+          child: ShopProductsScreen(
+            shopPhone: state.pathParameters['phone']!,
+            shopName: state.uri.queryParameters['name'],
           ),
         ),
       ),
@@ -616,7 +649,9 @@ final routerProvider = Provider<GoRouter>((ref) {
             routes: [
               GoRoute(
                 path: '/reels',
-                builder: (_, _) => const ReelsFeedScreen(),
+                builder: (_, state) => ReelsFeedScreen(
+                  searchToken: state.uri.queryParameters['search'],
+                ),
               ),
             ],
           ),

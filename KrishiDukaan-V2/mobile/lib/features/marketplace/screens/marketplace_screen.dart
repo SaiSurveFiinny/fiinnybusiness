@@ -521,13 +521,18 @@ class _MarketplaceScreenState extends ConsumerState<MarketplaceScreen> {
                   ref.read(marketplaceProvider.notifier).clearSeller(),
             ),
 
-          // Category filter chips
+          // Category filter chips + distance filter
           SizedBox(
             height: 48,
             child: ListView(
               scrollDirection: Axis.horizontal,
               padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
               children: [
+                _DistanceFilterChip(
+                  maxDistanceKm: state.maxDistanceKm,
+                  onChanged: (km) =>
+                      ref.read(marketplaceProvider.notifier).setMaxDistanceKm(km),
+                ),
                 _CategoryChip(
                   label: 'All',
                   selected: state.category == null && state.searchQuery.isEmpty,
@@ -701,6 +706,111 @@ class _SellerBanner extends StatelessWidget {
             ),
           ),
         ],
+      ),
+    );
+  }
+}
+
+/// Distance radius filter — matches web's DISTANCE_OPTIONS exactly (Any
+/// Distance / 5 / 25 / 100 / 500 km), which mobile never had at all until
+/// now. Opens a bottom sheet rather than a dropdown since there's no
+/// hover/dropdown affordance on mobile, but the options and their meaning
+/// (a cap on the nearest-store distance already computed for every product)
+/// are identical to web's.
+class _DistanceFilterChip extends StatelessWidget {
+  static const _options = <(String, double?)>[
+    ('Any Distance', null),
+    ('Within 5 km', 5),
+    ('Within 25 km', 25),
+    ('Within 100 km', 100),
+    ('Within 500 km', 500),
+  ];
+
+  final double? maxDistanceKm;
+  final ValueChanged<double?> onChanged;
+
+  const _DistanceFilterChip({
+    required this.maxDistanceKm,
+    required this.onChanged,
+  });
+
+  String get _label {
+    for (final (label, km) in _options) {
+      if (km == maxDistanceKm) return label;
+    }
+    return 'Any Distance';
+  }
+
+  void _openSheet(BuildContext context) {
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: Colors.white,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (_) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Padding(
+              padding: EdgeInsets.fromLTRB(16, 16, 16, 4),
+              child: Align(
+                alignment: Alignment.centerLeft,
+                child: Text('Distance', style: AppTextStyles.heading3),
+              ),
+            ),
+            for (final (label, km) in _options)
+              RadioListTile<double?>(
+                value: km,
+                // ignore: deprecated_member_use
+                groupValue: maxDistanceKm,
+                title: Text(label),
+                activeColor: AppColors.primary,
+                // ignore: deprecated_member_use
+                onChanged: (v) {
+                  Navigator.of(context).pop();
+                  onChanged(v);
+                },
+              ),
+            const SizedBox(height: 8),
+          ],
+        ),
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final active = maxDistanceKm != null;
+    return Padding(
+      padding: const EdgeInsets.only(right: 8),
+      child: GestureDetector(
+        onTap: () => _openSheet(context),
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 7),
+          decoration: BoxDecoration(
+            color: active ? AppColors.primary : Colors.white,
+            borderRadius: BorderRadius.circular(20),
+            border: Border.all(
+              color: active ? AppColors.primary : AppColors.divider,
+            ),
+          ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(Icons.near_me_outlined,
+                  size: 16, color: active ? Colors.white : AppColors.onSurfaceVariant),
+              const SizedBox(width: 6),
+              Text(
+                _label,
+                style: AppTextStyles.bodySmall.copyWith(
+                  color: active ? Colors.white : AppColors.onSurface,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+            ],
+          ),
+        ),
       ),
     );
   }

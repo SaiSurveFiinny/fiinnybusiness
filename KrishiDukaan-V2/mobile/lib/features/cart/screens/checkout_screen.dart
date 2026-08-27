@@ -294,17 +294,14 @@ class _CheckoutScreenState extends ConsumerState<CheckoutScreen> {
     final deliveryCharge = delivery?.totalCharge ?? 0.0;
     final grandTotal = subtotal + deliveryCharge + gst;
 
-    final appBar = AppBar(
-      elevation: 0,
-      backgroundColor: Colors.transparent,
-      foregroundColor: Colors.white,
-      flexibleSpace: Container(
-        decoration: BoxDecoration(gradient: topBarGradient()),
-      ),
-      titleSpacing: 0,
-      title: Text('Checkout',
-          style: AppTextStyles.heading2.copyWith(color: Colors.white)),
-    );
+    // Was a custom AppBar with white text/icons (foregroundColor: Colors.white)
+    // painted on topBarGradient() — which is this app's shared FROSTED WHITE
+    // top-bar background (see app_top_bar.dart's doc comment), not a colored
+    // brand bar. That made every icon/button in the app bar (back arrow,
+    // title) invisible against the white background. AppTopBar is the same
+    // gradient used correctly everywhere else in the app, with a dark
+    // foreground that actually shows up on it.
+    const appBar = AppTopBar(title: 'Checkout');
 
     if (items.isEmpty) {
       return Scaffold(

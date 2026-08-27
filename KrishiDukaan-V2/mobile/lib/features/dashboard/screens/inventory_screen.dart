@@ -18,6 +18,8 @@ import '../../../core/widgets/error_view.dart';
 import '../../marketplace/data/catalog_repository.dart';
 import '../data/dashboard_repository.dart';
 import '../providers/dashboard_provider.dart';
+import '../../../core/data/product_schema_repository.dart';
+import '../widgets/product_form_sections.dart';
 // SeatStats is defined in dashboard_repository.dart
 
 /// Mirrors DEFAULT_LOW_STOCK_THRESHOLD in
@@ -728,6 +730,13 @@ class _AddListingSheetState extends ConsumerState<_AddListingSheet> {
   double _gstRate = 18.0;
   String _sellMode = 'online_delivery';
 
+  // Web-parity product detail fields (see product_form_sections.dart).
+  // categoryInfo values are String, except `chips` fields which are
+  // List<String> — the same shape web writes.
+  final Map<String, dynamic> _categoryInfo = {};
+  List<Map<String, String>> _composition = [];
+  List<Map<String, String>> _customFields = [];
+  String _videoUrl = '';
 
   bool _saving = false;
   final _catalogRepo = CatalogRepository();
@@ -995,29 +1004,43 @@ class _AddListingSheetState extends ConsumerState<_AddListingSheet> {
                   ),
                 ),
                 const SizedBox(height: 8),
-                DropdownButtonFormField<String>(
-                  // ignore: deprecated_member_use
-                  value: _category,
-                  decoration: InputDecoration(
-                    border: OutlineInputBorder(
-                      borderRadius: BorderRadius.circular(12),
-                    ),
-                  ),
-                  items:
-                      [
-                            'Fertilizers',
-                            'Seeds',
-                            'Pesticides',
-                            'Irrigation',
-                            'Tools',
-                            'Organic',
-                            'Herbicides',
-                          ]
+                // Categories come from `settings/productSchema` — the same doc
+                // the web dashboard reads — so the two platforms can never
+                // drift apart again, and a new category doesn't need an app
+                // release. This list used to be hardcoded here and had already
+                // diverged from web's: it offered Irrigation/Organic (which no
+                // product uses) while missing Bio-Stimulants, and neither
+                // platform offered Adjuvants despite 333 products using it.
+                Builder(
+                  builder: (context) {
+                    final schema = ref.watch(productSchemaProvider).value ??
+                        ProductSchemaRepository.fallback;
+                    final categories = schema.categories;
+                    // A product saved under a category no longer in the list
+                    // (legacy 'Irrigation', a free-text value, or a category
+                    // added on web after this build) must still round-trip
+                    // rather than silently resetting the seller's choice.
+                    final options = categories.contains(_category)
+                        ? categories
+                        : [_category, ...categories];
+                    return DropdownButtonFormField<String>(
+                      // ignore: deprecated_member_use
+                      value: _category,
+                      isExpanded: true,
+                      decoration: InputDecoration(
+                        border: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                      ),
+                      items: options
                           .map(
                             (c) => DropdownMenuItem(value: c, child: Text(c)),
                           )
                           .toList(),
-                  onChanged: (v) => setState(() => _category = v ?? _category),
+                      onChanged: (v) =>
+                          setState(() => _category = v ?? _category),
+                    );
+                  },
                 ),
                 const SizedBox(height: 16),
 
@@ -1060,6 +1083,61 @@ class _AddListingSheetState extends ConsumerState<_AddListingSheet> {
                   ),
                 ),
                 const SizedBox(height: 20),
+
+                // ── Web-parity sections ─────────────────────────────────
+                // Order matches the web Add Product form: Category Info →
+                // Composition → Additional Information, between Description
+                // and Pack Sizes.
+                Builder(
+                  builder: (context) {
+                    final schema = ref.watch(productSchemaProvider).value ??
+                        ProductSchemaRepository.fallback;
+                    return Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        CategoryInfoSection(
+                          schema: schema,
+                          category: _category,
+                          values: _categoryInfo,
+                          onChanged: (key, value) {
+                            // No setState: the editors hold their own text
+                            // state, and rebuilding here would fight the
+                            // cursor position while typing.
+                            _categoryInfo[key] = value;
+                          },
+                        ),
+                        if (schema.showsComposition(_category))
+                          KeyValueRowsSection(
+                            title: 'Composition',
+                            subtitle:
+                                'Ingredients & nutrients shown on the product page',
+                            keyName: 'name',
+                            valueName: 'value',
+                            keyLabel: 'Component / Ingredient',
+                            valueLabel: 'Value / %',
+                            addLabel: 'Add component',
+                            rows: _composition,
+                            onChanged: (rows) => _composition = rows,
+                          ),
+                        KeyValueRowsSection(
+                          title: 'Additional Information',
+                          subtitle: 'Any other detail buyers should see',
+                          keyName: 'title',
+                          valueName: 'value',
+                          keyLabel: 'Title',
+                          valueLabel: 'Value',
+                          addLabel: 'Add information',
+                          rows: _customFields,
+                          onChanged: (rows) => _customFields = rows,
+                        ),
+                        ProductVideoSection(
+                          initialValue: _videoUrl,
+                          onChanged: (v) => _videoUrl = v,
+                        ),
+                      ],
+                    );
+                  },
+                ),
 
                 // Variants list
                 Text(
@@ -1428,6 +1506,20 @@ class _AddListingSheetState extends ConsumerState<_AddListingSheet> {
       return;
     }
 
+    // The video field is optional, but a non-empty value that isn't a
+    // YouTube link renders nothing on the product page — so reject it here
+    // rather than saving something the buyer will never see. Checked
+    // explicitly because this sheet is a plain Column, not a Form, so
+    // TextFormField validators never run on their own.
+    if (_videoUrl.trim().isNotEmpty && extractYouTubeId(_videoUrl) == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Enter a valid YouTube link, or leave the video empty.'),
+        ),
+      );
+      return;
+    }
+
     // Enforce seat limit before writing
     final seatStats = ref.read(seatStatsProvider(widget.sellerPhone)).value;
     if (seatStats != null && seatStats.available <= 0) {
@@ -1523,6 +1615,17 @@ class _AddListingSheetState extends ConsumerState<_AddListingSheet> {
         sellMode: _sellMode,
         gstApplicable: _gstApplicable,
         gstRate: _gstRate,
+        // Drop empty values so a product never carries a blank map/array.
+        categoryInfo: Map<String, dynamic>.fromEntries(
+          _categoryInfo.entries.where((e) {
+            final v = e.value;
+            if (v is List) return v.isNotEmpty;
+            return v != null && v.toString().trim().isNotEmpty;
+          }),
+        ),
+        composition: _composition,
+        customFields: _customFields,
+        videoUrl: _videoUrl,
       );
 
       // Choosing online delivery for a product must also switch the
@@ -1531,8 +1634,9 @@ class _AddListingSheetState extends ConsumerState<_AddListingSheet> {
       // reach their delivery charges — it gates on users/{phone}.onlineDelivery,
       // which nothing on mobile used to write.
       if (_sellMode != 'offline_store_only') {
-        await DashboardRepository().enableAccountOnlineDelivery(
+        await DashboardRepository().setAccountOnlineDelivery(
           widget.sellerPhone,
+          enabled: true,
           isManufacturer:
               ref.read(currentUserProvider).value?.isManufacturer ?? false,
         );
@@ -2173,13 +2277,14 @@ class _EditListingSheetState extends State<_EditListingSheet> {
       }
 
       // Switching a product to online delivery must also turn the
-      // ACCOUNT-level flag on — see enableAccountOnlineDelivery. Without it the
+      // ACCOUNT-level flag on — see setAccountOnlineDelivery. Without it the
       // web Delivery Settings page stays locked and the seller never sees their
       // delivery charges.
       if (_sellMode != 'offline_store_only' &&
           widget.listing.sellerPhone.isNotEmpty) {
-        await repo.enableAccountOnlineDelivery(
+        await repo.setAccountOnlineDelivery(
           widget.listing.sellerPhone,
+          enabled: true,
           isManufacturer: widget.listing.sellerType == 'manufacturer',
         );
       }

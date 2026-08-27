@@ -227,6 +227,13 @@ class DashboardRepository {
     String? sellMode,
     bool? gstApplicable,
     double? gstRate,
+    // Web-parity product detail fields. All optional so existing callers and
+    // older app versions keep working; each is only written when non-empty so
+    // a product never gains a meaningless empty array/map.
+    Map<String, dynamic>? categoryInfo,
+    List<Map<String, String>>? composition,
+    List<Map<String, String>>? customFields,
+    String? videoUrl,
   }) async {
     final uid = FirebaseAuth.instance.currentUser?.uid;
     final productRef = _db.collection('products').doc();
@@ -261,6 +268,16 @@ class DashboardRepository {
       'sellMode': sellMode,
       'gstApplicable': gstApplicable,
       'gstRate': gstRate,
+      // Same field names the web dashboard writes (inventory-firestore.ts), so
+      // a product created on either platform renders identically on both.
+      if (categoryInfo != null && categoryInfo.isNotEmpty)
+        'categoryInfo': categoryInfo,
+      if (composition != null && composition.isNotEmpty)
+        'composition': composition,
+      if (customFields != null && customFields.isNotEmpty)
+        'customFields': customFields,
+      if (videoUrl != null && videoUrl.trim().isNotEmpty)
+        'videoUrl': videoUrl.trim(),
       'createdAt': FieldValue.serverTimestamp(),
       'updatedAt': FieldValue.serverTimestamp(),
     });
@@ -536,40 +553,36 @@ class DashboardRepository {
         .set(settings, SetOptions(merge: true));
   }
 
-  /// Turns on the ACCOUNT-level online-delivery flag for a seller.
+  /// Sets the ACCOUNT-level online-delivery flag for a seller.
   ///
-  /// Distinct from a product's own `sellMode`/`isOnline`: the web dashboard's
-  /// Delivery Settings page gates its whole charges/slabs UI on
-  /// `users/{phone}.onlineDelivery`, and a MISSING field reads as false. Mobile
-  /// never wrote this field anywhere, so a retailer who ticked "online
-  /// delivery" while adding a product on mobile still saw "Online delivery
-  /// disabled" on web with no way to reach their delivery charges.
+  /// Distinct from a product's own `sellMode`/`isOnline`: this is the single
+  /// switch that turns the seller's online selling on or off across their
+  /// whole catalogue, so they never have to edit every product one by one.
   ///
-  /// Web sets the same flag from its Profile save (app/firebase.ts
-  /// saveBusinessProfile) across users/, retailers|manufacturers/ and
-  /// profiles/, so all three are mirrored here to keep the platforms agreeing.
-  /// users/{phone} is the one the gate actually reads, so it is written first
-  /// and allowed to throw; the two mirrors are best-effort.
-  Future<void> enableAccountOnlineDelivery(
+  /// Writes every mirror web reads, in web's own precedence order (see
+  /// fetchStoreOnlineDelivery in app/firebase.ts: profiles -> users ->
+  /// retailers|manufacturers). users/{phone} is always written and allowed to
+  /// throw; the profile mirrors are best-effort and use update() rather than
+  /// set(merge:) so they never CREATE a near-empty public profile doc for a
+  /// seller who has none — storefront readers would pick that up as a real
+  /// (nameless) profile.
+  Future<void> setAccountOnlineDelivery(
     String sellerPhone, {
+    required bool enabled,
     required bool isManufacturer,
   }) async {
     if (sellerPhone.isEmpty) return;
 
     await _db.collection('users').doc(sellerPhone).set({
-      'onlineDelivery': true,
+      'onlineDelivery': enabled,
       'updatedAt': FieldValue.serverTimestamp(),
     }, SetOptions(merge: true));
 
     final profileCollection = isManufacturer ? 'manufacturers' : 'retailers';
     for (final path in [profileCollection, 'profiles']) {
       try {
-        // update(), not set(merge:) — these are mirrors of a profile the seller
-        // creates elsewhere. A set() would CREATE a near-empty public profile
-        // doc for a seller who has none, which storefront readers would then
-        // pick up as a real (nameless) profile.
         await _db.collection(path).doc(sellerPhone).update({
-          'onlineDelivery': true,
+          'onlineDelivery': enabled,
           'updatedAt': FieldValue.serverTimestamp(),
         });
       } catch (_) {
@@ -577,6 +590,27 @@ class DashboardRepository {
         // users/{phone}, which was already written above.
       }
     }
+  }
+
+  /// Reads the seller's account-level online-delivery flag using web's exact
+  /// precedence (profiles -> users -> retailers|manufacturers), so the toggle
+  /// shows the same state the web dashboard would.
+  Future<bool> fetchAccountOnlineDelivery(
+    String sellerPhone, {
+    required bool isManufacturer,
+  }) async {
+    if (sellerPhone.isEmpty) return false;
+    final profileCollection = isManufacturer ? 'manufacturers' : 'retailers';
+    for (final path in ['profiles', 'users', profileCollection]) {
+      try {
+        final snap = await _db.collection(path).doc(sellerPhone).get();
+        final value = snap.data()?['onlineDelivery'];
+        if (value is bool) return value;
+      } catch (_) {
+        // Unreadable mirror — fall through to the next one.
+      }
+    }
+    return false;
   }
 
   // ── Seller orders ─────────────────────────────────────────────────────────

@@ -11,6 +11,7 @@ import type { InventoryRow } from "../_types/inventory";
 import { useI18n } from "../../i18n/I18nContext";
 import {
   PRODUCT_CATEGORIES, isStandardCategory, CATEGORY_FIELDS, CHIPS_FIELDS,
+  loadProductSchema, getProductCategories, getCategoryFields,
   type ProductCategory, effectiveCategoryInfo,
 } from "../_lib/category-info";
 import { CompositionEditor, COMPOSITION_CATEGORIES, type CompositionEntry } from "../_components/composition-editor";
@@ -18,6 +19,8 @@ import { CustomFieldsEditor, type CustomFieldEntry } from "../_components/custom
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
+// Runtime list from settings/productSchema (see loadProductSchema); falls
+// back to the PRODUCT_CATEGORIES constant when Firestore is unreachable.
 const CATEGORIES = PRODUCT_CATEGORIES;
 
 const GST_RATES = [0, 5, 12, 18, 28] as const;
@@ -127,7 +130,10 @@ function ModalCategoryInfoSection({
   onToggle: () => void;
 }) {
   const activeCat: ProductCategory = isStandardCategory(category) ? category : "Other";
-  const fields = CATEGORY_FIELDS[activeCat];
+  // getCategoryFields accepts any string, so a category that exists only in
+  // Firestore (added on web/mobile after this build) still renders its fields
+  // instead of silently falling back to "Other".
+  const fields = getCategoryFields(category) ?? CATEGORY_FIELDS[activeCat];
   if (!fields.length) return null;
 
   const inputCls = "w-full rounded-xl border border-outline-variant/40 bg-white px-3 py-2.5 text-on-surface outline-none focus:border-primary focus:ring-2 focus:ring-primary/20 disabled:opacity-50 text-xs";
@@ -415,6 +421,17 @@ export function EditProductModal({ row, accountDeliveryEnabled, onClose, onSaved
   onSaved: () => void;
 }) {
   const { t } = useI18n();
+  // See add-product-inventory-form: the category list comes from
+  // settings/productSchema at runtime so web and mobile stay in step.
+  const [categoryOptions, setCategoryOptions] =
+    useState<readonly string[]>(CATEGORIES);
+  useEffect(() => {
+    let cancelled = false;
+    void loadProductSchema().then(() => {
+      if (!cancelled) setCategoryOptions(getProductCategories());
+    });
+    return () => { cancelled = true; };
+  }, []);
   const [name, setName]               = useState(row.productName);
   // For "Other": category stores the actual custom name; isStandardCategory check determines display.
   // Use a case-insensitive lookup so Firestore values like "pesticides" resolve to "Pesticides".
@@ -689,7 +706,7 @@ export function EditProductModal({ row, accountDeliveryEnabled, onClose, onSaved
               <select value={category}
                 onChange={(e) => { setCategory(e.target.value); setCategoryInfo({}); }}
                 className="rounded-xl border border-outline-variant/40 bg-white px-3 py-2.5 text-on-surface outline-none focus:border-primary focus:ring-2 focus:ring-primary/20 appearance-none">
-                {CATEGORIES.map((c) => <option key={c} value={c}>{c}</option>)}
+                {categoryOptions.map((c) => <option key={c} value={c}>{c}</option>)}
               </select>
               {category === "Other" && (
                 <input type="text"

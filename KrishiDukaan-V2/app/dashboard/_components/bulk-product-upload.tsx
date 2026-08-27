@@ -1,6 +1,6 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import * as XLSX from "xlsx";
 // exceljs is imported dynamically in downloadTemplate() to keep it out of the
 // initial bundle — it's only needed when the user requests the template file.
@@ -10,12 +10,17 @@ import {
 } from "lucide-react";
 import { createManufacturerProduct } from "../_lib/manufacturer-products-firestore";
 import { createProductAndInventory } from "../_lib/inventory-firestore";
-import { PRODUCT_CATEGORIES } from "../_lib/category-info";
+import { PRODUCT_CATEGORIES, loadProductSchema, getProductCategories } from "../_lib/category-info";
 import type { SeatStats } from "../_types/subscriptions";
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
-const VALID_CATEGORIES = PRODUCT_CATEGORIES as readonly string[];
+// Resolved at CALL time, not module load: settings/productSchema is fetched
+// asynchronously, and a stale snapshot here would reject a category the rest
+// of the app now offers (e.g. Adjuvants, which 333 live products already use).
+// Falls back to the bundled constant until the load resolves.
+const validCategories = (): readonly string[] =>
+  getProductCategories() ?? (PRODUCT_CATEGORIES as readonly string[]);
 
 // Labels shown in the dropdown and accepted in the upload file
 const UNIT_TYPE_LABELS = [
@@ -116,7 +121,8 @@ async function downloadTemplate() {
   ws.views = [{ state: "frozen", ySplit: 1 }];
 
   // ── Dropdown validations ─────────────────────────────────────────────────
-  const categoryFormula = `"${VALID_CATEGORIES.join(",")}"`;
+  const categoryList = validCategories();
+  const categoryFormula = `"${categoryList.join(",")}"`;
   const unitFormula     = `"${UNIT_TYPE_LABELS.join(",")}"`;
 
   // ExcelJS types omit dataValidations from Worksheet but it exists at runtime
@@ -128,7 +134,7 @@ async function downloadTemplate() {
     showErrorMessage: true,
     errorStyle: "error",
     errorTitle: "Invalid Category",
-    error: `Choose one of: ${VALID_CATEGORIES.join(", ")}`,
+    error: `Choose one of: ${categoryList.join(", ")}`,
   });
   dv.add("D2:D1001", {
     type: "list",
@@ -210,8 +216,8 @@ async function parseAndValidate(
 
     if (!category)
       err("Category is required");
-    else if (!VALID_CATEGORIES.includes(category))
-      err(`Invalid Category "${category}" — must be one of: ${VALID_CATEGORIES.join(", ")}`);
+    else if (!validCategories().includes(category))
+      err(`Invalid Category "${category}" — must be one of: ${validCategories().join(", ")}`);
 
     if (!packageSize) {
       err("Package Size is required");
@@ -324,6 +330,10 @@ export function BulkProductUpload({
   accountDeliveryEnabled,
 }: Props) {
   const [open, setOpen] = useState(false);
+  // Warm the shared category schema so template generation and row validation
+  // accept every category the rest of the app offers, not just the bundled
+  // constant. Fire-and-forget: on failure the constant remains in effect.
+  useEffect(() => { void loadProductSchema(); }, []);
   const [downloadingTemplate, setDownloadingTemplate] = useState(false);
   const [parsing, setParsing] = useState(false);
   const [validationErrors, setValidationErrors] = useState<ValidationError[]>([]);
