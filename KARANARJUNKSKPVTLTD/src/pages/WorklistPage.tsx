@@ -8,7 +8,7 @@ import {
     X, Copy, CheckSquare, FileText, ChevronDown, ChevronRight, Phone, Clock, Columns3,
 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
-import { getDocs, orderBy, query, where, collectionGroup, collection } from 'firebase/firestore';
+import { getDocs, orderBy, query, where, collection } from 'firebase/firestore';
 import { db } from '../firebase';
 import { useAuth } from '../contexts/AuthContext';
 import { useFeaturePermissions } from '../hooks/useFeaturePermissions';
@@ -440,19 +440,32 @@ function PartnersTab() {
         const fetchRetailers = async () => {
             if (!tenantId) return;
             try {
-                // 4 parallel reads — retailers, salesOrders, payments (collection group),
-                // and sales users (for the Assigned Salesperson column).
+                // 3 parallel reads — retailers, salesOrders, and sales users.
+                // Payments are fetched per-retailer in a second parallel step after
+                // retailer IDs are known, eliminating the cross-tenant collectionGroup risk.
                 const isMasterTenant = tenantId === 'master';
-                const [retailersSnap, salesOrdersSnap, paymentsGroupSnap, salesUsersSnap] = await Promise.all([
+                const [retailersSnap, salesOrdersSnap, salesUsersSnap] = await Promise.all([
                     getDocs(query(getTenantCollection(db, tenantId, 'retailers'), orderBy('createdAt', 'desc'))),
                     getDocs(getTenantCollection(db, tenantId, 'salesOrders')),
-                    getDocs(collectionGroup(db, 'payments')),
-                    getDocs(
-                        isMasterTenant
-                            ? collection(db, 'users')
-                            : query(collection(db, 'users'), where('tenantId', '==', tenantId))
-                    ),
+                    getDocs(query(collection(db, 'users'), where('tenantId', '==', tenantId))),
                 ]);
+
+                // Derive the set of B2B retailer IDs (POS walk-ins and soft-deleted excluded)
+                // to drive the per-retailer payment queries below.
+                const b2bRetailerIds = retailersSnap.docs
+                    .filter(d => {
+                        const data = d.data() as { channel?: string; deleted?: boolean };
+                        return data.channel !== 'pos' && !data.deleted;
+                    })
+                    .map(d => d.id);
+
+                // Fetch payments for each B2B retailer in parallel — naturally scoped to
+                // this tenant because getTenantCollection routes to the correct path prefix.
+                const pmtSnaps = await Promise.all(
+                    b2bRetailerIds.map(rId =>
+                        getDocs(getTenantCollection(db, tenantId, 'retailers', rId, 'payments'))
+                    )
+                );
 
                 // Build retailer → salesperson(s) reverse map from user assignments.
                 // Each retailer may have multiple salespersons (district-wide + direct).
@@ -475,41 +488,19 @@ function PartnersTab() {
                     });
                 });
 
-                // Sum payment amounts per retailer, filtering strictly to this tenant.
-                // getTenantCollection uses two different path layouts depending on tenantId:
-                //   master    →  retailers/{retailerId}/payments/{paymentId}        (4 parts)
-                //   non-master→  tenants/{tenantId}/retailers/{retailerId}/payments/{paymentId}  (6 parts)
-                // The previous filter hard-coded the 6-part form and silently dropped all
-                // master-tenant payments, which caused the Outstanding mismatch.
+                // Aggregate payment amounts per retailer from the per-retailer snapshots.
+                // rId is known from the array index — no path parsing needed.
                 const paymentsByRetailer = new Map<string, number>();
                 const rawPmtsByRetailerMap = new Map<string, { amount: number; paymentDate?: string }[]>();
-                paymentsGroupSnap.docs.forEach(pdoc => {
-                    const parts = pdoc.ref.path.split('/');
-                    let rId: string | undefined;
-
-                    if (isMasterTenant) {
-                        // retailers/{retailerId}/payments/{paymentId}
-                        if (parts.length === 4 && parts[0] === 'retailers' && parts[2] === 'payments') {
-                            rId = parts[1];
-                        }
-                    } else {
-                        // tenants/{tenantId}/retailers/{retailerId}/payments/{paymentId}
-                        if (
-                            parts.length === 6      &&
-                            parts[0] === 'tenants'  &&
-                            parts[1] === tenantId   &&
-                            parts[2] === 'retailers' &&
-                            parts[4] === 'payments'
-                        ) {
-                            rId = parts[3];
-                        }
-                    }
-
-                    if (!rId) return;
-                    paymentsByRetailer.set(rId, (paymentsByRetailer.get(rId) ?? 0) + Number(pdoc.data().amount ?? 0));
-                    const pmtArr = rawPmtsByRetailerMap.get(rId) ?? [];
-                    pmtArr.push({ amount: Number(pdoc.data().amount ?? 0), paymentDate: pdoc.data().paymentDate });
-                    rawPmtsByRetailerMap.set(rId, pmtArr);
+                pmtSnaps.forEach((snap, idx) => {
+                    const rId = b2bRetailerIds[idx];
+                    snap.docs.forEach(pdoc => {
+                        const amt = Number(pdoc.data().amount ?? 0);
+                        paymentsByRetailer.set(rId, (paymentsByRetailer.get(rId) ?? 0) + amt);
+                        const pmtArr = rawPmtsByRetailerMap.get(rId) ?? [];
+                        pmtArr.push({ amount: amt, paymentDate: pdoc.data().paymentDate });
+                        rawPmtsByRetailerMap.set(rId, pmtArr);
+                    });
                 });
 
                 // Group salesOrders by retailerId (include financial fields for outstanding calc).

@@ -58,15 +58,19 @@ export default function AdminPage() {
     const [updateLoading, setUpdateLoading] = useState(false);
 
 
+    // Tenant-scoped user list query — always filter by the caller's tenantId.
+    // The master tenant has tenantId == 'master', so master admins see only
+    // master users. No special-casing; no cross-tenant reads.
+    const tenantUsersQuery = () => {
+        if (!tenantId) return null;
+        return query(collection(db, 'users'), where('tenantId', '==', tenantId));
+    };
+
     useEffect(() => {
         const fetchUsers = async () => {
+            const q = tenantUsersQuery();
+            if (!q) { setLoading(false); return; }
             try {
-                let q;
-                if (tenantId === 'master') {
-                    q = collection(db, 'users');
-                } else {
-                    q = query(collection(db, 'users'), where('tenantId', '==', tenantId));
-                }
                 const querySnapshot = await getDocs(q);
                 const usersData = querySnapshot.docs.map(doc => ({
                     id: doc.id,
@@ -114,19 +118,23 @@ export default function AdminPage() {
             const userCredential = await createUserWithEmailAndPassword(secondaryAuth, newEmail, newPassword);
             const newUser = userCredential.user;
 
+            if (!tenantId) throw new Error('No tenant assigned to the current admin — cannot create user.');
             // Create the user document in Firestore
             await setDoc(doc(db, 'users', newUser.uid), {
                 name: newName,
                 email: newEmail,
                 role: newRole,
-                tenantId: tenantId || 'master',
+                tenantId,
                 assignedDistricts: newRole === 'sales' ? newDistricts : [],
                 createdAt: serverTimestamp()
             });
 
-            // Refresh user list
-            const querySnapshot = await getDocs(collection(db, 'users'));
-            setUsers(querySnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
+            // Refresh user list — scoped to this tenant only
+            const refreshQ = tenantUsersQuery();
+            if (refreshQ) {
+                const querySnapshot = await getDocs(refreshQ);
+                setUsers(querySnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
+            }
 
             if (tenantId && currentUser) {
                 logAudit({ db, tenantId, userId: currentUser.uid, userName: userName || currentUser.email || 'Admin', userRole: userRole || 'admin', module: 'Manage Users', action: 'Create', entityName: newName, entityId: newUser.uid, remarks: `Role: ${newRole} · Email: ${newEmail}` });
@@ -160,11 +168,12 @@ export default function AdminPage() {
             const secondaryApp = initializeApp(firebaseConfig, 'SecondaryR_' + Date.now());
             const secondaryAuth = getAuth(secondaryApp);
             const cred = await createUserWithEmailAndPassword(secondaryAuth, inviteRetailerEmail, inviteRetailerPassword);
+            if (!tenantId) throw new Error('No tenant assigned — cannot invite retailer.');
             await setDoc(doc(db, 'users', cred.user.uid), {
                 email: inviteRetailerEmail,
                 name: retailers.find(r => r.id === inviteRetailerId)?.name || 'Retailer',
                 role: 'retailer',
-                tenantId: tenantId || 'master',
+                tenantId,
                 linkedId: inviteRetailerId,
                 assignedRetailers: [inviteRetailerId],
                 createdAt: serverTimestamp()
@@ -185,11 +194,12 @@ export default function AdminPage() {
             const secondaryApp = initializeApp(firebaseConfig, 'SecondaryM_' + Date.now());
             const secondaryAuth = getAuth(secondaryApp);
             const cred = await createUserWithEmailAndPassword(secondaryAuth, inviteMfgEmail, inviteMfgPassword);
+            if (!tenantId) throw new Error('No tenant assigned — cannot invite manufacturer.');
             await setDoc(doc(db, 'users', cred.user.uid), {
                 email: inviteMfgEmail,
                 name: manufacturers.find(m => m.id === inviteMfgId)?.name || 'Manufacturer',
                 role: 'manufacturer',
-                tenantId: tenantId || 'master',
+                tenantId,
                 linkedId: inviteMfgId,
                 createdAt: serverTimestamp()
             });
