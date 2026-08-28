@@ -20,6 +20,7 @@ export type WaTemplate =
   | "product_assignment_onboarded"
   | "product_assignment_pending_signup"
   | "manufacturer_network_summary"
+  | "payment_failed_app_update"
   | "generic";
 
 /** Dynamic values substituted into the template at render time (for audit/debug). */

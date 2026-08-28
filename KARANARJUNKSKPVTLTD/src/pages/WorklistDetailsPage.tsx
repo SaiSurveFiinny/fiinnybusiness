@@ -1,7 +1,7 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef, useMemo } from 'react';
 import { createPortal } from 'react-dom';
 import { useParams, useNavigate } from 'react-router-dom';
-import { ArrowLeft, User, Phone, MapPin, Calendar, MessageCircle, FileText, CheckSquare, ShoppingCart, Loader2, Trash2, Mic, TrendingUp, X, AlertTriangle, FilePen, Printer, PlusCircle, Square, Wallet, Pencil, Paperclip, Link2, Download, Package, Search } from 'lucide-react';
+import { ArrowLeft, User, Phone, MapPin, Calendar, MessageCircle, FileText, CheckSquare, ShoppingCart, Loader2, Trash2, Mic, TrendingUp, X, AlertTriangle, FilePen, Printer, PlusCircle, Square, Wallet, Pencil, Paperclip, Link2, Download, Package, Search, Lock, LockOpen, ChevronDown, ChevronRight } from 'lucide-react';
 import { ResponsiveContainer, BarChart, Bar, XAxis, YAxis, Tooltip, CartesianGrid, PieChart, Pie, Cell } from 'recharts';
 import { useTranslation } from 'react-i18next';
 import { getDoc, getDocs, query, orderBy, onSnapshot, addDoc, serverTimestamp, deleteDoc, updateDoc, where, writeBatch, arrayUnion, arrayRemove, doc as fsDoc, collection } from 'firebase/firestore';
@@ -12,11 +12,13 @@ import { uploadPaymentProof } from '../utils/uploadPaymentProof';
 import PaymentAttachmentField from '../components/PaymentAttachmentField';
 import { db } from '../firebase';
 import { useAuth } from '../contexts/AuthContext';
+import { useFeaturePermissions } from '../hooks/useFeaturePermissions';
 import { getTenantDoc, getTenantCollection } from '../utils/tenantPath';
 import { useSchema } from '../contexts/SchemaContext';
 import DynamicForm from '../components/DynamicForm';
 import OutstandingInvoice from '../components/OutstandingInvoice';
 import DatePeriodFilter from '../components/DatePeriodFilter';
+import { SortLabel, ColumnNumFilter, type NumFilter, EMPTY_NUM, matchNum, isNumActive } from '../components/tableFilters';
 import { type FinancialPeriod, getFinancialDateRange } from '../utils/financialPeriod';
 import { printB2BInvoice } from '../utils/printB2BInvoice';
 import { logAudit } from '../utils/auditLog';
@@ -107,10 +109,22 @@ interface Payment {
     createdAt?: any;
 }
 
+// ─── Order status helpers ───────────────────────────────────────────────────
+const SO_STATUS_LABELS: Record<string, string> = {
+    confirmed:  'Order Placed',
+    dispatched: 'Dispatched',
+    delivered:  'Delivered',
+    cancelled:  'Cancelled',
+};
+
+const isOrderLocked = (so: any): boolean =>
+    so.status !== 'delivered' && !so.manuallyUnlocked;
+
 export default function WorklistDetailsPage() {
     const { id } = useParams();
     const navigate = useNavigate();
     const { userRole, tenantId, currentUser, userName } = useAuth();
+    const can = useFeaturePermissions();
     const isSales = userRole === 'sales';
     const { t } = useTranslation();
     const { getSchema: _getSchema } = useSchema(); // kept for schema referencing
@@ -225,6 +239,31 @@ export default function WorklistDetailsPage() {
     // Quick-update inline payment notes per order
     const [orderNotes, setOrderNotes] = useState<Record<string, string>>({});
     const [orderPayDates, setOrderPayDates] = useState<Record<string, string>>({});
+
+    // Compact invoice table — only one row expanded at a time
+    const [expandedSoId, setExpandedSoId] = useState<string | null>(null);
+    const toggleSoExpand = (id: string) => setExpandedSoId(prev => prev === id ? null : id);
+
+    // Sales Orders table sort/filter — default: newest invoice date first
+    type SoSortCol = 'invoice' | 'date' | 'status' | 'payment' | 'total' | 'outstanding';
+    const [soSortCol, setSoSortCol] = useState<SoSortCol>('date');
+    const [soSortDir, setSoSortDir] = useState<'asc' | 'desc'>('desc');
+    const toggleSoSort = (col: SoSortCol) => {
+        if (soSortCol === col) {
+            setSoSortDir(d => d === 'asc' ? 'desc' : 'asc');
+        } else {
+            setSoSortCol(col);
+            setSoSortDir(col === 'date' || col === 'invoice' ? 'desc' : col === 'outstanding' || col === 'total' ? 'desc' : 'asc');
+        }
+    };
+    const [soFInvoice, setSoFInvoice] = useState('');
+    const [soFDate, setSoFDate] = useState('');
+    const [soFStatus, setSoFStatus] = useState('');
+    const [soFPayment, setSoFPayment] = useState('');
+    const [soFTotal, setSoFTotal] = useState<NumFilter>(EMPTY_NUM);
+    const [soFOs, setSoFOs] = useState<NumFilter>(EMPTY_NUM);
+    const soHasFilter = soFInvoice || soFDate || soFStatus || soFPayment || isNumActive(soFTotal) || isNumActive(soFOs);
+    const clearSoFilters = () => { setSoFInvoice(''); setSoFDate(''); setSoFStatus(''); setSoFPayment(''); setSoFTotal(EMPTY_NUM); setSoFOs(EMPTY_NUM); };
 
     // New Note Form States
     const [newNoteTalkedTo, setNewNoteTalkedTo] = useState('');
@@ -345,6 +384,64 @@ export default function WorklistDetailsPage() {
             return (!profileFrom || d >= profileFrom) && (!profileTo || d <= profileTo);
         })
         : salesOrders;
+
+    // Applies Sales Orders table column filters + sort on top of the date-range slice.
+    const processedSalesOrders = useMemo(() => {
+        let rows = [...displaySalesOrders];
+
+        if (soFInvoice.trim()) {
+            const q = soFInvoice.trim().toLowerCase();
+            rows = rows.filter(so => (so.orderNumber || so.invoiceNumber || so.id.slice(-8)).toLowerCase().includes(q));
+        }
+        if (soFDate.trim()) {
+            const q = soFDate.trim().toLowerCase();
+            rows = rows.filter(so => {
+                const d = so.invoiceDate || '';
+                const label = d ? new Date(d).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: '2-digit' }).toLowerCase() : '';
+                return label.includes(q) || d.includes(q);
+            });
+        }
+        if (soFStatus) rows = rows.filter(so => (so.status || '') === soFStatus);
+        if (soFPayment) {
+            rows = rows.filter(so => {
+                const invoiceTotal = Number(so.grandTotal ?? so.netAmount ?? so.totalAmount ?? 0);
+                const amountPaid = Number(so.amountPaid) || 0;
+                const outstanding = Math.max(0, invoiceTotal - amountPaid);
+                const fullyPaid = invoiceTotal > 0 && outstanding === 0 && amountPaid > 0;
+                if (soFPayment === 'Paid') return fullyPaid;
+                if (soFPayment === 'Pending') return !fullyPaid && (so.paymentStatus || 'Pending') === 'Pending';
+                if (soFPayment === 'Partial') return (so.paymentStatus || '') === 'Partial';
+                return true;
+            });
+        }
+        if (isNumActive(soFTotal)) {
+            rows = rows.filter(so => matchNum(Number(so.grandTotal ?? so.netAmount ?? so.totalAmount ?? 0), soFTotal));
+        }
+        if (isNumActive(soFOs)) {
+            rows = rows.filter(so => {
+                const t = Number(so.grandTotal ?? so.netAmount ?? so.totalAmount ?? 0);
+                return matchNum(Math.max(0, t - Number(so.amountPaid || 0)), soFOs);
+            });
+        }
+
+        const dir = soSortDir === 'asc' ? 1 : -1;
+        rows.sort((a, b) => {
+            switch (soSortCol) {
+                case 'invoice': return dir * (a.orderNumber || a.invoiceNumber || a.id).localeCompare(b.orderNumber || b.invoiceNumber || b.id);
+                case 'date':    return dir * (a.invoiceDate || '').localeCompare(b.invoiceDate || '');
+                case 'status':  return dir * (a.status || '').localeCompare(b.status || '');
+                case 'payment': return dir * ((a.paymentStatus || 'Pending').localeCompare(b.paymentStatus || 'Pending'));
+                case 'total':   return dir * (Number(a.grandTotal ?? a.netAmount ?? a.totalAmount ?? 0) - Number(b.grandTotal ?? b.netAmount ?? b.totalAmount ?? 0));
+                case 'outstanding': {
+                    const oA = Math.max(0, Number(a.grandTotal ?? a.netAmount ?? a.totalAmount ?? 0) - Number(a.amountPaid || 0));
+                    const oB = Math.max(0, Number(b.grandTotal ?? b.netAmount ?? b.totalAmount ?? 0) - Number(b.amountPaid || 0));
+                    return dir * (oA - oB);
+                }
+                default: return 0;
+            }
+        });
+        return rows;
+    }, [displaySalesOrders, soFInvoice, soFDate, soFStatus, soFPayment, soFTotal, soFOs, soSortCol, soSortDir]);
 
     const displayPayments: Payment[] = profileRange
         ? payments.filter((p: Payment) => {
@@ -472,8 +569,11 @@ export default function WorklistDetailsPage() {
 
     // ─── Quick status update for B2B sales orders ───
     const updateOrderStatus = async (soId: string, field: 'status' | 'paymentStatus' | 'modeOfPayment', value: string, so: any) => {
+        if (!can('worklist.retailerProfile.b2bOrders.editOrder')) return;
         if (!tenantId || !id) return;
         const update: Record<string, any> = { [field]: value };
+        // Delivered automatically removes the edit lock; manual unlock is no longer needed.
+        if (field === 'status' && value === 'delivered') update.manuallyUnlocked = false;
 
         // When marking payment as done, adjust retailer outstanding / paid
         if (field === 'paymentStatus') {
@@ -514,6 +614,11 @@ export default function WorklistDetailsPage() {
         // Retailer card will auto-refresh via onSnapshot
         const updatedSnap = await getDoc(getTenantDoc(db, tenantId, 'retailers', id));
         setRetailer({ id: updatedSnap.id, ...updatedSnap.data() } as Retailer);
+    };
+
+    const handleUnlockOrder = async (soId: string) => {
+        if (!tenantId) return;
+        await updateDoc(getTenantDoc(db, tenantId, 'salesOrders', soId), { manuallyUnlocked: true });
     };
 
     const handleDeleteOrder = async (order: Order) => {
@@ -563,6 +668,7 @@ export default function WorklistDetailsPage() {
     // Mirrors the financial bookkeeping applied when the order was created/paid:
     // reverse its contribution to retailer totalSales / totalPaid / outstandingAmount.
     const handleDeleteSalesOrder = async (so: SalesOrder) => {
+        if (!can('worklist.retailerProfile.b2bOrders.deleteOrder')) return;
         if (!id || !tenantId || !so) return;
         setDeletingSO(true);
         try {
@@ -624,6 +730,7 @@ export default function WorklistDetailsPage() {
 
     // Bulk delete: sequentially apply the same financial reversal as single delete
     const handleBulkDeleteConfirm = async () => {
+        if (!can('worklist.retailerProfile.b2bOrders.deleteOrder')) return;
         if (!id || !tenantId) return;
         setBulkDeleting(true);
         try {
@@ -894,6 +1001,7 @@ export default function WorklistDetailsPage() {
     };
 
     const handleDeletePayment = async (p: Payment) => {
+        if (!can('worklist.retailerProfile.payments.edit')) return;
         if (!id || !tenantId) return;
 
         // If payment has linked order allocations, route through the confirmation modal
@@ -1308,20 +1416,22 @@ export default function WorklistDetailsPage() {
                 </div>
 
                 <div style={{ display: 'flex', gap: '0.75rem', flexWrap: 'wrap' }}>
-                    {!isSales && (
+                    {can('worklist.partners.recordPayment') && !isSales && (
                         <button onClick={() => setShowPaymentModal(true)} className="btn btn-primary animate-pulse" style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', padding: '0.5rem 1rem', fontSize: '0.875rem' }}>
                             ₹ {t('worklist_details.record_payment')}
                         </button>
                     )}
-                    {retailer?.number && (
+                    {can('worklist.partners.call') && retailer?.number && (
                         <a href={`tel:${retailer.number}`} className="btn btn-secondary" style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', padding: '0.5rem 1rem', fontSize: '0.875rem', textDecoration: 'none' }}>
                             <Phone size={16} /> {t('worklist_details.call')}
                         </a>
                     )}
-                    <button onClick={handleWhatsApp} className="btn" style={{ background: '#25D366', color: 'white', padding: '0.5rem 1rem', fontSize: '0.875rem' }}>
-                        <MessageCircle size={16} /> {t('worklist_details.whatsapp')}
-                    </button>
-                    {userRole === 'admin' && (
+                    {can('worklist.partners.whatsapp') && (
+                        <button onClick={handleWhatsApp} className="btn" style={{ background: '#25D366', color: 'white', padding: '0.5rem 1rem', fontSize: '0.875rem' }}>
+                            <MessageCircle size={16} /> {t('worklist_details.whatsapp')}
+                        </button>
+                    )}
+                    {can('worklist.partners.delete') && (
                         <button onClick={handleDeleteRetailer} className="btn" style={{ background: 'hsla(0, 84%, 60%, 0.1)', color: 'var(--danger)', padding: '0.5rem 1rem', fontSize: '0.875rem', border: '1px solid hsla(0, 84%, 60%, 0.2)' }}>
                             <Trash2 size={16} /> {t('worklist_details.delete')}
                         </button>
@@ -1542,11 +1652,11 @@ export default function WorklistDetailsPage() {
             {/* Tabs Navigation */}
             <div style={{ display: 'flex', gap: '0.5rem', borderBottom: '1px solid var(--surface-border)', marginBottom: '2rem', overflowX: 'auto', paddingBottom: '0.5rem' }}>
                 {[
-                    { id: 'orders', label: 'B2B Orders', icon: ShoppingCart, count: displaySalesOrders.length },
-                    { id: 'payments', label: 'Payments', icon: Wallet, count: displayPayments.length },
-                    { id: 'productSales', label: 'Product Sales', icon: Package },
-                    { id: 'overview', label: 'Overview', icon: User },
-                ].map(tab => (
+                    { id: 'orders',       label: 'B2B Orders',    icon: ShoppingCart, count: displaySalesOrders.length, perm: 'worklist.retailerProfile.b2bOrders.view' },
+                    { id: 'payments',     label: 'Payments',      icon: Wallet, count: displayPayments.length,          perm: 'worklist.retailerProfile.payments.view' },
+                    { id: 'productSales', label: 'Product Sales', icon: Package,                                         perm: 'worklist.retailerProfile.productSalesOverview.view' },
+                    { id: 'overview',     label: 'Overview',      icon: User,                                            perm: null },
+                ].filter(tab => tab.perm === null || can(tab.perm)).map(tab => (
                     <button
                         key={tab.id}
                         onClick={() => setActiveTab(tab.id as any)}
@@ -1741,7 +1851,7 @@ export default function WorklistDetailsPage() {
                                     </span>
                                 </div>
                             </div>
-                            {!isSales && (
+                            {!isSales && can('worklist.retailerProfile.payments.edit') && (
                                 <button onClick={() => setShowPaymentModal(true)} className="btn btn-primary" style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', padding: '0.5rem 1rem', fontSize: '0.85rem' }}>
                                     <PlusCircle size={16} /> Add Payment
                                 </button>
@@ -1903,7 +2013,7 @@ export default function WorklistDetailsPage() {
                                                             )}
                                                         </div>
                                                     </td>
-                                                    {!isSales && (
+                                                    {!isSales && can('worklist.retailerProfile.payments.edit') && (
                                                         <td style={{ padding: '0.7rem 0.75rem', whiteSpace: 'nowrap' }}>
                                                             <div style={{ display: 'flex', gap: '0.3rem' }}>
                                                                 <button onClick={() => openEditPayment(p)} title="Edit" className="btn btn-secondary" style={{ display: 'flex', alignItems: 'center', gap: '0.25rem', padding: '0.3rem 0.6rem', fontSize: '0.75rem' }}>
@@ -2075,22 +2185,26 @@ export default function WorklistDetailsPage() {
                             >
                                 <AlertTriangle size={16} /> Outstanding Statement
                             </button>
-                            {!isSales && (
+                            {!isSales && (can('worklist.partners.newSalesOrder') || can('worklist.partners.newB2BInvoice')) && (
                                 <div style={{ display: 'flex', gap: '0.75rem', flexWrap: 'wrap' }}>
-                                    <button
-                                        className="btn btn-secondary"
-                                        onClick={() => navigate(`/sales-order/new?retailerId=${id}`)}
-                                        style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', fontSize: '0.9rem', padding: '0.55rem 1.25rem' }}
-                                    >
-                                        <PlusCircle size={16} /> + New Sales Order
-                                    </button>
-                                    <button
-                                        className="btn btn-primary animate-pulse"
-                                        onClick={() => navigate(`/b2b-invoice?retailerId=${id}`)}
-                                        style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', fontSize: '0.9rem', padding: '0.55rem 1.25rem' }}
-                                    >
-                                        <FilePen size={16} /> + New B2B GST Invoice
-                                    </button>
+                                    {can('worklist.partners.newSalesOrder') && (
+                                        <button
+                                            className="btn btn-secondary"
+                                            onClick={() => navigate(`/sales-order/new?retailerId=${id}`)}
+                                            style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', fontSize: '0.9rem', padding: '0.55rem 1.25rem' }}
+                                        >
+                                            <PlusCircle size={16} /> + New Sales Order
+                                        </button>
+                                    )}
+                                    {can('worklist.partners.newB2BInvoice') && (
+                                        <button
+                                            className="btn btn-primary animate-pulse"
+                                            onClick={() => navigate(`/b2b-invoice?retailerId=${id}`)}
+                                            style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', fontSize: '0.9rem', padding: '0.55rem 1.25rem' }}
+                                        >
+                                            <FilePen size={16} /> + New B2B GST Invoice
+                                        </button>
+                                    )}
                                 </div>
                             )}
                         </div>
@@ -2138,7 +2252,7 @@ export default function WorklistDetailsPage() {
                                         </button>
                                     </div>
                                     <div style={{ display: 'flex', gap: '0.4rem', marginLeft: 'auto' }}>
-                                        {userRole === 'admin' && (
+                                        {can('worklist.retailerProfile.b2bOrders.deleteOrder') && (
                                             <button
                                                 onClick={() => setShowBulkDeleteModal(true)}
                                                 style={{ display: 'flex', alignItems: 'center', gap: '0.35rem', padding: '0.32rem 0.9rem', borderRadius: '6px', border: '1px solid rgba(255,100,100,0.7)', background: 'rgba(239,68,68,0.2)', color: '#fff', fontWeight: 600, fontSize: '0.82rem', cursor: 'pointer', fontFamily: 'inherit' }}
@@ -2150,211 +2264,388 @@ export default function WorklistDetailsPage() {
                                 </div>
                             )}
 
-                            {displaySalesOrders.length === 0 ? (
+                            {salesOrders.length === 0 ? (
                                 <div className="glass-panel" style={{ textAlign: 'center', padding: '3rem', color: 'var(--text-secondary)' }}>
                                     <ShoppingCart size={40} color="var(--surface-border)" style={{ margin: '0 auto 1rem', display: 'block' }} />
-                                    <p style={{ margin: 0 }}>{salesOrders.length === 0 ? 'No sales orders yet for this partner.' : 'No orders match the selected period.'}</p>
-                                    <p style={{ margin: '0.5rem 0 0', fontSize: '0.85rem', color: 'var(--text-tertiary)' }}>{salesOrders.length === 0 ? 'Use the buttons above to create one.' : 'Change the date filter above to see more orders.'}</p>
+                                    <p style={{ margin: 0 }}>No sales orders yet for this partner.</p>
+                                    <p style={{ margin: '0.5rem 0 0', fontSize: '0.85rem', color: 'var(--text-tertiary)' }}>Use the buttons above to create one.</p>
                                 </div>
-                            ) : displaySalesOrders.map((so: any) => {
-                                const statusColor: Record<string, string> = { confirmed: '#10b981', draft: '#f59e0b', dispatched: '#38bdf8', cancelled: '#ef4444' };
-                                const color = statusColor[so.status?.toLowerCase()] || '#94a3b8';
-                                const date = so.invoiceDate
-                                    ? new Date(so.invoiceDate).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: '2-digit' })
-                                    : (so.createdAt?.toDate ? new Date(so.createdAt.toDate()).toLocaleDateString('en-IN', { day:'2-digit', month:'short', year:'2-digit' }) : '—');
-                                // Use the same total-field fallback as everything else (GST invoices
-                                // store the total in netAmount/totalAmount, not grandTotal) so outstanding
-                                // can't wrongly compute to 0 and show a false "Fully Paid".
-                                const invoiceTotal = Number(so.grandTotal ?? so.netAmount ?? so.totalAmount ?? 0);
-                                const amountPaid = Number(so.amountPaid) || 0;
-                                const outstanding = Math.max(0, invoiceTotal - amountPaid);
-                                const fullyPaid = invoiceTotal > 0 && outstanding === 0 && amountPaid > 0;
-                                const isSelected = selectedSoIds.has(so.id);
-                                return (
-                                    <div key={so.id} className="glass-panel" style={{ padding: '1.25rem', borderLeft: `4px solid ${isSelected ? 'var(--primary-light)' : color}`, transition: 'box-shadow 0.15s', outline: isSelected ? '2px solid var(--primary-light)' : 'none', outlineOffset: '-2px' }}
-                                        onMouseOver={e => e.currentTarget.style.boxShadow = `0 4px 20px ${color}22`}
-                                        onMouseOut={e => e.currentTarget.style.boxShadow = 'none'}>
-                                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flexWrap: 'wrap', gap: '1rem' }}>
-                                            {/* Left: checkbox + order info */}
-                                            <div style={{ flex: 1 }}>
-                                                <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', marginBottom: '0.4rem' }}>
-                                                    {/* Selection checkbox — hidden in sales view-only mode */}
-                                                    {!isSales && (
-                                                        <button
-                                                            onClick={() => toggleSoSelection(so.id)}
-                                                            title={isSelected ? 'Deselect order' : 'Select order'}
-                                                            style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 0, flexShrink: 0, color: isSelected ? 'var(--primary-light)' : 'var(--text-tertiary)', display: 'flex', alignItems: 'center' }}
-                                                        >
-                                                            {isSelected ? <CheckSquare size={17} /> : <Square size={17} />}
-                                                        </button>
-                                                    )}
-                                                    <span style={{ fontWeight: 700, color: 'var(--primary-light)', fontSize: '1rem' }}>{so.orderNumber || so.invoiceNumber || so.id.slice(-8).toUpperCase()}</span>
-                                                    <span style={{ background: `${color}22`, color, padding: '0.15rem 0.6rem', borderRadius: '99px', fontSize: '0.72rem', fontWeight: 700 }}>
-                                                        {so.status?.toUpperCase() || 'DRAFT'}
-                                                    </span>
-                                                    {so.invoiceType === 'B2B_GST' && (
-                                                        <span style={{ background: '#8b5cf622', color: '#8b5cf6', padding: '0.15rem 0.5rem', borderRadius: '99px', fontSize: '0.7rem', fontWeight: 600 }}>GST Invoice</span>
-                                                    )}
-                                                </div>
-                                                <div style={{ fontSize: '0.8rem', color: 'var(--text-tertiary)', display: 'flex', gap: '1rem', flexWrap: 'wrap' }}>
-                                                    <span>📅 {date}</span>
-                                                    <span>📦 {so.lineItems?.length || (so.items?.length) || 0} items</span>
-                                                    {so.paymentStatus && <span>💳 {so.paymentStatus}</span>}
-                                                </div>
-                                            </div>
-                                            {/* Right: amounts */}
-                                            <div style={{ textAlign: 'right', flexShrink: 0 }}>
-                                                <div style={{ fontWeight: 800, fontSize: '1.15rem', color: 'var(--secondary)' }}>₹{invoiceTotal.toLocaleString()}</div>
-                                                {amountPaid > 0 && outstanding > 0 && (
-                                                    <div style={{ fontSize: '0.72rem', color: '#10b981', fontWeight: 600 }}>Paid: ₹{amountPaid.toLocaleString()}</div>
-                                                )}
-                                                {outstanding > 0 && (
-                                                    <div style={{ fontSize: '0.78rem', color: '#ef4444', fontWeight: 600 }}>Outstanding: ₹{outstanding.toLocaleString()}</div>
-                                                )}
-                                                {fullyPaid && (
-                                                    <div style={{ fontSize: '0.78rem', color: '#10b981', fontWeight: 600 }}>✅ Fully Paid</div>
-                                                )}
-                                                {(so.linkedPaymentIds?.length ?? 0) > 0 && (
-                                                    <div style={{ fontSize: '0.7rem', color: '#8b5cf6', fontWeight: 600, marginTop: '0.2rem', display: 'flex', alignItems: 'center', gap: '0.25rem', justifyContent: 'flex-end' }}>
-                                                        <Link2 size={10} /> {so.linkedPaymentIds.length} linked
-                                                    </div>
-                                                )}
-                                            </div>
+                            ) : (
+                                <div className="glass-panel" style={{ overflow: 'hidden' }}>
+                                    {/* Filter active indicator + clear */}
+                                    {soHasFilter && (
+                                        <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', padding: '0.45rem 0.75rem', background: 'hsla(210,100%,70%,0.06)', borderBottom: '1px solid var(--surface-border)', fontSize: '0.75rem', color: 'var(--text-secondary)' }}>
+                                            <Search size={12} style={{ color: 'var(--primary-light)', flexShrink: 0 }} />
+                                            <span>{processedSalesOrders.length} of {displaySalesOrders.length} invoice{displaySalesOrders.length !== 1 ? 's' : ''} shown</span>
+                                            <button onClick={clearSoFilters} style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: '0.25rem', background: 'none', border: 'none', color: 'var(--primary-light)', cursor: 'pointer', fontFamily: 'inherit', fontSize: '0.75rem', fontWeight: 600, padding: 0 }}>
+                                                <X size={11} /> Clear filters
+                                            </button>
                                         </div>
-                                        {/* Order status — interactive for editors, read-only for sales */}
-                                        {isSales ? (
-                                            <div style={{ marginTop: '0.65rem', display: 'flex', gap: '0.4rem', flexWrap: 'wrap', alignItems: 'center' }}>
-                                                {so.status && (
-                                                    <span style={{ fontSize: '0.72rem', padding: '0.2rem 0.55rem', borderRadius: '8px', background: 'var(--surface-raised)', color: 'var(--text-secondary)', border: '1px solid var(--surface-border)', fontWeight: 600 }}>
-                                                        📦 {so.status.charAt(0).toUpperCase() + so.status.slice(1)}
-                                                    </span>
+                                    )}
+                                    <div style={{ overflowX: 'auto' }}>
+                                        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.82rem' }}>
+                                            <thead>
+                                                {/* ── Sort row ── */}
+                                                <tr style={{ background: 'var(--surface-raised)', borderBottom: '1px solid var(--surface-border)' }}>
+                                                    {!isSales && <th style={{ width: 36, padding: '0.5rem 0.5rem' }} />}
+                                                    <th style={{ padding: '0.5rem 0.75rem', textAlign: 'left' }}>
+                                                        <SortLabel label="Invoice" active={soSortCol === 'invoice'} dir={soSortDir} onClick={() => toggleSoSort('invoice')} />
+                                                    </th>
+                                                    <th style={{ padding: '0.5rem 0.75rem', textAlign: 'left' }}>
+                                                        <SortLabel label="Date" active={soSortCol === 'date'} dir={soSortDir} onClick={() => toggleSoSort('date')} />
+                                                    </th>
+                                                    <th style={{ padding: '0.5rem 0.75rem', textAlign: 'center', fontWeight: 600, fontSize: '0.75rem', color: 'var(--text-tertiary)', whiteSpace: 'nowrap' }}>Items</th>
+                                                    <th style={{ padding: '0.5rem 0.75rem', textAlign: 'left' }}>
+                                                        <SortLabel label="Order Status" active={soSortCol === 'status'} dir={soSortDir} onClick={() => toggleSoSort('status')} />
+                                                    </th>
+                                                    <th style={{ padding: '0.5rem 0.75rem', textAlign: 'left' }}>
+                                                        <SortLabel label="Payment" active={soSortCol === 'payment'} dir={soSortDir} onClick={() => toggleSoSort('payment')} />
+                                                    </th>
+                                                    <th style={{ padding: '0.5rem 0.75rem', textAlign: 'right' }}>
+                                                        <SortLabel label="Total" align="right" active={soSortCol === 'total'} dir={soSortDir} onClick={() => toggleSoSort('total')} />
+                                                    </th>
+                                                    <th style={{ padding: '0.5rem 0.75rem', textAlign: 'right' }}>
+                                                        <SortLabel label="Outstanding" align="right" active={soSortCol === 'outstanding'} dir={soSortDir} onClick={() => toggleSoSort('outstanding')} />
+                                                    </th>
+                                                    <th style={{ padding: '0.5rem 0.5rem', textAlign: 'center', fontWeight: 600, fontSize: '0.75rem', color: 'var(--text-tertiary)', whiteSpace: 'nowrap' }}>Details</th>
+                                                </tr>
+                                                {/* ── Filter row ── */}
+                                                <tr style={{ background: 'var(--surface-raised)', borderBottom: '2px solid var(--surface-border)' }}>
+                                                    {!isSales && <td style={{ padding: '0.3rem 0.5rem' }} />}
+                                                    {/* Invoice filter */}
+                                                    <td style={{ padding: '0.3rem 0.75rem' }}>
+                                                        <input
+                                                            type="text" value={soFInvoice} onChange={e => setSoFInvoice(e.target.value)}
+                                                            placeholder="Search…"
+                                                            style={{ width: '100%', fontSize: '0.73rem', padding: '0.2rem 0.4rem', borderRadius: '5px', border: `1px solid ${soFInvoice ? 'var(--primary-light)' : 'var(--surface-border)'}`, background: 'var(--surface-base)', color: 'var(--text-primary)', boxSizing: 'border-box' }}
+                                                        />
+                                                    </td>
+                                                    {/* Date filter */}
+                                                    <td style={{ padding: '0.3rem 0.75rem' }}>
+                                                        <input
+                                                            type="text" value={soFDate} onChange={e => setSoFDate(e.target.value)}
+                                                            placeholder="e.g. Jan 25"
+                                                            style={{ width: '100%', fontSize: '0.73rem', padding: '0.2rem 0.4rem', borderRadius: '5px', border: `1px solid ${soFDate ? 'var(--primary-light)' : 'var(--surface-border)'}`, background: 'var(--surface-base)', color: 'var(--text-primary)', boxSizing: 'border-box' }}
+                                                        />
+                                                    </td>
+                                                    {/* Items — no filter */}
+                                                    <td style={{ padding: '0.3rem 0.75rem' }} />
+                                                    {/* Order Status filter */}
+                                                    <td style={{ padding: '0.3rem 0.75rem' }}>
+                                                        <select value={soFStatus} onChange={e => setSoFStatus(e.target.value)}
+                                                            style={{ width: '100%', fontSize: '0.73rem', padding: '0.2rem 0.35rem', borderRadius: '5px', border: `1px solid ${soFStatus ? 'var(--primary-light)' : 'var(--surface-border)'}`, background: 'var(--surface-base)', color: soFStatus ? 'var(--primary-light)' : 'var(--text-tertiary)', cursor: 'pointer' }}>
+                                                            <option value="">All</option>
+                                                            <option value="confirmed">Order Placed</option>
+                                                            <option value="dispatched">Dispatched</option>
+                                                            <option value="delivered">Delivered</option>
+                                                            <option value="cancelled">Cancelled</option>
+                                                        </select>
+                                                    </td>
+                                                    {/* Payment filter */}
+                                                    <td style={{ padding: '0.3rem 0.75rem' }}>
+                                                        <select value={soFPayment} onChange={e => setSoFPayment(e.target.value)}
+                                                            style={{ width: '100%', fontSize: '0.73rem', padding: '0.2rem 0.35rem', borderRadius: '5px', border: `1px solid ${soFPayment ? 'var(--primary-light)' : 'var(--surface-border)'}`, background: 'var(--surface-base)', color: soFPayment ? 'var(--primary-light)' : 'var(--text-tertiary)', cursor: 'pointer' }}>
+                                                            <option value="">All</option>
+                                                            <option value="Paid">Paid</option>
+                                                            <option value="Pending">Pending</option>
+                                                            <option value="Partial">Partial</option>
+                                                        </select>
+                                                    </td>
+                                                    {/* Total filter */}
+                                                    <td style={{ padding: '0.3rem 0.75rem', minWidth: '130px' }}>
+                                                        <ColumnNumFilter state={soFTotal} onChange={setSoFTotal} />
+                                                    </td>
+                                                    {/* Outstanding filter */}
+                                                    <td style={{ padding: '0.3rem 0.75rem', minWidth: '130px' }}>
+                                                        <ColumnNumFilter state={soFOs} onChange={setSoFOs} />
+                                                    </td>
+                                                    {/* Details — no filter */}
+                                                    <td style={{ padding: '0.3rem 0.5rem' }} />
+                                                </tr>
+                                            </thead>
+                                            <tbody>
+                                                {processedSalesOrders.length === 0 && (
+                                                    <tr>
+                                                        <td colSpan={isSales ? 8 : 9} style={{ padding: '2.5rem 1rem', textAlign: 'center', color: 'var(--text-secondary)' }}>
+                                                            <div style={{ fontWeight: 600, fontSize: '0.9rem', marginBottom: '0.2rem' }}>No matching invoices</div>
+                                                            <div style={{ fontSize: '0.78rem', color: 'var(--text-tertiary)' }}>
+                                                                {displaySalesOrders.length > 0 ? 'Try adjusting your filters.' : 'No orders match the selected period.'}
+                                                            </div>
+                                                        </td>
+                                                    </tr>
                                                 )}
-                                                {so.paymentStatus && (
-                                                    <span style={{ fontSize: '0.72rem', padding: '0.2rem 0.55rem', borderRadius: '8px', background: so.paymentStatus === 'Paid' ? 'rgba(16,185,129,0.1)' : 'rgba(239,68,68,0.08)', color: so.paymentStatus === 'Paid' ? '#10b981' : '#ef4444', border: `1px solid ${so.paymentStatus === 'Paid' ? '#10b98140' : '#ef444440'}`, fontWeight: 600 }}>
-                                                        💳 {so.paymentStatus}
-                                                    </span>
-                                                )}
-                                                {so.modeOfPayment && (
-                                                    <span style={{ fontSize: '0.72rem', padding: '0.2rem 0.55rem', borderRadius: '8px', background: 'var(--surface-raised)', color: 'var(--text-secondary)', border: '1px solid var(--surface-border)' }}>
-                                                        {so.modeOfPayment}
-                                                    </span>
-                                                )}
-                                                {so.paymentNotes && (
-                                                    <span style={{ fontSize: '0.72rem', color: 'var(--text-tertiary)', fontStyle: 'italic' }}>{so.paymentNotes}</span>
-                                                )}
-                                            </div>
-                                        ) : (
-                                            <div style={{ marginTop: '0.85rem', display: 'flex', flexDirection: 'column', gap: '0.6rem' }}>
-                                                <div style={{ display: 'flex', gap: '0.6rem', flexWrap: 'wrap', alignItems: 'center' }}>
-                                                    <label style={{ fontSize: '0.72rem', color: 'var(--text-tertiary)', fontWeight: 600, whiteSpace: 'nowrap' }}>Quick update:</label>
-                                                    <select value={so.status || 'pending'} onChange={e => updateOrderStatus(so.id, 'status', e.target.value, so)}
-                                                        style={{ fontSize: '0.78rem', padding: '0.25rem 0.5rem', borderRadius: '8px', border: '1px solid var(--surface-border)', background: 'var(--surface-raised)', color: 'var(--text-primary)', cursor: 'pointer' }}>
-                                                        <option value="draft">📋 Draft</option>
-                                                        <option value="confirmed">✅ Confirmed</option>
-                                                        <option value="in_transit">🚛 In Transit</option>
-                                                        <option value="dispatched">📦 Dispatched</option>
-                                                        <option value="delivered">🏠 Delivered</option>
-                                                        <option value="cancelled">❌ Cancelled</option>
-                                                        <option value="pending">⏳ Pending</option>
-                                                    </select>
-                                                    <select value={so.paymentStatus || 'Pending'} onChange={e => updateOrderStatus(so.id, 'paymentStatus', e.target.value, so)}
-                                                        style={{ fontSize: '0.78rem', padding: '0.25rem 0.5rem', borderRadius: '8px', border: '1px solid var(--surface-border)', background: so.paymentStatus === 'Paid' ? 'rgba(16,185,129,0.1)' : 'rgba(239,68,68,0.08)', color: so.paymentStatus === 'Paid' ? '#10b981' : '#ef4444', cursor: 'pointer' }}>
-                                                        <option value="Pending">💳 Payment Pending</option>
-                                                        <option value="Paid">✅ Payment Done</option>
-                                                        <option value="Partial">🔶 Partial</option>
-                                                    </select>
-                                                    <select value={so.modeOfPayment || ''} onChange={e => updateOrderStatus(so.id, 'modeOfPayment', e.target.value, so)}
-                                                        style={{ fontSize: '0.78rem', padding: '0.25rem 0.5rem', borderRadius: '8px', border: '1px solid var(--surface-border)', background: 'var(--surface-raised)', color: 'var(--text-primary)', cursor: 'pointer' }}>
-                                                        <option value="">-- Mode --</option>
-                                                        <option value="Cash">💵 Cash</option>
-                                                        <option value="UPI">📱 UPI</option>
-                                                        <option value="Cheque">🏦 Cheque</option>
-                                                        <option value="15 Days">⏱ 15 Days</option>
-                                                        <option value="30 Days">⏱ 30 Days</option>
-                                                        <option value="45 Days">⏱ 45 Days</option>
-                                                        <option value="Credit">💳 Credit</option>
-                                                    </select>
-                                                    {/* Payment Date */}
-                                                    <input type="date" value={orderPayDates[so.id] ?? (so.paymentDate || '')}
-                                                        onChange={e => setOrderPayDates(prev => ({ ...prev, [so.id]: e.target.value }))}
-                                                        title="Payment Date"
-                                                        style={{ fontSize: '0.78rem', padding: '0.25rem 0.5rem', borderRadius: '8px', border: '1px solid var(--surface-border)', background: 'var(--surface-raised)', color: 'var(--text-primary)', cursor: 'pointer' }} />
-                                                </div>
-                                                {/* Notes */}
-                                                <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
-                                                    <input type="text" placeholder="Payment notes / remarks…" value={orderNotes[so.id] ?? (so.paymentNotes || '')}
-                                                        onChange={e => setOrderNotes(prev => ({ ...prev, [so.id]: e.target.value }))}
-                                                        style={{ flex: 1, fontSize: '0.78rem', padding: '0.3rem 0.6rem', borderRadius: '8px', border: '1px solid var(--surface-border)', background: 'var(--surface-raised)', color: 'var(--text-primary)' }} />
-                                                    <button className="btn btn-secondary"
-                                                        style={{ fontSize: '0.75rem', padding: '0.3rem 0.75rem', whiteSpace: 'nowrap' }}
-                                                        onClick={async () => {
-                                                            await updateDoc(getTenantDoc(db, tenantId!, 'salesOrders', so.id), {
-                                                                paymentDate: orderPayDates[so.id] ?? so.paymentDate ?? '',
-                                                                paymentNotes: orderNotes[so.id] ?? so.paymentNotes ?? '',
-                                                            });
-                                                        }}>💾 Save</button>
-                                                </div>
-                                            </div>
-                                        )}
-                                        {/* Action buttons */}
-                                        <div style={{ display: 'flex', gap: '0.6rem', marginTop: '0.75rem', paddingTop: '0.75rem', borderTop: '1px solid var(--surface-border)', flexWrap: 'wrap' }}>
-                                            {!isSales && outstanding > 0 && (
-                                                <button className="btn btn-primary"
-                                                    onClick={() => { setPayOrder(so); setPayOrderAmount(outstanding); setPayOrderNote(''); }}
-                                                    title="Record a new payment against this invoice"
-                                                    style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', padding: '0.45rem 1rem', fontSize: '0.82rem' }}>
-                                                    <PlusCircle size={14} /> Add Payment
-                                                </button>
-                                            )}
-                                            {!isSales && outstanding > 0 && availablePayments.length > 0 && (
-                                                <button className="btn btn-secondary"
-                                                    onClick={() => { setLinkPaymentOrder(so); setLinkAllocations({}); }}
-                                                    title="Link an existing unallocated payment to this invoice"
-                                                    style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', padding: '0.45rem 1rem', fontSize: '0.82rem' }}>
-                                                    <Link2 size={14} /> Link Payment
-                                                </button>
-                                            )}
-                                            {!isSales && (
-                                                <button className="btn btn-secondary"
-                                                    onClick={() => so.invoiceType === 'B2B_GST'
-                                                        ? navigate(`/b2b-invoice?orderId=${so.id}&retailerId=${id}`)
-                                                        : navigate(`/sales-order/${so.id}`)}
-                                                    style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', padding: '0.45rem 1rem', fontSize: '0.82rem' }}>
-                                                    <FilePen size={14} /> Edit Order
-                                                </button>
-                                            )}
-                                            {isSales ? (
-                                                <button className="btn btn-secondary"
-                                                    onClick={() => tenantId && printB2BInvoice(so.id, tenantId)}
-                                                    style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', padding: '0.45rem 1rem', fontSize: '0.82rem' }}>
-                                                    <Printer size={14} /> Print Invoice
-                                                </button>
-                                            ) : (
-                                                <button className="btn btn-secondary"
-                                                    onClick={() => navigate(`/b2b-invoice?orderId=${so.id}&retailerId=${id}`)}
-                                                    style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', padding: '0.45rem 1rem', fontSize: '0.82rem' }}>
-                                                    <Printer size={14} /> View / Edit Invoice
-                                                </button>
-                                            )}
-                                            {!isSales && (so.linkedPaymentIds?.length ?? 0) > 0 && (
-                                                <button className="btn btn-secondary"
-                                                    onClick={() => handleOpenUnlinkModal(so)}
-                                                    title="View and unlink payments from this order"
-                                                    style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', padding: '0.45rem 1rem', fontSize: '0.82rem' }}>
-                                                    <Link2 size={14} /> Unlink Payments ({so.linkedPaymentIds.length})
-                                                </button>
-                                            )}
-                                            {userRole === 'admin' && (
-                                                <button className="btn" onClick={() => setSoToDelete(so)}
-                                                    title="Delete this sales order"
-                                                    style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', padding: '0.45rem 1rem', fontSize: '0.82rem', background: 'hsla(0, 84%, 60%, 0.1)', color: 'var(--danger)', border: '1px solid hsla(0, 84%, 60%, 0.3)' }}>
-                                                    <Trash2 size={14} /> Delete
-                                                </button>
-                                            )}
-                                        </div>
+                                                {processedSalesOrders.map((so: any) => {
+                                                    const statusColor: Record<string, string> = { confirmed: '#f59e0b', dispatched: '#38bdf8', delivered: '#10b981', cancelled: '#ef4444' };
+                                                    const color = statusColor[so.status?.toLowerCase()] || '#94a3b8';
+                                                    const locked = isOrderLocked(so);
+                                                    const isExpanded = expandedSoId === so.id;
+                                                    const isSelected = selectedSoIds.has(so.id);
+                                                    const date = so.invoiceDate
+                                                        ? new Date(so.invoiceDate).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: '2-digit' })
+                                                        : (so.createdAt?.toDate ? new Date(so.createdAt.toDate()).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: '2-digit' }) : '—');
+                                                    const invoiceTotal = Number(so.grandTotal ?? so.netAmount ?? so.totalAmount ?? 0);
+                                                    const amountPaid = Number(so.amountPaid) || 0;
+                                                    const outstanding = Math.max(0, invoiceTotal - amountPaid);
+                                                    const fullyPaid = invoiceTotal > 0 && outstanding === 0 && amountPaid > 0;
+                                                    const rowBg = isSelected ? 'hsla(210,100%,70%,0.07)' : isExpanded ? 'var(--surface-raised)' : 'transparent';
+                                                    return (
+                                                        <>
+                                                            {/* ── Compact Row ── */}
+                                                            <tr key={so.id}
+                                                                style={{ borderBottom: isExpanded ? 'none' : '1px solid var(--surface-border)', background: rowBg, cursor: 'pointer', transition: 'background 0.1s' }}
+                                                                onMouseEnter={e => { if (!isExpanded && !isSelected) e.currentTarget.style.background = 'var(--surface-raised)'; }}
+                                                                onMouseLeave={e => { if (!isExpanded && !isSelected) e.currentTarget.style.background = 'transparent'; }}
+                                                                onClick={() => toggleSoExpand(so.id)}
+                                                            >
+                                                                {/* Checkbox */}
+                                                                {!isSales && (
+                                                                    <td style={{ padding: '0.6rem 0.5rem', textAlign: 'center' }} onClick={e => e.stopPropagation()}>
+                                                                        <button
+                                                                            onClick={() => toggleSoSelection(so.id)}
+                                                                            style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 0, color: isSelected ? 'var(--primary-light)' : 'var(--text-tertiary)', display: 'flex', alignItems: 'center' }}
+                                                                        >
+                                                                            {isSelected ? <CheckSquare size={15} /> : <Square size={15} />}
+                                                                        </button>
+                                                                    </td>
+                                                                )}
+                                                                {/* Invoice # */}
+                                                                <td style={{ padding: '0.6rem 0.75rem', whiteSpace: 'nowrap' }}>
+                                                                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', flexWrap: 'wrap' }}>
+                                                                        <span style={{ fontWeight: 700, color: 'var(--primary-light)', fontSize: '0.83rem' }}>
+                                                                            {so.orderNumber || so.invoiceNumber || so.id.slice(-8).toUpperCase()}
+                                                                        </span>
+                                                                        {so.invoiceType === 'B2B_GST' && (
+                                                                            <span style={{ background: '#8b5cf622', color: '#8b5cf6', padding: '0.1rem 0.4rem', borderRadius: '99px', fontSize: '0.65rem', fontWeight: 600 }}>GST</span>
+                                                                        )}
+                                                                        {locked && (
+                                                                            <span title="Locked" style={{ display: 'flex', alignItems: 'center', gap: '0.15rem', fontSize: '0.65rem', color: '#f59e0b', background: 'rgba(245,158,11,0.1)', border: '1px solid rgba(245,158,11,0.3)', borderRadius: '99px', padding: '0.08rem 0.35rem' }}>
+                                                                                <Lock size={9} /> Locked
+                                                                            </span>
+                                                                        )}
+                                                                        {so.manuallyUnlocked && so.status !== 'delivered' && (
+                                                                            <span title="Manually unlocked" style={{ display: 'flex', alignItems: 'center', gap: '0.15rem', fontSize: '0.65rem', color: '#10b981', background: 'rgba(16,185,129,0.1)', border: '1px solid rgba(16,185,129,0.3)', borderRadius: '99px', padding: '0.08rem 0.35rem' }}>
+                                                                                <LockOpen size={9} /> Unlocked
+                                                                            </span>
+                                                                        )}
+                                                                    </div>
+                                                                </td>
+                                                                {/* Date */}
+                                                                <td style={{ padding: '0.6rem 0.75rem', whiteSpace: 'nowrap', color: 'var(--text-secondary)' }}>{date}</td>
+                                                                {/* Items */}
+                                                                <td style={{ padding: '0.6rem 0.75rem', textAlign: 'center', color: 'var(--text-tertiary)' }}>
+                                                                    {so.lineItems?.length || so.items?.length || 0}
+                                                                </td>
+                                                                {/* Order Status */}
+                                                                <td style={{ padding: '0.6rem 0.75rem', whiteSpace: 'nowrap' }}>
+                                                                    <span style={{ background: `${color}22`, color, padding: '0.12rem 0.5rem', borderRadius: '99px', fontSize: '0.7rem', fontWeight: 700 }}>
+                                                                        {(SO_STATUS_LABELS[so.status] || so.status || 'Draft').toUpperCase()}
+                                                                    </span>
+                                                                </td>
+                                                                {/* Payment Status */}
+                                                                <td style={{ padding: '0.6rem 0.75rem', whiteSpace: 'nowrap' }}>
+                                                                    {fullyPaid ? (
+                                                                        <span style={{ fontSize: '0.7rem', fontWeight: 700, color: '#10b981' }}>✅ Paid</span>
+                                                                    ) : (
+                                                                        <span style={{ fontSize: '0.7rem', fontWeight: 600, color: so.paymentStatus === 'Partial' ? '#f59e0b' : '#ef4444' }}>
+                                                                            {so.paymentStatus || 'Pending'}
+                                                                        </span>
+                                                                    )}
+                                                                </td>
+                                                                {/* Total */}
+                                                                <td style={{ padding: '0.6rem 0.75rem', textAlign: 'right', whiteSpace: 'nowrap', fontWeight: 600, color: 'var(--text-primary)' }}>
+                                                                    ₹{invoiceTotal.toLocaleString()}
+                                                                </td>
+                                                                {/* Outstanding */}
+                                                                <td style={{ padding: '0.6rem 0.75rem', textAlign: 'right', whiteSpace: 'nowrap' }}>
+                                                                    {outstanding > 0
+                                                                        ? <span style={{ fontWeight: 700, color: '#ef4444' }}>₹{outstanding.toLocaleString()}</span>
+                                                                        : <span style={{ color: '#10b981', fontWeight: 600 }}>—</span>}
+                                                                </td>
+                                                                {/* Expand toggle */}
+                                                                <td style={{ padding: '0.6rem 0.5rem', textAlign: 'center' }} onClick={e => e.stopPropagation()}>
+                                                                    <button
+                                                                        onClick={() => toggleSoExpand(so.id)}
+                                                                        title={isExpanded ? 'Collapse' : 'View details'}
+                                                                        style={{ background: isExpanded ? 'var(--primary-light)' : 'var(--surface-raised)', border: `1px solid ${isExpanded ? 'var(--primary-light)' : 'var(--surface-border)'}`, color: isExpanded ? '#fff' : 'var(--text-secondary)', borderRadius: '6px', padding: '0.2rem 0.55rem', cursor: 'pointer', fontSize: '0.72rem', fontWeight: 600, display: 'flex', alignItems: 'center', gap: '0.25rem', whiteSpace: 'nowrap' }}
+                                                                    >
+                                                                        {isExpanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+                                                                        {isExpanded ? 'Close' : 'View'}
+                                                                    </button>
+                                                                </td>
+                                                            </tr>
+
+                                                            {/* ── Expandable Detail Panel ── */}
+                                                            {isExpanded && (
+                                                                <tr style={{ borderBottom: '1px solid var(--surface-border)', background: 'var(--surface-raised)' }}>
+                                                                    <td colSpan={isSales ? 8 : 9} style={{ padding: '1rem 1.25rem 1.25rem' }}>
+                                                                        {/* Order status controls */}
+                                                                        {isSales || !can('worklist.retailerProfile.b2bOrders.editOrder') ? (
+                                                                            <div style={{ display: 'flex', gap: '0.4rem', flexWrap: 'wrap', alignItems: 'center', marginBottom: '0.85rem' }}>
+                                                                                {so.status && (
+                                                                                    <span style={{ fontSize: '0.72rem', padding: '0.2rem 0.55rem', borderRadius: '8px', background: 'var(--surface-base)', color: 'var(--text-secondary)', border: '1px solid var(--surface-border)', fontWeight: 600 }}>
+                                                                                        📦 {so.status.charAt(0).toUpperCase() + so.status.slice(1)}
+                                                                                    </span>
+                                                                                )}
+                                                                                {so.paymentStatus && (
+                                                                                    <span style={{ fontSize: '0.72rem', padding: '0.2rem 0.55rem', borderRadius: '8px', background: so.paymentStatus === 'Paid' ? 'rgba(16,185,129,0.1)' : 'rgba(239,68,68,0.08)', color: so.paymentStatus === 'Paid' ? '#10b981' : '#ef4444', border: `1px solid ${so.paymentStatus === 'Paid' ? '#10b98140' : '#ef444440'}`, fontWeight: 600 }}>
+                                                                                        💳 {so.paymentStatus}
+                                                                                    </span>
+                                                                                )}
+                                                                                {so.modeOfPayment && (
+                                                                                    <span style={{ fontSize: '0.72rem', padding: '0.2rem 0.55rem', borderRadius: '8px', background: 'var(--surface-base)', color: 'var(--text-secondary)', border: '1px solid var(--surface-border)' }}>
+                                                                                        {so.modeOfPayment}
+                                                                                    </span>
+                                                                                )}
+                                                                                {so.paymentNotes && (
+                                                                                    <span style={{ fontSize: '0.72rem', color: 'var(--text-tertiary)', fontStyle: 'italic' }}>{so.paymentNotes}</span>
+                                                                                )}
+                                                                            </div>
+                                                                        ) : (
+                                                                            <div style={{ display: 'flex', flexDirection: 'column', gap: '0.55rem', marginBottom: '0.85rem' }}>
+                                                                                <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap', alignItems: 'center' }}>
+                                                                                    <label style={{ fontSize: '0.7rem', color: 'var(--text-tertiary)', fontWeight: 600, whiteSpace: 'nowrap' }}>Order Status</label>
+                                                                                    <select value={so.status || 'confirmed'} onChange={e => updateOrderStatus(so.id, 'status', e.target.value, so)}
+                                                                                        style={{ fontSize: '0.78rem', padding: '0.25rem 0.5rem', borderRadius: '8px', border: '1px solid var(--surface-border)', background: 'var(--surface-base)', color: 'var(--text-primary)', cursor: 'pointer' }}>
+                                                                                        <option value="confirmed">📋 Order Placed</option>
+                                                                                        <option value="dispatched">📦 Dispatched</option>
+                                                                                        <option value="delivered">🏠 Delivered</option>
+                                                                                    </select>
+                                                                                    <label style={{ fontSize: '0.7rem', color: 'var(--text-tertiary)', fontWeight: 600, whiteSpace: 'nowrap' }}>Payment Status</label>
+                                                                                    <select value={so.paymentStatus || 'Pending'} onChange={e => updateOrderStatus(so.id, 'paymentStatus', e.target.value, so)}
+                                                                                        style={{ fontSize: '0.78rem', padding: '0.25rem 0.5rem', borderRadius: '8px', border: '1px solid var(--surface-border)', background: so.paymentStatus === 'Paid' ? 'rgba(16,185,129,0.1)' : 'rgba(239,68,68,0.08)', color: so.paymentStatus === 'Paid' ? '#10b981' : '#ef4444', cursor: 'pointer' }}>
+                                                                                        <option value="Pending">💳 Payment Pending</option>
+                                                                                        <option value="Paid">✅ Payment Done</option>
+                                                                                        <option value="Partial">🔶 Partial</option>
+                                                                                    </select>
+                                                                                    <label style={{ fontSize: '0.7rem', color: 'var(--text-tertiary)', fontWeight: 600, whiteSpace: 'nowrap' }}>Payment Terms</label>
+                                                                                    <select value={so.modeOfPayment || ''} onChange={e => updateOrderStatus(so.id, 'modeOfPayment', e.target.value, so)}
+                                                                                        style={{ fontSize: '0.78rem', padding: '0.25rem 0.5rem', borderRadius: '8px', border: '1px solid var(--surface-border)', background: 'var(--surface-base)', color: 'var(--text-primary)', cursor: 'pointer' }}>
+                                                                                        <option value="">-- Terms --</option>
+                                                                                        <option value="Cash">💵 Cash</option>
+                                                                                        <option value="UPI">📱 UPI</option>
+                                                                                        <option value="Cheque">🏦 Cheque</option>
+                                                                                        <option value="15 Days">⏱ 15 Days</option>
+                                                                                        <option value="30 Days">⏱ 30 Days</option>
+                                                                                        <option value="45 Days">⏱ 45 Days</option>
+                                                                                        <option value="Credit">💳 Credit</option>
+                                                                                    </select>
+                                                                                    <label style={{ fontSize: '0.7rem', color: 'var(--text-tertiary)', fontWeight: 600, whiteSpace: 'nowrap' }}>Payment Date</label>
+                                                                                    <input type="date" value={orderPayDates[so.id] ?? (so.paymentDate || '')}
+                                                                                        onChange={e => setOrderPayDates(prev => ({ ...prev, [so.id]: e.target.value }))}
+                                                                                        style={{ fontSize: '0.78rem', padding: '0.25rem 0.5rem', borderRadius: '8px', border: '1px solid var(--surface-border)', background: 'var(--surface-base)', color: 'var(--text-primary)', cursor: 'pointer' }} />
+                                                                                </div>
+                                                                                <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
+                                                                                    <label style={{ fontSize: '0.7rem', color: 'var(--text-tertiary)', fontWeight: 600, whiteSpace: 'nowrap' }}>Remarks</label>
+                                                                                    <input type="text" placeholder="Payment notes / remarks…" value={orderNotes[so.id] ?? (so.paymentNotes || '')}
+                                                                                        onChange={e => setOrderNotes(prev => ({ ...prev, [so.id]: e.target.value }))}
+                                                                                        style={{ flex: 1, fontSize: '0.78rem', padding: '0.28rem 0.6rem', borderRadius: '8px', border: '1px solid var(--surface-border)', background: 'var(--surface-base)', color: 'var(--text-primary)' }} />
+                                                                                    <button className="btn btn-secondary"
+                                                                                        style={{ fontSize: '0.75rem', padding: '0.28rem 0.75rem', whiteSpace: 'nowrap' }}
+                                                                                        onClick={async () => {
+                                                                                            await updateDoc(getTenantDoc(db, tenantId!, 'salesOrders', so.id), {
+                                                                                                paymentDate: orderPayDates[so.id] ?? so.paymentDate ?? '',
+                                                                                                paymentNotes: orderNotes[so.id] ?? so.paymentNotes ?? '',
+                                                                                            });
+                                                                                        }}>💾 Save</button>
+                                                                                </div>
+                                                                            </div>
+                                                                        )}
+
+                                                                        {/* Additional info row */}
+                                                                        {(amountPaid > 0 || (so.linkedPaymentIds?.length ?? 0) > 0) && (
+                                                                            <div style={{ display: 'flex', gap: '1rem', flexWrap: 'wrap', marginBottom: '0.85rem', fontSize: '0.75rem', color: 'var(--text-secondary)' }}>
+                                                                                {amountPaid > 0 && <span>Paid: <strong style={{ color: '#10b981' }}>₹{amountPaid.toLocaleString()}</strong></span>}
+                                                                                {outstanding > 0 && <span>Outstanding: <strong style={{ color: '#ef4444' }}>₹{outstanding.toLocaleString()}</strong></span>}
+                                                                                {(so.linkedPaymentIds?.length ?? 0) > 0 && (
+                                                                                    <span style={{ display: 'flex', alignItems: 'center', gap: '0.2rem', color: '#8b5cf6' }}><Link2 size={11} /> {so.linkedPaymentIds.length} linked payment{so.linkedPaymentIds.length !== 1 ? 's' : ''}</span>
+                                                                                )}
+                                                                            </div>
+                                                                        )}
+
+                                                                        {/* Action buttons */}
+                                                                        <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap', borderTop: '1px solid var(--surface-border)', paddingTop: '0.75rem' }}>
+                                                                            {!isSales && can('worklist.retailerProfile.b2bOrders.addPayment') && outstanding > 0 && (
+                                                                                <button className="btn btn-primary"
+                                                                                    onClick={() => { setPayOrder(so); setPayOrderAmount(outstanding); setPayOrderNote(''); }}
+                                                                                    style={{ display: 'flex', alignItems: 'center', gap: '0.35rem', padding: '0.38rem 0.85rem', fontSize: '0.8rem' }}>
+                                                                                    <PlusCircle size={13} /> Add Payment
+                                                                                </button>
+                                                                            )}
+                                                                            {!isSales && can('worklist.retailerProfile.b2bOrders.addPayment') && outstanding > 0 && availablePayments.length > 0 && (
+                                                                                <button className="btn btn-secondary"
+                                                                                    onClick={() => { setLinkPaymentOrder(so); setLinkAllocations({}); }}
+                                                                                    style={{ display: 'flex', alignItems: 'center', gap: '0.35rem', padding: '0.38rem 0.85rem', fontSize: '0.8rem' }}>
+                                                                                    <Link2 size={13} /> Link Payment
+                                                                                </button>
+                                                                            )}
+                                                                            {!isSales && can('worklist.retailerProfile.b2bOrders.editOrder') && (
+                                                                                locked ? (
+                                                                                    <button className="btn btn-secondary" disabled
+                                                                                        title="Order is locked for editing until Delivered or manually unlocked"
+                                                                                        style={{ display: 'flex', alignItems: 'center', gap: '0.35rem', padding: '0.38rem 0.85rem', fontSize: '0.8rem', opacity: 0.5, cursor: 'not-allowed' }}>
+                                                                                        <Lock size={13} /> Edit Order
+                                                                                    </button>
+                                                                                ) : (
+                                                                                    <button className="btn btn-secondary"
+                                                                                        onClick={() => so.invoiceType === 'B2B_GST'
+                                                                                            ? navigate(`/b2b-invoice?orderId=${so.id}&retailerId=${id}`)
+                                                                                            : navigate(`/sales-order/${so.id}`)}
+                                                                                        style={{ display: 'flex', alignItems: 'center', gap: '0.35rem', padding: '0.38rem 0.85rem', fontSize: '0.8rem' }}>
+                                                                                        <FilePen size={13} /> Edit Order
+                                                                                    </button>
+                                                                                )
+                                                                            )}
+                                                                            {isSales ? (
+                                                                                <button className="btn btn-secondary"
+                                                                                    onClick={() => tenantId && printB2BInvoice(so.id, tenantId)}
+                                                                                    style={{ display: 'flex', alignItems: 'center', gap: '0.35rem', padding: '0.38rem 0.85rem', fontSize: '0.8rem' }}>
+                                                                                    <Printer size={13} /> Print Invoice
+                                                                                </button>
+                                                                            ) : locked ? (
+                                                                                <button className="btn btn-secondary"
+                                                                                    onClick={() => navigate(`/b2b-invoice?orderId=${so.id}&retailerId=${id}`)}
+                                                                                    style={{ display: 'flex', alignItems: 'center', gap: '0.35rem', padding: '0.38rem 0.85rem', fontSize: '0.8rem' }}>
+                                                                                    <Printer size={13} /> View Invoice
+                                                                                </button>
+                                                                            ) : (
+                                                                                <button className="btn btn-secondary"
+                                                                                    onClick={() => navigate(`/b2b-invoice?orderId=${so.id}&retailerId=${id}`)}
+                                                                                    style={{ display: 'flex', alignItems: 'center', gap: '0.35rem', padding: '0.38rem 0.85rem', fontSize: '0.8rem' }}>
+                                                                                    <Printer size={13} /> View / Edit Invoice
+                                                                                </button>
+                                                                            )}
+                                                                            {!isSales && can('worklist.retailerProfile.b2bOrders.editOrder') && locked && (
+                                                                                <button className="btn btn-secondary"
+                                                                                    onClick={() => handleUnlockOrder(so.id)}
+                                                                                    style={{ display: 'flex', alignItems: 'center', gap: '0.35rem', padding: '0.38rem 0.85rem', fontSize: '0.8rem', color: '#f59e0b', borderColor: 'rgba(245,158,11,0.4)' }}>
+                                                                                    <LockOpen size={13} /> Unlock Order
+                                                                                </button>
+                                                                            )}
+                                                                            {!isSales && can('worklist.retailerProfile.b2bOrders.addPayment') && (so.linkedPaymentIds?.length ?? 0) > 0 && (
+                                                                                <button className="btn btn-secondary"
+                                                                                    onClick={() => handleOpenUnlinkModal(so)}
+                                                                                    style={{ display: 'flex', alignItems: 'center', gap: '0.35rem', padding: '0.38rem 0.85rem', fontSize: '0.8rem' }}>
+                                                                                    <Link2 size={13} /> Unlink Payments ({so.linkedPaymentIds.length})
+                                                                                </button>
+                                                                            )}
+                                                                            {can('worklist.retailerProfile.b2bOrders.deleteOrder') && (
+                                                                                <button className="btn" onClick={() => setSoToDelete(so)}
+                                                                                    style={{ display: 'flex', alignItems: 'center', gap: '0.35rem', padding: '0.38rem 0.85rem', fontSize: '0.8rem', background: 'hsla(0,84%,60%,0.1)', color: 'var(--danger)', border: '1px solid hsla(0,84%,60%,0.3)' }}>
+                                                                                    <Trash2 size={13} /> Delete
+                                                                                </button>
+                                                                            )}
+                                                                        </div>
+                                                                    </td>
+                                                                </tr>
+                                                            )}
+                                                        </>
+                                                    );
+                                                })}
+                                            </tbody>
+                                        </table>
                                     </div>
-                                );
-                            })}
+                                </div>
+                            )}
                         </div>
 
                         {/* Legacy Orders */}

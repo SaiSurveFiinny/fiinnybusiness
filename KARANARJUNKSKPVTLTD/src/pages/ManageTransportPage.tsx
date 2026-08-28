@@ -3,6 +3,7 @@ import { createPortal } from 'react-dom';
 import { updateDoc, deleteDoc, onSnapshot, orderBy, query, serverTimestamp } from 'firebase/firestore';
 import { db } from '../firebase';
 import { useAuth } from '../contexts/AuthContext';
+import { useFeaturePermissions } from '../hooks/useFeaturePermissions';
 import { getTenantCollection, getTenantDoc } from '../utils/tenantPath';
 import { useToast } from '../contexts/ToastContext';
 import { Truck, Plus, Pencil, Trash2, X, Phone, User, AlertTriangle, Search, ChevronDown, ChevronRight } from 'lucide-react';
@@ -56,6 +57,12 @@ function useScrollLock(active: boolean) {
 export default function ManageTransportPage() {
     const { tenantId } = useAuth();
     const { showToast } = useToast();
+
+    // Feature-permission layer (Super Admin → Feature Permissions → Inventory → Transport).
+    const can = useFeaturePermissions();
+    const canAddTransporter    = can('inventory.transfer.add');
+    const canEditTransporter   = can('inventory.transfer.edit');
+    const canDeleteTransporter = can('inventory.transfer.delete');
 
     const [transporters, setTransporters] = useState<Transporter[]>([]);
     const [loading, setLoading] = useState(true);
@@ -304,10 +311,12 @@ export default function ManageTransportPage() {
                     </h1>
                     <p style={{ color: 'var(--text-secondary)' }}>Master list of transporters — select one when creating a B2B Invoice.</p>
                 </div>
-                <button onClick={() => setAddOpen(true)} className="btn btn-primary"
-                    style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', padding: '0.6rem 1.1rem', fontSize: '0.85rem', whiteSpace: 'nowrap' }}>
-                    <Plus size={16} /> Add Transporter
-                </button>
+                {canAddTransporter && (
+                    <button onClick={() => setAddOpen(true)} className="btn btn-primary"
+                        style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', padding: '0.6rem 1.1rem', fontSize: '0.85rem', whiteSpace: 'nowrap' }}>
+                        <Plus size={16} /> Add Transporter
+                    </button>
+                )}
             </div>
 
             {/* Search */}
@@ -330,7 +339,7 @@ export default function ManageTransportPage() {
                 <div className="glass-panel" style={{ textAlign: 'center', padding: '4rem 2rem', color: 'var(--text-secondary)' }}>
                     <Truck size={48} color="var(--surface-border)" style={{ margin: '0 auto 1rem', display: 'block' }} />
                     <h3>{search ? 'No transporters match your search.' : 'No transporters yet.'}</h3>
-                    {!search && (
+                    {!search && canAddTransporter && (
                         <>
                             <p>Add your first transporter to use it on B2B Invoices.</p>
                             <button onClick={() => setAddOpen(true)} className="btn btn-primary" style={{ marginTop: '1rem', display: 'inline-flex', alignItems: 'center', gap: '0.4rem' }}>
@@ -394,14 +403,18 @@ export default function ManageTransportPage() {
                                                 <td style={{ padding: '0.85rem 1rem', color: 'var(--text-secondary)' }}>{t.vehicleRoute || '—'}</td>
                                                 <td style={{ padding: '0.85rem 1rem', textAlign: 'right' }}>
                                                     <div style={{ display: 'inline-flex', gap: '0.4rem' }} onClick={e => e.stopPropagation()}>
+                                                        {canEditTransporter && (
                                                         <button onClick={() => openEdit(t)} title="Edit"
                                                             style={{ display: 'flex', alignItems: 'center', gap: '0.25rem', padding: '0.3rem 0.6rem', background: 'hsla(220,70%,55%,0.12)', color: '#3b82f6', border: '1px solid hsla(220,70%,55%,0.25)', borderRadius: '8px', cursor: 'pointer', fontSize: '0.75rem', fontWeight: 600, fontFamily: 'inherit' }}>
                                                             <Pencil size={12} /> Edit
                                                         </button>
+                                                        )}
+                                                        {canDeleteTransporter && (
                                                         <button onClick={() => setDeleteTarget(t)} title="Delete"
                                                             style={{ display: 'flex', alignItems: 'center', gap: '0.25rem', padding: '0.3rem 0.6rem', background: 'hsla(0,84%,60%,0.12)', color: '#ef4444', border: '1px solid hsla(0,84%,60%,0.25)', borderRadius: '8px', cursor: 'pointer', fontSize: '0.75rem', fontWeight: 600, fontFamily: 'inherit' }}>
                                                             <Trash2 size={12} /> Delete
                                                         </button>
+                                                        )}
                                                     </div>
                                                 </td>
                                             </tr>

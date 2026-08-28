@@ -5,16 +5,18 @@ import {
     Download, Store, Filter,
     Users, Building2, UserPlus, Calendar,
     Bell, ShoppingCart, Truck, Mail, MessageSquare, Wallet,
-    X, Copy, CheckSquare, FileText, ChevronDown, ChevronRight, Phone, Clock,
+    X, Copy, CheckSquare, FileText, ChevronDown, ChevronRight, Phone, Clock, Columns3,
 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { getDocs, orderBy, query, where, collectionGroup, collection } from 'firebase/firestore';
 import { db } from '../firebase';
 import { useAuth } from '../contexts/AuthContext';
+import { useFeaturePermissions } from '../hooks/useFeaturePermissions';
 import { getTenantCollection } from '../utils/tenantPath';
 import UdhariUploadModal from '../components/UdhariUploadModal';
 import { type FinancialPeriod, getFinancialDateRange } from '../utils/financialPeriod';
 import { useColumnLayout } from '../hooks/useColumnLayout';
+import { computePromiseDate } from '../utils/paymentTerms';
 import {
     HDR_COL_STYLE, SortLabel, ColumnTextFilter, ColumnNumFilter, ColumnMultiSelectFilter,
     EMPTY_NUM, isNumActive, matchNum, type NumFilter,
@@ -73,6 +75,15 @@ interface Retailer {
     computedTotalSales?: number;
     computedTotalPaid?: number;
     assignedSalespersons?: string[];
+    // Payment follow-up columns (derived / optional). lastPaymentDate and
+    // lastBillDate are computed from the payment (paymentDate) and salesOrder
+    // (invoiceDate — the ACTUAL bill date, never createdAt) entries already loaded.
+    // promiseDate is DERIVED from the most recent still-outstanding invoice's actual
+    // invoiceDate + its payment term (modeOfPayment) — never a manually stored field.
+    // collectionPercent is read straight from the retailer doc if configured there.
+    lastPaymentDate?: string;   // YYYY-MM-DD of most recent payment
+    lastBillDate?: string;      // YYYY-MM-DD of most recent invoice/bill (invoiceDate)
+    promiseDate?: string;       // derived from latest outstanding invoice's term
 }
 
 interface ReminderEntry {
@@ -97,33 +108,44 @@ const VALID_TABS: readonly ModuleTab[] = ['partners', 'invoices', 'payments', 'r
 // chevron) are utility columns; 'select' is dropped for view-only roles.
 type PartnerColKey =
     | 'select' | 'name' | 'contact' | 'district' | 'salesperson'
-    | 'portfolio' | 'totalInvoice' | 'paymentReceived' | 'outstanding' | 'expand';
+    | 'portfolio' | 'totalInvoice' | 'paymentReceived' | 'outstanding'
+    | 'lastPayment' | 'lastBillDate' | 'promiseDate'
+    | 'expand';
 
 const PARTNER_ALL_KEYS: PartnerColKey[] = [
     'select', 'name', 'contact', 'district', 'salesperson',
-    'portfolio', 'totalInvoice', 'paymentReceived', 'outstanding', 'expand',
+    'portfolio', 'totalInvoice', 'paymentReceived', 'outstanding',
+    'lastPayment', 'lastBillDate', 'promiseDate',
+    'expand',
 ];
 
 const PARTNER_LABELS: Record<PartnerColKey, string> = {
     select: 'Select', name: 'Retailer Name', contact: 'Contact', district: 'District',
     salesperson: 'Salesperson', portfolio: 'Portfolio', totalInvoice: 'Total Invoice Amount',
-    paymentReceived: 'Payment Received', outstanding: 'Outstanding', expand: 'Details',
+    paymentReceived: 'Payment Received', outstanding: 'Outstanding',
+    lastPayment: 'Last Payment', lastBillDate: 'Last Bill Date', promiseDate: 'Promise Date',
+    expand: 'Details',
 };
 
 const PARTNER_DEFAULT_WIDTHS: Record<PartnerColKey, number> = {
     select: 44, name: 240, contact: 150, district: 140, salesperson: 180,
-    portfolio: 130, totalInvoice: 175, paymentReceived: 160, outstanding: 150, expand: 48,
+    portfolio: 130, totalInvoice: 175, paymentReceived: 160, outstanding: 150,
+    lastPayment: 140, lastBillDate: 140, promiseDate: 140,
+    expand: 48,
 };
 
 const PARTNER_ALIGN: Record<PartnerColKey, 'left' | 'right' | 'center'> = {
     select: 'center', name: 'left', contact: 'left', district: 'left', salesperson: 'left',
-    portfolio: 'left', totalInvoice: 'right', paymentReceived: 'right', outstanding: 'right', expand: 'center',
+    portfolio: 'left', totalInvoice: 'right', paymentReceived: 'right', outstanding: 'right',
+    lastPayment: 'left', lastBillDate: 'left', promiseDate: 'left',
+    expand: 'center',
 };
 
 // Columns that support click-to-sort, and the value each sorts on.
 type PartnerSortKey =
     | 'name' | 'contact' | 'district' | 'salesperson'
-    | 'portfolio' | 'totalInvoice' | 'paymentReceived' | 'outstanding';
+    | 'portfolio' | 'totalInvoice' | 'paymentReceived' | 'outstanding'
+    | 'lastPayment' | 'lastBillDate' | 'promiseDate';
 
 // Sentinel value for the Salesperson checklist's "Unassigned" option.
 const UNASSIGNED_SP = '__unassigned__';
@@ -154,17 +176,23 @@ const MODULE_TABS: { id: ModuleTab; label: string; icon: React.ReactNode }[] = [
 
 // ─── Main Component ───────────────────────────────────────────────────────────
 
+const TAB_PERM: Record<ModuleTab, string> = {
+    'partners':      'worklist.partners.view',
+    'invoices':      'worklist.invoices.view',
+    'payments':      'worklist.payments.view',
+    'reminders':     'worklist.reminders.view',
+    'tracking':      'worklist.tracking.view',
+    'online-orders': 'worklist.onlineOrders.view',
+};
+
 export default function WorklistPage() {
     const [moduleTab, setModuleTab] = useHashTab<ModuleTab>(VALID_TABS, 'partners', 'fiinny-tab-worklist');
-    const { userRole } = useAuth();
+    const can = useFeaturePermissions();
 
-    const visibleTabs = MODULE_TABS.filter(tab => {
-        if (userRole === 'sales' && tab.id === 'online-orders') return false;
-        if (userRole === 'retailer' && (tab.id === 'online-orders' || tab.id === 'tracking')) return false;
-        // Analyst: hide the Payment Reminders sub-tab (route still works directly).
-        if (userRole === 'analyst' && tab.id === 'reminders') return false;
-        return true;
-    });
+    // Sub-tab visibility is driven SOLELY by the Feature Matrix (single source of
+    // truth). Per-role denials (sales/retailer/analyst) now live in
+    // DEFAULT_FEATURE_PERMISSIONS instead of hardcoded page guards.
+    const visibleTabs = MODULE_TABS.filter(tab => can(TAB_PERM[tab.id]));
 
     return (
         <div className="animate-fade-in" style={{ width: '100%' }}>
@@ -243,6 +271,7 @@ export default function WorklistPage() {
 function PartnersTab() {
     const navigate = useNavigate();
     const { tenantId, userRole, assignedDistricts, assignedRetailers } = useAuth();
+    const can = useFeaturePermissions();
     const isSales = userRole === 'sales';
     const isRetailer = userRole === 'retailer';
     const isViewOnly = isSales || isRetailer;
@@ -274,6 +303,19 @@ function PartnersTab() {
         return () => document.removeEventListener('mousedown', onDown);
     }, [showDateDropdown]);
 
+    // Column-visibility ("Columns") dropdown.
+    const [showColumnsDropdown, setShowColumnsDropdown] = useState(false);
+    const columnsDropdownRef = useRef<HTMLDivElement>(null);
+    useEffect(() => {
+        if (!showColumnsDropdown) return;
+        const onDown = (e: MouseEvent) => {
+            if (columnsDropdownRef.current?.contains(e.target as Node)) return;
+            setShowColumnsDropdown(false);
+        };
+        document.addEventListener('mousedown', onDown);
+        return () => document.removeEventListener('mousedown', onDown);
+    }, [showColumnsDropdown]);
+
     const [partnerView, setPartnerView] = useState<'all' | 'active' | 'cleared'>('all');
 
     // ── Per-column filters (AND-combined, all recompute processedRetailers) ──────
@@ -285,13 +327,26 @@ function PartnersTab() {
     const [fTotalInvoice, setFTotalInvoice] = useState<NumFilter>(EMPTY_NUM);
     const [fPayment, setFPayment]           = useState<NumFilter>(EMPTY_NUM);
     const [fOutstanding, setFOutstanding]   = useState<NumFilter>(EMPTY_NUM);
+    const [fLastPayment, setFLastPayment]   = useState('');
+    const [fLastBill, setFLastBill]         = useState('');
+    const [fPromise, setFPromise]           = useState('');
 
     // ── Column sort (null = default fetch order, i.e. newest retailer first) ─────
     const [sortCol, setSortCol] = useState<PartnerSortKey | null>(null);
     const [sortDir, setSortDir] = useState<'asc' | 'desc'>('asc');
     const toggleSort = (col: PartnerSortKey) => {
         if (sortCol === col) { if (sortDir === 'asc') setSortDir('desc'); else setSortCol(null); }
-        else { setSortCol(col); setSortDir(col === 'name' || col === 'contact' || col === 'district' || col === 'salesperson' || col === 'portfolio' ? 'asc' : 'desc'); }
+        else { setSortCol(col); setSortDir(col === 'name' || col === 'contact' || col === 'district' || col === 'salesperson' || col === 'portfolio' || col === 'lastPayment' || col === 'lastBillDate' || col === 'promiseDate' ? 'asc' : 'desc'); }
+    };
+
+    // ── Payment follow-up helpers ────────────────────────────────────────────────
+    // Formats a 'YYYY-MM-DD' date string; blank/invalid → "—".
+    const fmtDate = (s?: string): string => {
+        if (!s) return '—';
+        const d = new Date(s);
+        return isNaN(d.getTime())
+            ? '—'
+            : d.toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: '2-digit' });
     };
 
     // ── Column layout: resize / freeze / reorder / localStorage persistence ──────
@@ -458,7 +513,7 @@ function PartnersTab() {
                 });
 
                 // Group salesOrders by retailerId (include financial fields for outstanding calc).
-                type SOEntry = { invoiceDate?: string; status?: string; paymentStatus?: string; dueDate?: string; grandTotal?: number; netAmount?: number; totalAmount?: number; amountPaid?: number; deleted?: boolean };
+                type SOEntry = { invoiceDate?: string; status?: string; paymentStatus?: string; modeOfPayment?: string; dueDate?: string; grandTotal?: number; netAmount?: number; totalAmount?: number; amountPaid?: number; deleted?: boolean };
                 const salesByRetailer = new Map<string, SOEntry[]>();
                 salesOrdersSnap.docs.forEach(doc => {
                     const so = doc.data() as { retailerId?: string } & SOEntry;
@@ -508,6 +563,28 @@ function PartnersTab() {
                     const soTotalPaid  = paymentsByRetailer.get(r.id) ?? 0;
                     const computedOutstanding = Math.max(0, soTotalSales - soTotalPaid);
 
+                    // Most recent bill/payment dates. invoiceDate is the ACTUAL bill date
+                    // stored on the salesOrder — never the Firestore createdAt. Dates are
+                    // 'YYYY-MM-DD' strings, so a plain string max yields the latest one.
+                    const lastBillDate = soList.reduce(
+                        (max, so) => (so.invoiceDate && so.invoiceDate > max ? so.invoiceDate : max), '');
+                    const lastPaymentDate = (rawPmtsByRetailerMap.get(r.id) ?? []).reduce(
+                        (max, p) => (p.paymentDate && p.paymentDate > max ? p.paymentDate : max), '');
+
+                    // Promise Date — derived, never stored. Take the retailer's most
+                    // recent invoice (by actual invoiceDate) that is NOT fully paid,
+                    // then add its payment-term days (modeOfPayment) to that invoice
+                    // date. Fully-paid invoices are ignored; no outstanding bills → ''.
+                    // Matches the pendingSOs 'paid' check used elsewhere on this page.
+                    const latestOutstanding = soList.reduce<SOEntry | null>((latest, so) => {
+                        if (!so.invoiceDate) return latest;
+                        if (String(so.paymentStatus ?? '').toLowerCase() === 'paid') return latest;
+                        return (!latest || so.invoiceDate > (latest.invoiceDate ?? '')) ? so : latest;
+                    }, null);
+                    const promiseDate = latestOutstanding
+                        ? computePromiseDate(latestOutstanding.invoiceDate, latestOutstanding.modeOfPayment)
+                        : undefined;
+
                     // Merge direct assignments and district-based assignments, deduplicated.
                     // Direct assignments come first so they appear before district-based ones.
                     const directSPs  = spByRetailerId.get(r.id) ?? [];
@@ -518,6 +595,7 @@ function PartnersTab() {
                     return {
                         ...r, closestCreditDays, computedOutstanding, assignedSalespersons,
                         computedTotalSales: soTotalSales, computedTotalPaid: soTotalPaid,
+                        lastBillDate, lastPaymentDate, promiseDate,
                     };
                 });
 
@@ -608,6 +686,12 @@ function PartnersTab() {
         if (isNumActive(fPayment))      result = result.filter(r => matchNum(r.computedTotalPaid ?? 0, fPayment));
         if (isNumActive(fOutstanding))  result = result.filter(r => matchNum(r.computedOutstanding ?? 0, fOutstanding));
 
+        // ── Payment follow-up column filters ─────────────────────────────────────
+        // Date filters match against the formatted label so "Jan"/"25" both work.
+        if (fLastPayment.trim()) { const q = fLastPayment.trim().toLowerCase(); result = result.filter(r => fmtDate(r.lastPaymentDate).toLowerCase().includes(q)); }
+        if (fLastBill.trim())    { const q = fLastBill.trim().toLowerCase();    result = result.filter(r => fmtDate(r.lastBillDate).toLowerCase().includes(q)); }
+        if (fPromise.trim())     { const q = fPromise.trim().toLowerCase();     result = result.filter(r => fmtDate(r.promiseDate).toLowerCase().includes(q)); }
+
         // ── Column sort (null keeps default newest-first fetch order) ────────────
         if (sortCol) {
             const asc = sortDir === 'asc' ? 1 : -1;
@@ -621,12 +705,15 @@ function PartnersTab() {
                     case 'totalInvoice':    return asc * ((a.computedTotalSales ?? 0) - (b.computedTotalSales ?? 0));
                     case 'paymentReceived': return asc * ((a.computedTotalPaid ?? 0) - (b.computedTotalPaid ?? 0));
                     case 'outstanding':     return asc * ((a.computedOutstanding ?? 0) - (b.computedOutstanding ?? 0));
+                    case 'lastPayment':     return asc * (a.lastPaymentDate || '').localeCompare(b.lastPaymentDate || '');
+                    case 'lastBillDate':    return asc * (a.lastBillDate || '').localeCompare(b.lastBillDate || '');
+                    case 'promiseDate':     return asc * (a.promiseDate || '').localeCompare(b.promiseDate || '');
                     default:                return 0;
                 }
             });
         }
         return result;
-    }, [dateFilteredRetailers, partnerView, fName, fContact, fDistrict, fSalespersons, fPortfolios, fTotalInvoice, fPayment, fOutstanding, sortCol, sortDir]);
+    }, [dateFilteredRetailers, partnerView, fName, fContact, fDistrict, fSalespersons, fPortfolios, fTotalInvoice, fPayment, fOutstanding, fLastPayment, fLastBill, fPromise, sortCol, sortDir]);
 
     // Salesperson checklist options — distinct assigned names plus an Unassigned
     // bucket. Derived from the date-filtered set so the list reflects the range.
@@ -646,12 +733,14 @@ function PartnersTab() {
     const hasColumnFilter =
         fName.trim() !== '' || fContact.trim() !== '' || fDistrict.trim() !== '' ||
         fSalespersons.length > 0 || fPortfolios.length > 0 ||
-        isNumActive(fTotalInvoice) || isNumActive(fPayment) || isNumActive(fOutstanding);
+        isNumActive(fTotalInvoice) || isNumActive(fPayment) || isNumActive(fOutstanding) ||
+        fLastPayment.trim() !== '' || fLastBill.trim() !== '' || fPromise.trim() !== '';
 
     const clearAllFilters = () => {
         setFName(''); setFContact(''); setFDistrict('');
         setFSalespersons([]); setFPortfolios([]);
         setFTotalInvoice(EMPTY_NUM); setFPayment(EMPTY_NUM); setFOutstanding(EMPTY_NUM);
+        setFLastPayment(''); setFLastBill(''); setFPromise('');
     };
 
     // Grand-total summary for the currently visible (filtered/searched) rows —
@@ -687,7 +776,7 @@ function PartnersTab() {
     // processedRetailers array (already filtered by Outstanding/Size/search/sort)
     // and the same per-cell values/formatting used in the <tbody> render.
     const handleExportCSV = () => {
-        const headers = ['Retailer Name', 'Contact', 'District', 'Salesperson', 'Portfolio', 'Total Invoice Amount', 'Payment Received', 'Outstanding'];
+        const headers = ['Retailer Name', 'Contact', 'District', 'Salesperson', 'Portfolio', 'Total Invoice Amount', 'Payment Received', 'Outstanding', 'Last Payment', 'Last Bill Date', 'Promise Date'];
         const csvRows = processedRetailers.map(r => {
             const outstanding = r.computedOutstanding ?? 0;
             const salesperson = (r.assignedSalespersons?.length ?? 0) > 0
@@ -702,6 +791,9 @@ function PartnersTab() {
                 `\u20B9${(r.computedTotalSales ?? 0).toLocaleString('en-IN')}`,
                 `\u20B9${(r.computedTotalPaid ?? 0).toLocaleString('en-IN')}`,
                 `\u20B9${outstanding.toLocaleString('en-IN')}`,
+                fmtDate(r.lastPaymentDate),
+                fmtDate(r.lastBillDate),
+                fmtDate(r.promiseDate),
             ].map(v => csvEscape(String(v))).join(',');
         });
         const csvContent = [headers.join(','), ...csvRows].join('\r\n');
@@ -721,7 +813,7 @@ function PartnersTab() {
         measure();
         window.addEventListener('resize', measure);
         return () => window.removeEventListener('resize', measure);
-    }, [layout.colWidths, layout.colOrder, layout.freezeCount, loading]);
+    }, [layout.colWidths, layout.visibleOrder, layout.freezeCount, loading]);
 
     // ── Column renderers (colOrder-driven, like the Stock Report / Product Master) ─
     const renderHeaderTh = (key: PartnerColKey, colIdx: number) => {
@@ -790,6 +882,24 @@ function PartnersTab() {
                 <div style={HDR_COL_STYLE}>
                     <SortLabel label="Outstanding" align="right" active={sortCol === 'outstanding'} dir={sortDir} onClick={() => toggleSort('outstanding')} />
                     <ColumnNumFilter state={fOutstanding} onChange={setFOutstanding} />
+                </div>
+            ); break;
+            case 'lastPayment': inner = (
+                <div style={HDR_COL_STYLE}>
+                    <SortLabel label="Last Payment" active={sortCol === 'lastPayment'} dir={sortDir} onClick={() => toggleSort('lastPayment')} />
+                    <ColumnTextFilter value={fLastPayment} onChange={setFLastPayment} placeholder="Search date…" />
+                </div>
+            ); break;
+            case 'lastBillDate': inner = (
+                <div style={HDR_COL_STYLE}>
+                    <SortLabel label="Last Bill Date" active={sortCol === 'lastBillDate'} dir={sortDir} onClick={() => toggleSort('lastBillDate')} />
+                    <ColumnTextFilter value={fLastBill} onChange={setFLastBill} placeholder="Search date…" />
+                </div>
+            ); break;
+            case 'promiseDate': inner = (
+                <div style={HDR_COL_STYLE}>
+                    <SortLabel label="Promise Date" active={sortCol === 'promiseDate'} dir={sortDir} onClick={() => toggleSort('promiseDate')} />
+                    <ColumnTextFilter value={fPromise} onChange={setFPromise} placeholder="Search date…" />
                 </div>
             ); break;
             case 'expand': inner = ''; break;
@@ -883,6 +993,12 @@ function PartnersTab() {
                             : <span style={{ color: '#10b981', fontWeight: 700 }}>₹0</span>}
                     </td>
                 );
+            case 'lastPayment':
+                return <td key={key} style={{ ...tdBase, whiteSpace: 'nowrap', color: r.lastPaymentDate ? 'var(--text-secondary)' : 'var(--text-tertiary)', fontSize: '0.83rem' }}>{fmtDate(r.lastPaymentDate)}</td>;
+            case 'lastBillDate':
+                return <td key={key} style={{ ...tdBase, whiteSpace: 'nowrap', color: r.lastBillDate ? 'var(--text-secondary)' : 'var(--text-tertiary)', fontSize: '0.83rem' }}>{fmtDate(r.lastBillDate)}</td>;
+            case 'promiseDate':
+                return <td key={key} style={{ ...tdBase, whiteSpace: 'nowrap', color: r.promiseDate ? 'var(--text-secondary)' : 'var(--text-tertiary)', fontSize: '0.83rem' }}>{fmtDate(r.promiseDate)}</td>;
             case 'expand':
                 return (
                     <td key={key} style={{ ...tdBase, padding: '0.8rem 0.5rem' }} onClick={e => toggleExpand(r.id, e)}>
@@ -909,6 +1025,10 @@ function PartnersTab() {
             case 'totalInvoice':    return <td key={key} style={{ ...gBase, color: 'var(--text-primary)' }}>₹{worklistSummary.totalInvoiceAmount.toLocaleString('en-IN')}</td>;
             case 'paymentReceived': return <td key={key} style={{ ...gBase, color: '#10b981' }}>₹{worklistSummary.totalPaymentReceived.toLocaleString('en-IN')}</td>;
             case 'outstanding':     return <td key={key} style={{ ...gBase, color: worklistSummary.totalOutstanding > 0 ? '#ef4444' : '#10b981' }}>₹{worklistSummary.totalOutstanding.toLocaleString('en-IN')}</td>;
+            // Date columns have no meaningful total — kept blank.
+            case 'lastPayment':     return <td key={key} style={gBase}>—</td>;
+            case 'lastBillDate':    return <td key={key} style={gBase}>—</td>;
+            case 'promiseDate':     return <td key={key} style={gBase}>—</td>;
             case 'expand':          return <td key={key} style={{ ...gBase, padding: '0.75rem 0.5rem' }} />;
             default:                return <td key={key} style={gBase} />;
         }
@@ -984,8 +1104,10 @@ function PartnersTab() {
                             </div>
                         )}
                     </div>
-                    <button className="btn btn-secondary" onClick={handleExportCSV} disabled={processedRetailers.length === 0}><Download size={16} /> {t('worklist.export_csv')}</button>
-                    {!isViewOnly && (
+                    {can('worklist.partners.export') && (
+                        <button className="btn btn-secondary" onClick={handleExportCSV} disabled={processedRetailers.length === 0}><Download size={16} /> {t('worklist.export_csv')}</button>
+                    )}
+                    {can('worklist.partners.create') && !isViewOnly && (
                         <button className="btn btn-primary" onClick={() => navigate('/onboarding')}><UserPlus size={16} /> {t('worklist.add_new')}</button>
                     )}
                 </div>
@@ -1041,20 +1163,25 @@ function PartnersTab() {
                             <X size={13} /> Clear
                         </button>
                     </div>
-                    <button
-                        onClick={handleSendReminder}
-                        disabled={loadingReminders}
-                        style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: '0.45rem', padding: '0.35rem 1rem', borderRadius: '6px', border: '1px solid rgba(255,255,255,0.7)', background: 'rgba(255,255,255,0.15)', color: '#fff', fontWeight: 700, fontSize: '0.85rem', cursor: loadingReminders ? 'wait' : 'pointer', fontFamily: 'inherit' }}
-                    >
-                        <Mail size={15} /> {loadingReminders ? 'Loading…' : 'Send Reminder Email'}
-                    </button>
+                    {can('worklist.partners.sendReminder') && (
+                        <button
+                            onClick={handleSendReminder}
+                            disabled={loadingReminders}
+                            style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: '0.45rem', padding: '0.35rem 1rem', borderRadius: '6px', border: '1px solid rgba(255,255,255,0.7)', background: 'rgba(255,255,255,0.15)', color: '#fff', fontWeight: 700, fontSize: '0.85rem', cursor: loadingReminders ? 'wait' : 'pointer', fontFamily: 'inherit' }}
+                        >
+                            <Mail size={15} /> {loadingReminders ? 'Loading…' : 'Send Reminder Email'}
+                        </button>
+                    )}
                 </div>
             )}
 
             {/* List */}
             {loading ? (
                 <div style={{ textAlign: 'center', padding: '3rem', color: 'var(--text-secondary)' }}>{t('common.loading')}</div>
-            ) : processedRetailers.length === 0 ? (
+            ) : retailers.length === 0 ? (
+                // Genuinely empty — no partners exist yet. When partners DO exist but a
+                // filter/search matches nothing, we keep the table (with its header,
+                // filter inputs and grand-total row) and show a compact in-body message.
                 <div className="glass-panel" style={{ textAlign: 'center', padding: '4rem 2rem', color: 'var(--text-secondary)' }}>
                     <Store size={48} color="var(--surface-border)" style={{ margin: '0 auto 1rem auto', display: 'block' }} />
                     <h3>{t('worklist.no_retailers_found')}</h3>
@@ -1073,10 +1200,58 @@ function PartnersTab() {
                         <span>Drag column edges to resize.</span>
                         <span>Right-click a header to freeze or reset.</span>
                         {layout.freezeCount > 0 && (
-                            <span style={{ marginLeft: 'auto', color: 'var(--primary)', fontWeight: 600 }}>
-                                Frozen up to “{PARTNER_LABELS[layout.colOrder[layout.freezeCount - 1]]}”
+                            <span style={{ color: 'var(--primary)', fontWeight: 600 }}>
+                                Frozen up to “{PARTNER_LABELS[layout.visibleOrder[layout.freezeCount - 1]]}”
                             </span>
                         )}
+
+                        {/* Column visibility control */}
+                        <div ref={columnsDropdownRef} style={{ position: 'relative', marginLeft: 'auto' }}>
+                            <button
+                                onClick={() => setShowColumnsDropdown(v => !v)}
+                                style={{ display: 'inline-flex', alignItems: 'center', gap: '0.35rem', padding: '0.3rem 0.7rem', borderRadius: '6px', border: '1px solid var(--surface-border)', background: 'var(--surface-raised)', color: 'var(--text-secondary)', fontSize: '0.75rem', fontWeight: 600, cursor: 'pointer', fontFamily: 'inherit' }}
+                            >
+                                <Columns3 size={14} /> Columns
+                                {layout.hidden.size > 0 && (
+                                    <span style={{ fontSize: '0.65rem', color: 'var(--primary)', fontWeight: 700 }}>({layout.hidden.size} hidden)</span>
+                                )}
+                                <ChevronDown size={13} />
+                            </button>
+                            {showColumnsDropdown && (
+                                <div
+                                    role="menu"
+                                    style={{ position: 'absolute', top: 'calc(100% + 4px)', right: 0, zIndex: 5001, minWidth: '220px', background: 'var(--surface-raised)', border: '1px solid var(--surface-border)', borderRadius: '10px', padding: '0.4rem', boxShadow: '0 12px 40px rgba(0,0,0,0.22)' }}
+                                >
+                                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '0.2rem 0.5rem 0.4rem', borderBottom: '1px solid var(--surface-border)', marginBottom: '0.25rem' }}>
+                                        <span style={{ fontSize: '0.72rem', fontWeight: 700, color: 'var(--text-tertiary)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Columns</span>
+                                        {layout.hidden.size > 0 && (
+                                            <button
+                                                onClick={layout.showAllColumns}
+                                                style={{ background: 'none', border: 'none', color: 'var(--primary)', fontSize: '0.72rem', fontWeight: 600, cursor: 'pointer', fontFamily: 'inherit', padding: 0 }}
+                                            >
+                                                Show all
+                                            </button>
+                                        )}
+                                    </div>
+                                    {layout.colOrder
+                                        .filter(key => key !== 'select' && key !== 'expand')
+                                        .map(key => (
+                                            <label
+                                                key={key}
+                                                style={{ display: 'flex', alignItems: 'center', gap: '0.55rem', padding: '0.35rem 0.5rem', borderRadius: '6px', cursor: 'pointer', fontSize: '0.82rem', color: 'var(--text-primary)' }}
+                                            >
+                                                <input
+                                                    type="checkbox"
+                                                    checked={!layout.isHidden(key)}
+                                                    onChange={() => layout.toggleColumn(key)}
+                                                    style={{ width: '0.95rem', height: '0.95rem', cursor: 'pointer', accentColor: 'var(--primary-light)' }}
+                                                />
+                                                {PARTNER_LABELS[key]}
+                                            </label>
+                                        ))}
+                                </div>
+                            )}
+                        </div>
                     </div>
 
                     {/* Full-screen capture div during column resize — prevents cursor flicker */}
@@ -1089,19 +1264,27 @@ function PartnersTab() {
                         <div style={{ overflowX: 'auto', maxHeight: '72vh', overflowY: 'auto' }} onContextMenu={layout.handleTableContextMenu}>
                             <table style={{ width: layout.totalTableWidth, tableLayout: 'fixed', borderCollapse: 'collapse', fontSize: '0.875rem' }}>
                                 <colgroup>
-                                    {layout.colOrder.map(key => (
+                                    {layout.visibleOrder.map(key => (
                                         <col key={key} ref={layout.registerColEl(key)} style={{ width: layout.colWidths[key] }} />
                                     ))}
                                 </colgroup>
                                 <thead>
                                     <tr ref={headerRowRef} style={{ borderBottom: '2px solid var(--surface-border)', background: 'var(--surface-raised)' }}>
-                                        {layout.colOrder.map((key, colIdx) => renderHeaderTh(key, colIdx))}
+                                        {layout.visibleOrder.map((key, colIdx) => renderHeaderTh(key, colIdx))}
                                     </tr>
                                     <tr style={{ position: 'sticky', top: headerH, zIndex: 3, background: 'var(--surface-raised)', fontWeight: 700, borderBottom: '2px solid var(--surface-border)' } as React.CSSProperties}>
-                                        {layout.colOrder.map((key, colIdx) => renderGrandTd(key, colIdx))}
+                                        {layout.visibleOrder.map((key, colIdx) => renderGrandTd(key, colIdx))}
                                     </tr>
                                 </thead>
                                 <tbody>
+                                    {processedRetailers.length === 0 && (
+                                        <tr>
+                                            <td colSpan={layout.visibleOrder.length} style={{ padding: '2.5rem 1rem', textAlign: 'center', color: 'var(--text-secondary)' }}>
+                                                <div style={{ fontWeight: 600, fontSize: '0.95rem', marginBottom: '0.25rem' }}>No matching results</div>
+                                                <div style={{ fontSize: '0.82rem', color: 'var(--text-tertiary)' }}>Try adjusting or clearing your filters.</div>
+                                            </td>
+                                        </tr>
+                                    )}
                                     {processedRetailers.map(r => {
                                         const outstanding = r.computedOutstanding ?? 0;
                                         const isSelected = selectedIds.has(r.id);
@@ -1119,16 +1302,16 @@ function PartnersTab() {
                                         return (
                                             <Fragment key={r.id}>
                                                 <tr
-                                                    onClick={() => navigate(`/worklist/${r.id}`)}
-                                                    style={{ borderBottom: '1px solid var(--surface-border)', cursor: 'pointer', background: rowBg, transition: 'background 0.12s' }}
+                                                    onClick={() => can('worklist.retailerProfile.view') && navigate(`/worklist/${r.id}`)}
+                                                    style={{ borderBottom: '1px solid var(--surface-border)', cursor: can('worklist.retailerProfile.view') ? 'pointer' : 'default', background: rowBg, transition: 'background 0.12s' }}
                                                     onMouseEnter={e => { e.currentTarget.style.background = rowBgHover; }}
                                                     onMouseLeave={e => { e.currentTarget.style.background = rowBg; }}
                                                 >
-                                                    {layout.colOrder.map((key, colIdx) => renderBodyTd(key, colIdx, r, { rowBg: stickyBg, isSelected, isExpanded }))}
+                                                    {layout.visibleOrder.map((key, colIdx) => renderBodyTd(key, colIdx, r, { rowBg: stickyBg, isSelected, isExpanded }))}
                                                 </tr>
                                                 {isExpanded && (
                                                     <tr style={{ borderBottom: '1px solid var(--surface-border)', background: 'var(--surface-raised)' }}>
-                                                        <td colSpan={layout.colOrder.length} style={{ padding: '0.5rem 1rem 0.65rem 3.5rem' }}>
+                                                        <td colSpan={layout.visibleOrder.length} style={{ padding: '0.5rem 1rem 0.65rem 3.5rem' }}>
                                                             <div style={{ display: 'flex', gap: '2rem', fontSize: '0.82rem' }}>
                                                                 <div>
                                                                     <div style={{ fontSize: '0.65rem', fontWeight: 600, textTransform: 'uppercase', color: 'var(--text-tertiary)', letterSpacing: '0.05em' }}>Taluka</div>

@@ -43,6 +43,7 @@ export function useColumnLayout<K extends string>(opts: UseColumnLayoutOptions<K
     const LS_WIDTHS = (tid: string) => `${storageKey}_widths_${tid}`;
     const LS_FREEZE = (tid: string) => `${storageKey}_freeze_${tid}`;
     const LS_ORDER  = (tid: string) => `${storageKey}_order_${tid}`;
+    const LS_HIDDEN = (tid: string) => `${storageKey}_hidden_${tid}`;
 
     const loadWidths = useCallback((tid: string): Record<K, number> => {
         try {
@@ -97,9 +98,21 @@ export function useColumnLayout<K extends string>(opts: UseColumnLayoutOptions<K
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [keys, storageKey, insertMissingAtDefaultIndex]);
 
+    const loadHidden = useCallback((tid: string): K[] => {
+        try {
+            const raw = localStorage.getItem(LS_HIDDEN(tid));
+            if (!raw) return [];
+            const saved: string[] = JSON.parse(raw);
+            if (!Array.isArray(saved)) return [];
+            return saved.filter(k => (keys as readonly string[]).includes(k)) as K[];
+        } catch { return []; }
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [keys, storageKey]);
+
     const [colWidths, setColWidths]   = useState<Record<K, number>>({ ...defaultWidths });
     const [freezeCount, setFreezeCount] = useState(0);
     const [colOrder, setColOrder]     = useState<K[]>([...keys]);
+    const [hidden, setHidden]         = useState<Set<K>>(new Set());
     const [settingsLoaded, setSettingsLoaded] = useState(false);
     const [isResizing, setIsResizing] = useState(false);
 
@@ -117,8 +130,9 @@ export function useColumnLayout<K extends string>(opts: UseColumnLayoutOptions<K
         setColWidths(loadWidths(tenantId));
         setFreezeCount(loadFreeze(tenantId));
         setColOrder(loadOrder(tenantId));
+        setHidden(new Set(loadHidden(tenantId)));
         setSettingsLoaded(true);
-    }, [tenantId, loadWidths, loadFreeze, loadOrder]);
+    }, [tenantId, loadWidths, loadFreeze, loadOrder, loadHidden]);
 
     // Persist on change (after the initial load).
     useEffect(() => {
@@ -138,6 +152,12 @@ export function useColumnLayout<K extends string>(opts: UseColumnLayoutOptions<K
         try { localStorage.setItem(LS_ORDER(tenantId), JSON.stringify(colOrder)); } catch {}
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [colOrder, tenantId, settingsLoaded]);
+
+    useEffect(() => {
+        if (!tenantId || !settingsLoaded) return;
+        try { localStorage.setItem(LS_HIDDEN(tenantId), JSON.stringify([...hidden])); } catch {}
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [hidden, tenantId, settingsLoaded]);
 
     // Global mouse handlers for resize drag — attached once.
     useEffect(() => {
@@ -223,12 +243,29 @@ export function useColumnLayout<K extends string>(opts: UseColumnLayoutOptions<K
     const resetWidths = () => { setColWidths({ ...defaultWidths }); setCtxMenu(null); };
     const resetOrder  = () => { setColOrder([...keys]); setCtxMenu(null); };
 
+    // The order actually rendered: full order minus any hidden columns. When no
+    // column is hidden this equals colOrder, so consumers that don't use the
+    // visibility feature are unaffected.
+    const visibleOrder = useMemo(() => colOrder.filter(k => !hidden.has(k)), [colOrder, hidden]);
+
+    // Offsets / total width are computed over the VISIBLE columns so sticky
+    // (frozen) positions and the table width stay correct when columns are hidden.
     const frozenOffsets = useMemo(() => {
         let acc = 0;
-        return colOrder.map(key => { const o = acc; acc += colWidths[key]; return o; });
-    }, [colWidths, colOrder]);
+        return visibleOrder.map(key => { const o = acc; acc += colWidths[key]; return o; });
+    }, [colWidths, visibleOrder]);
 
-    const totalTableWidth = useMemo(() => colOrder.reduce((s, k) => s + colWidths[k], 0), [colWidths, colOrder]);
+    const totalTableWidth = useMemo(() => visibleOrder.reduce((s, k) => s + colWidths[k], 0), [colWidths, visibleOrder]);
+
+    const isHidden = useCallback((key: K) => hidden.has(key), [hidden]);
+    const toggleColumn = useCallback((key: K) => {
+        setHidden(prev => {
+            const next = new Set(prev);
+            next.has(key) ? next.delete(key) : next.add(key);
+            return next;
+        });
+    }, []);
+    const showAllColumns = useCallback(() => setHidden(new Set()), []);
 
     /** Sticky styles for a frozen column (empty object when not frozen). */
     const stickyStyle = (colIdx: number, o?: { header?: boolean; rowBg?: string }): React.CSSProperties => {
@@ -269,12 +306,13 @@ export function useColumnLayout<K extends string>(opts: UseColumnLayoutOptions<K
     };
 
     return {
-        colOrder, colWidths, freezeCount, isResizing,
+        colOrder, visibleOrder, colWidths, freezeCount, isResizing,
         frozenOffsets, totalTableWidth,
         registerColEl, resizeHandle, handleResizeStart,
         getDragProps, isDragOver,
         handleTableContextMenu, ctxMenu, ContextMenu,
         stickyStyle, labels,
         freezeUpTo, unfreezeAll, resetWidths, resetOrder,
+        hidden, isHidden, toggleColumn, showAllColumns,
     };
 }

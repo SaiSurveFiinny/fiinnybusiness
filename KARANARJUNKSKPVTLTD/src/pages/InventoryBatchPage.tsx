@@ -2,6 +2,7 @@ import { useState, useEffect, useMemo } from 'react';
 import { getDocs, onSnapshot, query, orderBy, serverTimestamp, updateDoc, deleteDoc, setDoc } from 'firebase/firestore';
 import { db } from '../firebase';
 import { useAuth } from '../contexts/AuthContext';
+import { useFeaturePermissions } from '../hooks/useFeaturePermissions';
 import { getTenantCollection, getTenantDoc } from '../utils/tenantPath';
 import { logAudit } from '../utils/auditLog';
 import { Package, Plus, AlertTriangle, Loader2, Trash2, Search, X, ChevronDown, ChevronRight } from 'lucide-react';
@@ -57,6 +58,8 @@ const fmtInr = (n: number) => `₹${(n || 0).toLocaleString('en-IN', { minimumFr
 
 export default function InventoryBatchPage() {
   const { tenantId, currentUser, userName, userRole } = useAuth();
+  const can = useFeaturePermissions();
+  const canAddBatch = can('inventory.registers.add');
   const [batches, setBatches] = useState<BatchItem[]>([]);
   const [products, setProducts] = useState<ProductMaster[]>([]);
   const [loading, setLoading] = useState(true);
@@ -191,13 +194,15 @@ export default function InventoryBatchPage() {
             Batch-wise stock tracking. Each batch is independent — different batches are never merged.
           </p>
         </div>
-        <button
-          onClick={() => setShowAddForm(f => !f)}
-          className="btn btn-primary"
-          style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}
-        >
-          <Plus size={16} /> Add Batch
-        </button>
+        {canAddBatch && (
+          <button
+            onClick={() => setShowAddForm(f => !f)}
+            className="btn btn-primary"
+            style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}
+          >
+            <Plus size={16} /> Add Batch
+          </button>
+        )}
       </div>
 
       {/* Stats */}

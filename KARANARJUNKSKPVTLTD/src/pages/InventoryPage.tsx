@@ -1,5 +1,7 @@
+import { useEffect } from 'react';
 import { Package, Layers, Truck, History } from 'lucide-react';
 import { useHashTab } from '../hooks/useHashTab';
+import { useFeaturePermissions } from '../hooks/useFeaturePermissions';
 
 // Import sub-pages directly (InventoryPage itself is lazy-loaded by App.tsx)
 import RateSheetPage from './RateSheetPage';
@@ -24,10 +26,32 @@ const INVENTORY_TABS: { id: InventoryTab; label: string; icon: React.ReactNode }
     { id: 'transport',      label: 'Transport',         icon: <Truck size={16} /> },
 ];
 
+// Feature-permission id per sub-tab (Super Admin → Feature Permissions).
+const TAB_PERM: Partial<Record<InventoryTab, string>> = {
+    products:         'inventory.productMaster.view',
+    batches:          'inventory.registers.view',
+    'stock-movement': 'inventory.stockMovements.view',
+    transport:        'inventory.transfer.view',
+};
+
 // ─── Main Component ───────────────────────────────────────────────────────────
 
 export default function InventoryPage() {
     const [activeTab, setActiveTab] = useHashTab<InventoryTab>(VALID_TABS, 'products', 'fiinny-tab-inventory');
+    const can = useFeaturePermissions();
+
+    // Only show sub-tabs the current role is permitted to view.
+    const visibleTabs = INVENTORY_TABS.filter(tab => {
+        const perm = TAB_PERM[tab.id];
+        return perm ? can(perm) : true;
+    });
+
+    // If the active tab is not permitted, fall back to the first visible one so
+    // denied content is never shown on load.
+    const activeAllowed = visibleTabs.some(t => t.id === activeTab);
+    useEffect(() => {
+        if (!activeAllowed && visibleTabs.length > 0) setActiveTab(visibleTabs[0].id);
+    }, [activeAllowed, visibleTabs, setActiveTab]);
 
     return (
         <div className="animate-fade-in" style={{ width: '100%' }}>
@@ -55,7 +79,7 @@ export default function InventoryPage() {
                     marginBottom: '1.75rem',
                 }}
             >
-                {INVENTORY_TABS.map(tab => {
+                {visibleTabs.map(tab => {
                     const active = activeTab === tab.id;
                     return (
                         <button
@@ -96,12 +120,12 @@ export default function InventoryPage() {
             </div>
 
             {/* ── Tab Content ── */}
-            {activeTab === 'products'       && <RateSheetPage />}
-            {activeTab === 'batches'        && <InventoryBatchPage />}
-            {activeTab === 'stock-movement' && <StockMovementPage />}
-            {activeTab === 'warehouses'     && <WarehousePage />}
-            {activeTab === 'transport'      && <ManageTransportPage />}
-            {activeTab === 'manufacturers'  && <ManufacturersPage />}
+            {activeAllowed && activeTab === 'products'       && <RateSheetPage />}
+            {activeAllowed && activeTab === 'batches'        && <InventoryBatchPage />}
+            {activeAllowed && activeTab === 'stock-movement' && <StockMovementPage />}
+            {activeAllowed && activeTab === 'warehouses'     && <WarehousePage />}
+            {activeAllowed && activeTab === 'transport'      && <ManageTransportPage />}
+            {activeAllowed && activeTab === 'manufacturers'  && <ManufacturersPage />}
         </div>
     );
 }

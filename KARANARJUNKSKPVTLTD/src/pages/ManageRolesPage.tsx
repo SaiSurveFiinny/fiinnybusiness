@@ -8,7 +8,7 @@ import { getTenantDoc } from '../utils/tenantPath';
 import { useToast } from '../contexts/ToastContext';
 
 export default function ManageRolesPage() {
-    const { tenantId, userRole, permissions: activePermissions } = useAuth();
+    const { tenantId, userRole, permissions: activePermissions, customRoles } = useAuth();
     const { showToast } = useToast();
 
     // Local state for editing the matrix
@@ -21,7 +21,9 @@ export default function ManageRolesPage() {
         }
     }, [activePermissions]);
 
-    const roles: UserRole[] = ['admin', 'analyst', 'retailer', 'shopkeeper', 'manufacturer', 'customer'];
+    // Built-in roles plus this tenant's admin-created custom roles (module/screen access).
+    const roles: UserRole[] = ['admin', 'analyst', 'retailer', 'shopkeeper', 'manufacturer', 'customer', ...customRoles.map(r => r.id)];
+    const roleLabels: Record<string, string> = Object.fromEntries(customRoles.map(r => [r.id, r.label]));
 
         const screens: { key: AppScreen, label: string }[] = [
             { key: 'dashboard', label: 'B2B Dashboard' },
@@ -119,7 +121,7 @@ export default function ManageRolesPage() {
                             <th style={{ padding: '1.25rem 1rem', fontWeight: 600, color: 'var(--text-secondary)', borderBottom: '2px solid var(--surface-border)' }}>Screen / Module</th>
                             {roles.map(role => (
                                 <th key={role} style={{ padding: '1.25rem 1rem', fontWeight: 600, color: 'var(--text-secondary)', borderBottom: '2px solid var(--surface-border)', textAlign: 'center', textTransform: 'capitalize' }}>
-                                    {role}
+                                    {roleLabels[role] ?? role}
                                 </th>
                             ))}
                         </tr>

@@ -8,13 +8,14 @@ import { logAudit } from '../utils/auditLog';
 import { Shield, ShieldAlert, UserCog, UserPlus, Loader2, Mail, Lock, User as UserIcon, Edit2, Trash2, X, Save, Store, Factory, Trash } from 'lucide-react';
 import RecentlyDeletedPage from './RecentlyDeletedPage';
 import { useAuth } from '../contexts/AuthContext';
+import type { UserRole } from '../contexts/AuthContext';
 import { useToast } from '../contexts/ToastContext';
 import { useTranslation } from 'react-i18next';
 
 
 export default function AdminPage() {
     const { t } = useTranslation();
-    const { userRole, currentUser, tenantId, userName } = useAuth();
+    const { userRole, currentUser, tenantId, userName, customRoles } = useAuth();
     const { showToast } = useToast();
     const [activeSection, setActiveSection] = useState<'staff' | 'retailer' | 'manufacturer' | 'trash'>('staff');
     const [users, setUsers] = useState<any[]>([]);
@@ -26,7 +27,7 @@ export default function AdminPage() {
     const [newName, setNewName] = useState('');
     const [newEmail, setNewEmail] = useState('');
     const [newPassword, setNewPassword] = useState('');
-    const [newRole, setNewRole] = useState<'admin' | 'analyst' | 'retailer' | 'manufacturer' | 'customer' | 'sales'>('analyst');
+    const [newRole, setNewRole] = useState<UserRole>('analyst');
     const [newDistricts, setNewDistricts] = useState<string[]>([]);
     const [districtInput, setDistrictInput] = useState('');
     const [createLoading, setCreateLoading] = useState(false);
@@ -200,7 +201,7 @@ export default function AdminPage() {
         } finally { setInviteMfgLoading(false); }
     };
 
-    const handleRoleChange = async (userId: string, newRole: 'admin' | 'analyst' | 'retailer' | 'manufacturer' | 'customer' | 'sales') => {
+    const handleRoleChange = async (userId: string, newRole: UserRole) => {
         setUpdatingId(userId);
         try {
             await updateDoc(doc(db, 'users', userId), {
@@ -355,6 +356,11 @@ export default function AdminPage() {
                                 <option value="retailer">Retailer</option>
                                 <option value="manufacturer">Manufacturer</option>
                                 <option value="customer">Customer</option>
+                                {customRoles.length > 0 && (
+                                    <optgroup label="Custom Roles">
+                                        {customRoles.map(r => <option key={r.id} value={r.id}>{r.label}</option>)}
+                                    </optgroup>
+                                )}
                             </select>
                         </div>
 
@@ -547,6 +553,11 @@ export default function AdminPage() {
                                         <option value="retailer">Retailer</option>
                                         <option value="manufacturer">Manufacturer</option>
                                         <option value="customer">Customer</option>
+                                        {customRoles.length > 0 && (
+                                            <optgroup label="Custom Roles">
+                                                {customRoles.map(r => <option key={r.id} value={r.id}>{r.label}</option>)}
+                                            </optgroup>
+                                        )}
                                     </select>
 
                                     <button

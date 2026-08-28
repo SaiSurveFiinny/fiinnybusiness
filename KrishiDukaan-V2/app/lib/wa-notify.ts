@@ -10,6 +10,7 @@ type WaTemplate =
   | "product_assignment_onboarded"
   | "product_assignment_pending_signup"
   | "manufacturer_network_summary"
+  | "payment_failed_app_update"
   | "generic";
 
 type WaPayload = Record<string, string | number | boolean>;

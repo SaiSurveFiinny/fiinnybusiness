@@ -88,6 +88,13 @@ export function resolveTemplateComponents(
         { type: "button", sub_type: "url", index: 0, parameters: [t(p("inviteCode"))] },
       ];
 
+    case "payment_failed_app_update":
+      // Marathi Utility template (Meta ID 2083284825612732).
+      // Body is fully static — no variable placeholders.
+      // Buttons are static CTAs: "ॲप अपडेट करा" and "पुन्हा पेमेंट करा".
+      // No component parameters are needed; the Cloud API sends the template as-is.
+      return [];
+
     case "generic":
     default:
       // No template — caller must provide a plain-text message instead

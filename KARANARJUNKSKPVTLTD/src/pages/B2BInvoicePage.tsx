@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
-import { Save, Loader2, Printer, Plus, Trash2, UserPlus, ArrowLeft, Truck } from 'lucide-react';
+import { Save, Loader2, Printer, Plus, Trash2, UserPlus, ArrowLeft, Truck, Lock, LockOpen } from 'lucide-react';
 import { Link, useSearchParams, useNavigate } from 'react-router-dom';
 import UpiQrCode from '../components/UpiQrCode';
 import {
@@ -502,8 +502,18 @@ ${styles}
 
     // ─── Save ───
     const isEditing = !!prefilledOrderId && !!existingOrder;
+    const isLocked = isEditing && existingOrder?.status !== 'delivered' && !existingOrder?.manuallyUnlocked;
+
+    const handleUnlock = async () => {
+        if (!tenantId || !prefilledOrderId) return;
+        await updateDoc(getTenantDoc(db, tenantId, 'salesOrders', prefilledOrderId), { manuallyUnlocked: true });
+        // Reload existingOrder to reflect the unlock
+        const snap = await getDoc(getTenantDoc(db, tenantId, 'salesOrders', prefilledOrderId));
+        if (snap.exists()) setExistingOrder({ id: snap.id, ...snap.data() });
+    };
 
     const handleSave = async (isPrint = false) => {
+        if (isLocked) return;
         if (!tenantId) return;
         if (!header.salesmanName) { alert('Please select a Salesperson before saving.'); return; }
         if (activeRows.length === 0) { alert('Please add at least one item.'); return; }
@@ -1691,9 +1701,24 @@ ${styles}
                     !header.salesmanName && 'Salesperson',
                     activeRows.length === 0 && 'at least one item',
                 ].filter(Boolean);
-                const isDisabled = isProcessing || missingFields.length > 0;
+                const isDisabled = isProcessing || missingFields.length > 0 || isLocked;
                 return (
                     <div className="no-print" style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '0.5rem', marginTop: '1.5rem', maxWidth: '1050px', marginLeft: 'auto', marginRight: 'auto' }}>
+                        {isLocked && (
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', padding: '0.75rem 1.25rem', background: 'rgba(245,158,11,0.1)', border: '1px solid rgba(245,158,11,0.4)', borderRadius: '10px', fontSize: '0.88rem', color: '#f59e0b', fontWeight: 600, width: '100%', maxWidth: '600px' }}>
+                                <Lock size={16} />
+                                <span style={{ flex: 1 }}>This invoice is locked for editing. Status must be Delivered, or unlock manually.</span>
+                                <button onClick={handleUnlock}
+                                    style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', padding: '0.4rem 1rem', background: 'rgba(245,158,11,0.2)', color: '#f59e0b', border: '1px solid rgba(245,158,11,0.5)', borderRadius: '8px', cursor: 'pointer', fontWeight: 700, fontSize: '0.82rem', fontFamily: 'inherit' }}>
+                                    <LockOpen size={14} /> Unlock Invoice
+                                </button>
+                            </div>
+                        )}
+                        {existingOrder?.manuallyUnlocked && existingOrder?.status !== 'delivered' && (
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', padding: '0.5rem 1rem', background: 'rgba(16,185,129,0.08)', border: '1px solid rgba(16,185,129,0.3)', borderRadius: '8px', fontSize: '0.82rem', color: '#10b981', fontWeight: 600 }}>
+                                <LockOpen size={14} /> Invoice manually unlocked — editing allowed
+                            </div>
+                        )}
                         {missingFields.length > 0 && (
                             <div style={{ fontSize: '0.82rem', color: '#c62828', fontWeight: 600 }}>
                                 Required: {missingFields.join(', ')}

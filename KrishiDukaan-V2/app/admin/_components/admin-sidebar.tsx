@@ -15,13 +15,13 @@ const navItems = [
   { href: "/admin/pricing", label: "Pricing & Promos", icon: IndianRupee, section: "pricing" as AdminSection },
   { href: "/admin/products", label: "Products", icon: Box, section: "products" as AdminSection },
   { href: "/admin/reels", label: "Reels", icon: Video, section: "reels" as AdminSection },
+  { href: "/admin/whatsapp", label: "WhatsApp", icon: MessageCircle, section: "whatsapp" as AdminSection },
+  { href: "/admin/messages", label: "Messages", icon: MessageSquare, section: "messages" as AdminSection },
   { href: "/admin/discounts", label: "Discounts", icon: Tag, section: "discounts" as AdminSection },
-  { href: "/admin/inventory", label: "Inventory", icon: Package, section: "inventory" as AdminSection },
   { href: "/admin/companies", label: "Company Pages", icon: Building2, section: "companies" as AdminSection },
   { href: "/admin/hubs", label: "Hubs", icon: Layers, section: "hubs" as AdminSection },
   { href: "/admin/reports", label: "Reports", icon: Mail, section: "reports" as AdminSection },
-  { href: "/admin/messages", label: "Messages", icon: MessageSquare, section: "messages" as AdminSection },
-  { href: "/admin/whatsapp", label: "WA Inbox", icon: MessageCircle, section: "whatsapp" as AdminSection },
+  { href: "/admin/inventory", label: "Inventory", icon: Package, section: "inventory" as AdminSection },
   { href: "/admin/blog", label: "Blog", icon: BookOpen, section: "blog" as AdminSection },
 ] as const;
 
