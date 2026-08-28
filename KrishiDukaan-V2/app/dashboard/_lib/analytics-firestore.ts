@@ -33,6 +33,12 @@ export type RetailerAnalytics = {
   callsOverTime: SeriesPoint[];
   directionRequests: SeriesPoint[];
   orders: OrderAnalytics;
+  /** Lifetime follower count — see the note where it's fetched. */
+  followers: number;
+  /** Reel reach/engagement across the seller's own reels. */
+  reelViews: number;
+  reelLikes: number;
+  reelComments: number;
   /** False when every query came back empty — drives the honest empty state. */
   hasAnyData: boolean;
 };
@@ -46,18 +52,70 @@ function getLocalDayKey(date: Date): string {
   return `${year}-${month}-${day}`;
 }
 
-function getLast7Days(): DaySeries[] {
+/**
+ * Selectable window, mirroring AnalyticsPeriod in the app
+ * (mobile/lib/features/dashboard/data/store_analytics.dart) — same keys,
+ * labels and day counts, so both platforms report the same number for the
+ * same choice, and an analytics_digest notification's `period` maps directly.
+ */
+export const ANALYTICS_PERIODS = [
+  { key: "week", label: "Week", days: 7 },
+  { key: "month", label: "Month", days: 30 },
+  { key: "year", label: "Year", days: 365 },
+] as const;
+
+export type AnalyticsPeriodKey = (typeof ANALYTICS_PERIODS)[number]["key"];
+
+export function periodDays(key: AnalyticsPeriodKey): number {
+  return ANALYTICS_PERIODS.find((p) => p.key === key)?.days ?? 7;
+}
+
+/**
+ * The day buckets for a window, oldest first.
+ *
+ * Chart labels adapt to the range: a weekday name reads well across 7 points
+ * but is meaningless repeated 52 times, so longer ranges switch to a date and
+ * a year is bucketed by MONTH rather than by day (365 bars are unreadable and
+ * would mean 365 map lookups per product).
+ */
+function getDaySeries(days: number): DaySeries[] {
   const today = new Date();
-  const days: DaySeries[] = [];
-  for (let i = 6; i >= 0; i -= 1) {
+  const out: DaySeries[] = [];
+  for (let i = days - 1; i >= 0; i -= 1) {
     const d = new Date(today);
     d.setDate(today.getDate() - i);
-    days.push({
+    out.push({
       key: getLocalDayKey(d),
-      label: d.toLocaleDateString("en-US", { weekday: "short" }),
+      label:
+        days <= 7
+          ? d.toLocaleDateString("en-US", { weekday: "short" })
+          : d.toLocaleDateString("en-US", { day: "numeric", month: "short" }),
     });
   }
-  return days;
+  return out;
+}
+
+/**
+ * Collapses a day series into at most [maxPoints] buckets for charting, summing
+ * the values that fall in each bucket. The underlying totals are unaffected —
+ * this only controls how many bars a chart draws.
+ */
+function bucketSeries(
+  points: { label: string; value: number }[],
+  maxPoints = 14,
+): { label: string; value: number }[] {
+  if (points.length <= maxPoints) return points;
+  const size = Math.ceil(points.length / maxPoints);
+  const out: { label: string; value: number }[] = [];
+  for (let i = 0; i < points.length; i += size) {
+    const chunk = points.slice(i, i + size);
+    out.push({
+      // Label the bucket by its first day — the range is implied by the picker.
+      label: chunk[0].label,
+      value: chunk.reduce((sum, p) => sum + p.value, 0),
+    });
+  }
+  return out;
 }
 
 /**
@@ -79,8 +137,9 @@ function getLast7Days(): DaySeries[] {
 export async function fetchRetailerAnalytics(
   retailerId: string | null,
   profile?: any,
+  period: AnalyticsPeriodKey = "week",
 ): Promise<RetailerAnalytics> {
-  const days = getLast7Days();
+  const days = getDaySeries(periodDays(period));
   const dayKeys = new Set(days.map((d) => d.key));
 
   // ── Candidate identifiers ────────────────────────────────────────────────
@@ -104,6 +163,59 @@ export async function fetchRetailerAnalytics(
   );
 
   const errors: unknown[] = [];
+
+  // ── Followers + reel engagement ──────────────────────────────────────────
+  // Mirrors StoreAnalyticsRepository on mobile so both platforms report the
+  // same figures from the same sources. Followers is a LIFETIME total, not a
+  // per-period count: `follows` docs carry createdAt, but ranging over it
+  // needs a composite index neither platform ships, and the running total is
+  // the more useful number on screen — so it does not change with the period
+  // picker, by design.
+  let followers = 0;
+  let reelViews = 0;
+  let reelLikes = 0;
+  let reelComments = 0;
+
+  {
+    // Reels and follows are keyed by the seller's PHONE (shopOwnerId /
+    // followedShopId), never a uid — querying with a uid just returns empty.
+    const phoneKeys = Array.from(phoneCandidates);
+    const settled = await Promise.allSettled([
+      ...phoneKeys.map((phone) =>
+        getDocs(query(collection(db, "follows"), where("followedShopId", "==", phone))),
+      ),
+      ...phoneKeys.map((phone) =>
+        getDocs(query(collection(db, "reels"), where("shopOwnerId", "==", phone))),
+      ),
+    ]);
+
+    // A seller's phone can appear in several formats; dedupe by doc id so the
+    // same follower or reel is never counted twice.
+    const seenFollows = new Set<string>();
+    const seenReels = new Set<string>();
+    for (let i = 0; i < settled.length; i += 1) {
+      const r = settled[i];
+      if (r.status !== "fulfilled") {
+        errors.push(r.reason);
+        continue;
+      }
+      const isFollows = i < phoneKeys.length;
+      for (const d of r.value.docs) {
+        if (isFollows) {
+          if (seenFollows.has(d.id)) continue;
+          seenFollows.add(d.id);
+          followers += 1;
+        } else {
+          if (seenReels.has(d.id)) continue;
+          seenReels.add(d.id);
+          const data = d.data() as Record<string, unknown>;
+          reelViews += Number(data.viewsCount ?? 0) || 0;
+          reelLikes += Number(data.likesCount ?? 0) || 0;
+          reelComments += Number(data.commentsCount ?? 0) || 0;
+        }
+      }
+    }
+  }
 
   // ── Products: engagement counters ────────────────────────────────────────
   const viewsByDay: Record<string, number> = {};
@@ -260,17 +372,26 @@ export async function fetchRetailerAnalytics(
       ctr: ctr.toFixed(1) + "%",
       avgPosition: avgPosition > 0 ? avgPosition.toFixed(1) : "—",
     },
-    viewsOverTime: days.map((day) => ({ label: day.label, value: viewsByDay[day.key] || 0 })),
-    callsOverTime: days.map((day) => ({ label: day.label, value: callsByDay[day.key] || 0 })),
-    directionRequests: days.map((day) => ({ label: day.label, value: directionsByDay[day.key] || 0 })),
+    viewsOverTime: bucketSeries(days.map((day) => ({ label: day.label, value: viewsByDay[day.key] || 0 }))),
+    callsOverTime: bucketSeries(days.map((day) => ({ label: day.label, value: callsByDay[day.key] || 0 }))),
+    directionRequests: bucketSeries(days.map((day) => ({ label: day.label, value: directionsByDay[day.key] || 0 }))),
     orders: {
       totalOrders,
       totalRevenue,
-      revenueOverTime: days.map((day) => ({ label: day.label, value: revenueByDay[day.key] || 0 })),
-      ordersOverTime: days.map((day) => ({ label: day.label, value: ordersByDay[day.key] || 0 })),
+      revenueOverTime: bucketSeries(days.map((day) => ({ label: day.label, value: revenueByDay[day.key] || 0 }))),
+      ordersOverTime: bucketSeries(days.map((day) => ({ label: day.label, value: ordersByDay[day.key] || 0 }))),
       statusCounts,
       topProducts,
     },
-    hasAnyData: totalOrders > 0 || totalImpressions > 0 || totalClicks > 0,
+    followers,
+    reelViews,
+    reelLikes,
+    reelComments,
+    hasAnyData:
+      totalOrders > 0 ||
+      totalImpressions > 0 ||
+      totalClicks > 0 ||
+      followers > 0 ||
+      reelViews > 0,
   };
 }

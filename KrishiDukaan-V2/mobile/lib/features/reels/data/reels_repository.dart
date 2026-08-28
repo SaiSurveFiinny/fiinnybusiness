@@ -113,16 +113,37 @@ class ReelsRepository {
   /// has only a handful of reels, so sorting in memory is cheaper and far more
   /// robust than depending on a deployed Firestore index. It also avoids the
   /// orderBy gotcha where docs missing `viewsCount` get silently dropped.
-  Future<List<ReelModel>> fetchProductReels(String productId) async {
-    final snap = await _db
+  /// A reel is linked to whichever product doc the seller who uploaded it
+  /// actually owns — that can be the canonical id OR any retailer/admin copy
+  /// id merged into the product card — so every id merged into the card must
+  /// be matched, not just the one the page happened to navigate with.
+  /// Mirrors web's ProductReelsSection (app/views/ProductDetailView.tsx):
+  /// Firestore `whereIn` allows at most 30 values, so chunk and merge.
+  Future<List<ReelModel>> fetchProductReels(List<String> productIds) async {
+    if (productIds.isEmpty) return [];
+
+    final chunks = <List<String>>[];
+    for (var i = 0; i < productIds.length; i += 30) {
+      chunks.add(productIds.sublist(i, i + 30 > productIds.length ? productIds.length : i + 30));
+    }
+
+    final snaps = await Future.wait(chunks.map((chunk) => _db
         .collection('reels')
-        .where('linkedProductId', isEqualTo: productId)
+        .where('linkedProductId', whereIn: chunk)
         .limit(50)
-        .get();
-    final reels = snap.docs
-        .map(ReelModel.fromFirestore)
-        .where((r) => r.moderationStatus != 'flagged')
-        .toList();
+        .get()));
+
+    final seen = <String>{};
+    final reels = <ReelModel>[];
+    for (final snap in snaps) {
+      for (final doc in snap.docs) {
+        if (!seen.add(doc.id)) continue;
+        final reel = ReelModel.fromFirestore(doc);
+        if (reel.moderationStatus == 'flagged') continue;
+        reels.add(reel);
+      }
+    }
+
     reels.sort((a, b) {
       final byViews = b.viewsCount.compareTo(a.viewsCount);
       return byViews != 0 ? byViews : b.createdAt.compareTo(a.createdAt);

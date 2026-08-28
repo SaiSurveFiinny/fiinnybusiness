@@ -98,6 +98,32 @@ export function perMonthLabel(d: DurationPrice): string {
   return `₹${Math.round(d.pricePerSeat / d.months)}/month`;
 }
 
+// ─── Seat quantity rule ─────────────────────────────────────────────────────
+
+/** Seats are sold in blocks of this size, and this is also the minimum buy. */
+export const SEAT_STEP = 10;
+
+/** One-tap seat quantities offered next to the input. */
+export const SEAT_PRESETS = [10, 100, 500] as const;
+
+/**
+ * Snap a requested seat count to the sale rule: at least [SEAT_STEP], and
+ * always a whole multiple of it.
+ *
+ * Rounds UP rather than to nearest, so a seller who needs 15 listing slots
+ * gets 20 and never silently ends up with fewer slots than they asked for.
+ *
+ * The purchase UIs (mobile subscription screen, web SubscriptionView) and
+ * /api/payment/create-order all run requests through this, so the seat count
+ * the seller sees priced is exactly the one the server charges for — a client
+ * that skipped the rule can't be billed on a different number than it showed.
+ */
+export function normalizeSeatCount(raw: unknown): number {
+  const n = Math.floor(Number(raw));
+  if (!Number.isFinite(n) || n <= SEAT_STEP) return SEAT_STEP;
+  return Math.ceil(n / SEAT_STEP) * SEAT_STEP;
+}
+
 // ─── Promo codes ────────────────────────────────────────────────────────────
 
 export interface PromoCode {

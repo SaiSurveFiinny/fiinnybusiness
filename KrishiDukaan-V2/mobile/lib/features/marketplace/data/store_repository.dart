@@ -101,6 +101,7 @@ class StoreRepository {
         lng: (lng != null && lng != 0.0) ? lng : null,
         role: role,
         googleMapsUrl: _mapsUrl(d),
+        onlineDelivery: _onlineDeliveryOf(d),
         score: 10 + (lat != null && lat != 0.0 ? 1 : 0),
       ));
     }
@@ -109,6 +110,18 @@ class StoreRepository {
     for (final doc in retailersSnap.docs) {
       try {
         final d = doc.data();
+
+        // Explicit deactivation by an admin/manufacturer is the ONLY reason to
+        // hide a store from search/count — mirrors app/firebase.ts's fetchStores
+        // exactly. Deliberately NOT gating on `active`/`assignedSeat`: that was
+        // tried on web and rejected 294 of 423 retailers, most of whom DO have
+        // sellable products — `active: false` there is just the un-activated
+        // default (onboardingStatus: 'pending'), not a deactivation signal.
+        final onboardingStatus = (d['onboardingStatus'] ?? '').toString();
+        if (onboardingStatus == 'removed' || onboardingStatus == 'inactive') {
+          continue;
+        }
+
         final phone = d['phone']?.toString() ??
             (_isPhoneId(doc.id) ? doc.id : null);
         final geoRaw = d['geo'];
@@ -119,7 +132,14 @@ class StoreRepository {
 
         upsert(_TempStore(
           id: doc.id,
-          name: (d['shopName'] ?? d['ownerName'] ?? '').toString(),
+          // Web falls back to the literal placeholder 'Retailer' rather than
+          // dropping a nameless doc (app/firebase.ts fetchStores:
+          // `data.shopName || data.ownerName || 'Retailer'`). Mobile's
+          // upsert() below skips any entry with an EMPTY name, so without
+          // this fallback these retailers silently vanished from mobile's
+          // count while still showing on web — confirmed live: 2 retailers
+          // with no shopName/ownerName were the entire 450-vs-448 gap.
+          name: (d['shopName'] ?? d['ownerName'] ?? 'Retailer').toString(),
           ownerName: d['ownerName']?.toString(),
           phone: phone,
           uid: d['uid']?.toString(),
@@ -132,6 +152,7 @@ class StoreRepository {
           lng: geoPoint?.longitude ?? _num(geo?['longitude'] ?? loc?['longitude'] ?? loc?['lng'] ?? d['lng']),
           role: 'retailer',
           googleMapsUrl: _mapsUrl(d),
+          onlineDelivery: _onlineDeliveryOf(d),
           score: 5,
         ));
       } catch (_) {}
@@ -175,6 +196,7 @@ class StoreRepository {
           lng: geoPoint?.longitude ?? _num(geo?['longitude'] ?? loc?['longitude'] ?? loc?['lng'] ?? d['lng']),
           role: 'manufacturer',
           googleMapsUrl: _mapsUrl(d),
+          onlineDelivery: _onlineDeliveryOf(d),
           score: 5,
         ));
       } catch (_) {}
@@ -205,6 +227,7 @@ class StoreRepository {
           lat: geoPoint?.latitude ?? _num(geo?['latitude'] ?? loc?['latitude'] ?? loc?['lat'] ?? d['lat']),
           lng: geoPoint?.longitude ?? _num(geo?['longitude'] ?? loc?['longitude'] ?? loc?['lng'] ?? d['lng']),
           googleMapsUrl: _mapsUrl(d),
+          onlineDelivery: _onlineDeliveryOf(d),
           score: 3,
         ));
       } catch (_) {}
@@ -235,6 +258,7 @@ class StoreRepository {
         pincode: ts.pincode,
         role: ts.role,
         googleMapsUrl: ts.googleMapsUrl,
+        onlineDelivery: ts.onlineDelivery,
         averageRating: (agg != null && agg.count > 0) ? agg.sum / agg.count : null,
         totalReviews: (agg != null && agg.count > 0) ? agg.count : null,
       );
@@ -243,6 +267,14 @@ class StoreRepository {
 
   bool _isPhoneId(String id) =>
       RegExp(r'^\+?\d{10,13}$').hasMatch(id);
+
+  /// Reads `onlineDelivery` as a TRI-STATE: true / false / null-when-absent.
+  /// Absence must stay distinguishable from false — see
+  /// StoreModel.onlineDelivery for why absence cannot mean "off".
+  static bool? _onlineDeliveryOf(Map<String, dynamic> d) {
+    final v = d['onlineDelivery'];
+    return v is bool ? v : null;
+  }
 
   /// Seller's Google Maps / Business listing URL under any of the key names
   /// the web + mobile profile editors have used.
@@ -285,6 +317,8 @@ class _TempStore {
   final double? lng;
   final String role;
   final String? googleMapsUrl;
+  /// Tri-state account-level online-selling switch — see StoreModel.onlineDelivery.
+  final bool? onlineDelivery;
   final int score;
 
   const _TempStore({
@@ -302,6 +336,7 @@ class _TempStore {
     this.lng,
     this.role = '',
     this.googleMapsUrl,
+    this.onlineDelivery,
     required this.score,
   });
 }

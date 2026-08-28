@@ -48,6 +48,10 @@ class MarketplaceState {
   final String? error;
   final DocumentSnapshot? lastDoc;
 
+  /// Radius cap in km, matching web's DISTANCE_OPTIONS (Any/5/25/100/500).
+  /// Null == "Any Distance" (web's `Infinity`) — no cap applied.
+  final double? maxDistanceKm;
+
   const MarketplaceState({
     this.products = const [],
     this.isLoading = false,
@@ -58,6 +62,7 @@ class MarketplaceState {
     this.seller,
     this.error,
     this.lastDoc,
+    this.maxDistanceKm,
   });
 
   MarketplaceState copyWith({
@@ -70,6 +75,7 @@ class MarketplaceState {
     SellerFilter? Function()? seller,
     String? Function()? error,
     DocumentSnapshot? Function()? lastDoc,
+    double? Function()? maxDistanceKm,
   }) => MarketplaceState(
     products: products ?? this.products,
     isLoading: isLoading ?? this.isLoading,
@@ -80,6 +86,8 @@ class MarketplaceState {
     seller: seller != null ? seller() : this.seller,
     error: error != null ? error() : this.error,
     lastDoc: lastDoc != null ? lastDoc() : this.lastDoc,
+    maxDistanceKm:
+        maxDistanceKm != null ? maxDistanceKm() : this.maxDistanceKm,
   );
 }
 
@@ -91,9 +99,15 @@ class MarketplaceNotifier extends StateNotifier<MarketplaceState> {
 
   static const _pageSize = AppConfig.firestorePageSize;
 
-  /// The full merged + filtered catalog for the current query. Fetched once per
-  /// query; [loadMore] just reveals more of it so the grid keeps growing as the
-  /// user scrolls instead of stopping after the first page.
+  /// The full merged catalog for the current query/seller scope, distance-
+  /// enriched but NOT distance-filtered. Kept separate from [_all] so
+  /// changing the distance radius can re-filter and re-paginate purely
+  /// in-memory, without a full Firestore refetch.
+  List<CatalogModel> _allUnfiltered = [];
+
+  /// [_allUnfiltered] with the current [MarketplaceState.maxDistanceKm] cap
+  /// applied. [loadMore] pages through THIS list, so pagination always
+  /// reflects the active distance filter.
   List<CatalogModel> _all = [];
 
   MarketplaceNotifier(this._repo, this._ref) : super(const MarketplaceState()) {
@@ -111,7 +125,7 @@ class MarketplaceNotifier extends StateNotifier<MarketplaceState> {
     );
 
     try {
-      _all = await _repo.fetchFiltered(
+      _allUnfiltered = await _repo.fetchFiltered(
         category: state.category,
         searchQuery: state.searchQuery,
       );
@@ -122,19 +136,21 @@ class MarketplaceNotifier extends StateNotifier<MarketplaceState> {
       // them plus the owner fields yields the seller's full assortment.
       final seller = state.seller;
       if (seller != null && !seller.isEmpty) {
-        _all = _all.where((p) => _soldBySeller(p, seller)).toList();
+        _allUnfiltered =
+            _allUnfiltered.where((p) => _soldBySeller(p, seller)).toList();
       }
 
       final stores = await _ref.read(storesListProvider.future).catchError((_) {
         return <StoreModel>[];
       });
       final userLocation = _ref.read(locationProvider).value;
-      _all = enrichProductsWithNearestStoreDistance(
-        products: _all,
+      _allUnfiltered = enrichProductsWithNearestStoreDistance(
+        products: _allUnfiltered,
         stores: stores,
         userLocation: userLocation,
       );
 
+      _applyDistanceFilter();
       final firstPage = _all.take(_pageSize).toList();
       state = state.copyWith(
         products: firstPage,
@@ -147,6 +163,36 @@ class MarketplaceNotifier extends StateNotifier<MarketplaceState> {
         error: () => 'Failed to load products. Please try again.',
       );
     }
+  }
+
+  /// Recomputes [_all] from [_allUnfiltered] using the current radius cap.
+  /// Mirrors web's `productDistance(p) <= maxDistanceKm` exactly: web's
+  /// `productDistance` returns `Infinity` when a product has no computable
+  /// distance (no store location data), so it fails any finite cap and is
+  /// excluded — a product with unknown distance is treated as infinitely
+  /// far, not as always-visible.
+  void _applyDistanceFilter() {
+    final cap = state.maxDistanceKm;
+    _all = cap == null
+        ? _allUnfiltered
+        : _allUnfiltered
+            .where((p) =>
+                p.nearestStoreDistanceKm != null &&
+                p.nearestStoreDistanceKm! <= cap)
+            .toList();
+  }
+
+  /// Sets the distance radius filter (null = Any Distance) and re-paginates
+  /// in-memory from the already-fetched catalog — no Firestore refetch.
+  void setMaxDistanceKm(double? km) {
+    if (state.maxDistanceKm == km) return;
+    state = state.copyWith(maxDistanceKm: () => km);
+    _applyDistanceFilter();
+    final firstPage = _all.take(_pageSize).toList();
+    state = state.copyWith(
+      products: firstPage,
+      hasMore: firstPage.length < _all.length,
+    );
   }
 
   /// Reveals the next page from the already-fetched in-memory list.
@@ -378,10 +424,24 @@ final allMergedProductsProvider = Provider<AsyncValue<List<CatalogModel>>>((ref)
   );
 });
 
+/// "Featured Products" — the slice AFTER the one Trending shows.
+///
+/// Both rails read the same merged catalogue, so taking from the top for both
+/// would render two identical rows now that each shows 10 instead of 3. This
+/// offsets past Trending's window, mirroring how `_ReelsRail(skipCount:)`
+/// already keeps the home page's two reel rows from repeating themselves.
+/// When the catalogue is too small to offer a disjoint slice, it falls back to
+/// the top of the list rather than rendering an empty section.
 final featuredProductsProvider = Provider<AsyncValue<List<CatalogModel>>>((ref) {
+  const railSize = 10;
   final allAsync = ref.watch(allMergedProductsProvider);
   return allAsync.when(
-    data: (all) => AsyncValue.data(all.take(6).toList()),
+    data: (all) {
+      final distinct = all.skip(railSize).take(railSize).toList();
+      return AsyncValue.data(
+        distinct.isNotEmpty ? distinct : all.take(railSize).toList(),
+      );
+    },
     error: (err, stack) => AsyncValue.error(err, stack),
     loading: () => const AsyncValue.loading(),
   );
@@ -595,7 +655,15 @@ final listingsForCatalogProvider = FutureProvider.family<List<ListingModel>, Str
         // has explicitly turned on online delivery (isOnline == true). A missing
         // flag means they never enabled it, so default to offline — otherwise
         // every store would wrongly get buy buttons.
-        isOnline: av.isOnline == true,
+        //
+        // The account-level switch overrides the per-product one: a seller who
+        // turns online selling OFF in Settings must stop selling online
+        // everywhere without editing each product. Mirrors web's two-switch
+        // rule (app/page.tsx's onlineStore check), except web treats a MISSING
+        // account flag as off while this only blocks an EXPLICIT false — 427
+        // of 442 live retailer docs have no such field, and blocking on
+        // absence would silently stop online orders for nearly all of them.
+        isOnline: av.isOnline == true && !(store?.onlineSellingDisabled ?? false),
         variants: av.variants ?? [],
         store: store,
       );
@@ -610,7 +678,9 @@ final listingsForCatalogProvider = FutureProvider.family<List<ListingModel>, Str
       ownerId.isNotEmpty ? ownerId : null,
       ownerPhone.isNotEmpty ? ownerPhone : null,
     );
-    final isOnline = product.sellMode != 'offline_store_only';
+    // Same two-switch rule as the availability path above.
+    final isOnline = product.sellMode != 'offline_store_only' &&
+        !(ownerStore?.onlineSellingDisabled ?? false);
     final ownerStockQty = (product.stock?.toLowerCase() == 'out of stock')
         ? 0
         : 99;

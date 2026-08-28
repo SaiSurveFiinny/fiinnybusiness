@@ -1318,14 +1318,46 @@ export async function fetchManufacturerProducts(manufacturerId: string): Promise
 
 export async function fetchRetailerProducts(retailerId: string): Promise<MarketplaceProduct[]> {
   try {
-    const q = query(collection(db, 'products'), where('retailerId', '==', retailerId));
-    const snapshot = await getDocs(q);
-    return snapshot.docs
-      .filter(doc => doc.data().isActive !== false)
-      .map(doc => ({
-      id: doc.id,
-      ...doc.data()
-    } as MarketplaceProduct));
+    // Dual-field read. This used to query ONLY `retailerId == uid`, which is
+    // the LEGACY uid-keyed field — per CLAUDE.md the current schema keys
+    // seller identity by `retailerPhone`/`ownerPhone`. A phone-keyed seller
+    // therefore had this return 0 products, so the dashboard's "Products
+    // Listed" tile and Inventory Health read empty while the app (which
+    // queries all these fields) showed the real catalogue.
+    //
+    // Mirrors DashboardRepository.fetchStats on mobile: run the variants in
+    // parallel and dedupe by doc id.
+    const phone = await resolveUserProfileDocId(retailerId);
+    const isPhone = !!phone && /^\+?\d{10,13}$/.test(phone);
+
+    const queries = [
+      query(collection(db, 'products'), where('retailerId', '==', retailerId)),
+      query(collection(db, 'products'), where('ownerId', '==', retailerId)),
+      ...(isPhone
+        ? [
+            query(collection(db, 'products'), where('retailerPhone', '==', phone)),
+            query(collection(db, 'products'), where('ownerPhone', '==', phone)),
+          ]
+        : []),
+    ];
+
+    const snapshots = await Promise.all(
+      // One unreadable/missing-index variant must not zero out the whole tile.
+      queries.map((q) => getDocs(q).catch(() => null)),
+    );
+
+    const seen = new Set<string>();
+    const results: MarketplaceProduct[] = [];
+    for (const snapshot of snapshots) {
+      if (!snapshot) continue;
+      for (const doc of snapshot.docs) {
+        if (seen.has(doc.id)) continue;
+        seen.add(doc.id);
+        if (doc.data().isActive === false) continue;
+        results.push({ id: doc.id, ...doc.data() } as MarketplaceProduct);
+      }
+    }
+    return results;
   } catch (error) {
     console.error('Error fetching retailer products:', error);
     throw error;
@@ -2865,6 +2897,11 @@ export async function adminUpdateProductSellMode(
     await Promise.all([
       rSnap.exists() ? setDoc(doc(db, "retailers", sellerPhone), { onlineDelivery: true, updatedAt: serverTimestamp() }, { merge: true }) : null,
       mSnap.exists() ? setDoc(doc(db, "manufacturers", sellerPhone), { onlineDelivery: true, updatedAt: serverTimestamp() }, { merge: true }) : null,
+      // users/{phone} too: the Delivery Settings page gates its whole
+      // charges/slabs UI on THIS copy of the flag (getUserProfile →
+      // users/{phone}.onlineDelivery), so writing only the profile mirrors
+      // above left the page locked even after an admin enabled delivery.
+      setDoc(doc(db, "users", sellerPhone), { onlineDelivery: true, updatedAt: serverTimestamp() }, { merge: true }),
     ].filter(Boolean) as Promise<void>[]);
   }
 }

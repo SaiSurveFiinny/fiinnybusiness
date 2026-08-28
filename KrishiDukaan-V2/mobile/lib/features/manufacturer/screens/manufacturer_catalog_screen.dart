@@ -4,6 +4,8 @@ import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import '../../../core/data/product_schema_repository.dart';
+import '../../dashboard/providers/dashboard_provider.dart';
 import 'package:go_router/go_router.dart';
 import 'package:intl/intl.dart';
 import '../../../core/constants/app_colors.dart';
@@ -559,16 +561,16 @@ class _CatalogTile extends StatelessWidget {
 
 // ── Product Add/Edit Sheet ────────────────────────────────────────────────────
 
-class _ProductSheet extends StatefulWidget {
+class _ProductSheet extends ConsumerStatefulWidget {
   final String manufacturerPhone;
   final CatalogModel? product;
   const _ProductSheet({required this.manufacturerPhone, this.product});
 
   @override
-  State<_ProductSheet> createState() => _ProductSheetState();
+  ConsumerState<_ProductSheet> createState() => _ProductSheetState();
 }
 
-class _ProductSheetState extends State<_ProductSheet> {
+class _ProductSheetState extends ConsumerState<_ProductSheet> {
   late final TextEditingController _nameCtrl;
   late final TextEditingController _priceCtrl;
   late final TextEditingController _descCtrl;
@@ -598,15 +600,15 @@ class _ProductSheetState extends State<_ProductSheet> {
   late List<TextEditingController> _imageUrlCtrls;
   final List<File?> _imageFiles = List.filled(5, null);
 
-  static const _categories = [
-    'Fertilizers',
-    'Seeds',
-    'Pesticides',
-    'Irrigation',
-    'Tools',
-    'Organic',
-    'Herbicides',
-  ];
+  /// Categories from `settings/productSchema` — the same doc the web
+  /// dashboard and the retailer Inventory form read, so all three stay in
+  /// step. Was a hardcoded list here that had drifted from web's (offered
+  /// Irrigation/Organic, which no product uses; missing Bio-Stimulants and
+  /// Adjuvants). Falls back to the bundled copy when the doc is unreadable.
+  List<String> get _categories =>
+      (ref.watch(productSchemaProvider).value ??
+              ProductSchemaRepository.fallback)
+          .categories;
 
   @override
   void initState() {
