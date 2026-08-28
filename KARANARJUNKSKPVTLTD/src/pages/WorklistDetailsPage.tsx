@@ -1,10 +1,10 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import { useParams, useNavigate } from 'react-router-dom';
 import { ArrowLeft, User, Phone, MapPin, Calendar, MessageCircle, FileText, CheckSquare, ShoppingCart, Loader2, Trash2, Mic, TrendingUp, X, AlertTriangle, FilePen, Printer, PlusCircle, Square, Wallet, Pencil, Paperclip, Link2, Download, Package, Search, Lock, LockOpen } from 'lucide-react';
 import { ResponsiveContainer, BarChart, Bar, XAxis, YAxis, Tooltip, CartesianGrid, PieChart, Pie, Cell } from 'recharts';
 import { useTranslation } from 'react-i18next';
-import { getDoc, getDocs, query, orderBy, onSnapshot, addDoc, serverTimestamp, deleteDoc, updateDoc, where, writeBatch, arrayUnion, arrayRemove, doc as fsDoc, collection } from 'firebase/firestore';
+import { getDoc, getDocs, query, orderBy, onSnapshot, addDoc, serverTimestamp, deleteDoc, updateDoc, where, writeBatch, arrayUnion, arrayRemove, doc as fsDoc, collection, deleteField } from 'firebase/firestore';
 import { softDelete } from '../utils/softDelete';
 import { generateRetailerStatement } from '../utils/statementGenerator';
 import { generatePaymentId } from '../utils/paymentIdGenerator';
@@ -44,6 +44,11 @@ interface Retailer {
     lastOrderedAt?: any;
     lastTalkedTo?: string;
     createdAt?: any;
+    // Collection Percentage — the source the Worklist's Amount Percent /
+    // Amount to Be Collected columns read from. Absent until an authorized user
+    // configures it (never defaulted). Promise Date is NOT stored here — the
+    // Worklist derives it from the latest outstanding invoice's payment term.
+    collectionPercent?: number; // 0–100
 }
 
 interface Order {
@@ -130,6 +135,14 @@ export default function WorklistDetailsPage() {
 
     const [retailer, setRetailer] = useState<Retailer | null>(null);
     const [loading, setLoading] = useState(true);
+
+    // ── Payment Collection Settings (Collection %) ──
+    // Draft form state — kept separate from `retailer` so edits are only
+    // persisted on the explicit Save action (never on every keystroke).
+    const canEditCollection = can('worklist.retailerProfile.editCollectionSettings');
+    const [editCollectionPercent, setEditCollectionPercent] = useState(''); // '' = not configured
+    const [savingCollSettings, setSavingCollSettings] = useState(false);
+    const [collSettingsStatus, setCollSettingsStatus] = useState<'idle' | 'saved' | 'error'>('idle');
 
     const [activeTab, setActiveTab] = useState<'overview' | 'tasks' | 'notes' | 'orders' | 'payments' | 'productSales'>('orders');
     const [payChartView, setPayChartView] = useState<'circle' | 'bar'>(
@@ -478,6 +491,51 @@ export default function WorklistDetailsPage() {
             setNewNoteTalkedTo('');
         } catch (error) {
             console.error(error);
+        }
+    };
+
+    // Seed the Payment Collection Settings draft once per retailer. Guarded by a
+    // ref so the real-time retailer listener (which re-fires on unrelated writes
+    // like Record Payment) can't wipe out edits the user is mid-way through.
+    const collSettingsSeededFor = useRef<string | null>(null);
+    useEffect(() => {
+        if (!retailer) return;
+        if (collSettingsSeededFor.current === retailer.id) return;
+        collSettingsSeededFor.current = retailer.id;
+        setEditCollectionPercent(retailer.collectionPercent != null ? String(retailer.collectionPercent) : '');
+    }, [retailer]);
+
+    // Persist Collection Percentage on one explicit Save. A blank field clears the
+    // stored value (deleteField) rather than writing 0 — so the Worklist keeps
+    // showing "—" instead of an invented default.
+    const collectionPercentInvalid = (() => {
+        const s = editCollectionPercent.trim();
+        if (s === '') return false;               // empty = "not configured", allowed
+        const n = Number(s);
+        return !Number.isFinite(n) || n < 0 || n > 100;
+    })();
+    const handleSaveCollectionSettings = async () => {
+        if (!id || !tenantId || !canEditCollection || savingCollSettings) return;
+        if (collectionPercentInvalid) { setCollSettingsStatus('error'); return; }
+        setSavingCollSettings(true);
+        setCollSettingsStatus('idle');
+        try {
+            const pctStr = editCollectionPercent.trim();
+            const pct = pctStr === '' ? null : Number(pctStr);
+            await updateDoc(getTenantDoc(db, tenantId, 'retailers', id), {
+                collectionPercent: pct === null ? deleteField() : pct,
+            });
+            // Reflect immediately in local state (listener will confirm shortly).
+            setRetailer(prev => prev ? {
+                ...prev,
+                collectionPercent: pct === null ? undefined : pct,
+            } : prev);
+            setCollSettingsStatus('saved');
+        } catch (error) {
+            console.error('Error saving collection settings:', error);
+            setCollSettingsStatus('error');
+        } finally {
+            setSavingCollSettings(false);
         }
     };
 
@@ -1353,6 +1411,70 @@ export default function WorklistDetailsPage() {
                         {computedOutstanding <= 0 && computedTotalSales > 0 && <span style={{ fontSize: '0.9rem', marginLeft: '0.4rem' }}>✅</span>}
                     </div>
                 </div>
+            </div>
+
+            {/* ── Payment Collection Settings — source for the Worklist's Amount Percent
+                   and Amount to Be Collected columns. Editable only with the
+                   editCollectionSettings permission; view-only otherwise. (Promise Date
+                   is derived automatically in the Worklist from the latest outstanding
+                   invoice's payment term and is not configured here.) ── */}
+            <div className="glass-panel" style={{ padding: '1.5rem', marginBottom: '2rem' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '1rem' }}>
+                    <Wallet size={18} color="var(--primary-light)" />
+                    <h3 style={{ margin: 0, fontSize: '1.05rem', fontWeight: 700 }}>Payment Collection Settings</h3>
+                </div>
+                <div style={{ display: 'flex', gap: '1.5rem', flexWrap: 'wrap', alignItems: 'flex-end' }}>
+                    {/* Collection Percentage */}
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '0.35rem' }}>
+                        <label style={{ fontSize: '0.8rem', fontWeight: 600, color: 'var(--text-secondary)' }}>Collection Percentage</label>
+                        {canEditCollection ? (
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+                                <input
+                                    type="number"
+                                    min={0}
+                                    max={100}
+                                    step="any"
+                                    value={editCollectionPercent}
+                                    onChange={e => { setEditCollectionPercent(e.target.value); setCollSettingsStatus('idle'); }}
+                                    placeholder="—"
+                                    className="input-field"
+                                    style={{ height: '38px', padding: '0 0.6rem', fontSize: '0.9rem', width: '110px', borderColor: collectionPercentInvalid ? 'var(--danger)' : undefined }}
+                                />
+                                <span style={{ fontSize: '0.95rem', fontWeight: 600, color: 'var(--text-secondary)' }}>%</span>
+                            </div>
+                        ) : (
+                            <div style={{ fontSize: '0.95rem', fontWeight: 600, color: retailer.collectionPercent != null ? 'var(--text-primary)' : 'var(--text-tertiary)' }}>
+                                {retailer.collectionPercent != null ? `${retailer.collectionPercent}%` : '—'}
+                            </div>
+                        )}
+                    </div>
+
+                    {/* Save action (edit permission only) */}
+                    {canEditCollection && (
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+                            <button
+                                className="btn btn-primary"
+                                onClick={handleSaveCollectionSettings}
+                                disabled={savingCollSettings || collectionPercentInvalid}
+                                style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', height: '38px' }}
+                            >
+                                {savingCollSettings ? <Loader2 size={15} className="animate-spin" /> : <CheckSquare size={15} />}
+                                {savingCollSettings ? 'Saving…' : 'Save'}
+                            </button>
+                            {collSettingsStatus === 'saved' && <span style={{ fontSize: '0.85rem', color: '#10b981', fontWeight: 600 }}>Saved ✓</span>}
+                            {collSettingsStatus === 'error' && (
+                                <span style={{ fontSize: '0.85rem', color: 'var(--danger)', fontWeight: 600 }}>
+                                    {collectionPercentInvalid ? 'Enter 0–100' : 'Save failed'}
+                                </span>
+                            )}
+                        </div>
+                    )}
+                </div>
+                {canEditCollection && (
+                    <p style={{ margin: '0.85rem 0 0', fontSize: '0.75rem', color: 'var(--text-tertiary)' }}>
+                        Amount to Be Collected is derived automatically as Outstanding × Collection % in the Worklist. Leave the field blank to clear it. Promise Date is calculated automatically from each retailer's latest outstanding invoice.
+                    </p>
+                )}
             </div>
 
             {/* ── Partner Analytics ── */}

@@ -16,6 +16,7 @@ import { getTenantCollection } from '../utils/tenantPath';
 import UdhariUploadModal from '../components/UdhariUploadModal';
 import { type FinancialPeriod, getFinancialDateRange } from '../utils/financialPeriod';
 import { useColumnLayout } from '../hooks/useColumnLayout';
+import { computePromiseDate } from '../utils/paymentTerms';
 import {
     HDR_COL_STYLE, SortLabel, ColumnTextFilter, ColumnNumFilter, ColumnMultiSelectFilter,
     EMPTY_NUM, isNumActive, matchNum, type NumFilter,
@@ -74,6 +75,15 @@ interface Retailer {
     computedTotalSales?: number;
     computedTotalPaid?: number;
     assignedSalespersons?: string[];
+    // Payment follow-up columns (derived / optional). lastPaymentDate and
+    // lastBillDate are computed from the payment (paymentDate) and salesOrder
+    // (invoiceDate — the ACTUAL bill date, never createdAt) entries already loaded.
+    // promiseDate is DERIVED from the most recent still-outstanding invoice's actual
+    // invoiceDate + its payment term (modeOfPayment) — never a manually stored field.
+    // collectionPercent is read straight from the retailer doc if configured there.
+    lastPaymentDate?: string;   // YYYY-MM-DD of most recent payment
+    lastBillDate?: string;      // YYYY-MM-DD of most recent invoice/bill (invoiceDate)
+    promiseDate?: string;       // derived from latest outstanding invoice's term
 }
 
 interface ReminderEntry {
@@ -98,33 +108,44 @@ const VALID_TABS: readonly ModuleTab[] = ['partners', 'invoices', 'payments', 'r
 // chevron) are utility columns; 'select' is dropped for view-only roles.
 type PartnerColKey =
     | 'select' | 'name' | 'contact' | 'district' | 'salesperson'
-    | 'portfolio' | 'totalInvoice' | 'paymentReceived' | 'outstanding' | 'expand';
+    | 'portfolio' | 'totalInvoice' | 'paymentReceived' | 'outstanding'
+    | 'lastPayment' | 'lastBillDate' | 'promiseDate'
+    | 'expand';
 
 const PARTNER_ALL_KEYS: PartnerColKey[] = [
     'select', 'name', 'contact', 'district', 'salesperson',
-    'portfolio', 'totalInvoice', 'paymentReceived', 'outstanding', 'expand',
+    'portfolio', 'totalInvoice', 'paymentReceived', 'outstanding',
+    'lastPayment', 'lastBillDate', 'promiseDate',
+    'expand',
 ];
 
 const PARTNER_LABELS: Record<PartnerColKey, string> = {
     select: 'Select', name: 'Retailer Name', contact: 'Contact', district: 'District',
     salesperson: 'Salesperson', portfolio: 'Portfolio', totalInvoice: 'Total Invoice Amount',
-    paymentReceived: 'Payment Received', outstanding: 'Outstanding', expand: 'Details',
+    paymentReceived: 'Payment Received', outstanding: 'Outstanding',
+    lastPayment: 'Last Payment', lastBillDate: 'Last Bill Date', promiseDate: 'Promise Date',
+    expand: 'Details',
 };
 
 const PARTNER_DEFAULT_WIDTHS: Record<PartnerColKey, number> = {
     select: 44, name: 240, contact: 150, district: 140, salesperson: 180,
-    portfolio: 130, totalInvoice: 175, paymentReceived: 160, outstanding: 150, expand: 48,
+    portfolio: 130, totalInvoice: 175, paymentReceived: 160, outstanding: 150,
+    lastPayment: 140, lastBillDate: 140, promiseDate: 140,
+    expand: 48,
 };
 
 const PARTNER_ALIGN: Record<PartnerColKey, 'left' | 'right' | 'center'> = {
     select: 'center', name: 'left', contact: 'left', district: 'left', salesperson: 'left',
-    portfolio: 'left', totalInvoice: 'right', paymentReceived: 'right', outstanding: 'right', expand: 'center',
+    portfolio: 'left', totalInvoice: 'right', paymentReceived: 'right', outstanding: 'right',
+    lastPayment: 'left', lastBillDate: 'left', promiseDate: 'left',
+    expand: 'center',
 };
 
 // Columns that support click-to-sort, and the value each sorts on.
 type PartnerSortKey =
     | 'name' | 'contact' | 'district' | 'salesperson'
-    | 'portfolio' | 'totalInvoice' | 'paymentReceived' | 'outstanding';
+    | 'portfolio' | 'totalInvoice' | 'paymentReceived' | 'outstanding'
+    | 'lastPayment' | 'lastBillDate' | 'promiseDate';
 
 // Sentinel value for the Salesperson checklist's "Unassigned" option.
 const UNASSIGNED_SP = '__unassigned__';
@@ -306,13 +327,26 @@ function PartnersTab() {
     const [fTotalInvoice, setFTotalInvoice] = useState<NumFilter>(EMPTY_NUM);
     const [fPayment, setFPayment]           = useState<NumFilter>(EMPTY_NUM);
     const [fOutstanding, setFOutstanding]   = useState<NumFilter>(EMPTY_NUM);
+    const [fLastPayment, setFLastPayment]   = useState('');
+    const [fLastBill, setFLastBill]         = useState('');
+    const [fPromise, setFPromise]           = useState('');
 
     // ── Column sort (null = default fetch order, i.e. newest retailer first) ─────
     const [sortCol, setSortCol] = useState<PartnerSortKey | null>(null);
     const [sortDir, setSortDir] = useState<'asc' | 'desc'>('asc');
     const toggleSort = (col: PartnerSortKey) => {
         if (sortCol === col) { if (sortDir === 'asc') setSortDir('desc'); else setSortCol(null); }
-        else { setSortCol(col); setSortDir(col === 'name' || col === 'contact' || col === 'district' || col === 'salesperson' || col === 'portfolio' ? 'asc' : 'desc'); }
+        else { setSortCol(col); setSortDir(col === 'name' || col === 'contact' || col === 'district' || col === 'salesperson' || col === 'portfolio' || col === 'lastPayment' || col === 'lastBillDate' || col === 'promiseDate' ? 'asc' : 'desc'); }
+    };
+
+    // ── Payment follow-up helpers ────────────────────────────────────────────────
+    // Formats a 'YYYY-MM-DD' date string; blank/invalid → "—".
+    const fmtDate = (s?: string): string => {
+        if (!s) return '—';
+        const d = new Date(s);
+        return isNaN(d.getTime())
+            ? '—'
+            : d.toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: '2-digit' });
     };
 
     // ── Column layout: resize / freeze / reorder / localStorage persistence ──────
@@ -479,7 +513,7 @@ function PartnersTab() {
                 });
 
                 // Group salesOrders by retailerId (include financial fields for outstanding calc).
-                type SOEntry = { invoiceDate?: string; status?: string; paymentStatus?: string; dueDate?: string; grandTotal?: number; netAmount?: number; totalAmount?: number; amountPaid?: number; deleted?: boolean };
+                type SOEntry = { invoiceDate?: string; status?: string; paymentStatus?: string; modeOfPayment?: string; dueDate?: string; grandTotal?: number; netAmount?: number; totalAmount?: number; amountPaid?: number; deleted?: boolean };
                 const salesByRetailer = new Map<string, SOEntry[]>();
                 salesOrdersSnap.docs.forEach(doc => {
                     const so = doc.data() as { retailerId?: string } & SOEntry;
@@ -523,6 +557,28 @@ function PartnersTab() {
                     const soTotalPaid  = paymentsByRetailer.get(r.id) ?? 0;
                     const computedOutstanding = Math.max(0, soTotalSales - soTotalPaid);
 
+                    // Most recent bill/payment dates. invoiceDate is the ACTUAL bill date
+                    // stored on the salesOrder — never the Firestore createdAt. Dates are
+                    // 'YYYY-MM-DD' strings, so a plain string max yields the latest one.
+                    const lastBillDate = soList.reduce(
+                        (max, so) => (so.invoiceDate && so.invoiceDate > max ? so.invoiceDate : max), '');
+                    const lastPaymentDate = (rawPmtsByRetailerMap.get(r.id) ?? []).reduce(
+                        (max, p) => (p.paymentDate && p.paymentDate > max ? p.paymentDate : max), '');
+
+                    // Promise Date — derived, never stored. Take the retailer's most
+                    // recent invoice (by actual invoiceDate) that is NOT fully paid,
+                    // then add its payment-term days (modeOfPayment) to that invoice
+                    // date. Fully-paid invoices are ignored; no outstanding bills → ''.
+                    // Matches the pendingSOs 'paid' check used elsewhere on this page.
+                    const latestOutstanding = soList.reduce<SOEntry | null>((latest, so) => {
+                        if (!so.invoiceDate) return latest;
+                        if (String(so.paymentStatus ?? '').toLowerCase() === 'paid') return latest;
+                        return (!latest || so.invoiceDate > (latest.invoiceDate ?? '')) ? so : latest;
+                    }, null);
+                    const promiseDate = latestOutstanding
+                        ? computePromiseDate(latestOutstanding.invoiceDate, latestOutstanding.modeOfPayment)
+                        : undefined;
+
                     // Merge direct assignments and district-based assignments, deduplicated.
                     // Direct assignments come first so they appear before district-based ones.
                     const directSPs  = spByRetailerId.get(r.id) ?? [];
@@ -533,6 +589,7 @@ function PartnersTab() {
                     return {
                         ...r, closestCreditDays, computedOutstanding, assignedSalespersons,
                         computedTotalSales: soTotalSales, computedTotalPaid: soTotalPaid,
+                        lastBillDate, lastPaymentDate, promiseDate,
                     };
                 });
 
@@ -623,6 +680,12 @@ function PartnersTab() {
         if (isNumActive(fPayment))      result = result.filter(r => matchNum(r.computedTotalPaid ?? 0, fPayment));
         if (isNumActive(fOutstanding))  result = result.filter(r => matchNum(r.computedOutstanding ?? 0, fOutstanding));
 
+        // ── Payment follow-up column filters ─────────────────────────────────────
+        // Date filters match against the formatted label so "Jan"/"25" both work.
+        if (fLastPayment.trim()) { const q = fLastPayment.trim().toLowerCase(); result = result.filter(r => fmtDate(r.lastPaymentDate).toLowerCase().includes(q)); }
+        if (fLastBill.trim())    { const q = fLastBill.trim().toLowerCase();    result = result.filter(r => fmtDate(r.lastBillDate).toLowerCase().includes(q)); }
+        if (fPromise.trim())     { const q = fPromise.trim().toLowerCase();     result = result.filter(r => fmtDate(r.promiseDate).toLowerCase().includes(q)); }
+
         // ── Column sort (null keeps default newest-first fetch order) ────────────
         if (sortCol) {
             const asc = sortDir === 'asc' ? 1 : -1;
@@ -636,12 +699,15 @@ function PartnersTab() {
                     case 'totalInvoice':    return asc * ((a.computedTotalSales ?? 0) - (b.computedTotalSales ?? 0));
                     case 'paymentReceived': return asc * ((a.computedTotalPaid ?? 0) - (b.computedTotalPaid ?? 0));
                     case 'outstanding':     return asc * ((a.computedOutstanding ?? 0) - (b.computedOutstanding ?? 0));
+                    case 'lastPayment':     return asc * (a.lastPaymentDate || '').localeCompare(b.lastPaymentDate || '');
+                    case 'lastBillDate':    return asc * (a.lastBillDate || '').localeCompare(b.lastBillDate || '');
+                    case 'promiseDate':     return asc * (a.promiseDate || '').localeCompare(b.promiseDate || '');
                     default:                return 0;
                 }
             });
         }
         return result;
-    }, [dateFilteredRetailers, partnerView, fName, fContact, fDistrict, fSalespersons, fPortfolios, fTotalInvoice, fPayment, fOutstanding, sortCol, sortDir]);
+    }, [dateFilteredRetailers, partnerView, fName, fContact, fDistrict, fSalespersons, fPortfolios, fTotalInvoice, fPayment, fOutstanding, fLastPayment, fLastBill, fPromise, sortCol, sortDir]);
 
     // Salesperson checklist options — distinct assigned names plus an Unassigned
     // bucket. Derived from the date-filtered set so the list reflects the range.
@@ -661,12 +727,14 @@ function PartnersTab() {
     const hasColumnFilter =
         fName.trim() !== '' || fContact.trim() !== '' || fDistrict.trim() !== '' ||
         fSalespersons.length > 0 || fPortfolios.length > 0 ||
-        isNumActive(fTotalInvoice) || isNumActive(fPayment) || isNumActive(fOutstanding);
+        isNumActive(fTotalInvoice) || isNumActive(fPayment) || isNumActive(fOutstanding) ||
+        fLastPayment.trim() !== '' || fLastBill.trim() !== '' || fPromise.trim() !== '';
 
     const clearAllFilters = () => {
         setFName(''); setFContact(''); setFDistrict('');
         setFSalespersons([]); setFPortfolios([]);
         setFTotalInvoice(EMPTY_NUM); setFPayment(EMPTY_NUM); setFOutstanding(EMPTY_NUM);
+        setFLastPayment(''); setFLastBill(''); setFPromise('');
     };
 
     // Grand-total summary for the currently visible (filtered/searched) rows —
@@ -702,7 +770,7 @@ function PartnersTab() {
     // processedRetailers array (already filtered by Outstanding/Size/search/sort)
     // and the same per-cell values/formatting used in the <tbody> render.
     const handleExportCSV = () => {
-        const headers = ['Retailer Name', 'Contact', 'District', 'Salesperson', 'Portfolio', 'Total Invoice Amount', 'Payment Received', 'Outstanding'];
+        const headers = ['Retailer Name', 'Contact', 'District', 'Salesperson', 'Portfolio', 'Total Invoice Amount', 'Payment Received', 'Outstanding', 'Last Payment', 'Last Bill Date', 'Promise Date'];
         const csvRows = processedRetailers.map(r => {
             const outstanding = r.computedOutstanding ?? 0;
             const salesperson = (r.assignedSalespersons?.length ?? 0) > 0
@@ -717,6 +785,9 @@ function PartnersTab() {
                 `\u20B9${(r.computedTotalSales ?? 0).toLocaleString('en-IN')}`,
                 `\u20B9${(r.computedTotalPaid ?? 0).toLocaleString('en-IN')}`,
                 `\u20B9${outstanding.toLocaleString('en-IN')}`,
+                fmtDate(r.lastPaymentDate),
+                fmtDate(r.lastBillDate),
+                fmtDate(r.promiseDate),
             ].map(v => csvEscape(String(v))).join(',');
         });
         const csvContent = [headers.join(','), ...csvRows].join('\r\n');
@@ -805,6 +876,24 @@ function PartnersTab() {
                 <div style={HDR_COL_STYLE}>
                     <SortLabel label="Outstanding" align="right" active={sortCol === 'outstanding'} dir={sortDir} onClick={() => toggleSort('outstanding')} />
                     <ColumnNumFilter state={fOutstanding} onChange={setFOutstanding} />
+                </div>
+            ); break;
+            case 'lastPayment': inner = (
+                <div style={HDR_COL_STYLE}>
+                    <SortLabel label="Last Payment" active={sortCol === 'lastPayment'} dir={sortDir} onClick={() => toggleSort('lastPayment')} />
+                    <ColumnTextFilter value={fLastPayment} onChange={setFLastPayment} placeholder="Search date…" />
+                </div>
+            ); break;
+            case 'lastBillDate': inner = (
+                <div style={HDR_COL_STYLE}>
+                    <SortLabel label="Last Bill Date" active={sortCol === 'lastBillDate'} dir={sortDir} onClick={() => toggleSort('lastBillDate')} />
+                    <ColumnTextFilter value={fLastBill} onChange={setFLastBill} placeholder="Search date…" />
+                </div>
+            ); break;
+            case 'promiseDate': inner = (
+                <div style={HDR_COL_STYLE}>
+                    <SortLabel label="Promise Date" active={sortCol === 'promiseDate'} dir={sortDir} onClick={() => toggleSort('promiseDate')} />
+                    <ColumnTextFilter value={fPromise} onChange={setFPromise} placeholder="Search date…" />
                 </div>
             ); break;
             case 'expand': inner = ''; break;
@@ -898,6 +987,12 @@ function PartnersTab() {
                             : <span style={{ color: '#10b981', fontWeight: 700 }}>₹0</span>}
                     </td>
                 );
+            case 'lastPayment':
+                return <td key={key} style={{ ...tdBase, whiteSpace: 'nowrap', color: r.lastPaymentDate ? 'var(--text-secondary)' : 'var(--text-tertiary)', fontSize: '0.83rem' }}>{fmtDate(r.lastPaymentDate)}</td>;
+            case 'lastBillDate':
+                return <td key={key} style={{ ...tdBase, whiteSpace: 'nowrap', color: r.lastBillDate ? 'var(--text-secondary)' : 'var(--text-tertiary)', fontSize: '0.83rem' }}>{fmtDate(r.lastBillDate)}</td>;
+            case 'promiseDate':
+                return <td key={key} style={{ ...tdBase, whiteSpace: 'nowrap', color: r.promiseDate ? 'var(--text-secondary)' : 'var(--text-tertiary)', fontSize: '0.83rem' }}>{fmtDate(r.promiseDate)}</td>;
             case 'expand':
                 return (
                     <td key={key} style={{ ...tdBase, padding: '0.8rem 0.5rem' }} onClick={e => toggleExpand(r.id, e)}>
@@ -924,6 +1019,10 @@ function PartnersTab() {
             case 'totalInvoice':    return <td key={key} style={{ ...gBase, color: 'var(--text-primary)' }}>₹{worklistSummary.totalInvoiceAmount.toLocaleString('en-IN')}</td>;
             case 'paymentReceived': return <td key={key} style={{ ...gBase, color: '#10b981' }}>₹{worklistSummary.totalPaymentReceived.toLocaleString('en-IN')}</td>;
             case 'outstanding':     return <td key={key} style={{ ...gBase, color: worklistSummary.totalOutstanding > 0 ? '#ef4444' : '#10b981' }}>₹{worklistSummary.totalOutstanding.toLocaleString('en-IN')}</td>;
+            // Date columns have no meaningful total — kept blank.
+            case 'lastPayment':     return <td key={key} style={gBase}>—</td>;
+            case 'lastBillDate':    return <td key={key} style={gBase}>—</td>;
+            case 'promiseDate':     return <td key={key} style={gBase}>—</td>;
             case 'expand':          return <td key={key} style={{ ...gBase, padding: '0.75rem 0.5rem' }} />;
             default:                return <td key={key} style={gBase} />;
         }

@@ -100,6 +100,7 @@ export const PERMISSION_MODULES: PermissionModule[] = [
                 label: 'Retailer Profile',
                 actions: [
                     { id: 'worklist.retailerProfile.view', label: 'View' },
+                    { id: 'worklist.retailerProfile.editCollectionSettings', label: 'Edit Collection Settings' },
                 ],
                 children: [
                     {
@@ -291,6 +292,7 @@ const ANALYST_DENIED = new Set([
     'worklist.invoices.delete',
     'worklist.retailerProfile.b2bOrders.deleteOrder',
     'worklist.retailerProfile.productSalesOverview.edit',
+    'worklist.retailerProfile.editCollectionSettings',
     // Payment Reminders sub-tab — previously hidden via a hardcoded WorklistPage guard.
     'worklist.reminders.view',
     // Financial + GST reports — previously hidden via a hardcoded ReportsPage guard.
