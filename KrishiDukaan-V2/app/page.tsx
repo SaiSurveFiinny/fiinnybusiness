@@ -24,7 +24,7 @@ import RetailerJoinView from './views/RetailerJoinView';
 import HelpView from './views/HelpView';
 import { fetchManufacturerProfile } from './dashboard/_lib/brand-page-firestore';
 import { motion, AnimatePresence } from 'framer-motion';
-import { auth, db, fetchMarketplaceProducts, fetchStores, syncInitialData, getUserProfile, fetchHubs, createOrdersFromCart, updateOrderPayment, trackPageView, requestRoleUpgrade } from './firebase';
+import { auth, db, fetchMarketplaceProducts, fetchStores, syncInitialData, getUserProfile, fetchHubs, createOrdersFromCart, updateOrderPayment, trackPageView, requestRoleUpgrade, logFailedPayment } from './firebase';
 import { acceptManufacturerInvite } from './lib/invite/invite-acceptance-service';
 import { fetchInviteDetailsForSignup } from './lib/invite/fetch-invite-for-signup';
 import { onAuthStateChanged, signOut } from 'firebase/auth';
@@ -1140,6 +1140,24 @@ export default function App() {
             setCheckoutMessage("Payment cancelled. Your cart is safe.");
           },
         },
+      });
+      // Cart-checkout failures were never logged anywhere — the admin's
+      // Failed Payments tab (app/admin/subscriptions/page.tsx) only ever
+      // received entries from the subscription-purchase page, so a failed
+      // cart payment was invisible to admin short of checking Razorpay's own
+      // dashboard directly. Mirrors the logging SubscriptionView.tsx already
+      // does on its own failure callback.
+      rzp.on("payment.failed", (response: any) => {
+        logFailedPayment(user.uid, response.error, {
+          orderId: rzpOrder.id,
+          // Paise, matching SubscriptionView's existing call and what the admin
+          // Failed Payments card expects (it renders fp.amount / 100).
+          amount: rzpOrder.amount,
+        });
+        setCheckoutLoading(false);
+        setCheckoutMessage(
+          "❌ Payment failed. If any amount was deducted, it will be refunded automatically within 5-7 business days.",
+        );
       });
       rzp.open();
     } catch (e) {

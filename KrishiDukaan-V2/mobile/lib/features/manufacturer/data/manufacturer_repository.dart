@@ -10,6 +10,12 @@ import 'package:http/http.dart' as http;
 import 'dart:convert';
 import '../../../core/utils/phone_utils.dart';
 
+// A freshly assigned product used to start at 0 stock / not-available, which
+// meant it was immediately unsellable until the retailer noticed and edited
+// it. Give it a small starting stock instead so it's usable right away.
+// Mirrors the same fix on web (app/dashboard/_lib/product-assignment-firestore.ts).
+const int kDefaultAssignedStock = 10;
+
 class ManufacturerRepository {
   final _db = FirebaseFirestore.instance;
 
@@ -734,7 +740,7 @@ class ManufacturerRepository {
       'source': 'manufacturer_assigned',
       'store': storeName,
       'stock': 'In Stock',
-      'stockQuantity': 0,
+      'stockQuantity': kDefaultAssignedStock,
       // Assigned copies start OFFLINE regardless of the manufacturer's own
       // sellMode/isOnline — inheriting it here meant every retailer a
       // manufacturer assigned a product to instantly showed up as an
@@ -750,7 +756,7 @@ class ManufacturerRepository {
       'updatedAt': now,
     });
 
-    // 6. Inventory record — zero stock until retailer sets it
+    // 6. Inventory record — starts with a small default stock, editable by the retailer
     final inventoryRef = _db.collection('inventory').doc();
     batch.set(inventoryRef, {
       'id': inventoryRef.id,
@@ -765,10 +771,10 @@ class ManufacturerRepository {
       'productId': retailerProductRef.id,
       'manufacturerProductId': catalogId,
       'assignedByManufacturer': true,
-      'stockQuantity': 0,
+      'stockQuantity': kDefaultAssignedStock,
       'sellingPrice': price,
       'reorderThreshold': 5,
-      'isAvailable': false,
+      'isAvailable': true,
       'updatedAt': now,
     });
 

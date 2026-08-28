@@ -5,6 +5,7 @@ import {
   DEFAULT_DURATIONS,
   PRICING_DOC_PATH,
   applyDiscount,
+  normalizeSeatCount,
   parseDurations,
   parsePromo,
   priceFor,
@@ -92,7 +93,11 @@ export async function POST(request: Request) {
 
     const durations = await loadDurations();
 
-    const seats = Math.max(1, parseInt(String(seatCount), 10) || 1);
+    // Seats sell in blocks of 10 with a 10-seat minimum. Enforced here as well
+    // as in the purchase UIs so the rule holds even for a request that didn't
+    // come from them; both sides use the same helper, so the charged seat count
+    // matches the one the seller was shown.
+    const seats = normalizeSeatCount(seatCount);
 
     // Unknown/absent period falls back to the shortest offered one rather than
     // assuming a literal 1 month — the ladder is admin-editable now and may not
