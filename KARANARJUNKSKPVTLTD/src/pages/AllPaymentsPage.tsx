@@ -245,11 +245,10 @@ export default function AllPaymentsPage() {
     return (
         <div className="animate-fade-in">
             {/* ── Header ── */}
-            <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', marginBottom: '0.35rem' }}>
-                <Wallet size={22} style={{ color: 'var(--primary-light)' }} />
-                <h2 style={{ margin: 0, fontSize: '1.3rem', fontWeight: 700, color: 'var(--text-primary)' }}>All Payments</h2>
-            </div>
-            <p style={{ margin: '0 0 1.25rem', color: 'var(--text-tertiary)', fontSize: '0.9rem' }}>
+            <h1 className="primary-gradient-text" style={{ fontSize: '2rem', display: 'flex', alignItems: 'center', gap: '0.75rem', marginBottom: '0.35rem' }}>
+                <Wallet size={28} /> All Payments
+            </h1>
+            <p style={{ margin: '0 0 1.25rem', color: 'var(--text-secondary)' }}>
                 Every retailer / B2B payment transaction across all partners.
             </p>
 

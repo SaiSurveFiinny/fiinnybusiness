@@ -476,7 +476,13 @@ function PartnersTab() {
                 const retailersWithStatus: Retailer[] = retailersSnap.docs
                     // Exclude B2C walk-in customers auto-created at the POS counter —
                     // they are not B2B partners and shouldn't appear in this worklist.
-                    .filter(d => (d.data() as { channel?: string }).channel !== 'pos')
+                    // Also exclude soft-deleted retailers (deleted: true) — every other
+                    // consumer of this collection (Manage Retailers, Recently Deleted)
+                    // filters on the same flag; this fetch must match that contract.
+                    .filter(d => {
+                        const data = d.data() as { channel?: string; deleted?: boolean };
+                        return data.channel !== 'pos' && !data.deleted;
+                    })
                     .map(doc => {
                     const r = { id: doc.id, ...doc.data() } as Retailer;
                     const salesOrders = salesByRetailer.get(r.id) ?? [];
