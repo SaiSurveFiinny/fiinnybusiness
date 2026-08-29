@@ -186,13 +186,23 @@ const TAB_PERM: Record<ModuleTab, string> = {
 };
 
 export default function WorklistPage() {
-    const [moduleTab, setModuleTab] = useHashTab<ModuleTab>(VALID_TABS, 'partners', 'fiinny-tab-worklist');
     const can = useFeaturePermissions();
+    const [moduleTab, setModuleTab] = useHashTab<ModuleTab>(VALID_TABS, 'partners', 'fiinny-tab-worklist', tab => can(TAB_PERM[tab]));
 
     // Sub-tab visibility is driven SOLELY by the Feature Matrix (single source of
     // truth). Per-role denials (sales/retailer/analyst) now live in
     // DEFAULT_FEATURE_PERMISSIONS instead of hardcoded page guards.
     const visibleTabs = MODULE_TABS.filter(tab => can(TAB_PERM[tab.id]));
+
+    // Guard: only render tab content for the currently permitted active tab.
+    // Without this, direct URL navigation to a denied hash would still trigger
+    // the content component because moduleTab === 'X' would be true even if the
+    // tab is hidden from the tab bar.
+    const activeAllowed = visibleTabs.some(t => t.id === moduleTab);
+
+    useEffect(() => {
+        if (!activeAllowed && visibleTabs.length > 0) setModuleTab(visibleTabs[0].id);
+    }, [activeAllowed, visibleTabs, setModuleTab]);
 
     return (
         <div className="animate-fade-in" style={{ width: '100%' }}>
@@ -254,12 +264,12 @@ export default function WorklistPage() {
             </div>
 
             {/* ── Tab Content ── */}
-            {moduleTab === 'partners'      && <PartnersTab />}
-            {moduleTab === 'invoices'      && <B2BInvoiceWorklistPage />}
-            {moduleTab === 'payments'      && <AllPaymentsPage />}
-            {moduleTab === 'reminders'     && <PaymentRemindersPage />}
-            {moduleTab === 'tracking'      && <DispatchBoardPage />}
-            {moduleTab === 'online-orders' && <OnlineOrdersPage />}
+            {activeAllowed && moduleTab === 'partners'      && <PartnersTab />}
+            {activeAllowed && moduleTab === 'invoices'      && <B2BInvoiceWorklistPage />}
+            {activeAllowed && moduleTab === 'payments'      && <AllPaymentsPage />}
+            {activeAllowed && moduleTab === 'reminders'     && <PaymentRemindersPage />}
+            {activeAllowed && moduleTab === 'tracking'      && <DispatchBoardPage />}
+            {activeAllowed && moduleTab === 'online-orders' && <OnlineOrdersPage />}
             {/* TEMPORARILY DISABLED (2026-07-03): Purchase Orders tab content hidden until rebuilt — do not delete. */}
             {/* {moduleTab === 'purchase-orders' && <PurchaseOrdersPage />} */}
         </div>

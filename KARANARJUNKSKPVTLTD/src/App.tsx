@@ -629,7 +629,7 @@ function AppRoutes() {
 
       {/* Admin — single hash-based hub. Sub-tabs live at /admin#<tab>; each
           tab's own role/permission gate is enforced inside AdminHubPage. */}
-      <Route path="/admin" element={<ProtectedRoute requireRole={['admin', 'analyst']}><AdminHubPage /></ProtectedRoute>} />
+      <Route path="/admin" element={<ProtectedRoute requireRole={['admin', 'analyst']} appScreen="admin"><AdminHubPage /></ProtectedRoute>} />
       {/* Team Performance — also a standalone navbar destination; navbar visibility
           is driven by the Main Navbar Feature Matrix (navbar.teamPerformance.view).
           The Admin sub-tab at /admin#team-performance remains intact. */}

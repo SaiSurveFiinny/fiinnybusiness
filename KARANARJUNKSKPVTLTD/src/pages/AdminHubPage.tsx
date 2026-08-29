@@ -60,20 +60,28 @@ const VALID_TABS: readonly string[] = ADMIN_TABS.map(t => t.id);
 
 export default function AdminHubPage() {
     const { userRole, permissions } = useAuth();
-    const [activeTab, setActiveTab] = useHashTab<string>(VALID_TABS, 'manage-users', 'fiinny-tab-admin');
+
+    // Per-tab permission check — uses requireRole + appScreen from each tab definition,
+    // exactly matching the gate those sub-pages had when they were standalone routes.
+    const isTabAllowed = (tabId: string): boolean => {
+        const tabDef = ADMIN_TABS.find(t => t.id === tabId);
+        if (!tabDef || !userRole) return false;
+        if (!tabDef.requireRole.includes(userRole as UserRole)) return false;
+        if (!permissions[userRole]?.[tabDef.appScreen]) return false;
+        return true;
+    };
+
+    const [activeTab, setActiveTab] = useHashTab<string>(VALID_TABS, 'manage-users', 'fiinny-tab-admin', isTabAllowed);
 
     // Only show tabs the current role/permissions allow — mirrors the nav filter.
-    const visibleTabs = ADMIN_TABS.filter(t => {
-        if (!userRole) return false;
-        if (!t.requireRole.includes(userRole as UserRole)) return false;
-        if (permissions && permissions[userRole] && !permissions[userRole][t.appScreen]) return false;
-        return true;
-    });
+    const visibleTabs = ADMIN_TABS.filter(t => isTabAllowed(t.id));
 
-    // If the resolved tab isn't accessible (e.g. analyst opening /admin with no
-    // hash defaults to manage-users), fall to the first tab they can see.
+    // Fallback: if the active tab is no longer in the visible set (e.g. because
+    // Firestore permissions loaded after initial render), switch to the first
+    // permitted tab. The `!window.location.hash` guard was intentionally removed —
+    // a denied hash in the URL is exactly the case that needs correcting.
     useEffect(() => {
-        if (visibleTabs.length > 0 && !visibleTabs.some(t => t.id === activeTab) && !window.location.hash) {
+        if (visibleTabs.length > 0 && !visibleTabs.some(t => t.id === activeTab)) {
             setActiveTab(visibleTabs[0].id);
         }
     }, [visibleTabs, activeTab, setActiveTab]);

@@ -209,8 +209,12 @@ export const PERMISSION_MODULES: PermissionModule[] = [
     {
         id: 'supplierLedger',
         label: 'Supplier Ledger',
-        // Internal sub-tabs/features to be added to the permission tree later.
-        sections: [],
+        sections: [
+            { id: 'supplierLedger.suppliers', label: 'Suppliers',         actions: [{ id: 'supplierLedger.suppliers.view', label: 'View' }] },
+            { id: 'supplierLedger.payments',  label: 'Invoices',          actions: [{ id: 'supplierLedger.payments.view',  label: 'View' }] },
+            { id: 'supplierLedger.reminders', label: 'Payment Reminders', actions: [{ id: 'supplierLedger.reminders.view', label: 'View' }] },
+            { id: 'supplierLedger.reports',   label: 'Reports',           actions: [{ id: 'supplierLedger.reports.view',   label: 'View' }] },
+        ],
     },
     {
         id: 'inventory',
