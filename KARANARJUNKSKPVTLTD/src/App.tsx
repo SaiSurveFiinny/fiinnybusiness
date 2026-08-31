@@ -10,6 +10,7 @@ import ErrorBoundary from './components/ErrorBoundary';
 import ModuleGate from './components/ModuleGate';
 import { AuthProvider, useAuth } from './contexts/AuthContext';
 import type { AppScreen } from './contexts/AuthContext';
+import { navFeatureGroupForPath, isFeatureGroupAllowed } from './utils/subscriptionCatalog';
 import { SchemaProvider } from './contexts/SchemaContext';
 import { ToastProvider } from './contexts/ToastContext';
 import ToastContainer from './components/ToastContainer';
@@ -23,6 +24,7 @@ const DashboardPage          = lazy(() => import('./pages/DashboardPage'));
 const B2CDashboardPage       = lazy(() => import('./pages/B2CDashboardPage'));
 const LoginPage              = lazy(() => import('./pages/LoginPage'));
 const AdminHubPage           = lazy(() => import('./pages/AdminHubPage'));
+const SuperAdminSubscriptionsPage = lazy(() => import('./pages/SuperAdminSubscriptionsPage'));
 const TeamPerformancePage    = lazy(() => import('./pages/TeamPerformancePage'));
 const StorefrontPage         = lazy(() => import('./pages/StorefrontPage'));
 const ErpHandoffPage         = lazy(() => import('./pages/ErpHandoffPage'));
@@ -127,7 +129,7 @@ function Layout({ children, currentTheme, toggleTheme }: { children: React.React
   const location = useLocation();
   const navigate = useNavigate();
   const { t } = useTranslation();
-  const { currentUser, userRole, tenantData, permissions, logout } = useAuth();
+  const { currentUser, userRole, tenantData, tenantId, permissions, logout, hasPlanScreen, planEntitlements } = useAuth();
   const can = useFeaturePermissions();
 
   const handleLogout = () => {
@@ -229,6 +231,11 @@ function Layout({ children, currentTheme, toggleTheme }: { children: React.React
     if (isSalesUser) return SALES_NAV_PATHS.includes(item.path);
     if (!isOwner && !isShopkeeper) return false;
     if (isShopkeeper && BASIC_PLAN_HIDDEN_PATHS.includes(item.path)) return false;
+    // Subscription plan gate — hide screens the tenant's plan excludes (rule 1),
+    // plus the feature group for screen-sharing modules (e.g. Supplier Ledger).
+    if (!hasPlanScreen(item.screenKey as AppScreen)) return false;
+    const navGroup = navFeatureGroupForPath(item.path);
+    if (navGroup && !isFeatureGroupAllowed(navGroup, planEntitlements)) return false;
     // Module-level role permission gate (existing behaviour).
     if (userRole && permissions && !permissions[userRole]?.[item.screenKey as AppScreen]) return false;
     // Main Navbar Feature Matrix — single source of truth for the tabs it covers.
@@ -246,9 +253,19 @@ function Layout({ children, currentTheme, toggleTheme }: { children: React.React
     { path: '/settings',                   icon: <Settings size={17} />,    label: t('common.settings'),              screenKey: 'settings' },
     { path: '/krishidukan',                icon: <Package size={17} />,     label: '🌾 KrishiDukan',                  screenKey: 'krishidukan' },
   ].filter(item => {
+    // Subscription plan gate first, then the module-level role permission gate.
+    if (!hasPlanScreen(item.screenKey as AppScreen)) return false;
+    const navGroup = navFeatureGroupForPath(item.path);
+    if (navGroup && !isFeatureGroupAllowed(navGroup, planEntitlements)) return false;
     if (userRole && permissions && !permissions[userRole]?.[item.screenKey as AppScreen]) return false;
     return true;
   });
+
+  // Platform Super Admin entry — only the master tenant admin sees it. Not
+  // screen/plan-gated (it is how the super admin seeds and assigns plans).
+  if (tenantId === 'master' && userRole === 'admin') {
+    adminItems.push({ path: '/super-admin', icon: <ShieldAlert size={17} />, label: '🛡️ Super Admin', screenKey: 'admin' });
+  }
 
   const isAdminPath = adminItems.some(i => location.pathname === i.path || location.pathname.startsWith(i.path + '/'));
 
@@ -630,6 +647,10 @@ function AppRoutes() {
       {/* Admin — single hash-based hub. Sub-tabs live at /admin#<tab>; each
           tab's own role/permission gate is enforced inside AdminHubPage. */}
       <Route path="/admin" element={<ProtectedRoute requireRole={['admin', 'analyst']} appScreen="admin"><AdminHubPage /></ProtectedRoute>} />
+      {/* Super Admin subscription management — platform-level. NO appScreen (never
+          plan-gated, so the master admin can always reach it to seed/assign plans);
+          the page itself hard-guards to the master tenant admin. */}
+      <Route path="/super-admin" element={<ProtectedRoute requireRole={['admin']}><SuperAdminSubscriptionsPage /></ProtectedRoute>} />
       {/* Team Performance — also a standalone navbar destination; navbar visibility
           is driven by the Main Navbar Feature Matrix (navbar.teamPerformance.view).
           The Admin sub-tab at /admin#team-performance remains intact. */}

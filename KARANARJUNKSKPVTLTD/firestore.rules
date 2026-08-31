@@ -70,6 +70,12 @@ service cloud.firestore {
       return d != null && d.tenantId == 'master';
     }
 
+    // Platform super admin — the master tenant's admin/analyst. Owns the global
+    // plan catalogue and assigns subscriptions. (Phase 2A subscription layer.)
+    function isSuperAdmin() {
+      return isMasterTenant() && isAdminOrAnalyst();
+    }
+
     // ── Global: User identity ─────────────────────────────────────────────────
     // /users/{uid} is root-level (global identity, never tenant-scoped).
     match /users/{userId} {
@@ -111,6 +117,25 @@ service cloud.firestore {
     match /posModules/{moduleId} {
       allow read:  if request.auth != null;
       allow write: if false;
+    }
+
+    // ── Global: Subscription plan catalogue (Phase 2A) ────────────────────────
+    // Platform config, kept separate from tenant data. Any authenticated user may
+    // read the catalogue (a tenant reads its own plan's entitlements). Only the
+    // platform super admin (master tenant admin) may create/edit plans.
+    match /plans/{planId} {
+      allow read:  if request.auth != null;
+      allow write: if request.auth != null && isSuperAdmin();
+    }
+
+    // ── Global: Tenant → plan assignment (Phase 2A) ───────────────────────────
+    // Deliberately NOT on the tenant root doc (which business admins can edit) so
+    // a business admin can never self-escalate their plan. Readable by the owning
+    // tenant's members (to resolve entitlements) and the super admin; writable
+    // ONLY by the super admin.
+    match /tenantSubscriptions/{tenantId} {
+      allow read:  if request.auth != null && (isSuperAdmin() || isTenantMember(tenantId));
+      allow write: if request.auth != null && isSuperAdmin();
     }
 
     // ── Global: Public payment landing pages ──────────────────────────────────
@@ -378,8 +403,10 @@ service cloud.firestore {
     match /tenants/{tenantId} {
 
       // Tenant root document.
+      // Super admin may read/list every tenant (Super Admin subscription screen).
       allow read: if request.auth != null && (
         tenantId == 'master' ||
+        isSuperAdmin() ||
         (getUserData() != null && getUserData().tenantId == tenantId)
       );
       allow create: if request.auth != null && tenantId == 'tenant_' + request.auth.uid;

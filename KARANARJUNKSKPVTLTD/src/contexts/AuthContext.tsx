@@ -4,6 +4,14 @@ import { onAuthStateChanged, signOut } from 'firebase/auth';
 import { doc, getDoc, setDoc, serverTimestamp, onSnapshot, collection } from 'firebase/firestore';
 import { auth, db } from '../firebase';
 import { DEFAULT_FEATURE_PERMISSIONS, type FeaturePermissions } from '../utils/featurePermissions';
+import {
+    resolveEntitlements,
+    isScreenAllowedByPlan,
+    RESTRICTED_ENTITLEMENTS,
+    type PlanEntitlements,
+    type Plan,
+    type TenantSubscription,
+} from '../utils/subscriptionPlans';
 
 // 'retailer' is a read-only portal for shops that buy FROM this tenant (see
 // RETAILER_ALLOWED_PATHS in App.tsx). 'shopkeeper' is the opposite: a shop owner
@@ -108,6 +116,13 @@ interface AuthContextType {
     tenantPlan: string;
     modulesLoading: boolean;
     hasModule: (moduleId: string) => boolean;
+    // ── Subscription plan layer (Phase 2A) ──
+    // Tenant-level entitlements resolved from tenantSubscriptions/{id} + plans/{planId}.
+    // A tenant with no valid subscription is RESTRICTED (empty screen set).
+    planEntitlements: PlanEntitlements;
+    hasPlanScreen: (screen: AppScreen) => boolean;
+    // True until the tenant's subscription has been resolved after login.
+    subscriptionLoading: boolean;
 }
 
 const AuthContext = createContext<AuthContextType>({
@@ -129,6 +144,9 @@ const AuthContext = createContext<AuthContextType>({
     tenantPlan: 'free',
     modulesLoading: true,
     hasModule: () => false,
+    planEntitlements: RESTRICTED_ENTITLEMENTS,
+    hasPlanScreen: () => false,
+    subscriptionLoading: true,
 });
 
 export function useAuth() {
@@ -152,10 +170,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     const [enabledModules, setEnabledModules] = useState<string[]>([]);
     const [tenantPlan, setTenantPlan] = useState<string>('free');
     const [modulesLoading, setModulesLoading] = useState(true);
+    const [planEntitlements, setPlanEntitlements] = useState<PlanEntitlements>(RESTRICTED_ENTITLEMENTS);
+    const [subscriptionLoading, setSubscriptionLoading] = useState(true);
 
     useEffect(() => {
         let unsubscribePerms: (() => void) | null = null;
         let unsubscribeModules: (() => void) | null = null;
+        let unsubscribeSubscription: (() => void) | null = null;
 
         const unsubscribe = onAuthStateChanged(auth, async (user) => {
             if (user) {
@@ -169,7 +190,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
                         'arjutanpure@karanarjun.com',
                         'arjun1829@karanarjun.com',
                         'karanarjun@karanarjun.com',
-                        'arjutanpure@gmail.com'
+                        'arjutanpure@gmail.com',
+                        // Platform Super Admin (subscription management).
+                        'superadmin@fiinny.com'
                     ];
                     const isMasterAdmin = MASTER_ADMIN_EMAILS.includes(emailLC);
 
@@ -317,12 +340,48 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
                             console.error("Error fetching modules", modErr);
                             setModulesLoading(false);
                         }
+
+                        // ── Subscription plan entitlements (Phase 2B) ──
+                        // Every tenant — INCLUDING master — resolves its plan from
+                        // tenantSubscriptions/{id} → plans/{planId}. No subscription →
+                        // RESTRICTED (not unlimited). Fail CLOSED so a rules/offline
+                        // hiccup can never silently grant unrestricted access.
+                        try {
+                            setSubscriptionLoading(true);
+                            if (unsubscribeSubscription) unsubscribeSubscription();
+                            const subRef = doc(db, 'tenantSubscriptions', tId);
+                            unsubscribeSubscription = onSnapshot(subRef, async (subSnap) => {
+                                if (!subSnap.exists()) {
+                                    setPlanEntitlements(RESTRICTED_ENTITLEMENTS);
+                                    setSubscriptionLoading(false);
+                                    return;
+                                }
+                                const subscription = subSnap.data() as TenantSubscription;
+                                let plan: Plan | null = null;
+                                if (subscription.planId) {
+                                    const planSnap = await getDoc(doc(db, 'plans', subscription.planId));
+                                    if (planSnap.exists()) plan = planSnap.data() as Plan;
+                                }
+                                setPlanEntitlements(resolveEntitlements(subscription, plan));
+                                setSubscriptionLoading(false);
+                            }, () => {
+                                setPlanEntitlements(RESTRICTED_ENTITLEMENTS);
+                                setSubscriptionLoading(false);
+                            });
+                        } catch (subErr) {
+                            console.error("Error fetching subscription", subErr);
+                            setPlanEntitlements(RESTRICTED_ENTITLEMENTS);
+                            setSubscriptionLoading(false);
+                        }
                     } else {
                         if (unsubscribePerms) {
                             unsubscribePerms();
                             unsubscribePerms = null;
                         }
                         setModulesLoading(false);
+                        // No tenant yet (e.g. mid-onboarding) — nothing to resolve.
+                        setPlanEntitlements(RESTRICTED_ENTITLEMENTS);
+                        setSubscriptionLoading(false);
                     }
 
                 } catch (error) {
@@ -330,7 +389,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
                     
                     // Fallback to ensure owner never gets locked out
                     const emailLC = user.email?.toLowerCase() || '';
-                    const isMasterAdmin = emailLC.includes('arjuntanpure') || emailLC.includes('arjutanpure') || emailLC.includes('arjun1829') || emailLC.includes('karanarjun');
+                    const isMasterAdmin = emailLC.includes('arjuntanpure') || emailLC.includes('arjutanpure') || emailLC.includes('arjun1829') || emailLC.includes('karanarjun') || emailLC === 'superadmin@fiinny.com';
                     
                     setUserRole(isMasterAdmin ? 'admin' : 'analyst');
                     if (isMasterAdmin) {
@@ -355,6 +414,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
                 setFeaturePermissions(DEFAULT_FEATURE_PERMISSIONS);
                 setCustomRoles([]);
                 setRoleLandingPages({});
+                setPlanEntitlements(RESTRICTED_ENTITLEMENTS);
+                setSubscriptionLoading(false);
+                if (unsubscribeSubscription) {
+                    unsubscribeSubscription();
+                    unsubscribeSubscription = null;
+                }
             }
             setCurrentUser(user);
             setLoading(false);
@@ -364,6 +429,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
             unsubscribe();
             if (unsubscribePerms) unsubscribePerms();
             if (unsubscribeModules) unsubscribeModules();
+            if (unsubscribeSubscription) unsubscribeSubscription();
         };
     }, []);
 
@@ -372,6 +438,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     };
 
     const hasModule = (moduleId: string): boolean => enabledModules.includes(moduleId);
+    const hasPlanScreen = (screen: AppScreen): boolean => isScreenAllowedByPlan(screen, planEntitlements);
 
     const value = {
         currentUser,
@@ -392,6 +459,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         tenantPlan,
         modulesLoading,
         hasModule,
+        planEntitlements,
+        hasPlanScreen,
+        subscriptionLoading,
     };
 
     return (

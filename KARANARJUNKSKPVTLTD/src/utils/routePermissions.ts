@@ -120,6 +120,7 @@ export const PROTECTED_ROUTES: RoutePermission[] = [
 
     // Admin
     { path: '/admin',                appScreen: 'admin',            requireRole: ['admin', 'analyst'] },
+    { path: '/super-admin',                                         requireRole: ['admin'], notes: 'Platform Super Admin subscription mgmt. NO appScreen (never plan-gated); page hard-guards to master-tenant admin.' },
     { path: '/administration',       appScreen: 'admin',            requireRole: ['admin'] },
     { path: '/krishidukan',          appScreen: 'krishidukan',      requireRole: ['admin', 'shopkeeper'] },
 ];

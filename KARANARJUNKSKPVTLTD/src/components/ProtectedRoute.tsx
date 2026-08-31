@@ -1,6 +1,8 @@
 import { Navigate, useLocation } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import type { UserRole, AppScreen } from '../contexts/AuthContext';
+import { isScreenAllowedByPlan } from '../utils/subscriptionPlans';
+import { navFeatureGroupForPath, isFeatureGroupAllowed } from '../utils/subscriptionCatalog';
 
 // Mirrors the DEFAULT_LANDING in App.tsx — the built-in fallback when no
 // admin-configured landing exists for a role.
@@ -40,10 +42,12 @@ interface ProtectedRouteProps {
  * environments including UAT/staging. Use a real Firebase auth session to test.
  */
 export default function ProtectedRoute({ children, requireAdmin = false, requireRole, appScreen }: ProtectedRouteProps) {
-    const { currentUser, userRole, permissions, loading, roleLandingPages } = useAuth();
+    const { currentUser, userRole, permissions, loading, roleLandingPages, planEntitlements, subscriptionLoading } = useAuth();
     const location = useLocation();
 
-    if (loading) {
+    // Wait for both auth AND the subscription to resolve — denying a gated screen
+    // before the plan is known would flash a wrongful redirect on every load.
+    if (loading || (currentUser && subscriptionLoading)) {
         return (
             <div style={{ padding: '4rem', textAlign: 'center', color: 'var(--text-secondary)' }}>
                 Verifying access…
@@ -55,8 +59,25 @@ export default function ProtectedRoute({ children, requireAdmin = false, require
         return <Navigate to="/login" replace />;
     }
 
-    // 'admin' role is unrestricted — bypasses every subsequent check.
-    if (userRole === 'admin') return <>{children}</>;
+    // ── Tenant-level plan gate (Phase 2A) ─────────────────────────────────────
+    // A tenant may only reach screens its subscription plan includes — this sits
+    // ABOVE roles and constrains even the business admin (rule 1). It never grants
+    // access the role matrix would deny; it only ever subtracts. Two axes:
+    //   • screen  — plan.screens (the AppScreen for this route).
+    //   • group   — plan.features, for modules that share a screen (Worklist vs
+    //               Supplier Ledger, Analytics vs Reports) or have none (Team
+    //               Performance). Blocks direct-URL / refresh for those too.
+    const routeGroup = navFeatureGroupForPath(location.pathname);
+    const planAllowsScreen =
+        isScreenAllowedByPlan(appScreen, planEntitlements) &&
+        (!routeGroup || isFeatureGroupAllowed(routeGroup, planEntitlements));
+
+    // 'admin' role is unrestricted at the ROLE layer — but still bound by the plan
+    // (rule 1). Settings is always allowed, so it is a loop-free redirect target.
+    if (userRole === 'admin') {
+        if (!planAllowsScreen) return <Navigate to="/settings" replace />;
+        return <>{children}</>;
+    }
 
     // Compute the safe redirect for this user. Uses the admin-configured landing
     // page when available, then the built-in default, then /dashboard as last resort.
@@ -78,9 +99,11 @@ export default function ProtectedRoute({ children, requireAdmin = false, require
     // ── Module-level permission (single source of truth) ──────────────────────
     // Reads the live rolePermissions matrix from Firestore via AuthContext.
     // undefined → not configured for this role → denied (secure by default).
+    // Role matrix grant AND the plan must include the screen (plan only subtracts).
     const screenAllowed =
-        !appScreen ||
-        (userRole != null && permissions[userRole]?.[appScreen] === true);
+        planAllowsScreen &&
+        (!appScreen ||
+            (userRole != null && permissions[userRole]?.[appScreen] === true));
 
     // ── Role list check ───────────────────────────────────────────────────────
     // A custom role will not appear in requireRole (those lists name built-in
