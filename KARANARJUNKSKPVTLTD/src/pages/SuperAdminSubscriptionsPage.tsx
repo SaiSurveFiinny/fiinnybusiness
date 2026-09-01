@@ -23,9 +23,22 @@ import {
 // Plans shown in the catalogue, in tier order. Reuses the Phase 2A seed defaults.
 const PLAN_ORDER: PlanId[] = ['retailer', 'distributor', 'manufacturer'];
 
-// Stable signature of the editor's checkbox state — used to detect unsaved edits.
-const serializeEditor = (keys: Set<string>, sections: Set<string>) =>
-    JSON.stringify({ k: [...keys].sort(), s: [...sections].sort() });
+// Stable signature of the editor's state — used to detect unsaved edits.
+const serializeEditor = (keys: Set<string>, sections: Set<string>, landing: string) =>
+    JSON.stringify({ k: [...keys].sort(), s: [...sections].sort(), l: landing });
+
+// Selectable landing pages per plan. Keyed by the SUBSCRIPTION_MODULES key that
+// must be enabled in the plan for this path to appear in the dropdown.
+const PLAN_LANDING_OPTIONS: { path: string; label: string; moduleKey: string }[] = [
+    { path: '/dashboard',     label: 'B2B Dashboard',    moduleKey: 'dashboard' },
+    { path: '/b2c-dashboard', label: 'B2C Dashboard',    moduleKey: 'b2cDashboard' },
+    { path: '/pos',           label: 'POS Billing',      moduleKey: 'pos' },
+    { path: '/worklist',      label: 'Worklist',         moduleKey: 'worklist' },
+    { path: '/reports',       label: 'Reports',          moduleKey: 'reports' },
+    { path: '/analytics',     label: 'Analytics',        moduleKey: 'analytics' },
+    { path: '/rates',         label: 'Inventory',        moduleKey: 'inventory' },
+    { path: '/expenses',      label: 'Expenses',         moduleKey: 'expenses' },
+];
 
 const STATUS_OPTIONS: { value: SubscriptionStatus; label: string }[] = [
     { value: 'active',    label: 'Active' },
@@ -54,6 +67,7 @@ export default function SuperAdminSubscriptionsPage() {
     // Enabled top-level modules + enabled sub-sections (checkbox state).
     const [editKeys, setEditKeys] = useState<Set<string>>(new Set());
     const [editSections, setEditSections] = useState<Set<string>>(new Set());
+    const [editDefaultLanding, setEditDefaultLanding] = useState('');
     // Signature of the plan as loaded; Save enables only when the editor differs.
     const [planBaseline, setPlanBaseline] = useState('');
     const [savingPlan, setSavingPlan] = useState(false);
@@ -123,9 +137,11 @@ export default function SuperAdminSubscriptionsPage() {
             existing?.screens ?? seed?.screens ?? [],
             existing?.features ?? seed?.features ?? [],
         );
+        const landing = existing?.defaultLandingPath ?? '';
         setEditKeys(enabledKeys);
         setEditSections(includedSections);
-        setPlanBaseline(serializeEditor(enabledKeys, includedSections));
+        setEditDefaultLanding(landing);
+        setPlanBaseline(serializeEditor(enabledKeys, includedSections, landing));
     }, [selectedPlan, plans]);
 
     if (!isSuperAdmin) {
@@ -171,6 +187,7 @@ export default function SuperAdminSubscriptionsPage() {
                 screens,
                 features,
                 modules: existing?.modules ?? seed?.modules ?? [],
+                ...(editDefaultLanding ? { defaultLandingPath: editDefaultLanding } : {}),
                 createdAt: existing?.createdAt ?? serverTimestamp(),
                 updatedAt: serverTimestamp(),
             };
@@ -230,7 +247,7 @@ export default function SuperAdminSubscriptionsPage() {
     };
 
     // Save enables only when the editor differs from the plan as loaded.
-    const planDirty = serializeEditor(editKeys, editSections) !== planBaseline;
+    const planDirty = serializeEditor(editKeys, editSections, editDefaultLanding) !== planBaseline;
 
     // ── Render ───────────────────────────────────────────────────────────────
     return (
@@ -365,6 +382,29 @@ export default function SuperAdminSubscriptionsPage() {
                                 </div>
                             );
                         })}
+                    </div>
+
+                    {/* Default landing page — only screens enabled in this plan are selectable */}
+                    <div className="glass-panel" style={{ padding: '1rem 1.25rem', marginTop: '1rem' }}>
+                        <div style={{ fontWeight: 600, fontSize: '0.92rem', marginBottom: '0.35rem' }}>Default Landing Page</div>
+                        <p style={{ margin: '0 0 0.75rem', fontSize: '0.8rem', color: 'var(--text-secondary)' }}>
+                            Where admin/analyst users land after login when no role-specific page is configured.
+                            Only pages included in this plan's modules are selectable.
+                        </p>
+                        <select
+                            className="input-field"
+                            value={editDefaultLanding}
+                            onChange={e => setEditDefaultLanding(e.target.value)}
+                            style={{ maxWidth: '280px' }}
+                        >
+                            <option value="">— Use role default —</option>
+                            {PLAN_LANDING_OPTIONS
+                                .filter(opt => editKeys.has(opt.moduleKey))
+                                .map(opt => (
+                                    <option key={opt.path} value={opt.path}>{opt.label} ({opt.path})</option>
+                                ))
+                            }
+                        </select>
                     </div>
                 </>
             )}

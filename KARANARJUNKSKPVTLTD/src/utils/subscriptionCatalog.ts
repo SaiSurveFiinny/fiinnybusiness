@@ -1,5 +1,6 @@
 import type { AppScreen } from '../contexts/AuthContext';
 import type { PlanEntitlements } from './subscriptionPlans';
+import { ADMIN_COROLLARY_SCREENS } from './subscriptionPlans';
 import { PERMISSION_MODULES, type PermissionSection } from './featurePermissions';
 
 /**
@@ -176,6 +177,11 @@ export function buildPlanEntitlement(state: PlanEditorState): { screens: AppScre
     const screens = new Set<AppScreen>();
     for (const mod of SUBSCRIPTION_MODULES) {
         if (state.enabledKeys.has(mod.key) && mod.screen) screens.add(mod.screen);
+    }
+    // Admin corollary screens are not individually toggled in the editor; inject them
+    // whenever admin is enabled so they are never dropped from plan.screens on re-save.
+    if (screens.has('admin')) {
+        for (const s of ADMIN_COROLLARY_SCREENS) screens.add(s);
     }
 
     const features: string[] = [];

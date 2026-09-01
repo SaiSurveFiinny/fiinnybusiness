@@ -33,6 +33,23 @@ import type { AppScreen, RolePermissions, UserRole } from '../contexts/AuthConte
 // can still open Settings to see their subscription state). Keep this minimal.
 export const ALWAYS_ALLOWED_SCREENS = new Set<AppScreen>(['settings']);
 
+/**
+ * Admin sub-screens that are corollaries of the `admin` AppScreen. The plan
+ * editor (SUBSCRIPTION_MODULES) only exposes a single "Admin" toggle, so these
+ * screens are never written into plan.screens by buildPlanEntitlement. They
+ * must be injected at both build-time and resolve-time whenever `admin` is in
+ * the plan, otherwise Admin Hub tabs gated by these screens are silently hidden.
+ */
+export const ADMIN_COROLLARY_SCREENS: AppScreen[] = [
+    'audit_log',
+    'manage_retailers',
+    'invoice_settings',
+    'manage_store',
+    'manufacturers',
+    'invoice_templates',
+    'schema_builder',
+];
+
 // ─── Screen vocabulary ─────────────────────────────────────────────────────────
 // Runtime list of every AppScreen (the TS union has no runtime form). Keep in
 // sync with the AppScreen type in AuthContext.
@@ -75,6 +92,8 @@ export interface Plan {
     features?: string[];
     /** Optional bundled/allowed posModules add-on ids (marketplace reuse). */
     modules?: string[];
+    /** Super-Admin-configured default landing page path for this plan (e.g. '/pos'). */
+    defaultLandingPath?: string;
     createdAt?: unknown;
     updatedAt?: unknown;
 }
@@ -114,12 +133,15 @@ export interface PlanEntitlements {
     /** Optional finer allowlists — null means "not restricted at that granularity". */
     features: Set<string> | null;
     modules: Set<string> | null;
+    /** Super-Admin-configured default landing path for this plan (e.g. '/pos'). */
+    defaultLandingPath: string | null;
 }
 
 /** The access a tenant gets when it has no valid subscription: restricted. */
 export const RESTRICTED_ENTITLEMENTS: PlanEntitlements = {
     planId: null, status: null, hasSubscription: false,
     screens: new Set<AppScreen>(), features: null, modules: null,
+    defaultLandingPath: null,
 };
 
 // ─── Default plan catalogue (seed source of truth) ─────────────────────────────
@@ -209,6 +231,13 @@ export function resolveEntitlements(
         ...(subscription.overrides?.screens ?? []),
     ]);
 
+    // Admin corollary screens are not toggled individually in the plan editor, so they
+    // can be absent from saved plans. Inject them whenever admin is present so every
+    // Admin Hub tab that the subscription + role permits is actually visible.
+    if (screens.has('admin')) {
+        for (const s of ADMIN_COROLLARY_SCREENS) screens.add(s);
+    }
+
     const featureList = [...(plan.features ?? []), ...(subscription.overrides?.features ?? [])];
     const moduleList = [...(plan.modules ?? []), ...(subscription.overrides?.modules ?? [])];
 
@@ -220,6 +249,7 @@ export function resolveEntitlements(
         // Empty feature/module allowlist means "not restricted at that granularity".
         features: featureList.length ? new Set(featureList) : null,
         modules: moduleList.length ? new Set(moduleList) : null,
+        defaultLandingPath: plan.defaultLandingPath ?? null,
     };
 }
 

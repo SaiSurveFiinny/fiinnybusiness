@@ -1,12 +1,11 @@
 import { useEffect } from 'react';
 import {
-    UserCog, Shield, TrendingUp, Target, Lock, ShieldAlert, Users,
+    UserCog, Shield, TrendingUp, Target, Lock, Users,
     Palette, Store, Factory, Layers, Database, KeyRound,
 } from 'lucide-react';
 import { useHashTab } from '../hooks/useHashTab';
 import { useAuth } from '../contexts/AuthContext';
 import type { AppScreen, UserRole } from '../contexts/AuthContext';
-import ProtectedRoute from '../components/ProtectedRoute';
 
 // Sub-pages rendered inside the Admin hub. AdminHubPage itself is lazy-loaded by
 // App.tsx, so these direct imports keep the whole Admin area in one chunk —
@@ -16,7 +15,6 @@ import AuditLogPage from './AuditLogPage';
 import TeamPerformancePage from './TeamPerformancePage';
 import SalesTargetsAdminPage from './SalesTargetsAdminPage';
 import DataSecurityPage from './DataSecurityPage';
-import ManageRolesPage from './ManageRolesPage';
 import SuperAdminPermissionsPage from './SuperAdminPermissionsPage';
 import ManageRetailersPage from './ManageRetailersPage';
 import InvoiceSettingsPage from './InvoiceSettingsPage';
@@ -44,7 +42,6 @@ const ADMIN_TABS: AdminTab[] = [
     { id: 'team-performance',  label: 'Team Performance',  icon: <TrendingUp size={16} />,  requireRole: ['admin'],            appScreen: 'admin',             Comp: TeamPerformancePage },
     { id: 'sales-target',      label: 'Sales Target',      icon: <Target size={16} />,      requireRole: ['admin'],            appScreen: 'admin',             Comp: SalesTargetsAdminPage },
     { id: 'data-security',     label: 'Data Security',     icon: <Lock size={16} />,        requireRole: ['admin'],            appScreen: 'admin',             Comp: DataSecurityPage },
-    { id: 'role-matrix',       label: 'Role Matrix',       icon: <ShieldAlert size={16} />, requireRole: ['admin'],            appScreen: 'admin',             Comp: ManageRolesPage },
     { id: 'feature-permissions', label: 'Feature Permissions', icon: <KeyRound size={16} />,  requireRole: ['admin'],            appScreen: 'admin',             Comp: SuperAdminPermissionsPage },
     { id: 'manage-retailers',  label: 'Manage Retailers',  icon: <Users size={16} />,       requireRole: ['admin', 'analyst'], appScreen: 'manage_retailers',  Comp: ManageRetailersPage },
     { id: 'invoice-branding',  label: 'Invoice Branding',  icon: <Palette size={16} />,     requireRole: ['admin', 'analyst'], appScreen: 'invoice_settings',  Comp: InvoiceSettingsPage },
@@ -59,16 +56,23 @@ const VALID_TABS: readonly string[] = ADMIN_TABS.map(t => t.id);
 // ─── Component ────────────────────────────────────────────────────────────────
 
 export default function AdminHubPage() {
-    const { userRole, permissions } = useAuth();
+    const { userRole, permissions, hasPlanScreen } = useAuth();
 
     // Per-tab permission check — uses requireRole + appScreen from each tab definition,
     // exactly matching the gate those sub-pages had when they were standalone routes.
     const isTabAllowed = (tabId: string): boolean => {
         const tabDef = ADMIN_TABS.find(t => t.id === tabId);
         if (!tabDef || !userRole) return false;
-        if (!tabDef.requireRole.includes(userRole as UserRole)) return false;
-        if (!permissions[userRole]?.[tabDef.appScreen]) return false;
-        return true;
+        // Plan gate mirrors ProtectedRoute: tab's appScreen must be in the subscription plan.
+        if (!hasPlanScreen(tabDef.appScreen)) return false;
+        // admin role bypasses role/permission checks (plan already checked above).
+        if (userRole === 'admin') return true;
+        // For built-in roles listed in requireRole: requireRole is sufficient — the plan
+        // gate above is the access boundary. For custom/unlisted roles: fall back to the
+        // existing screen-level permission grant (Feature Permissions / legacy role data).
+        const inRequireRole = tabDef.requireRole.includes(userRole as UserRole);
+        const screenAllowed = permissions[userRole]?.[tabDef.appScreen] === true;
+        return inRequireRole || screenAllowed;
     };
 
     const [activeTab, setActiveTab] = useHashTab<string>(VALID_TABS, 'manage-users', 'fiinny-tab-admin', isTabAllowed);
@@ -151,11 +155,11 @@ export default function AdminHubPage() {
                 })}
             </div>
 
-            {/* ── Tab Content — wrapped in the same gate the sub-page had as a route ── */}
+            {/* ── Tab Content — isTabAllowed gates every tab with the same plan +
+                 requireRole logic as ProtectedRoute, so rendering directly avoids
+                 the page-level <Navigate> a nested ProtectedRoute would fire. */}
             <div style={{ flex: '1 1 480px', minWidth: 0 }}>
-                <ProtectedRoute requireRole={active.requireRole} appScreen={active.appScreen}>
-                    <ActiveComp />
-                </ProtectedRoute>
+                <ActiveComp />
             </div>
         </div>
     );

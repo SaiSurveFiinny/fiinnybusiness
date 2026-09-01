@@ -15,7 +15,7 @@ import { useTranslation } from 'react-i18next';
 
 export default function AdminPage() {
     const { t } = useTranslation();
-    const { userRole, currentUser, tenantId, userName, customRoles } = useAuth();
+    const { userRole, currentUser, tenantId, userName, customRoles, permissions } = useAuth();
     const { showToast } = useToast();
     const [activeSection, setActiveSection] = useState<'staff' | 'retailer' | 'manufacturer' | 'trash'>('staff');
     const [users, setUsers] = useState<any[]>([]);
@@ -94,13 +94,14 @@ export default function AdminPage() {
             } catch (e) { console.error(e); }
         };
 
-        if (userRole === 'admin') {
+        const hasAccess = userRole === 'admin' || (userRole !== null && permissions[userRole]?.['admin'] === true);
+        if (hasAccess) {
             fetchUsers();
             fetchLinked();
         } else {
             setLoading(false);
         }
-    }, [userRole, tenantId]);
+    }, [userRole, tenantId]); // eslint-disable-line react-hooks/exhaustive-deps
 
 
     const handleCreateUser = async (e: React.FormEvent) => {
@@ -287,7 +288,10 @@ export default function AdminPage() {
         }
     };
 
-    if (userRole !== 'admin') {
+    // Admit the admin role (plan-gated upstream; admin bypasses role matrix) plus any
+    // role the business admin has explicitly granted 'admin' screen access in the Role Matrix.
+    const canManageUsers = userRole === 'admin' || (userRole !== null && permissions[userRole]?.['admin'] === true);
+    if (!canManageUsers) {
         return (
             <div style={{ textAlign: 'center', padding: '4rem', color: 'var(--danger)' }}>
                 <ShieldAlert size={48} style={{ margin: '0 auto 1rem auto' }} />

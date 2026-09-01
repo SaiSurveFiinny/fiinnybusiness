@@ -129,7 +129,7 @@ function Layout({ children, currentTheme, toggleTheme }: { children: React.React
   const location = useLocation();
   const navigate = useNavigate();
   const { t } = useTranslation();
-  const { currentUser, userRole, tenantData, tenantId, permissions, logout, hasPlanScreen, planEntitlements } = useAuth();
+  const { currentUser, userRole, tenantData, tenantId, permissions, logout, hasPlanScreen, planEntitlements, subscriptionLoading } = useAuth();
   const can = useFeaturePermissions();
 
   const handleLogout = () => {
@@ -164,6 +164,57 @@ function Layout({ children, currentTheme, toggleTheme }: { children: React.React
           </div>
         </div>
         <main style={{ padding: '2rem', maxWidth: '1100px', margin: '0 auto' }}>{children}</main>
+      </div>
+    );
+  }
+
+  // Subscription inactive guard — shown for any non-master tenant whose subscription
+  // is missing, suspended, or cancelled. Bypassed while the subscription is still
+  // resolving to avoid a flash. Master tenant (super admin) is never blocked.
+  const subscriptionActive =
+    !planEntitlements.hasSubscription
+      ? false
+      : ['active', 'trial', 'past_due'].includes(planEntitlements.status ?? '');
+  const showInactiveScreen =
+    !subscriptionLoading &&
+    !!currentUser &&
+    !!tenantId &&
+    tenantId !== 'master' &&
+    !subscriptionActive;
+
+  if (showInactiveScreen) {
+    return (
+      <div style={{ minHeight: '100vh', background: 'var(--surface-base)', display: 'flex', flexDirection: 'column' }}>
+        <header style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '1rem 1.5rem', background: 'var(--surface-raised)', borderBottom: '1px solid var(--surface-border)' }}>
+          <h2 className="primary-gradient-text" style={{ fontSize: '1.35rem', margin: 0, letterSpacing: '-0.03em' }}>
+            {tenantData?.businessName || 'Fiinny ERP'}
+          </h2>
+          <button
+            onClick={handleLogout}
+            style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', padding: '0.5rem 1rem', background: 'transparent', border: '1px solid var(--surface-border)', borderRadius: '8px', cursor: 'pointer', color: 'var(--text-secondary)', font: 'inherit', fontSize: '0.875rem' }}
+          >
+            <LogOut size={16} /> Logout
+          </button>
+        </header>
+        <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: '2rem', textAlign: 'center' }}>
+          <div style={{ maxWidth: '480px' }}>
+            <div style={{ width: '72px', height: '72px', borderRadius: '50%', background: 'hsla(0,84%,60%,0.1)', display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 1.5rem' }}>
+              <ShieldAlert size={36} style={{ color: 'var(--danger)' }} />
+            </div>
+            <h2 style={{ fontSize: '1.5rem', marginBottom: '1rem', color: 'var(--text-primary)' }}>
+              Subscription Not Active
+            </h2>
+            <p style={{ color: 'var(--text-secondary)', fontSize: '1rem', lineHeight: 1.6, marginBottom: '0' }}>
+              Your subscription is not active. Please contact{' '}
+              <strong style={{ color: 'var(--text-primary)' }}>Anshul Dhanpure</strong>{' '}
+              at{' '}
+              <a href="tel:8658032795" style={{ color: 'var(--primary-light)', fontWeight: 600, textDecoration: 'none' }}>
+                8658032795
+              </a>{' '}
+              to activate your subscription.
+            </p>
+          </div>
+        </div>
       </div>
     );
   }
@@ -480,7 +531,7 @@ function App() {
 }
 
 function AppRoutes() {
-  const { currentUser, tenantId, userRole, loading, roleLandingPages } = useAuth();
+  const { currentUser, tenantId, userRole, loading, roleLandingPages, planEntitlements } = useAuth();
   const locationHook = useLocation();
 
   if (loading) return null;
@@ -519,10 +570,17 @@ function AppRoutes() {
   const landingFor = (role: string | null, allowed?: string[]): string => {
     const configured = (role && roleLandingPages?.[role]) || '';
     const fallback = (role && DEFAULT_LANDING[role]) || '/dashboard';
-    if (!configured) return fallback;
-    // For confined roles, ignore a configured landing outside their allowed paths.
-    if (allowed && !allowed.some(p => configured.startsWith(p))) return fallback;
-    return configured;
+    if (configured) {
+      // For confined roles, ignore a configured landing outside their allowed paths.
+      if (allowed && !allowed.some(p => configured.startsWith(p))) return fallback;
+      return configured;
+    }
+    // Plan-level default applies to admin/analyst — confined roles ignore it.
+    if (!allowed && (role === 'admin' || role === 'analyst')) {
+      const planDefault = planEntitlements.defaultLandingPath || '';
+      if (planDefault) return planDefault;
+    }
+    return fallback;
   };
   const onEntryPage = locationHook.pathname === '/' || locationHook.pathname === '/login';
 
@@ -658,7 +716,7 @@ function AppRoutes() {
       <Route path="/customers" element={<ProtectedRoute requireRole={['admin', 'analyst', 'shopkeeper']} appScreen="customers"><CustomersPage /></ProtectedRoute>} />
       <Route path="/customers/:id" element={<ProtectedRoute requireRole={['admin', 'analyst', 'shopkeeper']} appScreen="customers"><CustomerProfilePage /></ProtectedRoute>} />
       {/* Legacy /admin/* deep links → hash equivalents (bookmarks stay working) */}
-      <Route path="/admin/manage-roles" element={<Navigate to="/admin#role-matrix" replace />} />
+      <Route path="/admin/manage-roles" element={<Navigate to="/admin#feature-permissions" replace />} />
       <Route path="/admin/data-security" element={<Navigate to="/admin#data-security" replace />} />
       <Route path="/admin/audit-log" element={<Navigate to="/admin#audit-log" replace />} />
       <Route path="/admin/manage-retailers" element={<Navigate to="/admin#manage-retailers" replace />} />
