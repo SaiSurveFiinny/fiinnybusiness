@@ -21,6 +21,8 @@ export type WaTemplate =
   | "product_assignment_pending_signup"
   | "manufacturer_network_summary"
   | "payment_failed_app_update"
+  | "retailer_seat_promotion"
+  | "add_product_reminder"
   | "generic";
 
 /** Dynamic values substituted into the template at render time (for audit/debug). */
@@ -54,7 +56,12 @@ export interface WaDateTimeParam {
   date_time: { fallback_value: string };
 }
 
-export type WaComponentParam = WaTextParam | WaCurrencyParam | WaDateTimeParam;
+export interface WaImageParam {
+  type: "image";
+  image: { id: string } | { link: string };
+}
+
+export type WaComponentParam = WaTextParam | WaCurrencyParam | WaDateTimeParam | WaImageParam;
 
 export interface WaTemplateComponent {
   type: "header" | "body" | "button";
