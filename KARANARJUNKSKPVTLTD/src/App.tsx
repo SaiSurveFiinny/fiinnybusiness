@@ -129,7 +129,7 @@ function Layout({ children, currentTheme, toggleTheme }: { children: React.React
   const location = useLocation();
   const navigate = useNavigate();
   const { t } = useTranslation();
-  const { currentUser, userRole, tenantData, tenantId, permissions, logout, hasPlanScreen, planEntitlements, subscriptionLoading } = useAuth();
+  const { currentUser, userRole, tenantData, tenantId, permissions, logout, hasPlanScreen, planEntitlements, subscriptionLoading, isSuperAdmin } = useAuth();
   const can = useFeaturePermissions();
 
   const handleLogout = () => {
@@ -144,6 +144,27 @@ function Layout({ children, currentTheme, toggleTheme }: { children: React.React
   // Fully standalone public pages — no nav, no sidebar
   const standalonePathPrefixes = ['/feedback-submit', '/v-checkout/', '/pay/', '/receipt/'];
   if (standalonePathPrefixes.some(p => location.pathname.startsWith(p))) return <>{children}</>;
+
+  // Platform super admin — fully standalone layout, no tenant nav or business data.
+  if (location.pathname.startsWith('/super-admin') && isSuperAdmin) {
+    return (
+      <div style={{ minHeight: '100vh', background: 'var(--surface-base)' }}>
+        <div style={{ padding: '1rem 1.5rem', borderBottom: '1px solid var(--surface-border)', display: 'flex', justifyContent: 'space-between', alignItems: 'center', background: 'var(--surface-raised)' }}>
+          <h2 className="primary-gradient-text" style={{ fontSize: '1.2rem', margin: 0 }}>
+            Fiinny Platform Admin
+          </h2>
+          <div style={{ display: 'flex', gap: '1rem', alignItems: 'center' }}>
+            {currentUser && (
+              <button onClick={handleLogout} style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', padding: '0.5rem 1rem', background: 'transparent', border: '1px solid var(--surface-border)', borderRadius: '8px', cursor: 'pointer', color: 'var(--text-secondary)', font: 'inherit', fontSize: '0.875rem' }}>
+                <LogOut size={16} /> Logout
+              </button>
+            )}
+          </div>
+        </div>
+        <main style={{ padding: '2rem', maxWidth: '1200px', margin: '0 auto' }}>{children}</main>
+      </div>
+    );
+  }
 
   // Role-specific portal paths — no sidebar needed, standalone layout
   const portalPaths = ['/retailer-portal', '/manufacturer-portal'];
@@ -312,9 +333,9 @@ function Layout({ children, currentTheme, toggleTheme }: { children: React.React
     return true;
   });
 
-  // Platform Super Admin entry — only the master tenant admin sees it. Not
-  // screen/plan-gated (it is how the super admin seeds and assigns plans).
-  if (tenantId === 'master' && userRole === 'admin') {
+  // Platform Super Admin entry — only the dedicated super admin identity sees it.
+  // Not screen/plan-gated (the super admin has no tenant subscription to check).
+  if (isSuperAdmin) {
     adminItems.push({ path: '/super-admin', icon: <ShieldAlert size={17} />, label: '🛡️ Super Admin', screenKey: 'admin' });
   }
 
@@ -531,7 +552,7 @@ function App() {
 }
 
 function AppRoutes() {
-  const { currentUser, tenantId, userRole, loading, roleLandingPages, planEntitlements } = useAuth();
+  const { currentUser, tenantId, userRole, loading, roleLandingPages, planEntitlements, isSuperAdmin } = useAuth();
   const locationHook = useLocation();
 
   if (loading) return null;
@@ -584,6 +605,12 @@ function AppRoutes() {
   };
   const onEntryPage = locationHook.pathname === '/' || locationHook.pathname === '/login';
 
+  // Platform super admin — route to /super-admin on entry pages; never to onboarding.
+  if (currentUser && isSuperAdmin) {
+    if (onEntryPage) return <Navigate to="/super-admin" replace />;
+    // Allow any explicit navigation (including /super-admin itself); no further redirect.
+  }
+
   if (currentUser && tenantId) {
     if (userRole === 'retailer' && !RETAILER_ALLOWED_PATHS.some(p => locationHook.pathname.startsWith(p))) {
       return <Navigate to={landingFor('retailer', RETAILER_ALLOWED_PATHS)} replace />;
@@ -602,11 +629,10 @@ function AppRoutes() {
     }
   }
 
-  // Force incomplete setups to finish onboarding — but ONLY for protected routes
-  // Public paths like '/', '/about' etc. are always visible to everyone, even logged-in users without tenantId
-  // This prevents the "stuck in onboarding" loop when Firestore read fails or user just wants to browse
+  // Force incomplete setups to finish onboarding — but ONLY for protected routes.
+  // Super admin is exempt: it intentionally has no tenant.
   const publicPaths = ['/', '/about', '/privacy', '/terms', '/blog', '/changelog', '/download', '/login'];
-  if (currentUser && !tenantId && !publicPaths.includes(locationHook.pathname) && locationHook.pathname !== '/client-onboarding') {
+  if (currentUser && !tenantId && !isSuperAdmin && !publicPaths.includes(locationHook.pathname) && locationHook.pathname !== '/client-onboarding') {
     return <Navigate to="/client-onboarding" replace />;
   }
 
@@ -705,10 +731,9 @@ function AppRoutes() {
       {/* Admin — single hash-based hub. Sub-tabs live at /admin#<tab>; each
           tab's own role/permission gate is enforced inside AdminHubPage. */}
       <Route path="/admin" element={<ProtectedRoute requireRole={['admin', 'analyst']} appScreen="admin"><AdminHubPage /></ProtectedRoute>} />
-      {/* Super Admin subscription management — platform-level. NO appScreen (never
-          plan-gated, so the master admin can always reach it to seed/assign plans);
-          the page itself hard-guards to the master tenant admin. */}
-      <Route path="/super-admin" element={<ProtectedRoute requireRole={['admin']}><SuperAdminSubscriptionsPage /></ProtectedRoute>} />
+      {/* Super Admin subscription management — platform-level. Only the dedicated
+          super admin identity may access this route (requireSuperAdmin enforces it). */}
+      <Route path="/super-admin" element={<ProtectedRoute requireSuperAdmin><SuperAdminSubscriptionsPage /></ProtectedRoute>} />
       {/* Team Performance — also a standalone navbar destination; navbar visibility
           is driven by the Main Navbar Feature Matrix (navbar.teamPerformance.view).
           The Admin sub-tab at /admin#team-performance remains intact. */}

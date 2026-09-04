@@ -109,26 +109,34 @@ export default function AdminPage() {
         setCreateLoading(true);
         setCreateError('');
 
+        // Unique app name prevents "duplicate-app" errors from a leaked previous instance.
+        const secondaryApp = initializeApp(firebaseConfig, 'StaffCreate_' + Date.now());
+        let createdAuthUser: { delete: () => Promise<void> } | null = null;
+
         try {
-            // Note: In a real production app, you'd use Firebase Admin SDK or a Cloud Function
-            // to create users without signing out the current admin.
-            // For this project, we'll use a secondary Firebase app instance to create the user.
-            const secondaryApp = initializeApp(firebaseConfig, 'Secondary');
             const secondaryAuth = getAuth(secondaryApp);
 
             const userCredential = await createUserWithEmailAndPassword(secondaryAuth, newEmail, newPassword);
-            const newUser = userCredential.user;
+            createdAuthUser = userCredential.user;
 
             if (!tenantId) throw new Error('No tenant assigned to the current admin — cannot create user.');
-            // Create the user document in Firestore
-            await setDoc(doc(db, 'users', newUser.uid), {
-                name: newName,
-                email: newEmail,
-                role: newRole,
-                tenantId,
-                assignedDistricts: newRole === 'sales' ? newDistricts : [],
-                createdAt: serverTimestamp()
-            });
+
+            try {
+                await setDoc(doc(db, 'users', userCredential.user.uid), {
+                    name: newName,
+                    email: newEmail,
+                    role: newRole,
+                    tenantId,
+                    assignedDistricts: newRole === 'sales' ? newDistricts : [],
+                    createdAt: serverTimestamp()
+                });
+            } catch (firestoreError) {
+                // Roll back the Auth account so it doesn't become orphaned.
+                await createdAuthUser.delete().catch((delErr: any) =>
+                    console.error('Rollback delete failed — Auth account may be orphaned:', delErr)
+                );
+                throw firestoreError;
+            }
 
             // Refresh user list — scoped to this tenant only
             const refreshQ = tenantUsersQuery();
@@ -138,7 +146,7 @@ export default function AdminPage() {
             }
 
             if (tenantId && currentUser) {
-                logAudit({ db, tenantId, userId: currentUser.uid, userName: userName || currentUser.email || 'Admin', userRole: userRole || 'admin', module: 'Manage Users', action: 'Create', entityName: newName, entityId: newUser.uid, remarks: `Role: ${newRole} · Email: ${newEmail}` });
+                logAudit({ db, tenantId, userId: currentUser.uid, userName: userName || currentUser.email || 'Admin', userRole: userRole || 'admin', module: 'Manage Users', action: 'Create', entityName: newName, entityId: userCredential.user.uid, remarks: `Role: ${newRole} · Email: ${newEmail}` });
             }
 
             // Reset form
@@ -151,13 +159,29 @@ export default function AdminPage() {
             setShowCreateForm(false);
             alert(t('admin.create_success', { name: newName }));
 
-            // Clean up secondary app
-            await deleteApp(secondaryApp);
         } catch (error: any) {
             console.error("Error creating user:", error);
-            setCreateError(error.message || t('admin.create_error'));
+
+            if (error.code === 'auth/email-already-in-use') {
+                // Distinguish orphaned Auth account (no Firestore doc) from a genuine duplicate.
+                const dupQ = query(collection(db, 'users'), where('email', '==', newEmail), where('tenantId', '==', tenantId));
+                const dupSnap = await getDocs(dupQ).catch(() => null);
+                if (!dupSnap || dupSnap.empty) {
+                    setCreateError(
+                        'This email already has a Firebase Auth account but no matching user record in this tenant. ' +
+                        'A previous creation attempt may have failed mid-way. ' +
+                        'Please contact support to clear the orphaned account before retrying.'
+                    );
+                } else {
+                    setCreateError('A user with this email already exists in your tenant.');
+                }
+            } else {
+                setCreateError(error.message || t('admin.create_error'));
+            }
         } finally {
             setCreateLoading(false);
+            // Always clean up the secondary app, even on failure.
+            await deleteApp(secondaryApp).catch(() => {});
         }
     };
 

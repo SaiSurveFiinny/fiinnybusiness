@@ -55,7 +55,7 @@ interface TenantRow {
 }
 
 export default function SuperAdminSubscriptionsPage() {
-    const { tenantId, userRole, currentUser } = useAuth();
+    const { isSuperAdmin, currentUser } = useAuth();
     const { showToast } = useToast();
 
     const [view, setView] = useState<'plans' | 'tenants'>('plans');
@@ -78,7 +78,7 @@ export default function SuperAdminSubscriptionsPage() {
     const [tenantsLoading, setTenantsLoading] = useState(false);
     const [savingTenant, setSavingTenant] = useState<string | null>(null);
 
-    const isSuperAdmin = tenantId === 'master' && userRole === 'admin';
+    // isSuperAdmin comes directly from AuthContext (superadmin@fiinny.com identity check).
 
     // ── Loaders ──────────────────────────────────────────────────────────────
     const loadPlans = useCallback(async () => {

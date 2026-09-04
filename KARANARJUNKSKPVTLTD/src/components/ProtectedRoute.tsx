@@ -20,6 +20,9 @@ interface ProtectedRouteProps {
     requireAdmin?: boolean;
     requireRole?: UserRole[];
     appScreen?: AppScreen;
+    // Restricts the route to the platform super admin only (superadmin@fiinny.com).
+    // Non-super-admin users are redirected to /login regardless of their role.
+    requireSuperAdmin?: boolean;
 }
 
 /**
@@ -41,8 +44,8 @@ interface ProtectedRouteProps {
  * DEV bypass removed intentionally — permissions must be testable in all
  * environments including UAT/staging. Use a real Firebase auth session to test.
  */
-export default function ProtectedRoute({ children, requireAdmin = false, requireRole, appScreen }: ProtectedRouteProps) {
-    const { currentUser, userRole, permissions, loading, roleLandingPages, planEntitlements, subscriptionLoading } = useAuth();
+export default function ProtectedRoute({ children, requireAdmin = false, requireRole, appScreen, requireSuperAdmin = false }: ProtectedRouteProps) {
+    const { currentUser, userRole, permissions, loading, roleLandingPages, planEntitlements, subscriptionLoading, isSuperAdmin } = useAuth();
     const location = useLocation();
 
     // Wait for both auth AND the subscription to resolve — denying a gated screen
@@ -57,6 +60,20 @@ export default function ProtectedRoute({ children, requireAdmin = false, require
 
     if (!currentUser) {
         return <Navigate to="/login" replace />;
+    }
+
+    // ─��� Super admin gate ──────────────────────────────────────────────────────
+    // If the route requires the platform super admin identity, enforce it strictly.
+    // The super admin bypasses all tenant-level role and plan checks — they have
+    // no tenant and the page is fully standalone.
+    if (requireSuperAdmin) {
+        return isSuperAdmin ? <>{children}</> : <Navigate to="/login" replace />;
+    }
+
+    // The super admin should never access tenant routes. If they somehow land on
+    // one (e.g. typed URL), send them back to their own page.
+    if (isSuperAdmin) {
+        return <Navigate to="/super-admin" replace />;
     }
 
     // ── Tenant-level plan gate (Phase 2A) ─────────────────────────────────────

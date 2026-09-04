@@ -123,6 +123,9 @@ interface AuthContextType {
     hasPlanScreen: (screen: AppScreen) => boolean;
     // True until the tenant's subscription has been resolved after login.
     subscriptionLoading: boolean;
+    // True only for the dedicated platform super admin (superadmin@fiinny.com).
+    // This identity never belongs to any tenant and has no business UI.
+    isSuperAdmin: boolean;
 }
 
 const AuthContext = createContext<AuthContextType>({
@@ -147,6 +150,7 @@ const AuthContext = createContext<AuthContextType>({
     planEntitlements: RESTRICTED_ENTITLEMENTS,
     hasPlanScreen: () => false,
     subscriptionLoading: true,
+    isSuperAdmin: false,
 });
 
 export function useAuth() {
@@ -172,11 +176,27 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     const [modulesLoading, setModulesLoading] = useState(true);
     const [planEntitlements, setPlanEntitlements] = useState<PlanEntitlements>(RESTRICTED_ENTITLEMENTS);
     const [subscriptionLoading, setSubscriptionLoading] = useState(true);
+    const [isSuperAdmin, setIsSuperAdmin] = useState(false);
 
     useEffect(() => {
         let unsubscribePerms: (() => void) | null = null;
         let unsubscribeModules: (() => void) | null = null;
         let unsubscribeSubscription: (() => void) | null = null;
+
+        // The dedicated platform super admin never belongs to any tenant.
+        // Checked before the master-admin list so it is never accidentally
+        // folded into a tenant even if the Firestore doc has a stale tenantId.
+        const SUPER_ADMIN_EMAIL = 'superadmin@fiinny.com';
+
+        // Business owners / master tenant admins. Must NOT include the platform
+        // super admin — it has its own identity path above.
+        const MASTER_ADMIN_EMAILS = [
+            'arjuntanpure@karanarjun.com',
+            'arjutanpure@karanarjun.com',
+            'arjun1829@karanarjun.com',
+            'karanarjun@karanarjun.com',
+            'arjutanpure@gmail.com',
+        ];
 
         const unsubscribe = onAuthStateChanged(auth, async (user) => {
             if (user) {
@@ -184,16 +204,38 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
                     const userDocRef = doc(db, 'users', user.uid);
                     const userDoc = await getDoc(userDocRef);
                     const emailLC = user.email?.toLowerCase() || '';
-                    
-                    const MASTER_ADMIN_EMAILS = [
-                        'arjuntanpure@karanarjun.com',
-                        'arjutanpure@karanarjun.com',
-                        'arjun1829@karanarjun.com',
-                        'karanarjun@karanarjun.com',
-                        'arjutanpure@gmail.com',
-                        // Platform Super Admin (subscription management).
-                        'superadmin@fiinny.com'
-                    ];
+
+                    // ── Platform Super Admin path ─────────────────────────────
+                    // This identity has no tenant, no subscription, no nav.
+                    if (emailLC === SUPER_ADMIN_EMAIL) {
+                        setIsSuperAdmin(true);
+                        setUserRole('admin');
+                        setTenantId(null);
+                        setTenantData(null);
+                        setLinkedId(null);
+                        setUserName(
+                            userDoc.exists()
+                                ? (userDoc.data().name || user.displayName || 'Super Admin')
+                                : (user.displayName || 'Super Admin')
+                        );
+                        setAssignedDistricts([]);
+                        setAssignedRetailers([]);
+                        setPermissions(defaultPermissions);
+                        setFeaturePermissions(DEFAULT_FEATURE_PERMISSIONS);
+                        setCustomRoles([]);
+                        setRoleLandingPages({});
+                        setEnabledModules([]);
+                        setTenantPlan('free');
+                        setModulesLoading(false);
+                        setPlanEntitlements(RESTRICTED_ENTITLEMENTS);
+                        setSubscriptionLoading(false);
+                        setCurrentUser(user);
+                        setLoading(false);
+                        return; // skip all tenant loading
+                    }
+
+                    // ── Regular / master-tenant user path ─────────────────────
+                    setIsSuperAdmin(false);
                     const isMasterAdmin = MASTER_ADMIN_EMAILS.includes(emailLC);
 
                     let existingRole = userDoc.exists() ? (userDoc.data().role as UserRole) : null;
@@ -386,24 +428,36 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
                 } catch (error) {
                     console.error("Error fetching user role:", error);
-                    
-                    // Fallback to ensure owner never gets locked out
+
                     const emailLC = user.email?.toLowerCase() || '';
-                    const isMasterAdmin = emailLC.includes('arjuntanpure') || emailLC.includes('arjutanpure') || emailLC.includes('arjun1829') || emailLC.includes('karanarjun') || emailLC === 'superadmin@fiinny.com';
-                    
-                    setUserRole(isMasterAdmin ? 'admin' : 'analyst');
-                    if (isMasterAdmin) {
-                        setTenantId('master');
-                        setTenantData({ businessName: 'KaranArjun' });
-                    } else {
+                    if (emailLC === SUPER_ADMIN_EMAIL) {
+                        // Super admin fallback — still no tenant.
+                        setIsSuperAdmin(true);
+                        setUserRole('admin');
                         setTenantId(null);
                         setTenantData(null);
+                    } else {
+                        // Fallback to ensure business owners never get locked out.
+                        setIsSuperAdmin(false);
+                        const isMasterAdmin = emailLC.includes('arjuntanpure') || emailLC.includes('arjutanpure') || emailLC.includes('arjun1829') || emailLC.includes('karanarjun');
+                        setUserRole(isMasterAdmin ? 'admin' : 'analyst');
+                        if (isMasterAdmin) {
+                            setTenantId('master');
+                            setTenantData({ businessName: 'KaranArjun' });
+                        } else {
+                            setTenantId(null);
+                            setTenantData(null);
+                        }
                     }
                     setAssignedDistricts([]);
                     setAssignedRetailers([]);
                     setPermissions(defaultPermissions);
+                    setModulesLoading(false);
+                    setPlanEntitlements(RESTRICTED_ENTITLEMENTS);
+                    setSubscriptionLoading(false);
                 }
             } else {
+                setIsSuperAdmin(false);
                 setUserRole(null);
                 setTenantId(null);
                 setTenantData(null);
@@ -462,6 +516,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         planEntitlements,
         hasPlanScreen,
         subscriptionLoading,
+        isSuperAdmin,
     };
 
     return (
