@@ -619,26 +619,6 @@ class _StoreLocatorScreenState extends ConsumerState<StoreLocatorScreen> {
                           userLng: userLng,
                           hasUserLocation: locationAsync.value != null,
                         ),
-                        onDetails: (s) {
-                          showStoreDetailSheet(
-                            context: context,
-                            ref: ref,
-                            store: s,
-                            onCall: s.phone != null && s.phone!.isNotEmpty
-                                ? () => _callStore(s.phone!)
-                                : null,
-                            onNavigate: s.hasLocation
-                                ? () => _navigate(
-                                    s,
-                                    allStores: allStores,
-                                    userLat: userLat,
-                                    userLng: userLng,
-                                    hasUserLocation:
-                                        locationAsync.value != null,
-                                  )
-                                : null,
-                          );
-                        },
                       ),
                   ],
                 );
@@ -735,7 +715,6 @@ class _MapOverlay extends StatelessWidget {
   final void Function(StoreModel) onMarkerTap;
   final VoidCallback onClose;
   final void Function(StoreModel) onNavigate;
-  final void Function(StoreModel) onDetails;
 
   const _MapOverlay({
     required this.onMapCreated,
@@ -747,7 +726,6 @@ class _MapOverlay extends StatelessWidget {
     required this.onMarkerTap,
     required this.onClose,
     required this.onNavigate,
-    required this.onDetails,
   });
 
   @override
@@ -895,51 +873,6 @@ class _MapOverlay extends StatelessWidget {
                       ],
                     ),
                   ),
-                  // Was only Back to List + Directions here — a store found
-                  // via search and opened on the map had no way to reach the
-                  // same call/reviews/products/brand-page actions the list
-                  // card's "View store details" already offered, so this
-                  // reuses the identical sheet.
-                  if (focusedStore != null)
-                    Padding(
-                      padding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
-                      child: InkWell(
-                        onTap: () => onDetails(focusedStore!),
-                        borderRadius: BorderRadius.circular(10),
-                        child: Container(
-                          width: double.infinity,
-                          padding: const EdgeInsets.symmetric(vertical: 9),
-                          decoration: BoxDecoration(
-                            color: AppColors.surfaceVariant,
-                            borderRadius: BorderRadius.circular(10),
-                          ),
-                          child: Row(
-                            mainAxisAlignment: MainAxisAlignment.center,
-                            children: [
-                              const Icon(
-                                Icons.info_outline,
-                                size: 14,
-                                color: AppColors.onSurface,
-                              ),
-                              const SizedBox(width: 6),
-                              Text(
-                                focusedStore!.isManufacturer
-                                    ? 'View details & brand page'
-                                    : 'View store details',
-                                style: AppTextStyles.caption.copyWith(
-                                  fontWeight: FontWeight.w700,
-                                ),
-                              ),
-                              const Icon(
-                                Icons.chevron_right,
-                                size: 16,
-                                color: AppColors.onSurfaceVariant,
-                              ),
-                            ],
-                          ),
-                        ),
-                      ),
-                    ),
                   SizedBox(height: MediaQuery.of(context).padding.bottom),
                 ],
               ),

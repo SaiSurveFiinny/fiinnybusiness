@@ -206,8 +206,8 @@ const TAB_PERM: Record<PosModuleTab, string> = {
 };
 
 export default function POSPage() {
+    const [posModuleTab, setPosModuleTab] = useHashTab<PosModuleTab>(VALID_POS_TABS, 'billing', 'fiinny-tab-pos');
     const can = useFeaturePermissions();
-    const [posModuleTab, setPosModuleTab] = useHashTab<PosModuleTab>(VALID_POS_TABS, 'billing', 'fiinny-tab-pos', tab => can(TAB_PERM[tab]));
 
     // Only show sub-tabs the current role is permitted to view.
     const visiblePosTabs = POS_MODULE_TABS.filter(tab => can(TAB_PERM[tab.id]));

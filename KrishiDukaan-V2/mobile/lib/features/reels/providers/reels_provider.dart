@@ -60,15 +60,11 @@ final sellerReelsProvider = FutureProvider.family<List<ReelModel>, String>((
   return _repo.fetchSellerReels(phone);
 });
 
-/// Keyed by a comma-joined list of product doc ids (see product_detail_screen
-/// for why) — a product's reels can be linked to the canonical id OR any
-/// retailer/admin copy id merged into the card.
 final productReelsProvider = FutureProvider.family<List<ReelModel>, String>((
   ref,
-  productIdsKey,
+  productId,
 ) {
-  final ids = productIdsKey.split(',').where((s) => s.isNotEmpty).toList();
-  return _repo.fetchProductReels(ids);
+  return _repo.fetchProductReels(productId);
 });
 
 /// Fetches a single reel by id — powers the `/reel/:id` deep-link screen

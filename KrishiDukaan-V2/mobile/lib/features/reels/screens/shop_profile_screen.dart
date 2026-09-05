@@ -32,20 +32,6 @@ class _ShopProfileScreenState extends ConsumerState<ShopProfileScreen> {
     _trackStoreView();
   }
 
-  /// Opens this shop's full product catalogue on its own page.
-  ///
-  /// The profile only has room for a short horizontal preview row, which
-  /// answers neither "how many products does this shop have" nor "show me all
-  /// of them" — so the Products stat (and the preview row's View All tile)
-  /// both land on a dedicated, searchable, seller-scoped grid instead.
-  void _openShopProducts(String shopName) {
-    final name = shopName.trim();
-    context.push(
-      '/shop/${Uri.encodeComponent(widget.shopPhone)}/products'
-      '${name.isEmpty ? '' : '?name=${Uri.encodeComponent(name)}'}',
-    );
-  }
-
   /// Best-effort, silent bump of `retailers/{phone}.storeViews` and today's
   /// bucket in `storeViewsByDay` — the counters the weekly/monthly/yearly
   /// analytics digest reads for "store views". Same shape and same
@@ -336,15 +322,9 @@ class _ShopProfileScreenState extends ConsumerState<ShopProfileScreen> {
                           loading: () => '—',
                           error: (_, _) => '—',
                         ),
-                        // Opens the shop's full catalogue on its own page.
-                        // Same destination for owner and visitor — the owner's
-                        // route into Inventory stays the "Manage" button in
-                        // the Products section header below.
-                        onTap: () => _openShopProducts(
-                          shopAsync.value?.businessName ??
-                              shopAsync.value?.name ??
-                              '',
-                        ),
+                        onTap: isOwnShop
+                            ? () => context.push(inventoryRoute)
+                            : null,
                       ),
                     ],
                   ),
@@ -353,30 +333,6 @@ class _ShopProfileScreenState extends ConsumerState<ShopProfileScreen> {
                     _FollowButton(
                       shopPhone: shopPhone,
                       currentUserId: currentUser.phone,
-                    ),
-                  ],
-                  // A manufacturer's shop profile had no link at all to their
-                  // brand page — the storefront-picker sheet already offers
-                  // "Visit Brand Page" for the same accounts, this brings
-                  // the profile screen to parity with it.
-                  if (shopAsync.value?.isManufacturer == true) ...[
-                    const SizedBox(height: 10),
-                    SizedBox(
-                      width: double.infinity,
-                      child: OutlinedButton.icon(
-                        onPressed: () => context.push('/brand/$shopPhone'),
-                        icon: const Icon(Icons.business_center_outlined,
-                            size: 18),
-                        label: const Text('Visit Brand Page'),
-                        style: OutlinedButton.styleFrom(
-                          foregroundColor: AppColors.secondary,
-                          side: const BorderSide(color: AppColors.secondary),
-                          padding: const EdgeInsets.symmetric(vertical: 12),
-                          shape: RoundedRectangleBorder(
-                            borderRadius: BorderRadius.circular(12),
-                          ),
-                        ),
-                      ),
                     ),
                   ],
                 ],
@@ -540,38 +496,14 @@ class _ShopProfileScreenState extends ConsumerState<ShopProfileScreen> {
                     ),
                   );
                 }
-                // This row used to render every active listing with no cap —
-                // fine for a handful of products, but a manufacturer can have
-                // hundreds (one seen in production had 800+ copies across
-                // retailers), and rendering + image-loading that many tiles
-                // in one unbounded horizontal list is real memory/scroll-jank
-                // risk on a phone. Capped preview here; the rest is one tap
-                // away via the marketplace's own seller-scoped, already-
-                // paginated browsing — not reimplemented on this screen.
-                const previewCap = 20;
-                final preview = active.take(previewCap).toList();
-                final remaining = active.length - preview.length;
-
                 return SizedBox(
                   height: 180,
                   child: ListView.separated(
                     scrollDirection: Axis.horizontal,
                     padding: const EdgeInsets.symmetric(horizontal: 12),
-                    itemCount: preview.length + (remaining > 0 ? 1 : 0),
+                    itemCount: active.length,
                     separatorBuilder: (_, _) => const SizedBox(width: 10),
-                    itemBuilder: (_, i) {
-                      if (i >= preview.length) {
-                        return _ViewAllProductsTile(
-                          remainingCount: remaining,
-                          onTap: () => _openShopProducts(
-                            shopAsync.value?.businessName ??
-                                shopAsync.value?.name ??
-                                '',
-                          ),
-                        );
-                      }
-                      return _ProductTile(listing: preview[i]);
-                    },
+                    itemBuilder: (_, i) => _ProductTile(listing: active[i]),
                   ),
                 );
               },
@@ -1238,47 +1170,6 @@ class _EditReelSheetState extends ConsumerState<_EditReelSheet> {
 }
 
 // ── Product tile (horizontal list) ────────────────────────────────────────────
-
-/// Trailing tile in the capped product preview row — routes into the
-/// marketplace's seller-scoped browsing (already paginated there) instead of
-/// this screen ever trying to render a seller's entire, potentially huge,
-/// catalog in one unbounded row.
-class _ViewAllProductsTile extends StatelessWidget {
-  final int remainingCount;
-  final VoidCallback onTap;
-  const _ViewAllProductsTile({required this.remainingCount, required this.onTap});
-
-  @override
-  Widget build(BuildContext context) {
-    return GestureDetector(
-      onTap: onTap,
-      child: Container(
-        width: 130,
-        decoration: BoxDecoration(
-          color: AppColors.primaryContainer.withValues(alpha: 0.3),
-          borderRadius: BorderRadius.circular(12),
-          border: Border.all(color: AppColors.divider),
-        ),
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            const Icon(Icons.arrow_forward_ios, color: AppColors.primary, size: 20),
-            const SizedBox(height: 8),
-            Text(
-              '+$remainingCount more',
-              style: AppTextStyles.caption.copyWith(fontWeight: FontWeight.w700),
-            ),
-            const SizedBox(height: 2),
-            Text(
-              'View All',
-              style: AppTextStyles.caption.copyWith(color: AppColors.primary),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-}
 
 class _ProductTile extends StatelessWidget {
   final ListingModel listing;

@@ -9,8 +9,6 @@ import 'package:go_router/go_router.dart';
 import '../../../core/constants/app_colors.dart';
 import '../../../core/constants/app_text_styles.dart';
 import '../../../core/providers/user_provider.dart';
-import '../../../core/services/product_analytics_service.dart';
-import '../../../core/models/catalog_model.dart';
 import '../../../core/widgets/app_top_bar.dart';
 import '../../../core/widgets/product_card.dart';
 import '../../../core/widgets/section_header.dart';
@@ -142,7 +140,23 @@ class HomeScreen extends ConsumerWidget {
                       final trending = ref.watch(trendingProductsProvider);
                       final products = trending.value;
                       if (products != null && products.isNotEmpty) {
-                        return _ProductRail(products: products);
+                        return GridView.builder(
+                          shrinkWrap: true,
+                          physics: const NeverScrollableScrollPhysics(),
+                          gridDelegate:
+                              const SliverGridDelegateWithFixedCrossAxisCount(
+                                crossAxisCount: 3,
+                                childAspectRatio: 0.54,
+                                crossAxisSpacing: 12,
+                                mainAxisSpacing: 12,
+                              ),
+                          itemCount: products.length > 3 ? 3 : products.length,
+                          itemBuilder: (_, i) => ProductCard(
+                            product: products[i],
+                            onTap: () =>
+                                context.push('/product/${products[i].id}'),
+                          ),
+                        );
                       }
                       if (trending.isLoading) {
                         return const ShimmerProductGrid(
@@ -223,7 +237,23 @@ class HomeScreen extends ConsumerWidget {
                       final featured = ref.watch(featuredProductsProvider);
                       final products = featured.value;
                       if (products != null && products.isNotEmpty) {
-                        return _ProductRail(products: products);
+                        return GridView.builder(
+                          shrinkWrap: true,
+                          physics: const NeverScrollableScrollPhysics(),
+                          gridDelegate:
+                              const SliverGridDelegateWithFixedCrossAxisCount(
+                                crossAxisCount: 3,
+                                childAspectRatio: 0.54,
+                                crossAxisSpacing: 12,
+                                mainAxisSpacing: 12,
+                              ),
+                          itemCount: products.length > 3 ? 3 : products.length,
+                          itemBuilder: (_, i) => ProductCard(
+                            product: products[i],
+                            onTap: () =>
+                                context.push('/product/${products[i].id}'),
+                          ),
+                        );
                       }
                       if (featured.isLoading) {
                         return const ShimmerProductGrid(
@@ -854,88 +884,27 @@ class _TopDealsRail extends ConsumerWidget {
               onAction: () => context.go('/marketplace'),
             ),
             const SizedBox(height: 4),
-            // Already a rail — routed through _ProductRail so its cards report
-            // impressions like every other Home section.
-            _ProductRail(products: deals),
+            SizedBox(
+              height: 250,
+              child: ListView.separated(
+                scrollDirection: Axis.horizontal,
+                padding: const EdgeInsets.symmetric(vertical: 4),
+                itemCount: deals.length,
+                separatorBuilder: (_, _) => const SizedBox(width: 12),
+                itemBuilder: (_, i) => SizedBox(
+                  width: 160,
+                  child: ProductCard(
+                    product: deals[i],
+                    onTap: () => context.push('/product/${deals[i].id}'),
+                  ),
+                ),
+              ),
+            ),
             const SizedBox(height: 24),
           ],
         );
       },
       orElse: () => const SizedBox.shrink(),
-    );
-  }
-}
-
-// ─────────────────────────── Product Rail ──────────────────────────────────
-
-/// Horizontal, side-scrolling row of products used by every product section
-/// on Home.
-///
-/// These sections used to be 3-column vertical grids capped at 3 items, so 7
-/// of the 10 products each provider already returned were simply discarded and
-/// never seen by a shopper — and never counted as a view for the seller. A
-/// rail shows all 10 in the same vertical space.
-///
-/// Each card reports an impression the first time it is BUILT, which for a
-/// lazy ListView means the first time it actually scrolls into view — a
-/// product sitting off the right edge is not counted until the shopper
-/// reaches it. Dedup + batching live in ProductAnalyticsService.
-class _ProductRail extends StatelessWidget {
-  final List<CatalogModel> products;
-
-  const _ProductRail({required this.products});
-
-  @override
-  Widget build(BuildContext context) {
-    return SizedBox(
-      height: 250,
-      child: ListView.separated(
-        scrollDirection: Axis.horizontal,
-        padding: const EdgeInsets.symmetric(vertical: 4),
-        itemCount: products.length,
-        separatorBuilder: (_, _) => const SizedBox(width: 12),
-        itemBuilder: (_, i) => SizedBox(
-          width: 160,
-          child: _TrackedProductCard(
-            product: products[i],
-            // 1-based, matching web's trackProductImpression(p.id, index + 1)
-            // so positionSum/avg-position means the same thing on both.
-            position: i + 1,
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-/// A [ProductCard] that reports one impression when it first appears.
-///
-/// Stateful purely so the report fires once per mounted card in initState
-/// rather than on every rebuild; the service also dedups per session, so a
-/// rebuild or a scroll back and forth cannot double-count.
-class _TrackedProductCard extends StatefulWidget {
-  final CatalogModel product;
-  final int position;
-
-  const _TrackedProductCard({required this.product, required this.position});
-
-  @override
-  State<_TrackedProductCard> createState() => _TrackedProductCardState();
-}
-
-class _TrackedProductCardState extends State<_TrackedProductCard> {
-  @override
-  void initState() {
-    super.initState();
-    ProductAnalyticsService.instance
-        .recordImpression(widget.product.id, position: widget.position);
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return ProductCard(
-      product: widget.product,
-      onTap: () => context.push('/product/${widget.product.id}'),
     );
   }
 }
@@ -990,15 +959,7 @@ class _ReelsRail extends ConsumerWidget {
               actionLabel: 'See all',
               onAction: () {
                 ref.invalidate(reelsFeedProvider);
-                // Was a bare navigate to the reels feed — the same tap in the
-                // Reels tab's own search icon opens a "Explore Reels" search
-                // sheet on top of the feed, but "See all" skipped straight
-                // past that discovery step. Fresh token per tap (see
-                // ReelsFeedScreen.searchToken) so a second tap re-opens it
-                // even if the reels tab was already visited this session.
-                context.go(
-                  '/reels?search=${DateTime.now().millisecondsSinceEpoch}',
-                );
+                context.go('/reels');
               },
             ),
             const SizedBox(height: 12),

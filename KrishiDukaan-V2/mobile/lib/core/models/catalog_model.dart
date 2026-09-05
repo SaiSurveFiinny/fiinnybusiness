@@ -46,30 +46,6 @@ class AvailabilityEntry {
   };
 }
 
-/// One row of the "Ingredients & Nutrients / Composition" table shown on the
-/// product detail page — matches web's `composition?: {name, value, color?}[]`
-/// (types/product.ts) field-for-field. `color` isn't rendered on either
-/// platform's simple table today but is kept for parity/future use.
-class CompositionEntry {
-  final String name;
-  final String value;
-  final String? color;
-
-  const CompositionEntry({required this.name, required this.value, this.color});
-
-  factory CompositionEntry.fromMap(Map<String, dynamic> m) => CompositionEntry(
-        name: (m['name'] ?? '').toString(),
-        value: (m['value'] ?? '').toString(),
-        color: m['color']?.toString(),
-      );
-
-  Map<String, dynamic> toMap() => {
-        'name': name,
-        'value': value,
-        if (color != null) 'color': color,
-      };
-}
-
 class CatalogModel {
   final String id;
   final String name;
@@ -92,13 +68,6 @@ class CatalogModel {
   final Map<String, dynamic>? categoryInfo;
   /// Free-form seller-added title/value pairs, rendered alongside categoryInfo.
   final List<Map<String, String>>? customFields;
-  /// "Ingredients & Nutrients / Composition" table — e.g. Soluble Potash
-  /// (K₂O): 54%. Set by the seller (currently only enterable via web; mobile
-  /// reads and displays whatever either platform writes). Was previously not
-  /// modeled on mobile at all, so it silently never rendered here even though
-  /// the data existed in Firestore for any product a seller had filled it in
-  /// for — not a per-product gap, a missing field on the whole model.
-  final List<CompositionEntry>? composition;
   /// YouTube URL for the "Product Demonstration" video embed.
   final String? videoUrl;
   final String? createdByPhone;
@@ -142,14 +111,6 @@ class CatalogModel {
   final double? lowestPrice;
   final double? nearestStoreDistanceKm;
 
-  /// Every canonical/copy PRODUCT DOC id merged into this card by name
-  /// (fetchAllMergedProducts). A reel can be linked to whichever doc id
-  /// the seller who uploaded it actually owns — the canonical id OR any
-  /// retailer/admin copy id — so matching only `id` misses reels linked
-  /// to a copy. Null on a model returned by [CatalogRepository.fetchById]'s
-  /// raw (non-merged) fallback path.
-  final List<String>? mergedProductIds;
-
   final String collectionPath;
 
   const CatalogModel({
@@ -168,7 +129,6 @@ class CatalogModel {
     this.bestForCrops,
     this.categoryInfo,
     this.customFields,
-    this.composition,
     this.videoUrl,
     this.createdByPhone,
     required this.sellerCount,
@@ -195,7 +155,6 @@ class CatalogModel {
     this.availability,
     this.lowestPrice,
     this.nearestStoreDistanceKm,
-    this.mergedProductIds,
     this.collectionPath = 'catalog',
   });
 
@@ -225,7 +184,6 @@ class CatalogModel {
     List<String>? bestForCrops,
     Map<String, dynamic>? categoryInfo,
     List<Map<String, String>>? customFields,
-    List<CompositionEntry>? composition,
     String? videoUrl,
     String? createdByPhone,
     int? sellerCount,
@@ -252,7 +210,6 @@ class CatalogModel {
     List<AvailabilityEntry>? availability,
     double? lowestPrice,
     double? nearestStoreDistanceKm,
-    List<String>? mergedProductIds,
     String? collectionPath,
   }) {
     return CatalogModel(
@@ -271,7 +228,6 @@ class CatalogModel {
       bestForCrops: bestForCrops ?? this.bestForCrops,
       categoryInfo: categoryInfo ?? this.categoryInfo,
       customFields: customFields ?? this.customFields,
-      composition: composition ?? this.composition,
       videoUrl: videoUrl ?? this.videoUrl,
       createdByPhone: createdByPhone ?? this.createdByPhone,
       sellerCount: sellerCount ?? this.sellerCount,
@@ -299,7 +255,6 @@ class CatalogModel {
       lowestPrice: lowestPrice ?? this.lowestPrice,
       nearestStoreDistanceKm:
           nearestStoreDistanceKm ?? this.nearestStoreDistanceKm,
-      mergedProductIds: mergedProductIds ?? this.mergedProductIds,
       collectionPath: collectionPath ?? this.collectionPath,
     );
   }
@@ -423,13 +378,6 @@ class CatalogModel {
         .where((f) => (f['title'] ?? '').trim().isNotEmpty)
         .toList();
 
-    final rawComposition = d['composition'] as List?;
-    final composition = rawComposition
-        ?.whereType<Map>()
-        .map((e) => CompositionEntry.fromMap(Map<String, dynamic>.from(e)))
-        .where((e) => e.name.isNotEmpty)
-        .toList();
-
     final rawBestForCrops = d['bestForCrops'];
     final bestForCrops = rawBestForCrops is List
         ? List<String>.from(rawBestForCrops.map((e) => e.toString()))
@@ -459,7 +407,6 @@ class CatalogModel {
       bestForCrops: bestForCrops,
       categoryInfo: categoryInfo,
       customFields: customFields,
-      composition: (composition != null && composition.isNotEmpty) ? composition : null,
       videoUrl: d['videoUrl'] as String?,
       createdByPhone: createdByPhone,
       sellerCount: sellerCount,

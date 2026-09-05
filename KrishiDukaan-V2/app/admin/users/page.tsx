@@ -58,7 +58,7 @@ export default function AdminUsersPage() {
   const identity = useAdminAuth();
   const isFullAdmin = identity.role === "admin";
   // Browse mode — Firestore-paginated "page N of users", loaded 25 at a time via "See More".
-  const PAGE_SIZE = 20;
+  const PAGE_SIZE = 25;
   const [pageUsers, setPageUsers] = useState<any[]>([]);
   const [pageSubs, setPageSubs] = useState<any[]>([]);
   const [lastDoc, setLastDoc] = useState<any>(null);

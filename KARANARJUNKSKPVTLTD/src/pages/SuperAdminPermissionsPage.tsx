@@ -398,13 +398,6 @@ export default function SuperAdminPermissionsPage() {
         );
     }
 
-    // Save enables only when the matrix or landing pages differ from what is
-    // stored (featurePermissions / roleLandingPages come from Firestore via
-    // AuthContext, so after a save they match again and Save re-disables).
-    const dirty =
-        JSON.stringify(matrix) !== JSON.stringify(featurePermissions) ||
-        JSON.stringify(landingMap) !== JSON.stringify(roleLandingPages);
-
     // ── Role detail view ──────────────────────────────────────────────────────
     // Opened on demand when a role is selected. Renders that role's full
     // permission tree; edits stay in local state until Save is pressed.
@@ -430,15 +423,9 @@ export default function SuperAdminPermissionsPage() {
                         Changes apply after you press Save.
                     </p>
                 </div>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
-                    {dirty && !saving && (
-                        <span style={{ fontSize: '0.75rem', color: 'var(--secondary-dark)' }}>Unsaved changes</span>
-                    )}
-                    <button onClick={handleSave} disabled={saving || !dirty} className="btn btn-primary"
-                        style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', opacity: (saving || !dirty) ? 0.55 : 1, cursor: (saving || !dirty) ? 'not-allowed' : 'pointer' }}>
-                        <Save size={16} /> {saving ? 'Saving…' : 'Save'}
-                    </button>
-                </div>
+                <button onClick={handleSave} disabled={saving} className="btn btn-primary" style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                    <Save size={16} /> {saving ? 'Saving…' : 'Save'}
+                </button>
             </div>
 
             {/* Landing page after login — per selected role */}

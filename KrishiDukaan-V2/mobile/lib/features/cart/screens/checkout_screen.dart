@@ -45,9 +45,6 @@ class _CheckoutScreenState extends ConsumerState<CheckoutScreen> {
   bool _prefilled = false;
   String? _error;
   String? _razorpayOrderId;
-  /// Order amount in PAISE, kept so a failure can be logged with the value the
-  /// admin Failed Payments card expects (it renders amount / 100).
-  int? _razorpayAmount;
 
   @override
   void initState() {
@@ -99,7 +96,6 @@ class _CheckoutScreenState extends ConsumerState<CheckoutScreen> {
       // The Razorpay API returns the order ID in the 'id' field, not 'orderId'
       _razorpayOrderId = result['id'] as String?;
       final amount = (result['amount'] as num).toInt();
-      _razorpayAmount = amount;
       // Use the key the backend used to create the order — prevents key-mismatch
       // errors when the server's RAZORPAY_KEY_ID differs from the app default.
       final razorpayKey = result['key_id'] as String? ?? AppConfig.razorpayKeyId;
@@ -115,16 +111,6 @@ class _CheckoutScreenState extends ConsumerState<CheckoutScreen> {
           'name': _nameCtrl.text.trim(),
         },
         'theme': {'color': '#2E7D32'},
-        // Seconds the checkout SDK waits before giving up and reporting
-        // PAYMENT_ERROR on its own, independent of whether Razorpay actually
-        // captures the payment. The SDK default (3 minutes) is tight for a
-        // UPI collect request, which needs the customer to switch to their
-        // bank/UPI app, approve, and switch back — on a slow connection that
-        // alone can take longer than 3 minutes. Widening this reduces how
-        // often the SDK gives up on a payment that goes on to succeed, but
-        // does NOT fully close the gap — _onPaymentError still reconciles
-        // against Razorpay directly for whatever slips through.
-        'timeout': 300,
       });
 
       setState(() => _isLoading = false);
@@ -149,10 +135,31 @@ class _CheckoutScreenState extends ConsumerState<CheckoutScreen> {
 
       if (!verified) throw Exception('Payment verification failed');
 
-      await _completeOrder(
+      // Write orders to Firestore (one per seller)
+      final items = ref.read(cartProvider);
+      final user = FirebaseAuth.instance.currentUser!;
+      final delivery = await ref.read(deliveryChargeProvider.future);
+
+      await _orderRepo.createOrdersAfterPayment(
+        items: items,
+        customerName: _nameCtrl.text.trim(),
+        customerPhone: user.phoneNumber ?? '',
+        customerAddress: {
+          'name': _nameCtrl.text.trim(),
+          'phone': _phoneCtrl.text.trim(),
+          'address': _addressCtrl.text.trim(),
+          'city': _cityCtrl.text.trim(),
+          'pincode': _pincodeCtrl.text.trim(),
+        },
         razorpayOrderId: response.orderId,
         razorpayPaymentId: response.paymentId,
+        deliveryChargesBySeller: delivery.bySellerCharge,
       );
+
+      ref.read(cartProvider.notifier).clear();
+      // Fire-and-forget: never block navigation on the review prompt.
+      unawaited(_reviewService.onOrderCompleted());
+      if (mounted) context.go('/orders');
     } catch (e) {
       if (mounted) {
         setState(() {
@@ -163,108 +170,10 @@ class _CheckoutScreenState extends ConsumerState<CheckoutScreen> {
     }
   }
 
-  /// Writes the order(s) to Firestore and navigates away, shared by the
-  /// normal success callback and [_onPaymentError]'s reconciliation path —
-  /// both end up with a confirmed order/payment id, just via different
-  /// routes (a client-supplied signature vs. Razorpay's own server records).
-  Future<void> _completeOrder({
-    required String razorpayOrderId,
-    required String razorpayPaymentId,
-  }) async {
-    final items = ref.read(cartProvider);
-    final user = FirebaseAuth.instance.currentUser!;
-    final delivery = await ref.read(deliveryChargeProvider.future);
-
-    await _orderRepo.createOrdersAfterPayment(
-      items: items,
-      customerName: _nameCtrl.text.trim(),
-      customerPhone: user.phoneNumber ?? '',
-      customerAddress: {
-        'name': _nameCtrl.text.trim(),
-        'phone': _phoneCtrl.text.trim(),
-        'address': _addressCtrl.text.trim(),
-        'city': _cityCtrl.text.trim(),
-        'pincode': _pincodeCtrl.text.trim(),
-      },
-      razorpayOrderId: razorpayOrderId,
-      razorpayPaymentId: razorpayPaymentId,
-      deliveryChargesBySeller: delivery.bySellerCharge,
-    );
-
-    ref.read(cartProvider.notifier).clear();
-    // Fire-and-forget: never block navigation on the review prompt.
-    unawaited(_reviewService.onOrderCompleted());
-    if (mounted) context.go('/orders');
-  }
-
-  /// Fires on both a genuine failure AND on the checkout SDK simply giving up
-  /// waiting ("...could not complete it in time") — which is not the same
-  /// thing as Razorpay not having captured the payment. Before showing the
-  /// customer a failure, this checks Razorpay's own records for the order;
-  /// if the payment actually went through, the order is completed exactly as
-  /// it would be on success instead of stranding a charged customer on a
-  /// "Failed" screen. See PaymentService.checkOrderStatus for the full story.
-  void _onPaymentError(AppPaymentError response) async {
-    final orderId = _razorpayOrderId;
-    if (orderId == null) {
-      setState(() {
-        _isLoading = false;
-        _error = response.message;
-      });
-      return;
-    }
-
-    setState(() {
-      _isLoading = true;
-      _error = null;
-    });
-
-    final reconciliation = await _paymentService.checkOrderStatus(orderId);
-
-    if (reconciliation.captured && reconciliation.paymentId != null) {
-      try {
-        await _completeOrder(
-          razorpayOrderId: orderId,
-          razorpayPaymentId: reconciliation.paymentId!,
-        );
-        return; // _completeOrder already navigated away on success.
-      } catch (_) {
-        if (mounted) {
-          setState(() {
-            _isLoading = false;
-            _error =
-                'Payment received but order creation failed. Contact support.';
-          });
-        }
-        return;
-      }
-    }
-
-    // Log only a CONFIRMED failure (Razorpay itself has no capture on record)
-    // so the admin's Failed Payments tab reflects reality — never log when
-    // checkFailed is true, since that means we genuinely don't know the
-    // outcome and it may well have succeeded.
-    if (!reconciliation.checkFailed) {
-      unawaited(
-        _paymentService.logFailedPayment(
-          response.message,
-          orderId: orderId,
-          amount: _razorpayAmount,
-        ),
-      );
-    }
-
-    if (!mounted) return;
+  void _onPaymentError(AppPaymentError response) {
     setState(() {
       _isLoading = false;
-      _error = reconciliation.checkFailed
-          // We genuinely don't know the outcome — never tell a customer who
-          // might have been charged that their payment definitely failed.
-          ? 'We could not confirm your payment status. If any amount was '
-              'deducted, it will be refunded automatically within 5-7 '
-              'business days. Please check My Orders before retrying, or '
-              'contact support.'
-          : response.message;
+      _error = response.message;
     });
   }
 
@@ -294,14 +203,17 @@ class _CheckoutScreenState extends ConsumerState<CheckoutScreen> {
     final deliveryCharge = delivery?.totalCharge ?? 0.0;
     final grandTotal = subtotal + deliveryCharge + gst;
 
-    // Was a custom AppBar with white text/icons (foregroundColor: Colors.white)
-    // painted on topBarGradient() — which is this app's shared FROSTED WHITE
-    // top-bar background (see app_top_bar.dart's doc comment), not a colored
-    // brand bar. That made every icon/button in the app bar (back arrow,
-    // title) invisible against the white background. AppTopBar is the same
-    // gradient used correctly everywhere else in the app, with a dark
-    // foreground that actually shows up on it.
-    const appBar = AppTopBar(title: 'Checkout');
+    final appBar = AppBar(
+      elevation: 0,
+      backgroundColor: Colors.transparent,
+      foregroundColor: Colors.white,
+      flexibleSpace: Container(
+        decoration: BoxDecoration(gradient: topBarGradient()),
+      ),
+      titleSpacing: 0,
+      title: Text('Checkout',
+          style: AppTextStyles.heading2.copyWith(color: Colors.white)),
+    );
 
     if (items.isEmpty) {
       return Scaffold(

@@ -7,8 +7,6 @@ import { SimpleBarChart } from "../_components/simple-bar-chart";
 import { InsightCard } from "../_components/insight-card";
 import {
   fetchRetailerAnalytics,
-  ANALYTICS_PERIODS,
-  type AnalyticsPeriodKey,
   type RetailerAnalytics,
 } from "../_lib/analytics-firestore";
 import { useEffectiveUser } from "../_context/effective-user-context";
@@ -25,10 +23,6 @@ export default function AnalyticsPage() {
   const [stats, setStats] = useState<RetailerAnalytics | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(false);
-  // The window was hardcoded to 7 days with no way to change it, while the app
-  // has offered Week/Month/Year all along — so the same seller saw different
-  // numbers on each platform and assumed web was wrong.
-  const [period, setPeriod] = useState<AnalyticsPeriodKey>("week");
 
   const load = useCallback(async () => {
     if (!effectiveUid && !profile?.phone) {
@@ -40,7 +34,7 @@ export default function AnalyticsPage() {
     setLoading(true);
     setError(false);
     try {
-      const realStats = await fetchRetailerAnalytics(effectiveUid, profile, period);
+      const realStats = await fetchRetailerAnalytics(effectiveUid, profile);
       setStats(realStats);
     } catch (err) {
       console.error("Failed to load analytics:", err);
@@ -48,7 +42,7 @@ export default function AnalyticsPage() {
     } finally {
       setLoading(false);
     }
-  }, [effectiveUid, profile, period]);
+  }, [effectiveUid, profile]);
 
   useEffect(() => {
     void load();
@@ -96,25 +90,6 @@ export default function AnalyticsPage() {
         helperKey="dashAnalytics"
       />
 
-      {/* Window selector — matches the app's Week/Month/Year picker. */}
-      <div className="mb-6 inline-flex rounded-xl border border-outline-variant/40 bg-surface-container-lowest p-1">
-        {ANALYTICS_PERIODS.map((p) => (
-          <button
-            key={p.key}
-            type="button"
-            onClick={() => setPeriod(p.key)}
-            aria-pressed={period === p.key}
-            className={`rounded-lg px-4 py-1.5 text-sm font-semibold transition-colors ${
-              period === p.key
-                ? "bg-primary text-white"
-                : "text-on-surface-variant hover:text-on-surface"
-            }`}
-          >
-            {p.label}
-          </button>
-        ))}
-      </div>
-
       {stats && !stats.hasAnyData && (
         <div className="mb-6 rounded-2xl border border-outline-variant/40 bg-surface-container-low px-5 py-4">
           <p className="text-sm font-bold text-on-surface">{t('anNoDataTitle')}</p>
@@ -133,36 +108,6 @@ export default function AnalyticsPage() {
           label={t('anRevenueTotal')}
           value={formatINR(orders?.totalRevenue ?? 0)}
           hint={t('anRevenueHint')}
-        />
-      </section>
-
-      {/* Audience — Followers and reel reach, which the app has always shown
-          and web had no equivalent for. Followers is a lifetime total, so it
-          is labelled as such rather than appearing to respond to the period
-          picker. */}
-      <section
-        aria-label="Audience"
-        className="mt-3 grid gap-3 sm:grid-cols-2 lg:grid-cols-4"
-      >
-        <MetricTile
-          label="Followers"
-          value={String(stats?.followers ?? 0)}
-          hint="All time"
-        />
-        <MetricTile
-          label="Reel views"
-          value={String(stats?.reelViews ?? 0)}
-          hint="Across your reels"
-        />
-        <MetricTile
-          label="Reel likes"
-          value={String(stats?.reelLikes ?? 0)}
-          hint="Across your reels"
-        />
-        <MetricTile
-          label="Reel comments"
-          value={String(stats?.reelComments ?? 0)}
-          hint="Across your reels"
         />
       </section>
 
