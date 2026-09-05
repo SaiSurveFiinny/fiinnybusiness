@@ -59,6 +59,20 @@
 		<string>whatsapp</string>
 		<string>comgooglemaps</string>
 		<string>youtube</string>
+		<!-- Razorpay's iOS checkout SDK calls canOpenURL on these UPI app
+		     schemes to decide which app icons to show for the fast
+		     tap-to-pay flow. Unlisted here, canOpenURL returns false for
+		     all of them (iOS 9+ query-scheme restriction), so checkout
+		     silently fell back to manual UPI-ID entry only — same root
+		     cause as the Android <queries> fix in AndroidManifest.xml,
+		     just iOS's equivalent mechanism. List matches Razorpay's own
+		     iOS integration guide. -->
+		<string>tez</string>
+		<string>phonepe</string>
+		<string>paytmmp</string>
+		<string>bhim</string>
+		<string>credpay</string>
+		<string>com.snapwork.hdfc</string>
 	</array>
 	<!-- ONE CFBundleURLTypes key only. This key was previously declared twice
 	     in this dict (Firebase schemes here, bundle-id scheme further down);

@@ -1,11 +1,42 @@
-import { defineConfig } from 'vite'
+import { defineConfig, loadEnv } from 'vite'
 import react from '@vitejs/plugin-react'
 import { VitePWA } from 'vite-plugin-pwa'
 
 // https://vite.dev/config/
-export default defineConfig({
+export default defineConfig(({ mode }) => {
+const env = loadEnv(mode, process.cwd(), '')
+const projectId = env.VITE_FIREBASE_PROJECT_ID || 'karanarjun-pvt-ltd'
+const emulatorBase = `/${projectId}/asia-south1`
+
+return {
   build: {
     chunkSizeWarningLimit: 1500,
+  },
+  // Local dev only: mimic the Firebase Hosting rewrites (firebase.json) that map
+  // /api/saas/* → deployed Cloud Functions. Vite's dev server does not read
+  // firebase.json, so we proxy these paths to the Functions Emulator on :5001 and
+  // rewrite each short name to its actual function export name.
+  // Use 127.0.0.1 (not "localhost"): the emulator binds IPv4 only, but Node 18+
+  // resolves "localhost" to IPv6 (::1) first, so a localhost target fails with
+  // ECONNREFUSED even though the emulator is running.
+  server: {
+    proxy: {
+      '/api/saas/order': {
+        target: 'http://127.0.0.1:5001',
+        changeOrigin: true,
+        rewrite: () => `${emulatorBase}/createSaaSOrder`,
+      },
+      '/api/saas/verify': {
+        target: 'http://127.0.0.1:5001',
+        changeOrigin: true,
+        rewrite: () => `${emulatorBase}/verifySaaSPayment`,
+      },
+      '/api/saas/subscription': {
+        target: 'http://127.0.0.1:5001',
+        changeOrigin: true,
+        rewrite: () => `${emulatorBase}/getSaaSSubscription`,
+      },
+    },
   },
   plugins: [
     react(),
@@ -89,5 +120,6 @@ export default defineConfig({
       }
     })
   ],
+  }
 })
 

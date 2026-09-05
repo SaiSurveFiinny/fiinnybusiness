@@ -20,6 +20,10 @@ interface SalesOrder {
     paymentStatus?: string;
     status?: string;
     modeOfPayment?: string;
+    // POS writes amountPaid; other writers used paidAmount — both are read below,
+    // matching DigitalKhataPage's authoritative status calculation.
+    amountPaid?: number;
+    paidAmount?: number;
     invoiceDate?: string;
     invoiceType?: string;
     createdAt?: any;
@@ -42,6 +46,19 @@ interface SalesOrder {
 /** Read amount from any known field name */
 function getAmount(order: SalesOrder): number {
     return Number(order.grandTotal || order.netAmount || order.totalAmount || order.subtotal || 0);
+}
+
+// Same formula as DigitalKhataPage's authoritative per-bill status calculation —
+// reused here rather than re-derived, so Order History never disagrees with the
+// Invoices view for the same salesOrders document.
+function getPaymentStatus(order: SalesOrder): 'paid' | 'partial' | 'pending' {
+    const total = getAmount(order);
+    const rawPaid = order.amountPaid ?? order.paidAmount;
+    const paid = rawPaid !== undefined && rawPaid !== null
+        ? Number(rawPaid) || 0
+        : (String(order.paymentStatus || '').toLowerCase() === 'paid' ? total : 0);
+    const outstanding = Math.max(0, total - paid);
+    return outstanding <= 0 ? 'paid' : paid > 0 ? 'partial' : 'pending';
 }
 
 const PAYMENT_MODES = ['Cash', 'Credit', 'UPI', 'NEFT', 'RTGS', 'Cheque', 'Online'];
@@ -218,7 +235,12 @@ export default function OrderHistoryPage({ fullWidth = false }: { fullWidth?: bo
                             filteredOrders.map((order) => {
                                 const amount = getAmount(order);
                                 const dateStr = order.createdAt?.toDate ? order.createdAt.toDate().toLocaleString() : 'N/A';
-                                const isPaid = order.status === 'paid' || order.modeOfPayment === 'Cash';
+                                const paymentStatus = getPaymentStatus(order);
+                                const statusBadge = {
+                                    paid:    { bg: 'rgba(16,185,129,0.12)', color: '#10b981', label: 'Paid' },
+                                    partial: { bg: 'rgba(245,158,11,0.12)', color: '#f59e0b', label: 'Partial' },
+                                    pending: { bg: 'rgba(245,158,11,0.12)', color: '#f59e0b', label: 'Pending' },
+                                }[paymentStatus];
                                 return (
                                     <tr key={order.id}
                                         style={{ borderBottom: '1px solid var(--surface-border)', transition: 'background-color 0.2s' }}
@@ -238,8 +260,8 @@ export default function OrderHistoryPage({ fullWidth = false }: { fullWidth?: bo
                                         </td>
                                         <td style={{ padding: '1rem', color: 'var(--text-secondary)', fontSize: '0.85rem' }}>{order.modeOfPayment || '—'}</td>
                                         <td style={{ padding: '1rem' }}>
-                                            <span style={{ fontSize: '0.75rem', padding: '2px 8px', borderRadius: '99px', background: isPaid ? 'rgba(16,185,129,0.12)' : 'rgba(245,158,11,0.12)', color: isPaid ? '#10b981' : '#f59e0b', fontWeight: 600 }}>
-                                                {isPaid ? 'Paid' : 'Pending'}
+                                            <span style={{ fontSize: '0.75rem', padding: '2px 8px', borderRadius: '99px', background: statusBadge.bg, color: statusBadge.color, fontWeight: 600 }}>
+                                                {statusBadge.label}
                                             </span>
                                         </td>
                                         <td className="sticky-actions-col" style={{ padding: '1rem' }}>

@@ -52,6 +52,13 @@ class _DeliverySettingsBodyState
   bool _saving = false;
   bool _loaded = false;
 
+  // Coverage isn't editable on mobile, but web's fetchDeliverySettings reads
+  // these fields and defaults a missing coverageType to "pan_india" with no
+  // states. They're carried through a mobile save unchanged so editing slabs
+  // here can never silently reset a coverage the seller configured on web.
+  String _coverageType = 'pan_india';
+  List<String> _states = const [];
+
   @override
   void initState() {
     super.initState();
@@ -63,6 +70,10 @@ class _DeliverySettingsBodyState
         await DashboardRepository().fetchDeliverySettings(widget.sellerPhone);
     if (!mounted) return;
     setState(() {
+      _coverageType =
+          data?['coverageType'] == 'states' ? 'states' : 'pan_india';
+      _states = (data?['states'] as List?)?.map((e) => e.toString()).toList() ??
+          const [];
       final rawSlabs = data?['weightSlabs'] as List? ?? [];
       _slabs.addAll(rawSlabs.map((s) {
         final m = s as Map<String, dynamic>;
@@ -116,6 +127,13 @@ class _DeliverySettingsBodyState
       await DashboardRepository().saveDeliverySettings(widget.sellerPhone, {
         // Web's saveDeliverySettings also stores the phone on the doc body.
         'sellerPhone': widget.sellerPhone,
+        // Web's fetchDeliverySettings requires these three; a doc created by
+        // mobile without them read back as onlineDeliveryEnabled: false, so
+        // the web dashboard showed delivery as off and hid the charges the
+        // seller had just configured here.
+        'onlineDeliveryEnabled': true,
+        'coverageType': _coverageType,
+        'states': _coverageType == 'states' ? _states : const <String>[],
         'weightSlabs': sorted
             .map((s) =>
                 {'minKg': s.minKg, 'maxKg': s.maxKg, 'charge': s.charge})

@@ -1,6 +1,6 @@
-import { useState, useEffect, lazy, Suspense } from 'react';
+import { useState, useEffect, lazy, Suspense, startTransition } from 'react';
 import { BrowserRouter, Routes, Route, Link, useLocation, Navigate, useNavigate } from 'react-router-dom';
-import { Home, Users, UserPlus, LogOut, ReceiptText, ShieldAlert, Calculator, Settings, Package, ChevronDown, Layers, Truck, ShoppingCart, BarChart3, Activity, Bell, ClipboardList, Star, Link2, Bot, Loader2, Menu, X, Target, Sun, Moon, Receipt, HelpCircle } from 'lucide-react';
+import { Home, Users, UserPlus, LogOut, ReceiptText, ShieldAlert, Calculator, Settings, Package, ChevronDown, Layers, Truck, ShoppingCart, BarChart3, Activity, Bell, ClipboardList, Star, Link2, Bot, Loader2, Menu, X, Target, Sun, Moon, Receipt, HelpCircle, ArrowLeft } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import LanguageSwitcher from './components/LanguageSwitcher';
 import EnvBadge from './components/EnvBadge';
@@ -10,6 +10,7 @@ import ErrorBoundary from './components/ErrorBoundary';
 import ModuleGate from './components/ModuleGate';
 import { AuthProvider, useAuth } from './contexts/AuthContext';
 import type { AppScreen } from './contexts/AuthContext';
+import { navFeatureGroupForPath, isFeatureGroupAllowed } from './utils/subscriptionCatalog';
 import { SchemaProvider } from './contexts/SchemaContext';
 import { ToastProvider } from './contexts/ToastContext';
 import ToastContainer from './components/ToastContainer';
@@ -23,6 +24,7 @@ const DashboardPage          = lazy(() => import('./pages/DashboardPage'));
 const B2CDashboardPage       = lazy(() => import('./pages/B2CDashboardPage'));
 const LoginPage              = lazy(() => import('./pages/LoginPage'));
 const AdminHubPage           = lazy(() => import('./pages/AdminHubPage'));
+const SuperAdminSubscriptionsPage = lazy(() => import('./pages/SuperAdminSubscriptionsPage'));
 const TeamPerformancePage    = lazy(() => import('./pages/TeamPerformancePage'));
 const StorefrontPage         = lazy(() => import('./pages/StorefrontPage'));
 const ErpHandoffPage         = lazy(() => import('./pages/ErpHandoffPage'));
@@ -127,11 +129,23 @@ function Layout({ children, currentTheme, toggleTheme }: { children: React.React
   const location = useLocation();
   const navigate = useNavigate();
   const { t } = useTranslation();
-  const { currentUser, userRole, tenantData, permissions, logout } = useAuth();
+  const { currentUser, userRole, tenantData, tenantId, permissions, logout, hasPlanScreen, planEntitlements, subscriptionLoading, isSuperAdmin, isImpersonating, exitTenantView } = useAuth();
   const can = useFeaturePermissions();
 
   const handleLogout = () => {
     logout().then(() => navigate('/login', { replace: true }));
+  };
+
+  // Super Admin exits a tenant view and returns directly to the Businesses section.
+  // Clearing impersonation and the navigation are committed in a single transition so
+  // React never renders the intermediate "on a tenant route but no longer impersonating"
+  // state — that state trips ProtectedRoute's super-admin guard, which would redirect to
+  // /super-admin (no hash) and strip the #businesses target.
+  const handleExitTenantView = () => {
+    startTransition(() => {
+      exitTenantView();
+      navigate('/super-admin#businesses', { replace: true });
+    });
   };
   const [adminExpanded, setAdminExpanded] = useState(true);
   const [drawerOpen, setDrawerOpen] = useState(false);
@@ -142,6 +156,27 @@ function Layout({ children, currentTheme, toggleTheme }: { children: React.React
   // Fully standalone public pages — no nav, no sidebar
   const standalonePathPrefixes = ['/feedback-submit', '/v-checkout/', '/pay/', '/receipt/'];
   if (standalonePathPrefixes.some(p => location.pathname.startsWith(p))) return <>{children}</>;
+
+  // Platform super admin — fully standalone layout, no tenant nav or business data.
+  if (location.pathname.startsWith('/super-admin') && isSuperAdmin) {
+    return (
+      <div style={{ minHeight: '100vh', background: 'var(--surface-base)', display: 'flex', flexDirection: 'column' }}>
+        <div style={{ padding: '1rem 1.5rem', borderBottom: '1px solid var(--surface-border)', display: 'flex', justifyContent: 'space-between', alignItems: 'center', background: 'var(--surface-raised)' }}>
+          <h2 className="primary-gradient-text" style={{ fontSize: '1.2rem', margin: 0 }}>
+            Fiinny Platform Admin
+          </h2>
+          <div style={{ display: 'flex', gap: '1rem', alignItems: 'center' }}>
+            {currentUser && (
+              <button onClick={handleLogout} style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', padding: '0.5rem 1rem', background: 'transparent', border: '1px solid var(--surface-border)', borderRadius: '8px', cursor: 'pointer', color: 'var(--text-secondary)', font: 'inherit', fontSize: '0.875rem' }}>
+                <LogOut size={16} /> Logout
+              </button>
+            )}
+          </div>
+        </div>
+        <main style={{ flex: 1, display: 'flex', minHeight: 0 }}>{children}</main>
+      </div>
+    );
+  }
 
   // Role-specific portal paths — no sidebar needed, standalone layout
   const portalPaths = ['/retailer-portal', '/manufacturer-portal'];
@@ -164,6 +199,52 @@ function Layout({ children, currentTheme, toggleTheme }: { children: React.React
         <main style={{ padding: '2rem', maxWidth: '1100px', margin: '0 auto' }}>{children}</main>
       </div>
     );
+  }
+
+  // Subscription inactive guard — shown for any non-master tenant whose subscription
+  // is missing, suspended, or cancelled. Bypassed while the subscription is still
+  // resolving to avoid a flash. Master tenant (super admin) is never blocked.
+  const subscriptionActive =
+    !planEntitlements.hasSubscription
+      ? false
+      : ['active', 'trial', 'past_due'].includes(planEntitlements.status ?? '');
+  const showInactiveScreen =
+    !subscriptionLoading &&
+    !!currentUser &&
+    !!tenantId &&
+    tenantId !== 'master' &&
+    !subscriptionActive;
+
+  if (showInactiveScreen) {
+    // New tenants (and tenants whose subscription has lapsed) must choose a plan
+    // before accessing the ERP. Show the pricing page in a minimal shell layout;
+    // redirect every other route to /pricing so they can't bypass it.
+    const pricingHeader = (
+      <header style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '1rem 1.5rem', background: 'var(--surface-raised)', borderBottom: '1px solid var(--surface-border)' }}>
+        <h2 className="primary-gradient-text" style={{ fontSize: '1.35rem', margin: 0, letterSpacing: '-0.03em' }}>
+          {tenantData?.businessName || 'Fiinny ERP'}
+        </h2>
+        <button
+          onClick={handleLogout}
+          style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', padding: '0.5rem 1rem', background: 'transparent', border: '1px solid var(--surface-border)', borderRadius: '8px', cursor: 'pointer', color: 'var(--text-secondary)', font: 'inherit', fontSize: '0.875rem' }}
+        >
+          <LogOut size={16} /> Logout
+        </button>
+      </header>
+    );
+
+    if (location.pathname === '/pricing') {
+      return (
+        <div style={{ minHeight: '100vh', background: 'var(--surface-base)', display: 'flex', flexDirection: 'column' }}>
+          {pricingHeader}
+          <main style={{ flex: 1, padding: '2rem', overflowY: 'auto' }}>
+            <Suspense fallback={<PageLoader />}>{children}</Suspense>
+          </main>
+        </div>
+      );
+    }
+
+    return <Navigate to="/pricing" replace />;
   }
 
   const isOwner = userRole === 'admin' || userRole === 'analyst';
@@ -229,6 +310,11 @@ function Layout({ children, currentTheme, toggleTheme }: { children: React.React
     if (isSalesUser) return SALES_NAV_PATHS.includes(item.path);
     if (!isOwner && !isShopkeeper) return false;
     if (isShopkeeper && BASIC_PLAN_HIDDEN_PATHS.includes(item.path)) return false;
+    // Subscription plan gate — hide screens the tenant's plan excludes (rule 1),
+    // plus the feature group for screen-sharing modules (e.g. Supplier Ledger).
+    if (!hasPlanScreen(item.screenKey as AppScreen)) return false;
+    const navGroup = navFeatureGroupForPath(item.path);
+    if (navGroup && !isFeatureGroupAllowed(navGroup, planEntitlements)) return false;
     // Module-level role permission gate (existing behaviour).
     if (userRole && permissions && !permissions[userRole]?.[item.screenKey as AppScreen]) return false;
     // Main Navbar Feature Matrix — single source of truth for the tabs it covers.
@@ -246,9 +332,19 @@ function Layout({ children, currentTheme, toggleTheme }: { children: React.React
     { path: '/settings',                   icon: <Settings size={17} />,    label: t('common.settings'),              screenKey: 'settings' },
     { path: '/krishidukan',                icon: <Package size={17} />,     label: '🌾 KrishiDukan',                  screenKey: 'krishidukan' },
   ].filter(item => {
+    // Subscription plan gate first, then the module-level role permission gate.
+    if (!hasPlanScreen(item.screenKey as AppScreen)) return false;
+    const navGroup = navFeatureGroupForPath(item.path);
+    if (navGroup && !isFeatureGroupAllowed(navGroup, planEntitlements)) return false;
     if (userRole && permissions && !permissions[userRole]?.[item.screenKey as AppScreen]) return false;
     return true;
   });
+
+  // Platform Super Admin entry — only the dedicated super admin identity sees it.
+  // Not screen/plan-gated (the super admin has no tenant subscription to check).
+  if (isSuperAdmin) {
+    adminItems.push({ path: '/super-admin', icon: <ShieldAlert size={17} />, label: '🛡️ Super Admin', screenKey: 'admin' });
+  }
 
   const isAdminPath = adminItems.some(i => location.pathname === i.path || location.pathname.startsWith(i.path + '/'));
 
@@ -274,8 +370,33 @@ function Layout({ children, currentTheme, toggleTheme }: { children: React.React
 
   return (
     <div className="app-container" style={{ flexDirection: 'column' }}>
+      {/* Super Admin impersonation banner — shown only while a Super Admin is
+          viewing a tenant's dashboard. Makes the tenant context explicit and gives
+          a one-click return to /super-admin. */}
+      {isImpersonating && (
+        <div style={{
+          display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '1rem',
+          padding: '0.55rem 1.25rem', background: 'hsla(45,93%,47%,0.14)',
+          borderBottom: '1px solid hsla(45,93%,47%,0.35)', color: 'var(--secondary-dark)',
+          fontSize: '0.85rem', fontWeight: 600,
+        }}>
+          <span style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', minWidth: 0 }}>
+            <ShieldAlert size={16} style={{ flexShrink: 0 }} />
+            <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+              Super Admin view · {tenantData?.businessName || tenantId}
+            </span>
+          </span>
+          <button
+            onClick={handleExitTenantView}
+            style={{ display: 'inline-flex', alignItems: 'center', gap: '0.4rem', padding: '0.35rem 0.8rem', background: 'var(--surface-raised)', border: '1px solid hsla(45,93%,47%,0.4)', borderRadius: '8px', cursor: 'pointer', color: 'var(--secondary-dark)', font: 'inherit', fontSize: '0.82rem', fontWeight: 600, whiteSpace: 'nowrap', flexShrink: 0 }}
+          >
+            <ArrowLeft size={15} /> Exit Business
+          </button>
+        </div>
+      )}
+
       {/* Top Header */}
-      <header style={{ 
+      <header style={{
         display: 'flex', alignItems: 'center', justifyContent: 'space-between', 
         padding: '1rem 1.5rem', background: 'var(--surface-base)', 
         borderBottom: '1px solid var(--surface-border)', zIndex: 10
@@ -463,7 +584,7 @@ function App() {
 }
 
 function AppRoutes() {
-  const { currentUser, tenantId, userRole, loading, roleLandingPages } = useAuth();
+  const { currentUser, tenantId, userRole, loading, roleLandingPages, planEntitlements, isSuperAdmin, isImpersonating } = useAuth();
   const locationHook = useLocation();
 
   if (loading) return null;
@@ -502,12 +623,27 @@ function AppRoutes() {
   const landingFor = (role: string | null, allowed?: string[]): string => {
     const configured = (role && roleLandingPages?.[role]) || '';
     const fallback = (role && DEFAULT_LANDING[role]) || '/dashboard';
-    if (!configured) return fallback;
-    // For confined roles, ignore a configured landing outside their allowed paths.
-    if (allowed && !allowed.some(p => configured.startsWith(p))) return fallback;
-    return configured;
+    if (configured) {
+      // For confined roles, ignore a configured landing outside their allowed paths.
+      if (allowed && !allowed.some(p => configured.startsWith(p))) return fallback;
+      return configured;
+    }
+    // Plan-level default applies to admin/analyst — confined roles ignore it.
+    if (!allowed && (role === 'admin' || role === 'analyst')) {
+      const planDefault = planEntitlements.defaultLandingPath || '';
+      if (planDefault) return planDefault;
+    }
+    return fallback;
   };
   const onEntryPage = locationHook.pathname === '/' || locationHook.pathname === '/login';
+
+  // Platform super admin — route to /super-admin on entry pages; never to onboarding.
+  // While "viewing" a tenant (impersonation) the super admin behaves like that tenant's
+  // admin, so skip this redirect and let the normal tenant redirects below run.
+  if (currentUser && isSuperAdmin && !isImpersonating) {
+    if (onEntryPage) return <Navigate to="/super-admin" replace />;
+    // Allow any explicit navigation (including /super-admin itself); no further redirect.
+  }
 
   if (currentUser && tenantId) {
     if (userRole === 'retailer' && !RETAILER_ALLOWED_PATHS.some(p => locationHook.pathname.startsWith(p))) {
@@ -527,11 +663,10 @@ function AppRoutes() {
     }
   }
 
-  // Force incomplete setups to finish onboarding — but ONLY for protected routes
-  // Public paths like '/', '/about' etc. are always visible to everyone, even logged-in users without tenantId
-  // This prevents the "stuck in onboarding" loop when Firestore read fails or user just wants to browse
+  // Force incomplete setups to finish onboarding — but ONLY for protected routes.
+  // Super admin is exempt: it intentionally has no tenant.
   const publicPaths = ['/', '/about', '/privacy', '/terms', '/blog', '/changelog', '/download', '/login'];
-  if (currentUser && !tenantId && !publicPaths.includes(locationHook.pathname) && locationHook.pathname !== '/client-onboarding') {
+  if (currentUser && !tenantId && !isSuperAdmin && !publicPaths.includes(locationHook.pathname) && locationHook.pathname !== '/client-onboarding') {
     return <Navigate to="/client-onboarding" replace />;
   }
 
@@ -596,7 +731,9 @@ function AppRoutes() {
       <Route path="/inventory-batches" element={<ProtectedRoute requireRole={['admin', 'analyst', 'shopkeeper']} appScreen="inventory"><InventoryBatchPage /></ProtectedRoute>} />
       <Route path="/barcode" element={<ProtectedRoute requireRole={['admin', 'analyst', 'shopkeeper']} appScreen="inventory"><BarcodePage /></ProtectedRoute>} />
       <Route path="/manage-transport" element={<ProtectedRoute requireRole={['admin', 'analyst']} appScreen="inventory"><ManageTransportPage /></ProtectedRoute>} />
-      <Route path="/pricing" element={<ProtectedRoute requireRole={['admin', 'analyst', 'shopkeeper']} appScreen="analytics"><PricingPage /></ProtectedRoute>} />
+      {/* Pricing is always accessible to authenticated tenant users regardless of plan,
+          so new tenants can select a plan after signup. No appScreen gate here. */}
+      <Route path="/pricing" element={<ProtectedRoute requireRole={['admin', 'analyst', 'shopkeeper']}><PricingPage /></ProtectedRoute>} />
       <Route path="/payment-links" element={<ProtectedRoute requireRole={['admin', 'analyst', 'shopkeeper']} appScreen="worklist"><PaymentLinkPage /></ProtectedRoute>} />
       <Route path="/ai-advisor" element={<ProtectedRoute requireRole={['admin', 'analyst']} appScreen="analytics"><AIAdvisorPage /></ProtectedRoute>} />
       {/* Module system */}
@@ -629,7 +766,10 @@ function AppRoutes() {
 
       {/* Admin — single hash-based hub. Sub-tabs live at /admin#<tab>; each
           tab's own role/permission gate is enforced inside AdminHubPage. */}
-      <Route path="/admin" element={<ProtectedRoute requireRole={['admin', 'analyst']}><AdminHubPage /></ProtectedRoute>} />
+      <Route path="/admin" element={<ProtectedRoute requireRole={['admin', 'analyst']} appScreen="admin"><AdminHubPage /></ProtectedRoute>} />
+      {/* Super Admin subscription management — platform-level. Only the dedicated
+          super admin identity may access this route (requireSuperAdmin enforces it). */}
+      <Route path="/super-admin" element={<ProtectedRoute requireSuperAdmin><SuperAdminSubscriptionsPage /></ProtectedRoute>} />
       {/* Team Performance — also a standalone navbar destination; navbar visibility
           is driven by the Main Navbar Feature Matrix (navbar.teamPerformance.view).
           The Admin sub-tab at /admin#team-performance remains intact. */}
@@ -637,7 +777,7 @@ function AppRoutes() {
       <Route path="/customers" element={<ProtectedRoute requireRole={['admin', 'analyst', 'shopkeeper']} appScreen="customers"><CustomersPage /></ProtectedRoute>} />
       <Route path="/customers/:id" element={<ProtectedRoute requireRole={['admin', 'analyst', 'shopkeeper']} appScreen="customers"><CustomerProfilePage /></ProtectedRoute>} />
       {/* Legacy /admin/* deep links → hash equivalents (bookmarks stay working) */}
-      <Route path="/admin/manage-roles" element={<Navigate to="/admin#role-matrix" replace />} />
+      <Route path="/admin/manage-roles" element={<Navigate to="/admin#feature-permissions" replace />} />
       <Route path="/admin/data-security" element={<Navigate to="/admin#data-security" replace />} />
       <Route path="/admin/audit-log" element={<Navigate to="/admin#audit-log" replace />} />
       <Route path="/admin/manage-retailers" element={<Navigate to="/admin#manage-retailers" replace />} />

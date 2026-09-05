@@ -15,6 +15,7 @@ import '../../dashboard/widgets/dashboard_drawer.dart';
 import '../../dashboard/widgets/dashboard_overview_widgets.dart';
 import '../../manufacturer/providers/manufacturer_provider.dart';
 import '../../marketplace/providers/marketplace_provider.dart';
+import '../widgets/delete_account_dialog.dart';
 
 class ProfileScreen extends ConsumerWidget {
   const ProfileScreen({super.key});
@@ -394,6 +395,11 @@ class _ProfileBody extends ConsumerWidget {
               label: isHindi ? 'सेटिंग्स' : 'Settings',
               onTap: () => context.push('/profile/settings'),
             ),
+            _LinkRow(
+              icon: Icons.info_outline,
+              label: isHindi ? 'हमारे बारे में' : 'About',
+              onTap: () => context.push('/about'),
+            ),
           ],
         ),
         const SizedBox(height: 24),
@@ -411,6 +417,35 @@ class _ProfileBody extends ConsumerWidget {
           ),
           style: OutlinedButton.styleFrom(
             side: const BorderSide(color: AppColors.error),
+            padding: const EdgeInsets.symmetric(vertical: 14),
+            minimumSize: const Size(double.infinity, 0),
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(12),
+            ),
+          ),
+        ),
+        const SizedBox(height: 12),
+
+        // Delete Account — every user needs a reachable way to do this
+        // in-app (App Store/Play Store account-deletion requirement), not
+        // just paid sellers via the Dashboard drawer. Shares the same
+        // confirmation dialog and backend call as the Dashboard's Business
+        // Settings screen.
+        OutlinedButton.icon(
+          onPressed: () => showDialog(
+            context: context,
+            barrierDismissible: true,
+            builder: (_) => const DeleteAccountDialog(),
+          ),
+          icon: const Icon(Icons.delete_forever_outlined,
+              color: AppColors.onSurfaceVariant),
+          label: Text(
+            isHindi ? 'खाता हटाएं' : 'Delete Account',
+            style: AppTextStyles.bodyMedium
+                .copyWith(color: AppColors.onSurfaceVariant),
+          ),
+          style: OutlinedButton.styleFrom(
+            side: const BorderSide(color: AppColors.divider),
             padding: const EdgeInsets.symmetric(vertical: 14),
             minimumSize: const Size(double.infinity, 0),
             shape: RoundedRectangleBorder(

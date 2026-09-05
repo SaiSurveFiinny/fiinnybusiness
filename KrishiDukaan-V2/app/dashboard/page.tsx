@@ -12,6 +12,7 @@ import { OpenBillingCard } from "./_components/open-billing-card";
 import { RecentReviews } from "./_components/recent-reviews";
 import { DashboardInventoryHealth } from "./_components/dashboard-inventory-health";
 import { fetchRetailerAnalytics } from "./_lib/analytics-firestore";
+import { fetchOwnerReviews } from "./_lib/reviews-firestore";
 import type { StatMetric, ReviewItem, InventoryProduct } from "./_data/mock";
 import { useI18n } from "../i18n/I18nContext";
 
@@ -119,12 +120,48 @@ export default function DashboardPage() {
           products = await fetchManufacturerProducts(uid);
         }
 
-        const analytics = await fetchRetailerAnalytics(uid);
+        // `profile` is REQUIRED, not optional in practice: fetchRetailerAnalytics
+        // builds its phoneCandidates set entirely from profile.phone, and with
+        // it omitted that set is empty — so the product scan queried
+        // retailerPhone == <uid>, matched nothing, and Total Views /
+        // Interactions / Directions all read 0 for every phone-keyed seller.
+        // The Analytics page has always passed it (analytics/page.tsx); only
+        // this Overview call omitted it, which is why the two pages disagreed.
+        const analytics = await fetchRetailerAnalytics(uid, profile);
 
         const productCount = products.length;
-        const inStock = products.filter(p => p.stock !== 'Out of Stock' && p.stock !== '0').length;
-        const lowStock = products.filter(p => p.stock === 'Low Stock').length;
-        const outOfStock = productCount - inStock;
+
+        // Inventory Health used to be computed from the `stock` STRING label
+        // ('Out of Stock' / 'Low Stock'), which had two problems: it ignored
+        // the numeric `stockQuantity` most docs actually carry, and a
+        // 'Low Stock' product satisfied the inStock predicate too — so it was
+        // counted in BOTH inStock and lowStock, and outOfStock (derived by
+        // subtraction) came out wrong as a result.
+        //
+        // This mirrors ListingModel._parseStock + InventoryHealthCard on
+        // mobile exactly, so both platforms bucket identically: three
+        // mutually-exclusive buckets that sum to the product count.
+        const stockQtyOf = (p: any): number => {
+          const qty = p.stockQuantity;
+          if (typeof qty === 'number' && qty > 0) return Math.trunc(qty);
+          const stock = p.stock;
+          if (typeof stock === 'number') return stock > 0 ? Math.trunc(stock) : 0;
+          // Web writes stock: "In Stock" — treat as 1 so it reads as in-stock.
+          if (typeof stock === 'string' && stock.length > 0) {
+            return stock.toLowerCase().startsWith('out') ? 0 : 1;
+          }
+          // No stock field: active products are assumed available.
+          return p.isActive !== false ? 1 : 0;
+        };
+
+        // qty === 1 is also the placeholder for docs that only store stock as
+        // an "In Stock" string — counted as in-stock, not low, same as mobile.
+        const lowStock = products.filter(p => {
+          const q = stockQtyOf(p);
+          return q >= 2 && q <= 5;
+        }).length;
+        const outOfStock = products.filter(p => stockQtyOf(p) <= 0).length;
+        const inStock = productCount - lowStock - outOfStock;
         const totalDirections = analytics.directionRequests.reduce((sum, d) => sum + d.value, 0);
 
         setStats([
@@ -138,11 +175,34 @@ export default function DashboardPage() {
           inStock,
           lowStock,
           outOfStock,
-          score: productCount > 0 ? Math.round((inStock / productCount) * 100) : 100,
-          label: productCount > 0 ? (inStock / productCount > 0.8 ? t('healthyLabel') : t('attentionNeeded')) : t('noDataLabel'),
+          // Mobile's InventoryHealthCard scores (inStock + lowStock) / total —
+          // a low-stock product is still sellable, so excluding it here made
+          // web's score read lower than the app's for the same catalogue.
+          score: productCount > 0
+            ? Math.round(((inStock + lowStock) / productCount) * 100)
+            : 100,
+          label: productCount > 0
+            ? ((inStock + lowStock) / productCount >= 0.8 ? t('healthyLabel') : t('attentionNeeded'))
+            : t('noDataLabel'),
         });
 
-        setReviews([]);
+        // Was literally `setReviews([])` — the fetch was never issued, so the
+        // Recent Reviews card rendered its empty state permanently even for
+        // sellers who had reviews. fetchOwnerReviews already merges storeReviews
+        // + both legacy `reviews` shapes and sorts newest-first, which is what
+        // the mobile app shows.
+        const ownerReviews = await fetchOwnerReviews(uid);
+        setReviews(
+          ownerReviews.slice(0, 5).map<ReviewItem>((r) => ({
+            id: r.id,
+            author: r.authorName,
+            rating: r.rating,
+            excerpt: r.comment,
+            date: r.createdAt ? r.createdAt.toLocaleDateString() : "",
+            // mapReview already labels store reviews "Store Review".
+            product: r.productName,
+          })),
+        );
       } catch (error) {
         console.error("Error fetching dashboard data:", error);
       } finally {

@@ -15,7 +15,7 @@ import { useTranslation } from 'react-i18next';
 
 export default function AdminPage() {
     const { t } = useTranslation();
-    const { userRole, currentUser, tenantId, userName, customRoles } = useAuth();
+    const { userRole, currentUser, tenantId, userName, customRoles, permissions } = useAuth();
     const { showToast } = useToast();
     const [activeSection, setActiveSection] = useState<'staff' | 'retailer' | 'manufacturer' | 'trash'>('staff');
     const [users, setUsers] = useState<any[]>([]);
@@ -58,15 +58,19 @@ export default function AdminPage() {
     const [updateLoading, setUpdateLoading] = useState(false);
 
 
+    // Tenant-scoped user list query — always filter by the caller's tenantId.
+    // The master tenant has tenantId == 'master', so master admins see only
+    // master users. No special-casing; no cross-tenant reads.
+    const tenantUsersQuery = () => {
+        if (!tenantId) return null;
+        return query(collection(db, 'users'), where('tenantId', '==', tenantId));
+    };
+
     useEffect(() => {
         const fetchUsers = async () => {
+            const q = tenantUsersQuery();
+            if (!q) { setLoading(false); return; }
             try {
-                let q;
-                if (tenantId === 'master') {
-                    q = collection(db, 'users');
-                } else {
-                    q = query(collection(db, 'users'), where('tenantId', '==', tenantId));
-                }
                 const querySnapshot = await getDocs(q);
                 const usersData = querySnapshot.docs.map(doc => ({
                     id: doc.id,
@@ -90,13 +94,14 @@ export default function AdminPage() {
             } catch (e) { console.error(e); }
         };
 
-        if (userRole === 'admin') {
+        const hasAccess = userRole === 'admin' || (userRole !== null && permissions[userRole]?.['admin'] === true);
+        if (hasAccess) {
             fetchUsers();
             fetchLinked();
         } else {
             setLoading(false);
         }
-    }, [userRole, tenantId]);
+    }, [userRole, tenantId]); // eslint-disable-line react-hooks/exhaustive-deps
 
 
     const handleCreateUser = async (e: React.FormEvent) => {
@@ -104,32 +109,44 @@ export default function AdminPage() {
         setCreateLoading(true);
         setCreateError('');
 
+        // Unique app name prevents "duplicate-app" errors from a leaked previous instance.
+        const secondaryApp = initializeApp(firebaseConfig, 'StaffCreate_' + Date.now());
+        let createdAuthUser: { delete: () => Promise<void> } | null = null;
+
         try {
-            // Note: In a real production app, you'd use Firebase Admin SDK or a Cloud Function
-            // to create users without signing out the current admin.
-            // For this project, we'll use a secondary Firebase app instance to create the user.
-            const secondaryApp = initializeApp(firebaseConfig, 'Secondary');
             const secondaryAuth = getAuth(secondaryApp);
 
             const userCredential = await createUserWithEmailAndPassword(secondaryAuth, newEmail, newPassword);
-            const newUser = userCredential.user;
+            createdAuthUser = userCredential.user;
 
-            // Create the user document in Firestore
-            await setDoc(doc(db, 'users', newUser.uid), {
-                name: newName,
-                email: newEmail,
-                role: newRole,
-                tenantId: tenantId || 'master',
-                assignedDistricts: newRole === 'sales' ? newDistricts : [],
-                createdAt: serverTimestamp()
-            });
+            if (!tenantId) throw new Error('No tenant assigned to the current admin — cannot create user.');
 
-            // Refresh user list
-            const querySnapshot = await getDocs(collection(db, 'users'));
-            setUsers(querySnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
+            try {
+                await setDoc(doc(db, 'users', userCredential.user.uid), {
+                    name: newName,
+                    email: newEmail,
+                    role: newRole,
+                    tenantId,
+                    assignedDistricts: newRole === 'sales' ? newDistricts : [],
+                    createdAt: serverTimestamp()
+                });
+            } catch (firestoreError) {
+                // Roll back the Auth account so it doesn't become orphaned.
+                await createdAuthUser.delete().catch((delErr: any) =>
+                    console.error('Rollback delete failed — Auth account may be orphaned:', delErr)
+                );
+                throw firestoreError;
+            }
+
+            // Refresh user list — scoped to this tenant only
+            const refreshQ = tenantUsersQuery();
+            if (refreshQ) {
+                const querySnapshot = await getDocs(refreshQ);
+                setUsers(querySnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
+            }
 
             if (tenantId && currentUser) {
-                logAudit({ db, tenantId, userId: currentUser.uid, userName: userName || currentUser.email || 'Admin', userRole: userRole || 'admin', module: 'Manage Users', action: 'Create', entityName: newName, entityId: newUser.uid, remarks: `Role: ${newRole} · Email: ${newEmail}` });
+                logAudit({ db, tenantId, userId: currentUser.uid, userName: userName || currentUser.email || 'Admin', userRole: userRole || 'admin', module: 'Manage Users', action: 'Create', entityName: newName, entityId: userCredential.user.uid, remarks: `Role: ${newRole} · Email: ${newEmail}` });
             }
 
             // Reset form
@@ -142,13 +159,29 @@ export default function AdminPage() {
             setShowCreateForm(false);
             alert(t('admin.create_success', { name: newName }));
 
-            // Clean up secondary app
-            await deleteApp(secondaryApp);
         } catch (error: any) {
             console.error("Error creating user:", error);
-            setCreateError(error.message || t('admin.create_error'));
+
+            if (error.code === 'auth/email-already-in-use') {
+                // Distinguish orphaned Auth account (no Firestore doc) from a genuine duplicate.
+                const dupQ = query(collection(db, 'users'), where('email', '==', newEmail), where('tenantId', '==', tenantId));
+                const dupSnap = await getDocs(dupQ).catch(() => null);
+                if (!dupSnap || dupSnap.empty) {
+                    setCreateError(
+                        'This email already has a Firebase Auth account but no matching user record in this tenant. ' +
+                        'A previous creation attempt may have failed mid-way. ' +
+                        'Please contact support to clear the orphaned account before retrying.'
+                    );
+                } else {
+                    setCreateError('A user with this email already exists in your tenant.');
+                }
+            } else {
+                setCreateError(error.message || t('admin.create_error'));
+            }
         } finally {
             setCreateLoading(false);
+            // Always clean up the secondary app, even on failure.
+            await deleteApp(secondaryApp).catch(() => {});
         }
     };
 
@@ -160,11 +193,12 @@ export default function AdminPage() {
             const secondaryApp = initializeApp(firebaseConfig, 'SecondaryR_' + Date.now());
             const secondaryAuth = getAuth(secondaryApp);
             const cred = await createUserWithEmailAndPassword(secondaryAuth, inviteRetailerEmail, inviteRetailerPassword);
+            if (!tenantId) throw new Error('No tenant assigned — cannot invite retailer.');
             await setDoc(doc(db, 'users', cred.user.uid), {
                 email: inviteRetailerEmail,
                 name: retailers.find(r => r.id === inviteRetailerId)?.name || 'Retailer',
                 role: 'retailer',
-                tenantId: tenantId || 'master',
+                tenantId,
                 linkedId: inviteRetailerId,
                 assignedRetailers: [inviteRetailerId],
                 createdAt: serverTimestamp()
@@ -185,11 +219,12 @@ export default function AdminPage() {
             const secondaryApp = initializeApp(firebaseConfig, 'SecondaryM_' + Date.now());
             const secondaryAuth = getAuth(secondaryApp);
             const cred = await createUserWithEmailAndPassword(secondaryAuth, inviteMfgEmail, inviteMfgPassword);
+            if (!tenantId) throw new Error('No tenant assigned — cannot invite manufacturer.');
             await setDoc(doc(db, 'users', cred.user.uid), {
                 email: inviteMfgEmail,
                 name: manufacturers.find(m => m.id === inviteMfgId)?.name || 'Manufacturer',
                 role: 'manufacturer',
-                tenantId: tenantId || 'master',
+                tenantId,
                 linkedId: inviteMfgId,
                 createdAt: serverTimestamp()
             });
@@ -277,7 +312,10 @@ export default function AdminPage() {
         }
     };
 
-    if (userRole !== 'admin') {
+    // Admit the admin role (plan-gated upstream; admin bypasses role matrix) plus any
+    // role the business admin has explicitly granted 'admin' screen access in the Role Matrix.
+    const canManageUsers = userRole === 'admin' || (userRole !== null && permissions[userRole]?.['admin'] === true);
+    if (!canManageUsers) {
         return (
             <div style={{ textAlign: 'center', padding: '4rem', color: 'var(--danger)' }}>
                 <ShieldAlert size={48} style={{ margin: '0 auto 1rem auto' }} />
