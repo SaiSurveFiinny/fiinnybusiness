@@ -1,4 +1,4 @@
-import { useState, useEffect, lazy, Suspense } from 'react';
+import { useState, useEffect, lazy, Suspense, startTransition } from 'react';
 import { BrowserRouter, Routes, Route, Link, useLocation, Navigate, useNavigate } from 'react-router-dom';
 import { Home, Users, UserPlus, LogOut, ReceiptText, ShieldAlert, Calculator, Settings, Package, ChevronDown, Layers, Truck, ShoppingCart, BarChart3, Activity, Bell, ClipboardList, Star, Link2, Bot, Loader2, Menu, X, Target, Sun, Moon, Receipt, HelpCircle, ArrowLeft } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
@@ -136,10 +136,16 @@ function Layout({ children, currentTheme, toggleTheme }: { children: React.React
     logout().then(() => navigate('/login', { replace: true }));
   };
 
-  // Super Admin exits a tenant view and returns to the platform admin screen.
+  // Super Admin exits a tenant view and returns directly to the Businesses section.
+  // Clearing impersonation and the navigation are committed in a single transition so
+  // React never renders the intermediate "on a tenant route but no longer impersonating"
+  // state — that state trips ProtectedRoute's super-admin guard, which would redirect to
+  // /super-admin (no hash) and strip the #businesses target.
   const handleExitTenantView = () => {
-    exitTenantView();
-    navigate('/super-admin', { replace: true });
+    startTransition(() => {
+      exitTenantView();
+      navigate('/super-admin#businesses', { replace: true });
+    });
   };
   const [adminExpanded, setAdminExpanded] = useState(true);
   const [drawerOpen, setDrawerOpen] = useState(false);
@@ -154,7 +160,7 @@ function Layout({ children, currentTheme, toggleTheme }: { children: React.React
   // Platform super admin — fully standalone layout, no tenant nav or business data.
   if (location.pathname.startsWith('/super-admin') && isSuperAdmin) {
     return (
-      <div style={{ minHeight: '100vh', background: 'var(--surface-base)' }}>
+      <div style={{ minHeight: '100vh', background: 'var(--surface-base)', display: 'flex', flexDirection: 'column' }}>
         <div style={{ padding: '1rem 1.5rem', borderBottom: '1px solid var(--surface-border)', display: 'flex', justifyContent: 'space-between', alignItems: 'center', background: 'var(--surface-raised)' }}>
           <h2 className="primary-gradient-text" style={{ fontSize: '1.2rem', margin: 0 }}>
             Fiinny Platform Admin
@@ -167,7 +173,7 @@ function Layout({ children, currentTheme, toggleTheme }: { children: React.React
             )}
           </div>
         </div>
-        <main style={{ padding: '2rem', maxWidth: '1200px', margin: '0 auto' }}>{children}</main>
+        <main style={{ flex: 1, display: 'flex', minHeight: 0 }}>{children}</main>
       </div>
     );
   }

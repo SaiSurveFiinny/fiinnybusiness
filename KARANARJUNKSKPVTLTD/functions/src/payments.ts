@@ -4,7 +4,7 @@ import * as admin from 'firebase-admin';
 // SDK service accessor so the namespaced statics (FieldValue /
 // .Timestamp) are undefined at runtime, even though admin.firestore() works.
 // The modular imports resolve correctly in both the emulator and production.
-import { FieldValue, Timestamp } from 'firebase-admin/firestore';
+import { FieldValue, Timestamp, type WriteBatch } from 'firebase-admin/firestore';
 import Razorpay from 'razorpay';
 import * as crypto from 'crypto';
 import corsLib from 'cors';
@@ -99,10 +99,12 @@ async function assertTenantOwnership(uid: string, claimedTenantId: string): Prom
   }
 }
 
-async function activatePlanModules(tenantId: string, pricingTier: string, expiry: Date): Promise<void> {
+// Adds the plan's add-on module docs to a caller-owned batch (no commit), so
+// module activation is atomic with the subscription + ledger writes.
+function addPlanModulesToBatch(
+  batch: WriteBatch, tenantId: string, pricingTier: string, expiry: Date,
+): void {
   const modules = PLAN_MODULE_MAP[pricingTier] ?? [];
-  if (!modules.length) return;
-  const batch = admin.firestore().batch();
   for (const moduleId of modules) {
     batch.set(admin.firestore().doc(`tenants/${tenantId}/modules/${moduleId}`), {
       moduleId,
@@ -112,7 +114,6 @@ async function activatePlanModules(tenantId: string, pricingTier: string, expiry
       expiresAt: Timestamp.fromDate(expiry),
     }, { merge: true });
   }
-  await batch.commit();
 }
 
 /** Wrap a handler with CORS + unified error handling. Returns an onRequest function. */
@@ -203,14 +204,13 @@ export const verifySaaSPayment = functions
     const decoded = await authenticate(req);
 
     const {
-      razorpay_order_id, razorpay_payment_id, razorpay_signature,
-      plan, cycle, tenantId,
+      razorpay_order_id, razorpay_payment_id, razorpay_signature, tenantId,
     } = req.body as {
       razorpay_order_id?: string; razorpay_payment_id?: string;
-      razorpay_signature?: string; plan?: string; cycle?: string; tenantId?: string;
+      razorpay_signature?: string; tenantId?: string;
     };
 
-    if (!razorpay_order_id || !razorpay_payment_id || !razorpay_signature || !plan || !cycle || !tenantId) {
+    if (!razorpay_order_id || !razorpay_payment_id || !razorpay_signature || !tenantId) {
       throw httpError(400, 'Missing verification parameters');
     }
 
@@ -227,24 +227,58 @@ export const verifySaaSPayment = functions
       throw httpError(400, 'Payment signature verification failed');
     }
 
-    // ── Write subscription ────────────────────────────────────────────────────
+    // ── Bind plan/cycle/amount to the PAID order — never trust client input ───
+    // The order's notes and amount were fixed server-side by createSaaSOrder, so
+    // they are the authoritative record of what was actually paid for. This blocks
+    // a client from paying for a cheap plan and requesting a more expensive one.
+    let order;
+    try {
+      order = await getRazorpay().orders.fetch(razorpay_order_id);
+    } catch (err: any) {
+      functions.logger.error('[payments] Could not fetch Razorpay order', err);
+      throw httpError(502, 'Could not verify order with payment gateway');
+    }
+
+    const notes = (order.notes ?? {}) as unknown as {
+      tenantId?: string; plan?: string; cycle?: string;
+    };
+    if (notes.tenantId !== tenantId) {
+      functions.logger.warn('[payments] Order tenant mismatch', {
+        tenantId, orderTenant: notes.tenantId, razorpay_order_id,
+      });
+      throw httpError(403, 'Order does not belong to this tenant');
+    }
+
+    const plan = notes.plan;
+    const cycle = notes.cycle;
+    if (!plan || !PLAN_AMOUNTS[plan] || (cycle !== 'monthly' && cycle !== 'yearly')) {
+      throw httpError(400, 'Order is missing a valid plan or billing cycle');
+    }
+    const planAmounts = PLAN_AMOUNTS[plan];
+
+    // Defense in depth: the amount actually charged must equal the catalogue price
+    // for the order's plan/cycle — blocks any amount/plan tampering.
+    const amountInPaise = (cycle === 'yearly' ? planAmounts.yearly : planAmounts.monthly) * 100;
+    if (Number(order.amount) !== amountInPaise) {
+      functions.logger.warn('[payments] Order amount mismatch', {
+        razorpay_order_id, orderAmount: order.amount, amountInPaise,
+      });
+      throw httpError(400, 'Order amount does not match plan pricing');
+    }
+
+    // ── Activate subscription atomically ──────────────────────────────────────
     const durationDays = cycle === 'yearly' ? 365 : 30;
-    const now = new Date();
-    const expiry = new Date(now.getTime());
+    const expiry = new Date();
     expiry.setDate(expiry.getDate() + durationDays);
 
     const catalogPlanId = PRICING_TO_PLAN_ID[plan] ?? plan;
     const db = admin.firestore();
+    const batch = db.batch();
 
     // 0. saasPayments/{razorpayPaymentId} — transaction/audit ledger (server-side
     //    only). Kept separate from the finance `payments` collection. Never store
-    //    razorpay_signature. Amount mirrors the order amount (paise), derived from
-    //    the plan catalogue — the same source createSaaSOrder uses.
-    const paymentAmounts = PLAN_AMOUNTS[plan];
-    const amountInPaise = paymentAmounts
-      ? (cycle === 'yearly' ? paymentAmounts.yearly : paymentAmounts.monthly) * 100
-      : null;
-    await db.doc(`saasPayments/${razorpay_payment_id}`).set({
+    //    razorpay_signature.
+    batch.set(db.doc(`saasPayments/${razorpay_payment_id}`), {
       tenantId,
       planId: catalogPlanId,
       cycle,
@@ -257,7 +291,7 @@ export const verifySaaSPayment = functions
     }, { merge: true });
 
     // 1. tenantSubscriptions/{tenantId} — Phase 2A source of truth
-    await db.doc(`tenantSubscriptions/${tenantId}`).set({
+    batch.set(db.doc(`tenantSubscriptions/${tenantId}`), {
       tenantId, planId: catalogPlanId, status: 'active',
       startedAt: FieldValue.serverTimestamp(),
       expiresAt: Timestamp.fromDate(expiry),
@@ -266,14 +300,16 @@ export const verifySaaSPayment = functions
     }, { merge: true });
 
     // 2. tenants/{tenantId} — backward-compat mirror
-    await db.doc(`tenants/${tenantId}`).set({
+    batch.set(db.doc(`tenants/${tenantId}`), {
       plan: catalogPlanId, planStatus: 'active',
       planExpiryAt: Timestamp.fromDate(expiry),
       updatedAt: FieldValue.serverTimestamp(),
     }, { merge: true });
 
     // 3. posModule add-ons
-    await activatePlanModules(tenantId, plan, expiry);
+    addPlanModulesToBatch(batch, tenantId, plan, expiry);
+
+    await batch.commit();
 
     functions.logger.info('[payments] Subscription activated', {
       tenantId, catalogPlanId, cycle, razorpay_payment_id,
