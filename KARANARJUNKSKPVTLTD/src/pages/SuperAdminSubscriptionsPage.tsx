@@ -1,7 +1,8 @@
 import { useState, useEffect, useCallback } from 'react';
 import {
-    ShieldCheck, Save, Layers, Building2, RefreshCw, Check, Info, ArrowLeft, Loader2,
+    ShieldCheck, Save, Layers, Building2, RefreshCw, Check, Info, ArrowLeft, Loader2, LayoutDashboard,
 } from 'lucide-react';
+import { useNavigate } from 'react-router-dom';
 import { collection, getDocs, doc, setDoc, serverTimestamp } from 'firebase/firestore';
 import { db } from '../firebase';
 import { useAuth } from '../contexts/AuthContext';
@@ -55,8 +56,15 @@ interface TenantRow {
 }
 
 export default function SuperAdminSubscriptionsPage() {
-    const { isSuperAdmin, currentUser } = useAuth();
+    const { isSuperAdmin, currentUser, enterTenantView } = useAuth();
     const { showToast } = useToast();
+    const navigate = useNavigate();
+
+    // Open a tenant's normal ERP dashboard with full Super Admin access.
+    const openTenantDashboard = (row: TenantRow) => {
+        enterTenantView(row.tenantId, row.businessName);
+        navigate('/dashboard');
+    };
 
     const [view, setView] = useState<'plans' | 'tenants'>('plans');
 
@@ -422,6 +430,7 @@ export default function SuperAdminSubscriptionsPage() {
                             saving={savingTenant === row.tenantId}
                             planExists={(id: PlanId) => !!plans[id]}
                             onSave={assignTenant}
+                            onOpenDashboard={openTenantDashboard}
                         />
                     ))}
                 </div>
@@ -432,12 +441,13 @@ export default function SuperAdminSubscriptionsPage() {
 
 // ─── Tenant row with per-row plan + status selectors ──────────────────────────
 function TenantAssignRow({
-    row, saving, planExists, onSave,
+    row, saving, planExists, onSave, onOpenDashboard,
 }: {
     row: TenantRow;
     saving: boolean;
     planExists: (id: PlanId) => boolean;
     onSave: (row: TenantRow, planId: PlanId, status: SubscriptionStatus) => void;
+    onOpenDashboard: (row: TenantRow) => void;
 }) {
     const [planId, setPlanId] = useState<PlanId>((row.subscription?.planId as PlanId) || 'retailer');
     const [status, setStatus] = useState<SubscriptionStatus>(row.subscription?.status || 'active');
@@ -456,6 +466,14 @@ function TenantAssignRow({
                         : <> · <span style={{ color: 'var(--danger)' }}>no subscription</span></>}
                 </div>
             </div>
+            <button
+                onClick={() => onOpenDashboard(row)}
+                title={`Open ${row.businessName}'s dashboard as Super Admin`}
+                className="btn btn-secondary"
+                style={{ display: 'inline-flex', alignItems: 'center', gap: '0.4rem', fontSize: '0.82rem', padding: '0.4rem 0.8rem', flexShrink: 0 }}
+            >
+                <LayoutDashboard size={14} /> Dashboard
+            </button>
             <select className="input-field" style={{ flex: '0 1 150px' }} value={planId} onChange={e => setPlanId(e.target.value as PlanId)}>
                 {PLAN_ORDER.map(id => (
                     <option key={id} value={id} disabled={!planExists(id)}>

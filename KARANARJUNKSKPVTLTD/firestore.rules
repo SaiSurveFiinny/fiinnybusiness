@@ -86,6 +86,12 @@ service cloud.firestore {
       allow read, create: if request.auth != null && request.auth.uid == userId;
       allow update:       if request.auth != null && request.auth.uid == userId;
 
+      // ── Platform Super Admin: cross-tenant read (support / "view business") ──
+      // Read-only so the Super Admin can render a tenant's Admin → user-management
+      // view while impersonating. Never grants write — the tenant's users/roles are
+      // never modified by the Super Admin. Regular users are unaffected.
+      allow read: if request.auth != null && isSuperAdmin();
+
       // ── Admin / Analyst: tenant-scoped user management ────────────────────
       // Reads: only documents whose tenantId matches the caller's own tenantId.
       // This makes the /users collection query with where('tenantId','==',x)
@@ -698,14 +704,12 @@ service cloud.firestore {
       match /promotionClaims/{pcId}     { allow read, write: if request.auth != null && isTenantMember(tenantId) && isAdminOrAnalyst(); }
       match /contracts/{cId}            { allow read, write: if request.auth != null && isTenantMember(tenantId) && isAdminOrAnalyst(); }
 
+      // ── Platform Super Admin: cross-tenant access (support / "view business") 
+      match /{document=**} {
+        allow read, write: if request.auth != null && isSuperAdmin();
+      }
+
     } // end /tenants/{tenantId}
-
-    // collectionGroup('payments') rule intentionally removed.
-    // All four pages that previously used collectionGroup (AllPaymentsPage,
-    // WorklistPage, TeamPerformancePage, SalesTargetsPage) now query payments
-    // per-retailer via getTenantCollection(db, tenantId, 'retailers', rId, 'payments').
-    // Direct-path reads of payment documents remain covered by the nested rules
-    // inside /retailers/{rId} and /tenants/{tenantId}/retailers/{rId} above.
-
+    
   } // end /databases/{database}/documents
 }

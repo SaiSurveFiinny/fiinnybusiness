@@ -45,7 +45,7 @@ interface ProtectedRouteProps {
  * environments including UAT/staging. Use a real Firebase auth session to test.
  */
 export default function ProtectedRoute({ children, requireAdmin = false, requireRole, appScreen, requireSuperAdmin = false }: ProtectedRouteProps) {
-    const { currentUser, userRole, permissions, loading, roleLandingPages, planEntitlements, subscriptionLoading, isSuperAdmin } = useAuth();
+    const { currentUser, userRole, permissions, loading, roleLandingPages, planEntitlements, subscriptionLoading, isSuperAdmin, isImpersonating } = useAuth();
     const location = useLocation();
 
     // Wait for both auth AND the subscription to resolve — denying a gated screen
@@ -70,9 +70,11 @@ export default function ProtectedRoute({ children, requireAdmin = false, require
         return isSuperAdmin ? <>{children}</> : <Navigate to="/login" replace />;
     }
 
-    // The super admin should never access tenant routes. If they somehow land on
-    // one (e.g. typed URL), send them back to their own page.
-    if (isSuperAdmin) {
+    // The super admin should never access tenant routes — UNLESS they are actively
+    // "viewing" a tenant (impersonation). While viewing, AuthContext overrides tenantId
+    // and userRole ('admin') so the checks below admit them like a business admin. If
+    // they are NOT viewing a tenant and hit a tenant route, send them back to their page.
+    if (isSuperAdmin && !isImpersonating) {
         return <Navigate to="/super-admin" replace />;
     }
 

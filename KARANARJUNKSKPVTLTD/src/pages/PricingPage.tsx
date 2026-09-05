@@ -1,9 +1,9 @@
 import { useState, useEffect } from 'react';
-import { httpsCallable } from 'firebase/functions';
-import { functions } from '../firebase';
 import { useAuth } from '../contexts/AuthContext';
+import { useToast } from '../contexts/ToastContext';
 import { useTranslation } from 'react-i18next';
-import { Check, Zap, Building2, Rocket, Star, Shield, ArrowRight, Crown, Loader2 } from 'lucide-react';
+import { useNavigate } from 'react-router-dom';
+import { Check, Zap, Building2, Rocket, Star, Shield, ArrowRight, Crown, Loader2, CheckCircle2 } from 'lucide-react';
 
 declare global {
   interface Window {
@@ -97,6 +97,49 @@ const PLANS: Plan[] = [
   },
 ];
 
+// Reverse-map the Phase 2A catalog plan id → PricingPage tier id so the
+// "Current Plan" badge matches what the user selected.
+const CATALOG_TO_PRICING_TIER: Record<string, string> = {
+  retailer:     'starter',
+  distributor:  'growth',
+  manufacturer: 'pro',
+};
+
+// ─── API helper ──────────────────────────────────────────────────────────────
+// Functions are now onRequest endpoints proxied through Firebase Hosting rewrites.
+// In development (emulator), point at localhost:5001; otherwise use the relative
+// /api path which the hosting rewrite maps to the deployed Cloud Function.
+const EMULATOR_BASE =
+  `http://localhost:5001/${import.meta.env.VITE_FIREBASE_PROJECT_ID}/asia-south1`;
+const API_BASE =
+  import.meta.env.DEV && import.meta.env.VITE_USE_EMULATOR === 'true'
+    ? EMULATOR_BASE
+    : '/api/saas';
+
+async function callFunction(
+  path: string,
+  idToken: string,
+  body: Record<string, unknown>
+): Promise<any> {
+  const url = import.meta.env.DEV && import.meta.env.VITE_USE_EMULATOR === 'true'
+    ? `${EMULATOR_BASE}/${path}`
+    : `/api/saas/${path}`;
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${idToken}`,
+    },
+    body: JSON.stringify(body),
+  });
+  const json = await res.json();
+  if (!res.ok) throw new Error(json.error ?? `Request failed (${res.status})`);
+  return json;
+}
+
+// Silence unused var — API_BASE is the conceptual default, callFunction builds its own URL.
+void API_BASE;
+
 function loadRazorpayScript(): Promise<boolean> {
   return new Promise((resolve) => {
     if (typeof window !== 'undefined' && window.Razorpay) return resolve(true);
@@ -109,64 +152,79 @@ function loadRazorpayScript(): Promise<boolean> {
 }
 
 export default function PricingPage() {
-  const { tenantId, currentUser } = useAuth();
+  const { tenantId, currentUser, planEntitlements } = useAuth();
+  const { showToast } = useToast();
   const { t } = useTranslation();
+  const navigate = useNavigate();
+
   const [cycle, setCycle] = useState<'monthly' | 'yearly'>('yearly');
+  // paying: plan id whose Razorpay order is being created / checkout is open
   const [paying, setPaying] = useState<string | null>(null);
-  const [currentPlan, setCurrentPlan] = useState<string>('free');
-  const [currentStatus, setCurrentStatus] = useState<string>('');
-  const [expiryAt, setExpiryAt] = useState<string>('');
+  // verifying: plan id whose payment is being verified server-side
+  const [verifying, setVerifying] = useState<string | null>(null);
+  // activating: shown briefly after verification succeeds, before navigating away
+  const [activating, setActivating] = useState(false);
 
   useEffect(() => {
     loadRazorpayScript();
-    fetchCurrentPlan();
-  }, [tenantId]);
+  }, []);
 
-  const fetchCurrentPlan = async () => {
-    if (!tenantId) return;
-    try {
-      const fn = httpsCallable(functions, 'getSaaSSubscription');
-      const res: any = await fn({ tenantId });
-      setCurrentPlan(res.data.plan || 'free');
-      setCurrentStatus(res.data.status || '');
-      setExpiryAt(res.data.expiryAt ? new Date(res.data.expiryAt).toLocaleDateString('en-IN') : '');
-    } catch { /* free plan by default */ }
-  };
+  // Derive current plan from AuthContext (same source as the rest of the app).
+  // planEntitlements.planId is the catalog id (retailer/distributor/manufacturer).
+  const activePlanId = planEntitlements.hasSubscription && planEntitlements.planId
+    ? (CATALOG_TO_PRICING_TIER[planEntitlements.planId] ?? planEntitlements.planId)
+    : null;
 
   const handleSubscribe = async (plan: Plan) => {
     if (!currentUser || !tenantId) return;
+    if (paying || verifying) return;
+
     setPaying(plan.id);
     try {
       const loaded = await loadRazorpayScript();
-      if (!loaded) { alert('Could not load payment gateway. Check internet connection.'); return; }
+      if (!loaded) {
+        showToast('Could not load payment gateway. Check your internet connection.', 'error');
+        return;
+      }
 
-      // 1. Create order on backend
-      const createOrder = httpsCallable(functions, 'createSaaSOrder');
-      const orderRes: any = await createOrder({ plan: plan.id, cycle, tenantId });
-      const { order_id, key_id, amount } = orderRes.data;
+      // 1. Create a Razorpay order server-side. The backend returns the order_id
+      //    and the public key_id — the secret key never leaves the server.
+      const idToken = await currentUser.getIdToken();
+      const { order_id, key_id, amount } = await callFunction(
+        'order', idToken, { plan: plan.id, cycle, tenantId }
+      );
 
-      // 2. Open Razorpay checkout
+      // 2. Open the Razorpay checkout modal. Wrapping in a Promise lets us await
+      //    the user's action (pay / cancel) before proceeding.
       await new Promise<void>((resolve, reject) => {
         const options = {
           key: key_id,
           amount,
           currency: 'INR',
-          name: 'KaranArjun SaaS',
-          description: `${plan.name} Plan (${cycle})`,
+          name: 'Fiinny ERP',
+          description: `${plan.name} Plan — ${cycle === 'yearly' ? 'Annual' : 'Monthly'}`,
           order_id,
           prefill: {
-            email: currentUser?.email || '',
-            contact: currentUser?.phoneNumber || '',
+            email: currentUser?.email ?? '',
+            contact: currentUser?.phoneNumber ?? '',
           },
           theme: { color: plan.color },
           modal: {
-            ondismiss: () => reject(new Error('Payment cancelled')),
+            ondismiss: () => reject(new Error('cancelled')),
           },
-          handler: async (response: any) => {
+          handler: async (response: {
+            razorpay_payment_id: string;
+            razorpay_order_id: string;
+            razorpay_signature: string;
+          }) => {
+            // Checkout succeeded on the Razorpay side. Transition to the
+            // verification phase — the server now does the HMAC check and
+            // writes the subscription to Firestore. The client never writes
+            // subscription data directly.
+            setPaying(null);
+            setVerifying(plan.id);
             try {
-              // 3. Verify on backend
-              const verify = httpsCallable(functions, 'verifySaaSPayment');
-              await verify({
+              await callFunction('verify', idToken, {
                 razorpay_payment_id: response.razorpay_payment_id,
                 razorpay_order_id: response.razorpay_order_id,
                 razorpay_signature: response.razorpay_signature,
@@ -180,25 +238,51 @@ export default function PricingPage() {
             }
           },
         };
-        const rzp = new window.Razorpay(options);
-        rzp.open();
+        const rzpInstance = new window.Razorpay(options);
+        rzpInstance.open();
       });
 
-      // Success!
-      await fetchCurrentPlan();
-      alert(`🎉 ${t('pricing.subscribe_success', { plan: plan.name })}`);
+      // Verification succeeded. AuthContext's onSnapshot on tenantSubscriptions/{id}
+      // will fire shortly and update planEntitlements (showInactiveScreen → false).
+      // Show a brief activation screen then navigate to the ERP.
+      setVerifying(null);
+      setActivating(true);
+      showToast(`${plan.name} plan activated! Welcome to Fiinny ERP.`, 'success');
+      setTimeout(() => {
+        navigate('/dashboard');
+      }, 1600);
+
     } catch (e: any) {
-      if (!e.message?.includes('cancelled')) {
-        console.error(e);
-        alert(t('pricing.subscribe_fail', { error: e.message || 'Unknown error' }));
-      }
-    } finally {
+      setVerifying(null);
       setPaying(null);
+      if (e?.message === 'cancelled') return; // user dismissed the modal intentionally
+      const msg = e?.message ?? 'Unknown error';
+      showToast(`Payment failed: ${msg}`, 'error');
+    } finally {
+      // Guard: ensure spinners clear even if an unexpected branch runs.
+      setPaying(prev => prev === plan.id ? null : prev);
+      setVerifying(prev => prev === plan.id ? null : prev);
     }
   };
 
   const displayPrice = (p: Plan) => cycle === 'yearly' ? Math.round(p.yearlyPrice / 12) : p.monthlyPrice;
   const savings = (p: Plan) => Math.round(((p.monthlyPrice * 12 - p.yearlyPrice) / (p.monthlyPrice * 12)) * 100);
+
+  // Full-page activation overlay shown briefly after server verification succeeds.
+  if (activating) {
+    return (
+      <div style={{ minHeight: '60vh', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: '1.5rem', textAlign: 'center', padding: '2rem' }}>
+        <div style={{ width: '80px', height: '80px', borderRadius: '50%', background: 'hsla(152,60%,40%,0.12)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+          <CheckCircle2 size={44} color="var(--primary-light)" />
+        </div>
+        <div>
+          <h2 style={{ fontSize: '1.6rem', fontWeight: 800, marginBottom: '0.5rem' }}>Subscription Activated!</h2>
+          <p style={{ color: 'var(--text-secondary)' }}>Launching your ERP dashboard...</p>
+        </div>
+        <Loader2 size={22} className="animate-spin" style={{ color: 'var(--primary-light)', opacity: 0.7 }} />
+      </div>
+    );
+  }
 
   return (
     <div className="animate-fade-in" style={{ maxWidth: '1150px', margin: '0 auto', paddingBottom: '4rem' }}>
@@ -214,10 +298,12 @@ export default function PricingPage() {
           {t('pricing.desc')}. All plans include GST compliance, invoicing, and inventory management.
         </p>
 
-        {/* Current Plan Badge */}
-        {currentPlan !== 'free' && (
+        {/* Current Plan Badge — driven by AuthContext planEntitlements */}
+        {activePlanId && (
           <div style={{ display: 'inline-flex', alignItems: 'center', gap: '0.5rem', padding: '0.5rem 1.25rem', background: 'hsla(38,92%,50%,0.1)', border: '1px solid hsla(38,92%,50%,0.3)', borderRadius: '12px', color: '#f59e0b', fontWeight: 700, fontSize: '0.9rem', marginBottom: '1.5rem' }}>
-            <Star size={16} fill="currentColor" /> {t('pricing.current_plan')}: {currentPlan.toUpperCase()} {currentStatus === 'active' && expiryAt && `· Valid till ${expiryAt}`}
+            <Star size={16} fill="currentColor" />
+            {t('pricing.current_plan')}: {activePlanId.toUpperCase()}
+            {planEntitlements.status === 'active' && ' · Active'}
           </div>
         )}
 
@@ -235,9 +321,11 @@ export default function PricingPage() {
       {/* Plan Cards */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))', gap: '1.5rem', alignItems: 'start' }}>
         {PLANS.map(plan => {
-          const isCurrentPlan = currentPlan === plan.id;
+          const isCurrentPlan = activePlanId === plan.id;
           const isPopular = plan.badge === 'Most Popular';
           const price = displayPrice(plan);
+          const isBusy = paying === plan.id || verifying === plan.id;
+          const anyBusy = !!(paying || verifying);
 
           return (
             <div
@@ -305,20 +393,23 @@ export default function PricingPage() {
                 ) : (
                   <button
                     onClick={() => handleSubscribe(plan)}
-                    disabled={!!paying}
+                    disabled={anyBusy}
                     style={{
-                      width: '100%', padding: '0.85rem', background: isPopular ? plan.gradient : 'transparent',
+                      width: '100%', padding: '0.85rem',
+                      background: isPopular ? plan.gradient : 'transparent',
                       border: isPopular ? 'none' : `2px solid ${plan.color}`,
                       color: isPopular ? '#fff' : plan.color,
-                      borderRadius: '12px', cursor: paying ? 'not-allowed' : 'pointer',
+                      borderRadius: '12px', cursor: anyBusy ? 'not-allowed' : 'pointer',
                       fontWeight: 700, font: 'inherit', fontSize: '0.95rem',
                       display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '0.5rem',
-                      opacity: paying && paying !== plan.id ? 0.5 : 1,
+                      opacity: anyBusy && !isBusy ? 0.45 : 1,
                       transition: 'all 0.2s',
                     }}
                   >
                     {paying === plan.id ? (
-                      <><Loader2 className="animate-spin" size={16} /> {t('pricing.processing')}</>
+                      <><Loader2 className="animate-spin" size={16} /> Preparing checkout…</>
+                    ) : verifying === plan.id ? (
+                      <><Loader2 className="animate-spin" size={16} /> Verifying payment…</>
                     ) : (
                       <>{t('pricing.get_plan', { plan: plan.name })} <ArrowRight size={16} /></>
                     )}

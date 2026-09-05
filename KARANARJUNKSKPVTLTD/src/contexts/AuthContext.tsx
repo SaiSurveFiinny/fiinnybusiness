@@ -12,6 +12,7 @@ import {
     type Plan,
     type TenantSubscription,
 } from '../utils/subscriptionPlans';
+import { FEATURE_ON } from '../utils/subscriptionCatalog';
 
 // 'retailer' is a read-only portal for shops that buy FROM this tenant (see
 // RETAILER_ALLOWED_PATHS in App.tsx). 'shopkeeper' is the opposite: a shop owner
@@ -93,6 +94,26 @@ export const defaultPermissions: RolePermissions = {
     customer: { dashboard: false, b2c_dashboard: false, online_dashboard: false, analytics: false, retailers: false, worklist: false, khata: false, dispatch: false, pos: false, inventory: false, online_orders: false, order_history: false, settings: true, admin: false, manufacturers: false, invoice_templates: false, invoice_settings: false, schema_builder: false, manage_retailers: false, manage_store: false, krishidukan: false, loyalty: false, accounts: false, ar: false, ap: false, cash: false, credit: false, collections: false, disputes: false, promotions: false, contracts: false, finance_analytics: false, expenses: false, audit_log: false, customers: false }
 };
 
+// Full, unrestricted plan entitlements. Used ONLY when the platform Super Admin is
+// "viewing" a tenant (see impersonation below) so the tenant's own plan never hides a
+// screen from the Super Admin. Built from the admin permission row so it always covers
+// every AppScreen the app knows about. The teamPerformance FEATURE_ON marker unlocks the
+// one screenless nav group (see isFeatureGroupAllowed in subscriptionCatalog).
+const UNLIMITED_ENTITLEMENTS: PlanEntitlements = {
+    planId: null,
+    status: 'active',
+    hasSubscription: true,
+    screens: new Set<AppScreen>(Object.keys(defaultPermissions.admin) as AppScreen[]),
+    features: new Set<string>([`teamPerformance.${FEATURE_ON}`]),
+    modules: null,
+    defaultLandingPath: null,
+};
+
+// sessionStorage keys for the Super Admin's active "view business" selection. Session-
+// scoped so it survives a refresh but never leaks across browser sessions.
+const VIEW_TENANT_KEY = 'superadmin.viewTenantId';
+const VIEW_TENANT_NAME_KEY = 'superadmin.viewTenantName';
+
 interface AuthContextType {
     currentUser: User | null;
     userRole: UserRole | null;
@@ -126,6 +147,15 @@ interface AuthContextType {
     // True only for the dedicated platform super admin (superadmin@fiinny.com).
     // This identity never belongs to any tenant and has no business UI.
     isSuperAdmin: boolean;
+    // ── Super Admin "view business" (tenant impersonation) ──
+    // When the Super Admin opens a tenant's dashboard from /super-admin, the values
+    // above (tenantId, userRole, permissions, planEntitlements, …) are transparently
+    // overridden to that tenant with full admin access. isImpersonating is true only
+    // then. Regular users can never enter this mode (enterTenantView is a no-op for them).
+    isImpersonating: boolean;
+    impersonatedTenantId: string | null;
+    enterTenantView: (tenantId: string, businessName?: string) => void;
+    exitTenantView: () => void;
 }
 
 const AuthContext = createContext<AuthContextType>({
@@ -151,6 +181,10 @@ const AuthContext = createContext<AuthContextType>({
     hasPlanScreen: () => false,
     subscriptionLoading: true,
     isSuperAdmin: false,
+    isImpersonating: false,
+    impersonatedTenantId: null,
+    enterTenantView: () => { },
+    exitTenantView: () => { },
 });
 
 export function useAuth() {
@@ -177,6 +211,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     const [planEntitlements, setPlanEntitlements] = useState<PlanEntitlements>(RESTRICTED_ENTITLEMENTS);
     const [subscriptionLoading, setSubscriptionLoading] = useState(true);
     const [isSuperAdmin, setIsSuperAdmin] = useState(false);
+    // Super Admin "view business" selection (persisted for the browser session).
+    const [impersonatedTenantId, setImpersonatedTenantId] = useState<string | null>(
+        () => sessionStorage.getItem(VIEW_TENANT_KEY)
+    );
+    const [impersonatedTenantData, setImpersonatedTenantData] = useState<TenantData | null>(() => {
+        const name = sessionStorage.getItem(VIEW_TENANT_NAME_KEY);
+        return name ? { businessName: name } : null;
+    });
 
     useEffect(() => {
         let unsubscribePerms: (() => void) | null = null;
@@ -487,36 +529,96 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         };
     }, []);
 
+    // ── Super Admin "view business" (impersonation) ──────────────────────────
+    // Only the platform Super Admin may enter a tenant's dashboard. Regular users
+    // calling these functions is a no-op (guarded by isSuperAdmin here AND enforced
+    // by Firestore rules, which only grant a master-tenant admin cross-tenant access).
+    const enterTenantView = (viewTenantId: string, businessName?: string) => {
+        if (!isSuperAdmin || !viewTenantId) return;
+        sessionStorage.setItem(VIEW_TENANT_KEY, viewTenantId);
+        if (businessName) sessionStorage.setItem(VIEW_TENANT_NAME_KEY, businessName);
+        else sessionStorage.removeItem(VIEW_TENANT_NAME_KEY);
+        setImpersonatedTenantId(viewTenantId);
+        setImpersonatedTenantData(businessName ? { businessName } : null);
+    };
+
+    const exitTenantView = () => {
+        sessionStorage.removeItem(VIEW_TENANT_KEY);
+        sessionStorage.removeItem(VIEW_TENANT_NAME_KEY);
+        setImpersonatedTenantId(null);
+        setImpersonatedTenantData(null);
+    };
+
+    // Clear any stale view selection if the session is not (or no longer) a Super Admin.
+    useEffect(() => {
+        if (!loading && !isSuperAdmin && impersonatedTenantId) {
+            exitTenantView();
+        }
+    }, [loading, isSuperAdmin, impersonatedTenantId]);
+
+    // Load the viewed tenant's business name for the header (master uses its own name).
+    useEffect(() => {
+        if (!isSuperAdmin || !impersonatedTenantId) return;
+        let cancelled = false;
+        (async () => {
+            try {
+                if (impersonatedTenantId === 'master') {
+                    if (!cancelled) setImpersonatedTenantData({ businessName: 'KaranArjun' });
+                    return;
+                }
+                const snap = await getDoc(doc(db, 'tenants', impersonatedTenantId));
+                if (!cancelled && snap.exists()) setImpersonatedTenantData(snap.data() as TenantData);
+            } catch {
+                // Keep the name we already have (from sessionStorage / the click).
+            }
+        })();
+        return () => { cancelled = true; };
+    }, [isSuperAdmin, impersonatedTenantId]);
+
     const logout = () => {
+        // Never carry a Super Admin's tenant view across a logout.
+        exitTenantView();
         return signOut(auth);
     };
 
-    const hasModule = (moduleId: string): boolean => enabledModules.includes(moduleId);
-    const hasPlanScreen = (screen: AppScreen): boolean => isScreenAllowedByPlan(screen, planEntitlements);
+    const isImpersonating = isSuperAdmin && !!impersonatedTenantId;
 
+    const hasModule = (moduleId: string): boolean => enabledModules.includes(moduleId);
+    // While impersonating, entitlements are UNLIMITED so this reflects full access.
+    const effectiveEntitlements = isImpersonating ? UNLIMITED_ENTITLEMENTS : planEntitlements;
+    const hasPlanScreen = (screen: AppScreen): boolean => isScreenAllowedByPlan(screen, effectiveEntitlements);
+
+    // When the Super Admin is viewing a tenant, transparently override the tenant-scoped
+    // values so every page/route/nav item resolves against the selected tenant with full
+    // admin access — without any per-page changes. The tenant's own users/roles/subscription
+    // are untouched; this is a client-side view only (Firestore rules gate the real access).
     const value = {
         currentUser,
-        userRole,
-        tenantId,
-        tenantData,
-        linkedId,
+        userRole: isImpersonating ? 'admin' as UserRole : userRole,
+        tenantId: isImpersonating ? impersonatedTenantId : tenantId,
+        tenantData: isImpersonating ? (impersonatedTenantData || { businessName: impersonatedTenantId || 'Business' }) : tenantData,
+        linkedId: isImpersonating ? null : linkedId,
         userName,
-        permissions,
-        featurePermissions,
-        customRoles,
-        roleLandingPages,
+        permissions: isImpersonating ? defaultPermissions : permissions,
+        featurePermissions: isImpersonating ? DEFAULT_FEATURE_PERMISSIONS : featurePermissions,
+        customRoles: isImpersonating ? [] : customRoles,
+        roleLandingPages: isImpersonating ? {} : roleLandingPages,
         loading,
         logout,
-        assignedDistricts,
-        assignedRetailers,
+        assignedDistricts: isImpersonating ? [] : assignedDistricts,
+        assignedRetailers: isImpersonating ? [] : assignedRetailers,
         enabledModules,
         tenantPlan,
-        modulesLoading,
+        modulesLoading: isImpersonating ? false : modulesLoading,
         hasModule,
-        planEntitlements,
+        planEntitlements: effectiveEntitlements,
         hasPlanScreen,
-        subscriptionLoading,
+        subscriptionLoading: isImpersonating ? false : subscriptionLoading,
         isSuperAdmin,
+        isImpersonating,
+        impersonatedTenantId,
+        enterTenantView,
+        exitTenantView,
     };
 
     return (

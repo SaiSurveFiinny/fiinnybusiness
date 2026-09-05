@@ -1,6 +1,6 @@
 import { useState, useEffect, lazy, Suspense } from 'react';
 import { BrowserRouter, Routes, Route, Link, useLocation, Navigate, useNavigate } from 'react-router-dom';
-import { Home, Users, UserPlus, LogOut, ReceiptText, ShieldAlert, Calculator, Settings, Package, ChevronDown, Layers, Truck, ShoppingCart, BarChart3, Activity, Bell, ClipboardList, Star, Link2, Bot, Loader2, Menu, X, Target, Sun, Moon, Receipt, HelpCircle } from 'lucide-react';
+import { Home, Users, UserPlus, LogOut, ReceiptText, ShieldAlert, Calculator, Settings, Package, ChevronDown, Layers, Truck, ShoppingCart, BarChart3, Activity, Bell, ClipboardList, Star, Link2, Bot, Loader2, Menu, X, Target, Sun, Moon, Receipt, HelpCircle, ArrowLeft } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import LanguageSwitcher from './components/LanguageSwitcher';
 import EnvBadge from './components/EnvBadge';
@@ -129,11 +129,17 @@ function Layout({ children, currentTheme, toggleTheme }: { children: React.React
   const location = useLocation();
   const navigate = useNavigate();
   const { t } = useTranslation();
-  const { currentUser, userRole, tenantData, tenantId, permissions, logout, hasPlanScreen, planEntitlements, subscriptionLoading, isSuperAdmin } = useAuth();
+  const { currentUser, userRole, tenantData, tenantId, permissions, logout, hasPlanScreen, planEntitlements, subscriptionLoading, isSuperAdmin, isImpersonating, exitTenantView } = useAuth();
   const can = useFeaturePermissions();
 
   const handleLogout = () => {
     logout().then(() => navigate('/login', { replace: true }));
+  };
+
+  // Super Admin exits a tenant view and returns to the platform admin screen.
+  const handleExitTenantView = () => {
+    exitTenantView();
+    navigate('/super-admin', { replace: true });
   };
   const [adminExpanded, setAdminExpanded] = useState(true);
   const [drawerOpen, setDrawerOpen] = useState(false);
@@ -204,40 +210,35 @@ function Layout({ children, currentTheme, toggleTheme }: { children: React.React
     !subscriptionActive;
 
   if (showInactiveScreen) {
-    return (
-      <div style={{ minHeight: '100vh', background: 'var(--surface-base)', display: 'flex', flexDirection: 'column' }}>
-        <header style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '1rem 1.5rem', background: 'var(--surface-raised)', borderBottom: '1px solid var(--surface-border)' }}>
-          <h2 className="primary-gradient-text" style={{ fontSize: '1.35rem', margin: 0, letterSpacing: '-0.03em' }}>
-            {tenantData?.businessName || 'Fiinny ERP'}
-          </h2>
-          <button
-            onClick={handleLogout}
-            style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', padding: '0.5rem 1rem', background: 'transparent', border: '1px solid var(--surface-border)', borderRadius: '8px', cursor: 'pointer', color: 'var(--text-secondary)', font: 'inherit', fontSize: '0.875rem' }}
-          >
-            <LogOut size={16} /> Logout
-          </button>
-        </header>
-        <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: '2rem', textAlign: 'center' }}>
-          <div style={{ maxWidth: '480px' }}>
-            <div style={{ width: '72px', height: '72px', borderRadius: '50%', background: 'hsla(0,84%,60%,0.1)', display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 1.5rem' }}>
-              <ShieldAlert size={36} style={{ color: 'var(--danger)' }} />
-            </div>
-            <h2 style={{ fontSize: '1.5rem', marginBottom: '1rem', color: 'var(--text-primary)' }}>
-              Subscription Not Active
-            </h2>
-            <p style={{ color: 'var(--text-secondary)', fontSize: '1rem', lineHeight: 1.6, marginBottom: '0' }}>
-              Your subscription is not active. Please contact{' '}
-              <strong style={{ color: 'var(--text-primary)' }}>Anshul Dhanpure</strong>{' '}
-              at{' '}
-              <a href="tel:8658032795" style={{ color: 'var(--primary-light)', fontWeight: 600, textDecoration: 'none' }}>
-                8658032795
-              </a>{' '}
-              to activate your subscription.
-            </p>
-          </div>
-        </div>
-      </div>
+    // New tenants (and tenants whose subscription has lapsed) must choose a plan
+    // before accessing the ERP. Show the pricing page in a minimal shell layout;
+    // redirect every other route to /pricing so they can't bypass it.
+    const pricingHeader = (
+      <header style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '1rem 1.5rem', background: 'var(--surface-raised)', borderBottom: '1px solid var(--surface-border)' }}>
+        <h2 className="primary-gradient-text" style={{ fontSize: '1.35rem', margin: 0, letterSpacing: '-0.03em' }}>
+          {tenantData?.businessName || 'Fiinny ERP'}
+        </h2>
+        <button
+          onClick={handleLogout}
+          style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', padding: '0.5rem 1rem', background: 'transparent', border: '1px solid var(--surface-border)', borderRadius: '8px', cursor: 'pointer', color: 'var(--text-secondary)', font: 'inherit', fontSize: '0.875rem' }}
+        >
+          <LogOut size={16} /> Logout
+        </button>
+      </header>
     );
+
+    if (location.pathname === '/pricing') {
+      return (
+        <div style={{ minHeight: '100vh', background: 'var(--surface-base)', display: 'flex', flexDirection: 'column' }}>
+          {pricingHeader}
+          <main style={{ flex: 1, padding: '2rem', overflowY: 'auto' }}>
+            <Suspense fallback={<PageLoader />}>{children}</Suspense>
+          </main>
+        </div>
+      );
+    }
+
+    return <Navigate to="/pricing" replace />;
   }
 
   const isOwner = userRole === 'admin' || userRole === 'analyst';
@@ -363,8 +364,33 @@ function Layout({ children, currentTheme, toggleTheme }: { children: React.React
 
   return (
     <div className="app-container" style={{ flexDirection: 'column' }}>
+      {/* Super Admin impersonation banner — shown only while a Super Admin is
+          viewing a tenant's dashboard. Makes the tenant context explicit and gives
+          a one-click return to /super-admin. */}
+      {isImpersonating && (
+        <div style={{
+          display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '1rem',
+          padding: '0.55rem 1.25rem', background: 'hsla(45,93%,47%,0.14)',
+          borderBottom: '1px solid hsla(45,93%,47%,0.35)', color: 'var(--secondary-dark)',
+          fontSize: '0.85rem', fontWeight: 600,
+        }}>
+          <span style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', minWidth: 0 }}>
+            <ShieldAlert size={16} style={{ flexShrink: 0 }} />
+            <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+              Super Admin view · {tenantData?.businessName || tenantId}
+            </span>
+          </span>
+          <button
+            onClick={handleExitTenantView}
+            style={{ display: 'inline-flex', alignItems: 'center', gap: '0.4rem', padding: '0.35rem 0.8rem', background: 'var(--surface-raised)', border: '1px solid hsla(45,93%,47%,0.4)', borderRadius: '8px', cursor: 'pointer', color: 'var(--secondary-dark)', font: 'inherit', fontSize: '0.82rem', fontWeight: 600, whiteSpace: 'nowrap', flexShrink: 0 }}
+          >
+            <ArrowLeft size={15} /> Exit Business
+          </button>
+        </div>
+      )}
+
       {/* Top Header */}
-      <header style={{ 
+      <header style={{
         display: 'flex', alignItems: 'center', justifyContent: 'space-between', 
         padding: '1rem 1.5rem', background: 'var(--surface-base)', 
         borderBottom: '1px solid var(--surface-border)', zIndex: 10
@@ -552,7 +578,7 @@ function App() {
 }
 
 function AppRoutes() {
-  const { currentUser, tenantId, userRole, loading, roleLandingPages, planEntitlements, isSuperAdmin } = useAuth();
+  const { currentUser, tenantId, userRole, loading, roleLandingPages, planEntitlements, isSuperAdmin, isImpersonating } = useAuth();
   const locationHook = useLocation();
 
   if (loading) return null;
@@ -606,7 +632,9 @@ function AppRoutes() {
   const onEntryPage = locationHook.pathname === '/' || locationHook.pathname === '/login';
 
   // Platform super admin — route to /super-admin on entry pages; never to onboarding.
-  if (currentUser && isSuperAdmin) {
+  // While "viewing" a tenant (impersonation) the super admin behaves like that tenant's
+  // admin, so skip this redirect and let the normal tenant redirects below run.
+  if (currentUser && isSuperAdmin && !isImpersonating) {
     if (onEntryPage) return <Navigate to="/super-admin" replace />;
     // Allow any explicit navigation (including /super-admin itself); no further redirect.
   }
@@ -697,7 +725,9 @@ function AppRoutes() {
       <Route path="/inventory-batches" element={<ProtectedRoute requireRole={['admin', 'analyst', 'shopkeeper']} appScreen="inventory"><InventoryBatchPage /></ProtectedRoute>} />
       <Route path="/barcode" element={<ProtectedRoute requireRole={['admin', 'analyst', 'shopkeeper']} appScreen="inventory"><BarcodePage /></ProtectedRoute>} />
       <Route path="/manage-transport" element={<ProtectedRoute requireRole={['admin', 'analyst']} appScreen="inventory"><ManageTransportPage /></ProtectedRoute>} />
-      <Route path="/pricing" element={<ProtectedRoute requireRole={['admin', 'analyst', 'shopkeeper']} appScreen="analytics"><PricingPage /></ProtectedRoute>} />
+      {/* Pricing is always accessible to authenticated tenant users regardless of plan,
+          so new tenants can select a plan after signup. No appScreen gate here. */}
+      <Route path="/pricing" element={<ProtectedRoute requireRole={['admin', 'analyst', 'shopkeeper']}><PricingPage /></ProtectedRoute>} />
       <Route path="/payment-links" element={<ProtectedRoute requireRole={['admin', 'analyst', 'shopkeeper']} appScreen="worklist"><PaymentLinkPage /></ProtectedRoute>} />
       <Route path="/ai-advisor" element={<ProtectedRoute requireRole={['admin', 'analyst']} appScreen="analytics"><AIAdvisorPage /></ProtectedRoute>} />
       {/* Module system */}
