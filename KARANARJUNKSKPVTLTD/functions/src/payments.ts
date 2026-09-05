@@ -1,5 +1,10 @@
 import * as functions from 'firebase-functions/v1';
 import * as admin from 'firebase-admin';
+// Use the modular FieldValue/Timestamp. The Functions emulator wraps the Admin
+// SDK service accessor so the namespaced statics (FieldValue /
+// .Timestamp) are undefined at runtime, even though admin.firestore() works.
+// The modular imports resolve correctly in both the emulator and production.
+import { FieldValue, Timestamp } from 'firebase-admin/firestore';
 import Razorpay from 'razorpay';
 import * as crypto from 'crypto';
 import corsLib from 'cors';
@@ -103,8 +108,8 @@ async function activatePlanModules(tenantId: string, pricingTier: string, expiry
       moduleId,
       status: 'active',
       billingCycle: 'plan_included',
-      activatedAt: admin.firestore.FieldValue.serverTimestamp(),
-      expiresAt: admin.firestore.Timestamp.fromDate(expiry),
+      activatedAt: FieldValue.serverTimestamp(),
+      expiresAt: Timestamp.fromDate(expiry),
     }, { merge: true });
   }
   await batch.commit();
@@ -147,7 +152,7 @@ export const getSaaSSubscription = functions
     res.json({
       plan: sub.planId ?? 'free',
       status: sub.status ?? 'none',
-      expiryAt: sub.expiresAt ? (sub.expiresAt as admin.firestore.Timestamp).toDate().toISOString() : null,
+      expiryAt: sub.expiresAt ? (sub.expiresAt as Timestamp).toDate().toISOString() : null,
     });
   }));
 
@@ -231,20 +236,40 @@ export const verifySaaSPayment = functions
     const catalogPlanId = PRICING_TO_PLAN_ID[plan] ?? plan;
     const db = admin.firestore();
 
+    // 0. saasPayments/{razorpayPaymentId} — transaction/audit ledger (server-side
+    //    only). Kept separate from the finance `payments` collection. Never store
+    //    razorpay_signature. Amount mirrors the order amount (paise), derived from
+    //    the plan catalogue — the same source createSaaSOrder uses.
+    const paymentAmounts = PLAN_AMOUNTS[plan];
+    const amountInPaise = paymentAmounts
+      ? (cycle === 'yearly' ? paymentAmounts.yearly : paymentAmounts.monthly) * 100
+      : null;
+    await db.doc(`saasPayments/${razorpay_payment_id}`).set({
+      tenantId,
+      planId: catalogPlanId,
+      cycle,
+      amount: amountInPaise,
+      currency: 'INR',
+      razorpayOrderId: razorpay_order_id,
+      razorpayPaymentId: razorpay_payment_id,
+      status: 'captured',
+      createdAt: FieldValue.serverTimestamp(),
+    }, { merge: true });
+
     // 1. tenantSubscriptions/{tenantId} — Phase 2A source of truth
     await db.doc(`tenantSubscriptions/${tenantId}`).set({
       tenantId, planId: catalogPlanId, status: 'active',
-      startedAt: admin.firestore.FieldValue.serverTimestamp(),
-      expiresAt: admin.firestore.Timestamp.fromDate(expiry),
+      startedAt: FieldValue.serverTimestamp(),
+      expiresAt: Timestamp.fromDate(expiry),
       assignedBy: `razorpay:${razorpay_payment_id}`,
-      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      updatedAt: FieldValue.serverTimestamp(),
     }, { merge: true });
 
     // 2. tenants/{tenantId} — backward-compat mirror
     await db.doc(`tenants/${tenantId}`).set({
       plan: catalogPlanId, planStatus: 'active',
-      planExpiryAt: admin.firestore.Timestamp.fromDate(expiry),
-      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      planExpiryAt: Timestamp.fromDate(expiry),
+      updatedAt: FieldValue.serverTimestamp(),
     }, { merge: true });
 
     // 3. posModule add-ons

@@ -70,10 +70,17 @@ service cloud.firestore {
       return d != null && d.tenantId == 'master';
     }
 
-    // Platform super admin — the master tenant's admin/analyst. Owns the global
-    // plan catalogue and assigns subscriptions. (Phase 2A subscription layer.)
+    // Platform super admin — either the master tenant's admin/analyst, OR the
+    // dedicated platform account identified by email. The email branch mirrors
+    // AuthContext (SUPER_ADMIN_EMAIL), which grants the Super Admin UI by email
+    // and carries no tenant; without it, collection-wide reads (tenants,
+    // tenantSubscriptions) from that account fail with permission-denied.
+    // Owns the global plan catalogue and assigns subscriptions. (Phase 2A.)
     function isSuperAdmin() {
-      return isMasterTenant() && isAdminOrAnalyst();
+      return (isMasterTenant() && isAdminOrAnalyst())
+        || (request.auth != null
+            && request.auth.token.email != null
+            && request.auth.token.email.lower() == 'superadmin@fiinny.com');
     }
 
     // ── Global: User identity ─────────────────────────────────────────────────
@@ -142,6 +149,20 @@ service cloud.firestore {
     match /tenantSubscriptions/{tenantId} {
       allow read:  if request.auth != null && (isSuperAdmin() || isTenantMember(tenantId));
       allow write: if request.auth != null && isSuperAdmin();
+    }
+
+    // ── Global: SaaS payment ledger (Phase 2A) ────────────────────────────────
+    // Transaction/audit records for Razorpay subscription payments, keyed by
+    // razorpayPaymentId. Written EXCLUSIVELY by Cloud Functions (verifySaaSPayment)
+    // via the Admin SDK — no client may create or modify a payment record.
+    // Readable by the owning tenant's members (their own billing history) and the
+    // platform super admin. Kept separate from the finance `payments` collection.
+    match /saasPayments/{razorpayPaymentId} {
+      allow read:  if request.auth != null && (
+        isSuperAdmin() ||
+        (resource.data.tenantId != null && isTenantMember(resource.data.tenantId))
+      );
+      allow write: if false;
     }
 
     // ── Global: Public payment landing pages ──────────────────────────────────
