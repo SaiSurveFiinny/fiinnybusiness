@@ -66,23 +66,5 @@
             <action android:name="android.intent.action.PROCESS_TEXT"/>
             <data android:mimeType="text/plain"/>
         </intent>
-
-        <!-- Lets Razorpay's checkout detect installed UPI apps (PhonePe,
-             Google Pay, Paytm, BHIM, etc.) so it can offer the fast "tap the
-             app icon" UPI intent flow instead of forcing every customer onto
-             manual UPI-ID entry.
-             Without this, Android 11+ package-visibility rules hide every
-             other app's package from this app's PackageManager, so
-             Razorpay's own installed-app check finds nothing and silently
-             falls back to the ID-entry (collect) flow — which is also the
-             slower flow that's more likely to trip the checkout SDK's own
-             completion timeout (see order-status/route.ts for the other half
-             of that fix). The generic upi://pay intent below is what every
-             UPI app registers, so this alone covers all of them without
-             listing packages one by one. -->
-        <intent>
-            <action android:name="android.intent.action.VIEW"/>
-            <data android:scheme="upi" android:host="pay"/>
-        </intent>
     </queries>
 </manifest>

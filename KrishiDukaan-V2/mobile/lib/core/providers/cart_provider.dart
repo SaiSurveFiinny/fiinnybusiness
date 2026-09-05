@@ -1,37 +1,17 @@
-import 'dart:async';
-
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_riverpod/legacy.dart';
 import 'package:shared_preferences/shared_preferences.dart';
-import '../data/shared_cart_repository.dart';
 import '../models/cart_model.dart';
-import '../models/user_model.dart';
 import '../utils/weight_utils.dart';
-import 'user_provider.dart';
 
 class CartNotifier extends StateNotifier<List<CartItemModel>> {
   CartNotifier() : super([]) {
-    _initialLoad = _load();
+    _load();
   }
 
   static const _key = 'cart_items';
-  final _sharedCartRepo = SharedCartRepository();
-
-  /// Completes once the on-device guest cart has been read into [state].
-  /// [onSignedIn] awaits this before treating [state] as "the guest cart" to
-  /// merge — without it, a sign-in detected before this finishes would merge
-  /// against an empty `state` and then have [_load]'s completion silently
-  /// clobber the just-merged result right after.
-  late final Future<void> _initialLoad;
-
-  /// The signed-in user's phone once [onAuthChanged] has synced their cart
-  /// from `carts/{phone}`; null means the current cart is a GUEST cart,
-  /// persisted only to on-device SharedPreferences — mirrors web's split
-  /// between localStorage (guest) and Firestore (signed in) exactly.
-  String? _signedInPhone;
-  Timer? _saveDebounce;
 
   Future<void> _load() async {
     final prefs = await SharedPreferences.getInstance();
@@ -45,63 +25,9 @@ class CartNotifier extends StateNotifier<List<CartItemModel>> {
     }
   }
 
-  /// Called once per sign-in (see `cartProvider`'s `ref.listen` below), never
-  /// re-entered for the same phone. Loads the user's Firestore cart, merges
-  /// it with whatever guest cart is currently in [state], persists the
-  /// result back to `carts/{phone}`, and clears the on-device guest cart —
-  /// mirrors web's exact login-time merge in app/page.tsx.
-  Future<void> onSignedIn(String phone) async {
-    if (phone.isEmpty || _signedInPhone == phone) return;
-    _signedInPhone = phone;
-
-    await _initialLoad;
-    final guestItems = state;
-    final remoteItems = await _sharedCartRepo.loadAndReconstruct(phone);
-    final merged = remoteItems.isEmpty
-        ? guestItems
-        : _sharedCartRepo.mergeCartItems(guestItems, remoteItems);
-
-    state = merged;
-
-    if (merged.isNotEmpty || remoteItems.isNotEmpty) {
-      await _sharedCartRepo.saveCart(phone, merged);
-    }
-
-    // Guest cart is now folded into the Firestore cart — clear it so a later
-    // sign-out doesn't resurrect these items as a stale "guest" cart.
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.remove(_key);
-  }
-
-  /// Called on sign-out. The in-memory cart is left as-is (still usable while
-  /// browsing signed out) but future saves go back to on-device storage —
-  /// this account's Firestore cart is no longer written to.
-  void onSignedOut() {
-    _signedInPhone = null;
-  }
-
   Future<void> _save() async {
-    final phone = _signedInPhone;
-    if (phone != null) {
-      // Debounced: a rapid string of quantity taps would otherwise fire one
-      // Firestore write per tap.
-      _saveDebounce?.cancel();
-      _saveDebounce = Timer(const Duration(milliseconds: 500), () {
-        // Best-effort, same as the SharedPreferences path below never
-        // surfacing a disk-write failure to the UI — a dropped save here
-        // just means the NEXT mutation's debounce retries with current state.
-        _sharedCartRepo.saveCart(phone, state).catchError((_) {});
-      });
-      return;
-    }
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString(_key, CartItemModel.listToJson(state));
-  }
-
-  @override
-  void dispose() {
-    _saveDebounce?.cancel();
-    super.dispose();
   }
 
   void addItem(CartItemModel item) {
@@ -188,26 +114,7 @@ class CartNotifier extends StateNotifier<List<CartItemModel>> {
 
 final cartProvider =
     StateNotifierProvider<CartNotifier, List<CartItemModel>>((ref) {
-  final notifier = CartNotifier();
-
-  // Fold the current user's Firestore cart in on sign-in (and handle the case
-  // where the app opens already signed in — ref.listen alone only fires on
-  // SUBSEQUENT changes, not the value present at provider creation).
-  void handle(UserModel? user) {
-    final phone = user?.phone;
-    if (phone != null && phone.isNotEmpty) {
-      notifier.onSignedIn(phone);
-    } else {
-      notifier.onSignedOut();
-    }
-  }
-
-  handle(ref.read(currentUserProvider).value);
-  ref.listen<AsyncValue<UserModel?>>(currentUserProvider, (previous, next) {
-    handle(next.value);
-  });
-
-  return notifier;
+  return CartNotifier();
 });
 
 final cartCountProvider = Provider<int>((ref) {

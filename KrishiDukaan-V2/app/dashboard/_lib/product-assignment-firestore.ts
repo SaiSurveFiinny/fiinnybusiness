@@ -26,11 +26,6 @@ import {
 
 const SEAT_LISTINGS = "retailerSeatListings";
 
-// A freshly assigned product used to start at 0 stock / not-available, which
-// meant it was immediately unsellable until the retailer noticed and edited
-// it. Give it a small starting stock instead so it's usable right away.
-const DEFAULT_ASSIGNED_STOCK = 10;
-
 export type AssignProductInput = {
   manufacturerId: string;
   retailerDocId: string;   // stable pre-signup identifier, always available
@@ -47,7 +42,7 @@ export type AssignProductResult = {
  * Assigns a manufacturer product to a retailer. Atomically:
  * 1. Validates the manufacturer has an available seat.
  * 2. Creates a product copy in `products` (retailer manages stock later).
- * 3. Creates an `inventory` record with a small default starting stock.
+ * 3. Creates an `inventory` record with zero initial stock.
  * 4. Creates a `retailerSeatListings` entry (listingType: "assigned") — consumes the seat.
  *
  * Does NOT require the retailer to have signed up (retailerId is optional).
@@ -174,10 +169,10 @@ export async function assignProductToRetailer(
     productId: retailerProductRef.id,
     manufacturerProductId: input.productId,
     assignedByManufacturer: true,
-    stockQuantity: DEFAULT_ASSIGNED_STOCK,
+    stockQuantity: 0,
     sellingPrice: typeof src.price === "number" ? src.price : 0,
     reorderThreshold: 5,
-    isAvailable: true,
+    isAvailable: false,
     updatedAt: now,
   });
 
@@ -226,10 +221,10 @@ export async function assignProductToRetailer(
           {
             id: inventoryRef.id,
             productId: retailerProductRef.id,
-            stockQuantity: DEFAULT_ASSIGNED_STOCK,
+            stockQuantity: 0,
             sellingPrice: typeof src.price === "number" ? src.price : 0,
             reorderThreshold: 5,
-            isAvailable: true,
+            isAvailable: false,
             updatedAt: serverTimestamp(),
             assignedByManufacturer: true
           },
@@ -536,10 +531,10 @@ export async function bulkAssignProductsToRetailer(
       productId: retailerProductRef.id,
       manufacturerProductId: productId,
       assignedByManufacturer: true,
-      stockQuantity: DEFAULT_ASSIGNED_STOCK,
+      stockQuantity: 0,
       sellingPrice: typeof src.price === "number" ? src.price : 0,
       reorderThreshold: 5,
-      isAvailable: true,
+      isAvailable: false,
       updatedAt: now,
     });
 
@@ -611,10 +606,10 @@ export async function bulkAssignProductsToRetailer(
               {
                 id: item.inventoryId,
                 productId: item.retailerProductId,
-                stockQuantity: DEFAULT_ASSIGNED_STOCK,
+                stockQuantity: 0,
                 sellingPrice: item.sellingPrice,
                 reorderThreshold: 5,
-                isAvailable: true,
+                isAvailable: false,
                 updatedAt: mirrorNow,
                 assignedByManufacturer: true
               },

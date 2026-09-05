@@ -18,18 +18,7 @@ import '../providers/reels_provider.dart';
 import '../widgets/reel_filters.dart';
 
 class ReelsFeedScreen extends ConsumerStatefulWidget {
-  /// A one-shot token (from `?search=`) that asks the screen to open the same
-  /// shop-search / "Explore Reels" sheet the in-feed search icon opens —
-  /// mirrors MarketplaceScreen.searchFocusToken exactly (see that class's
-  /// doc comment). Needed because this screen lives in a StatefulShellBranch,
-  /// which preserves State across tab visits — a plain "did the widget just
-  /// mount" check would only fire the FIRST time this tab is ever opened, not
-  /// on a second "See all" tap from Home once the branch state already
-  /// exists. Home passes a fresh value on every tap for the same reason
-  /// Marketplace's token does.
-  final String? searchToken;
-
-  const ReelsFeedScreen({super.key, this.searchToken});
+  const ReelsFeedScreen({super.key});
 
   @override
   ConsumerState<ReelsFeedScreen> createState() => _ReelsFeedScreenState();
@@ -42,7 +31,6 @@ class _ReelsFeedScreenState extends ConsumerState<ReelsFeedScreen>
   final Set<String> _viewedReelIds = {};
   int _currentPage = 0;
   bool _initialized = false;
-  String? _handledSearchToken;
 
   GoRouter? _router;
 
@@ -50,42 +38,6 @@ class _ReelsFeedScreenState extends ConsumerState<ReelsFeedScreen>
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
-    _maybeOpenSearch();
-  }
-
-  @override
-  void didUpdateWidget(covariant ReelsFeedScreen oldWidget) {
-    super.didUpdateWidget(oldWidget);
-    _maybeOpenSearch();
-  }
-
-  /// Opens the search/"Explore Reels" sheet when a new token arrives (e.g.
-  /// Home's reels rail "See all"). Guarded by [_handledSearchToken] so a
-  /// rebuild for any other reason doesn't keep reopening it.
-  void _maybeOpenSearch() {
-    final token = widget.searchToken;
-    if (token == null || token == _handledSearchToken) return;
-    _handledSearchToken = token;
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (mounted) _openSearchSheet();
-    });
-  }
-
-  void _openSearchSheet() {
-    final reels = ref.read(reelsFeedProvider).value ?? [];
-    showModalBottomSheet(
-      context: context,
-      isScrollControlled: true,
-      backgroundColor: Colors.transparent,
-      builder: (_) => _ShopSearchSheet(
-        onSelectReel: (selectedReel) {
-          final index = reels.indexWhere((r) => r.id == selectedReel.id);
-          if (index != -1) {
-            _pageController.jumpToPage(index);
-          }
-        },
-      ),
-    );
   }
 
   @override
@@ -419,7 +371,22 @@ class _ReelsFeedScreenState extends ConsumerState<ReelsFeedScreen>
                               Icons.search_rounded,
                               color: Colors.white,
                             ),
-                            onPressed: _openSearchSheet,
+                            onPressed: () {
+                              final reels = feedAsync.value ?? [];
+                              showModalBottomSheet(
+                                context: context,
+                                isScrollControlled: true,
+                                backgroundColor: Colors.transparent,
+                                builder: (_) => _ShopSearchSheet(
+                                  onSelectReel: (selectedReel) {
+                                    final index = reels.indexWhere((r) => r.id == selectedReel.id);
+                                    if (index != -1) {
+                                      _pageController.jumpToPage(index);
+                                    }
+                                  },
+                                ),
+                              );
+                            },
                           ),
                           IconButton(
                             icon: const Icon(

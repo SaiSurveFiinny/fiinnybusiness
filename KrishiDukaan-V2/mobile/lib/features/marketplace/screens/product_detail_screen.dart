@@ -1,4 +1,6 @@
 import 'package:cached_network_image/cached_network_image.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
@@ -7,7 +9,6 @@ import 'package:share_plus/share_plus.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:youtube_player_iframe/youtube_player_iframe.dart';
 import '../../../core/constants/app_colors.dart';
-import '../../../core/services/product_analytics_service.dart';
 import '../../../core/constants/app_text_styles.dart';
 import '../../../core/utils/category_info.dart';
 import '../../../core/models/catalog_model.dart';
@@ -38,8 +39,14 @@ import '../../../core/providers/user_provider.dart';
 /// Shared by `_ProductDetailScreenState` (view) and `_SellerTileState`
 /// (call/directions).
 void _trackProductEvent(String catalogId, String totalField, String byDayField) {
-  ProductAnalyticsService.instance
-      .recordEvent(catalogId, totalField, byDayField);
+  if (FirebaseAuth.instance.currentUser == null) return;
+  final now = DateTime.now();
+  final dayKey =
+      '${now.year}-${now.month.toString().padLeft(2, '0')}-${now.day.toString().padLeft(2, '0')}';
+  FirebaseFirestore.instance.collection('products').doc(catalogId).update({
+    totalField: FieldValue.increment(1),
+    '$byDayField.$dayKey': FieldValue.increment(1),
+  }).catchError((_) {});
 }
 
 class ProductDetailScreen extends ConsumerStatefulWidget {
@@ -140,8 +147,7 @@ class _ProductDetailScreenState extends ConsumerState<ProductDetailScreen> {
           final hasDetails =
               (catalog.description != null &&
                   catalog.description!.isNotEmpty) ||
-              _hasProductInsights(catalog) ||
-              (catalog.composition != null && catalog.composition!.isNotEmpty);
+              _hasProductInsights(catalog);
 
           return CustomScrollView(
             slivers: [
@@ -239,9 +245,6 @@ class _ProductDetailScreenState extends ConsumerState<ProductDetailScreen> {
                       _buildDescription(catalog),
                     if (_hasProductInsights(catalog))
                       _buildProductInsightsSection(catalog),
-                    if (catalog.composition != null &&
-                        catalog.composition!.isNotEmpty)
-                      _buildCompositionSection(catalog),
                     if (_youtubeVideoId(catalog.videoUrl) != null)
                       _buildProductDemonstrationSection(catalog),
 
@@ -308,7 +311,7 @@ class _ProductDetailScreenState extends ConsumerState<ProductDetailScreen> {
 
                     const Divider(height: 1, thickness: 1),
 
-                    _buildReelsSection(catalog.mergedProductIds ?? [widget.catalogId]),
+                    _buildReelsSection(widget.catalogId),
 
                     // ── Similar Products ────────────────────────────────────
                     if (similarProducts.isNotEmpty)
@@ -1059,104 +1062,6 @@ class _ProductDetailScreenState extends ConsumerState<ProductDetailScreen> {
   static String? _youtubeVideoId(String? rawUrl) {
     if (rawUrl == null || rawUrl.trim().isEmpty) return null;
     return _youtubeIdRegex.firstMatch(rawUrl)?.group(1);
-  }
-
-  // ─────────────────────────── Composition ───────────────────────────────────
-  //
-  // Mirrors web's Composition table (ProductDetailView.tsx ~1827-1855):
-  // "Ingredients & Nutrients" label + a Component/Ingredient | Value/% table.
-  // Generic over whatever a seller entered — not specific to any one product —
-  // so any product with a `composition` array gets this section automatically.
-
-  Widget _buildCompositionSection(CatalogModel catalog) {
-    final entries = catalog.composition!;
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(16, 16, 16, 16),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text(
-            'INGREDIENTS & NUTRIENTS',
-            style: AppTextStyles.caption.copyWith(
-              color: AppColors.primary,
-              fontWeight: FontWeight.w900,
-              letterSpacing: 0.6,
-            ),
-          ),
-          const SizedBox(height: 2),
-          Text('Composition', style: AppTextStyles.heading3),
-          const SizedBox(height: 12),
-          Container(
-            decoration: BoxDecoration(
-              color: Colors.white,
-              borderRadius: BorderRadius.circular(16),
-              border: Border.all(color: AppColors.divider),
-            ),
-            clipBehavior: Clip.antiAlias,
-            child: Column(
-              children: [
-                Container(
-                  color: AppColors.background,
-                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
-                  child: Row(
-                    children: [
-                      Expanded(
-                        flex: 3,
-                        child: Text(
-                          'COMPONENT / INGREDIENT',
-                          style: AppTextStyles.caption.copyWith(
-                            fontWeight: FontWeight.w900,
-                            letterSpacing: 0.4,
-                          ),
-                        ),
-                      ),
-                      Expanded(
-                        flex: 2,
-                        child: Text(
-                          'VALUE / %',
-                          textAlign: TextAlign.right,
-                          style: AppTextStyles.caption.copyWith(
-                            fontWeight: FontWeight.w900,
-                            letterSpacing: 0.4,
-                          ),
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-                for (var i = 0; i < entries.length; i++)
-                  Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-                    decoration: BoxDecoration(
-                      border: i > 0
-                          ? const Border(top: BorderSide(color: AppColors.divider))
-                          : null,
-                    ),
-                    child: Row(
-                      children: [
-                        Expanded(
-                          flex: 3,
-                          child: Text(entries[i].name,
-                              style: AppTextStyles.bodyMedium),
-                        ),
-                        Expanded(
-                          flex: 2,
-                          child: Text(
-                            entries[i].value,
-                            textAlign: TextAlign.right,
-                            style: AppTextStyles.bodyMedium
-                                .copyWith(color: AppColors.primary),
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-              ],
-            ),
-          ),
-        ],
-      ),
-    );
   }
 
   Widget _buildProductDemonstrationSection(CatalogModel catalog) {
@@ -1938,11 +1843,8 @@ class _ProductDetailScreenState extends ConsumerState<ProductDetailScreen> {
         ),
       );
 
-  Widget _buildReelsSection(List<String> productIds) {
-    // Family key is the joined id string, not the List itself — a List has no
-    // value equality, so keying on it directly would defeat Riverpod's
-    // family caching (every rebuild would look like a new argument).
-    final reelsAsync = ref.watch(productReelsProvider(productIds.join(',')));
+  Widget _buildReelsSection(String catalogId) {
+    final reelsAsync = ref.watch(productReelsProvider(catalogId));
     return reelsAsync.when(
       data: (reels) {
         if (reels.isEmpty) return const SizedBox.shrink();

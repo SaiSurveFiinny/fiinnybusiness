@@ -1,3 +1,4 @@
+import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
@@ -5,7 +6,7 @@ import '../../../core/constants/app_colors.dart';
 import '../../../core/constants/app_text_styles.dart';
 import '../../../core/models/user_model.dart';
 import '../../../core/providers/user_provider.dart';
-import '../../profile/widgets/delete_account_dialog.dart';
+import '../../profile/data/account_service.dart';
 import '../widgets/set_username_sheet.dart';
 
 /// Business/account-management screen reached from the Dashboard drawer's
@@ -85,7 +86,7 @@ class _Body extends StatelessWidget {
           onPressed: () => showDialog(
             context: context,
             barrierDismissible: true,
-            builder: (_) => const DeleteAccountDialog(),
+            builder: (_) => const _DeleteAccountDialog(),
           ),
           icon: const Icon(Icons.delete_forever_outlined,
               color: AppColors.onSurfaceVariant),
@@ -151,6 +152,105 @@ class _LinkRow extends StatelessWidget {
           ],
         ),
       ),
+    );
+  }
+}
+
+class _DeleteAccountDialog extends StatefulWidget {
+  const _DeleteAccountDialog();
+
+  @override
+  State<_DeleteAccountDialog> createState() => _DeleteAccountDialogState();
+}
+
+class _DeleteAccountDialogState extends State<_DeleteAccountDialog> {
+  final _ctrl = TextEditingController();
+  bool _deleting = false;
+  String? _error;
+
+  @override
+  void dispose() {
+    _ctrl.dispose();
+    super.dispose();
+  }
+
+  Future<void> _confirm() async {
+    setState(() {
+      _deleting = true;
+      _error = null;
+    });
+    try {
+      await AccountService().deleteMyAccount();
+      await FirebaseAuth.instance.signOut();
+      if (mounted) {
+        Navigator.of(context).pop();
+        context.go('/');
+      }
+    } catch (e) {
+      if (mounted) {
+        setState(() {
+          _deleting = false;
+          final msg = e.toString().replaceAll('Exception: ', '');
+          _error =
+              msg.isNotEmpty ? msg : 'Failed to delete account. Please try again.';
+        });
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final canConfirm = _ctrl.text.trim().toUpperCase() == 'DELETE' && !_deleting;
+    return AlertDialog(
+      title: Text(
+        'Delete Account',
+        style: AppTextStyles.heading3.copyWith(color: AppColors.error),
+      ),
+      content: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            'This permanently deletes your profile, listings, subscriptions, reels, reviews, and other account data. Past orders/payments are kept for records. This cannot be undone. Type DELETE to confirm.',
+            style: AppTextStyles.bodySmall,
+          ),
+          const SizedBox(height: 16),
+          TextField(
+            controller: _ctrl,
+            enabled: !_deleting,
+            textCapitalization: TextCapitalization.characters,
+            onChanged: (_) => setState(() {}),
+            decoration: InputDecoration(
+              hintText: 'DELETE',
+              border: OutlineInputBorder(borderRadius: BorderRadius.circular(10)),
+              isDense: true,
+              contentPadding:
+                  const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+            ),
+          ),
+          if (_error != null) ...[
+            const SizedBox(height: 10),
+            Text(_error!, style: const TextStyle(color: AppColors.error, fontSize: 12)),
+          ],
+        ],
+      ),
+      actions: [
+        TextButton(
+          onPressed: _deleting ? null : () => Navigator.of(context).pop(),
+          child: const Text('Cancel'),
+        ),
+        FilledButton(
+          onPressed: canConfirm ? _confirm : null,
+          style: FilledButton.styleFrom(backgroundColor: AppColors.error),
+          child: _deleting
+              ? const SizedBox(
+                  width: 18,
+                  height: 18,
+                  child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
+                )
+              : const Text('Delete'),
+        ),
+      ],
     );
   }
 }

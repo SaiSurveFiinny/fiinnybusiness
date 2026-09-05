@@ -3,7 +3,6 @@ import '../../../core/models/listing_model.dart';
 import '../../../core/models/order_model.dart';
 import '../data/dashboard_repository.dart';
 import '../data/store_analytics.dart';
-import '../../../core/data/product_schema_repository.dart';
 
 final _repo = DashboardRepository();
 
@@ -45,12 +44,4 @@ final storeAnalyticsProvider =
 final seatStatsProvider =
     FutureProvider.family<SeatStats, String>((ref, phone) {
   return _repo.fetchSeatStats(phone);
-});
-
-/// The shared product category + Category Info schema from
-/// `settings/productSchema`, so the Add/Edit Product form offers exactly the
-/// categories the web dashboard does. Falls back to a bundled copy when the
-/// doc can't be read — see ProductSchemaRepository.fallback.
-final productSchemaProvider = FutureProvider<ProductSchema>((ref) {
-  return ProductSchemaRepository().fetch();
 });

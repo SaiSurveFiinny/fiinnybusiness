@@ -5,16 +5,6 @@ import '../../../core/models/listing_model.dart' show VariantModel;
 
 const _col = 'products';
 
-/// Sources that mark a doc as a seller's COPY of a canonical manufacturer
-/// product, rather than the canonical product itself. Copies never carry the
-/// canonical doc's own display-only fields (videoUrl, composition, etc.) —
-/// see [CatalogRepository.fetchById]'s copy-doc redirect for why that matters.
-const _copySources = {
-  'retailer_inventory_copy',
-  'manufacturer_assigned',
-  'admin_assigned',
-};
-
 class CatalogRepository {
   final _db = FirebaseFirestore.instance;
 
@@ -66,12 +56,13 @@ class CatalogRepository {
         return b.createdAt!.compareTo(a.createdAt!);
       });
 
-      final retailerCopies = allMapped.where((p) => _copySources.contains(p.source)).toList();
+      final copySources = {'retailer_inventory_copy', 'manufacturer_assigned', 'admin_assigned'};
+      final retailerCopies = allMapped.where((p) => copySources.contains(p.source)).toList();
       final raw = allMapped.where((p) =>
           p.name.isNotEmpty &&
           p.imageUrl.isNotEmpty &&
           p.price.isFinite &&
-          !_copySources.contains(p.source)).toList();
+          !copySources.contains(p.source)).toList();
 
       // Per-seller discount map: nameKey -> { normalizedPhone: discountPct }
       // Phones are stored in both +91-prefixed and 10-digit forms; normalise to
@@ -326,7 +317,6 @@ class CatalogRepository {
           // Web parity: surface the per-seller discount map so the product
           // detail store tiles can show how much each store discounts.
           sellerDiscounts: sellerDiscountsByKey[key] ?? const {},
-          mergedProductIds: idsByKey[key] ?? [p.id],
         );
       }).toList();
 
@@ -439,29 +429,6 @@ class CatalogRepository {
       // it even after it was taken down. Mirror the same isActive check here.
       final data = doc.data();
       if (data != null && data['isActive'] == false) return null;
-
-      // A retailer/manufacturer COPY doc (source in _copySources) never
-      // carries the canonical product's own display-only fields — videoUrl,
-      // composition, nitrogen/phosphorus/potassium, etc. Only the
-      // manufacturer's ORIGINAL doc does. Navigating here with a copy's id
-      // (e.g. "More products from this seller", which queries copies
-      // directly — see fetchMoreFromRetailer below) used to return that
-      // copy's bare fields, silently showing "no video"/"no composition"
-      // even when the product genuinely has one (confirmed live for Gripper
-      // GR: the canonical doc has videoUrl, its 847 retailer copies don't).
-      // `list` above already holds every canonical merged product, so redirect
-      // there by manufacturerProductId instead of returning the copy as-is.
-      final source = data?['source']?.toString();
-      final manufacturerProductId = data?['manufacturerProductId']?.toString();
-      if (source != null &&
-          _copySources.contains(source) &&
-          manufacturerProductId != null &&
-          manufacturerProductId.isNotEmpty) {
-        for (final p in list) {
-          if (p.id == manufacturerProductId) return p;
-        }
-      }
-
       return CatalogModel.fromFirestore(doc);
     } catch (_) {}
     return null;

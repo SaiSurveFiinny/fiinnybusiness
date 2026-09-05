@@ -10,9 +10,6 @@ import { db } from '../firebase';
 import {
   DEFAULT_DURATIONS,
   PRICING_DOC_PATH,
-  SEAT_PRESETS,
-  SEAT_STEP,
-  normalizeSeatCount,
   parseDurations,
   type DurationPrice,
 } from '../lib/pricing';
@@ -64,8 +61,8 @@ export default function SubscriptionView({ user, role, onSuccess, onLogout }: Su
   const { t } = useI18n();
   const [loading,      setLoading]      = useState(false);
   const [verifying,    setVerifying]    = useState(false);
-  const [seatCount,    setSeatCount]    = useState<number>(SEAT_STEP);
-  const [seatInput,    setSeatInput]    = useState(String(SEAT_STEP));
+  const [seatCount,    setSeatCount]    = useState(1);
+  const [seatInput,    setSeatInput]    = useState('1');
   const [options,      setOptions]      = useState<DurationOption[]>(DURATION_OPTIONS);
   const [duration,     setDuration]     = useState<DurationOption>(DURATION_OPTIONS[0]!);
   const [promoCode,    setPromoCode]    = useState('');
@@ -115,30 +112,16 @@ export default function SubscriptionView({ user, role, onSuccess, onLogout }: Su
   const discountAmt = promoApplied ? Math.floor(baseTotal * promoApplied.discountPct / 100) : 0;
   const finalTotal  = baseTotal - discountAmt;
 
-  // Seats sell in blocks of SEAT_STEP with a SEAT_STEP minimum. While typing,
-  // the raw text is kept as-is so the field stays editable (a seller clearing
-  // it to retype shouldn't have "10" jump back in), and only the priced
-  // seatCount is snapped to the rule — the same normalizeSeatCount the server
-  // applies, so the total shown here is the total charged.
   const handleSeatInput = (val: string) => {
     setSeatInput(val);
     const n = parseInt(val, 10);
-    if (!isNaN(n) && n <= 10000) setSeatCount(normalizeSeatCount(n));
+    if (!isNaN(n) && n >= 1 && n <= 10000) setSeatCount(n);
   };
-
-  // Snap the visible text to the real seat count once the seller leaves the
-  // field, so a typed "15" doesn't keep displaying while 20 is being charged.
-  const commitSeatInput = () => setSeatInput(String(seatCount));
 
   const adjustSeats = (delta: number) => {
-    const next = normalizeSeatCount(seatCount + delta * SEAT_STEP);
+    const next = Math.max(1, seatCount + delta);
     setSeatCount(next);
     setSeatInput(String(next));
-  };
-
-  const selectSeatPreset = (n: number) => {
-    setSeatCount(n);
-    setSeatInput(String(n));
   };
 
   const applyPromo = async () => {
@@ -460,54 +443,32 @@ export default function SubscriptionView({ user, role, onSuccess, onLogout }: Su
                 </div>
 
                 {/* Listing count stepper */}
-                <div className="bg-surface-container-lowest p-4 rounded-xl border border-outline-variant/40">
-                  <div className="flex justify-between items-center">
-                    <div>
-                      <p className="text-sm font-bold text-on-surface">{t('numberOfSeats')}</p>
-                      <p className="text-[10px] text-on-surface-variant mt-0.5">
-                        {SEAT_STEP} listings पासून सुरुवात · {SEAT_STEP} च्या पटीत
-                      </p>
-                    </div>
-                    <div className="flex items-center gap-1.5 bg-white rounded-xl p-1 border border-outline-variant/20 shadow-sm">
-                      <button
-                        onClick={() => adjustSeats(-1)}
-                        disabled={seatCount <= SEAT_STEP}
-                        className="w-8 h-8 rounded-lg flex items-center justify-center hover:bg-surface-container transition-colors text-on-surface font-bold disabled:opacity-30 disabled:hover:bg-transparent"
-                      >
-                        −
-                      </button>
-                      <input
-                        type="number"
-                        min={SEAT_STEP}
-                        max={10000}
-                        step={SEAT_STEP}
-                        value={seatInput}
-                        onChange={(e) => handleSeatInput(e.target.value)}
-                        onBlur={commitSeatInput}
-                        className="text-base font-black w-16 text-center bg-transparent h-8 text-on-surface outline-none [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
-                      />
-                      <button
-                        onClick={() => adjustSeats(1)}
-                        className="w-8 h-8 rounded-lg flex items-center justify-center hover:bg-surface-container transition-colors text-on-surface font-bold"
-                      >
-                        +
-                      </button>
-                    </div>
+                <div className="flex justify-between items-center bg-surface-container-lowest p-4 rounded-xl border border-outline-variant/40">
+                  <div>
+                    <p className="text-sm font-bold text-on-surface">{t('numberOfSeats')}</p>
+                    <p className="text-[10px] text-on-surface-variant mt-0.5">आजच 1 listing ने सुरुवात करा</p>
                   </div>
-                  <div className="flex gap-2 mt-3">
-                    {SEAT_PRESETS.map((n) => (
-                      <button
-                        key={n}
-                        onClick={() => selectSeatPreset(n)}
-                        className={`flex-1 py-2 rounded-lg text-xs font-bold border transition-colors ${
-                          seatCount === n
-                            ? 'bg-primary text-white border-primary'
-                            : 'bg-white text-on-surface border-outline-variant/40 hover:bg-surface-container'
-                        }`}
-                      >
-                        {n} seats
-                      </button>
-                    ))}
+                  <div className="flex items-center gap-1.5 bg-white rounded-xl p-1 border border-outline-variant/20 shadow-sm">
+                    <button
+                      onClick={() => adjustSeats(-1)}
+                      className="w-8 h-8 rounded-lg flex items-center justify-center hover:bg-surface-container transition-colors text-on-surface font-bold"
+                    >
+                      −
+                    </button>
+                    <input
+                      type="number"
+                      min={1}
+                      max={10000}
+                      value={seatInput}
+                      onChange={(e) => handleSeatInput(e.target.value)}
+                      className="text-base font-black w-12 text-center bg-transparent h-8 text-on-surface outline-none [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
+                    />
+                    <button
+                      onClick={() => adjustSeats(1)}
+                      className="w-8 h-8 rounded-lg flex items-center justify-center hover:bg-surface-container transition-colors text-on-surface font-bold"
+                    >
+                      +
+                    </button>
                   </div>
                 </div>
 

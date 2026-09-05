@@ -30,17 +30,6 @@ class StoreModel {
   /// Cover/banner image URL, set on the web dashboard profile editor.
   final String? banner;
 
-  /// ACCOUNT-level online-selling switch, independent of any single product's
-  /// `isOnline`. Web requires BOTH this and the per-product flag before it
-  /// will offer a store for online ordering (see app/page.tsx's onlineStore
-  /// check). Tri-state on purpose:
-  ///   true  — seller explicitly enabled online selling
-  ///   false — seller explicitly turned it OFF (blocks ordering)
-  ///   null  — never set. Deliberately NOT treated as "off": 427 of 442 live
-  ///           retailer docs have no such field, so blocking on absence would
-  ///           silently stop online orders for nearly every existing seller.
-  final bool? onlineDelivery;
-
   // Distance from the user in km. Set client-side after a Haversine calc;
   // null when either the store or the user has no usable location.
   double? distanceKm;
@@ -65,7 +54,6 @@ class StoreModel {
     this.tagline,
     this.website,
     this.banner,
-    this.onlineDelivery,
     this.distanceKm,
   });
 
@@ -75,10 +63,6 @@ class StoreModel {
       googleMapsUrl != null && googleMapsUrl!.trim().startsWith('http');
 
   bool get isManufacturer => role == 'manufacturer';
-
-  /// True only when the seller has EXPLICITLY switched online selling off.
-  /// See [onlineDelivery] for why absence is not treated as off.
-  bool get onlineSellingDisabled => onlineDelivery == false;
 
   /// Full address line built from the parts we have, deduped of empties.
   String get fullAddress => [

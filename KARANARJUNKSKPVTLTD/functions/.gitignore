@@ -8,10 +8,3 @@ typings/
 # Node.js dependency directory
 node_modules/
 *.local
-
-# Environment variable files — NEVER commit these (contain Razorpay secrets)
-.env
-.env.*
-# Allow example/template files (no real credentials)
-!.env.example
-!.env.*.example

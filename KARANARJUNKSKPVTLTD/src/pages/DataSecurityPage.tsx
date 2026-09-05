@@ -46,7 +46,9 @@ export default function DataSecurityPage() {
         const load = async () => {
             try {
                 const [usersSnap, retailersSnap] = await Promise.all([
-                    getDocs(query(collection(db, 'users'), where('tenantId', '==', tenantId))),
+                    tenantId === 'master'
+                        ? getDocs(collection(db, 'users'))
+                        : getDocs(query(collection(db, 'users'), where('tenantId', '==', tenantId))),
                     getDocs(getTenantCollection(db, tenantId, 'retailers')),
                 ]);
 

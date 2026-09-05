@@ -7,7 +7,6 @@ import {
 } from "lucide-react";
 import {
   PRODUCT_CATEGORIES, isStandardCategory, CATEGORY_FIELDS, CHIPS_FIELDS,
-  loadProductSchema, getProductCategories, getCategoryFields,
   type ProductCategory, effectiveCategoryInfo,
 } from "../_lib/category-info";
 import { CompositionEditor, COMPOSITION_CATEGORIES, type CompositionEntry } from "../_components/composition-editor";
@@ -27,8 +26,6 @@ import type { MarketplaceProduct } from "../../../types/product";
 // ─── Constants ────────────────────────────────────────────────────────────────
 
 // Use the shared canonical category list
-// Runtime list from settings/productSchema (see loadProductSchema); falls
-// back to the PRODUCT_CATEGORIES constant when Firestore is unreachable.
 const CATEGORIES = PRODUCT_CATEGORIES;
 
 const GST_RATES = [0, 5, 12, 18, 28] as const;
@@ -190,10 +187,7 @@ function CategoryInfoSection({
   onToggle: () => void;
 }) {
   const activeCat: ProductCategory = isStandardCategory(category) ? category : "Other";
-  // getCategoryFields accepts any string, so a category that exists only in
-  // Firestore (added on web/mobile after this build) still renders its fields
-  // instead of silently falling back to "Other".
-  const fields = getCategoryFields(category) ?? CATEGORY_FIELDS[activeCat];
+  const fields = CATEGORY_FIELDS[activeCat];
   if (!fields.length) return null;
 
   const inputCls = "w-full rounded-xl border border-outline-variant/40 bg-white px-3 py-2.5 text-on-surface outline-none focus:border-primary focus:ring-2 focus:ring-primary/20 disabled:opacity-50 text-xs";
@@ -481,19 +475,6 @@ export function AddProductInventoryForm({
   const { t } = useI18n();
 
   // Basic fields
-  // Category list is loaded from settings/productSchema at runtime so web and
-  // mobile always offer the same options. Starts as the bundled constant, then
-  // re-renders with the Firestore list once it resolves.
-  const [categoryOptions, setCategoryOptions] =
-    useState<readonly string[]>(CATEGORIES);
-  useEffect(() => {
-    let cancelled = false;
-    void loadProductSchema().then(() => {
-      if (!cancelled) setCategoryOptions(getProductCategories());
-    });
-    return () => { cancelled = true; };
-  }, []);
-
   const [name,        setName]        = useState("");
   const [category,    setCategory]    = useState<string>(CATEGORIES[0]);
   const [customCategory, setCustomCategory] = useState("");
@@ -982,7 +963,7 @@ export function AddProductInventoryForm({
                     setCategory(e.target.value);
                     setCategoryInfo({});  // clear fields when category changes
                   }}>
-                  {categoryOptions.map((c) => <option key={c} value={c}>{c}</option>)}
+                  {CATEGORIES.map((c) => <option key={c} value={c}>{c}</option>)}
                 </select>
                 {category === "Other" && (
                   <input type="text" disabled={isDisabled}

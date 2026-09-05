@@ -1,6 +1,6 @@
 import { useState, useEffect, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { getDocs } from 'firebase/firestore';
+import { getDocs, collectionGroup } from 'firebase/firestore';
 import { db } from '../firebase';
 import { useAuth } from '../contexts/AuthContext';
 import { getTenantCollection } from '../utils/tenantPath';
@@ -65,15 +65,19 @@ export default function AllPaymentsPage() {
             if (!tenantId) return;
             setLoading(true);
             try {
-                const [retailersSnap, salesOrdersSnap] = await Promise.all([
+                const isMasterTenant = tenantId === 'master';
+                // Reuse the existing payment records (retailers/*/payments) — no new collection.
+                const [retailersSnap, salesOrdersSnap, paymentsGroupSnap] = await Promise.all([
                     getDocs(getTenantCollection(db, tenantId, 'retailers')),
                     getDocs(getTenantCollection(db, tenantId, 'salesOrders')),
+                    getDocs(collectionGroup(db, 'payments')),
                 ]);
 
-                // Retailer id → { name, district } — excludes POS walk-in customers.
+                // Retailer id → { name, district }
                 const retailerMap = new Map<string, { name: string; district: string }>();
                 retailersSnap.docs.forEach(d => {
                     const r = d.data() as { name?: string; district?: string; channel?: string };
+                    // Exclude B2C walk-in customers auto-created at the POS counter.
                     if (r.channel === 'pos') return;
                     retailerMap.set(d.id, { name: r.name || '—', district: r.district || '' });
                 });
@@ -95,21 +99,24 @@ export default function AllPaymentsPage() {
                 }
                 const canSeeAll = userRole !== 'sales' && userRole !== 'retailer';
 
-                // Fetch payments per-retailer — naturally scoped to this tenant.
-                // getTenantCollection routes master→root, others→/tenants/{id}/..., so
-                // no cross-tenant reads are possible and no path parsing is needed.
-                const b2bRetailerIds = Array.from(retailerMap.keys());
-                const pmtSnaps = await Promise.all(
-                    b2bRetailerIds.map(rId => getDocs(getTenantCollection(db, tenantId, 'retailers', rId, 'payments')))
-                );
-
                 const built: PaymentRow[] = [];
-                pmtSnaps.forEach((snap, idx) => {
-                    const rId = b2bRetailerIds[idx];
-                    const retailer = retailerMap.get(rId)!;
+                paymentsGroupSnap.docs.forEach(pdoc => {
+                    // Scope strictly to this tenant via the doc path.
+                    // master     → retailers/{retailerId}/payments/{paymentId}                    (4 parts)
+                    // non-master → tenants/{tenantId}/retailers/{retailerId}/payments/{paymentId} (6 parts)
+                    const parts = pdoc.ref.path.split('/');
+                    let rId: string | undefined;
+                    if (isMasterTenant) {
+                        if (parts.length === 4 && parts[0] === 'retailers' && parts[2] === 'payments') rId = parts[1];
+                    } else {
+                        if (parts.length === 6 && parts[0] === 'tenants' && parts[1] === tenantId && parts[2] === 'retailers' && parts[4] === 'payments') rId = parts[3];
+                    }
+                    if (!rId) return;
+
+                    const retailer = retailerMap.get(rId);
+                    if (!retailer) return; // unknown / POS-excluded retailer
                     if (!canSeeAll && !allowedRetailerIds.has(rId)) return;
 
-                    snap.docs.forEach(pdoc => {
                     const p = pdoc.data() as {
                         amount?: number; paymentDate?: string; paymentMethod?: string;
                         orderId?: string; orderNumber?: string; linkedOrderIds?: string[];
@@ -154,8 +161,7 @@ export default function AllPaymentsPage() {
                         paymentMethod: p.paymentMethod || '—',
                         reference: p.accountDetails?.transactionRef || p.notes || '',
                     });
-                    }); // end snap.docs.forEach
-                }); // end pmtSnaps.forEach
+                });
 
                 setRows(built);
             } finally {
@@ -239,10 +245,11 @@ export default function AllPaymentsPage() {
     return (
         <div className="animate-fade-in">
             {/* ── Header ── */}
-            <h1 className="primary-gradient-text" style={{ fontSize: '2rem', display: 'flex', alignItems: 'center', gap: '0.75rem', marginBottom: '0.35rem' }}>
-                <Wallet size={28} /> All Payments
-            </h1>
-            <p style={{ margin: '0 0 1.25rem', color: 'var(--text-secondary)' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', marginBottom: '0.35rem' }}>
+                <Wallet size={22} style={{ color: 'var(--primary-light)' }} />
+                <h2 style={{ margin: 0, fontSize: '1.3rem', fontWeight: 700, color: 'var(--text-primary)' }}>All Payments</h2>
+            </div>
+            <p style={{ margin: '0 0 1.25rem', color: 'var(--text-tertiary)', fontSize: '0.9rem' }}>
                 Every retailer / B2B payment transaction across all partners.
             </p>
 
