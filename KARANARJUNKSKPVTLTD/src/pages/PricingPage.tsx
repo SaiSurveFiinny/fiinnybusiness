@@ -1,17 +1,24 @@
 import { useState, useEffect } from 'react';
-import { collection, onSnapshot } from 'firebase/firestore';
+import { collection, onSnapshot, query, where } from 'firebase/firestore';
 import { db } from '../firebase';
 import { useAuth } from '../contexts/AuthContext';
 import { useToast } from '../contexts/ToastContext';
 import { useTranslation } from 'react-i18next';
 import { useNavigate } from 'react-router-dom';
-import { Check, Zap, Building2, Rocket, Star, Shield, ArrowRight, Crown, Loader2, CheckCircle2 } from 'lucide-react';
+import { Check, Zap, Building2, Rocket, Star, Shield, ArrowRight, Crown, Loader2, CheckCircle2, Tag } from 'lucide-react';
 import {
   DEFAULT_PLAN_PRICING,
   PLAN_ID_TO_PRICING_TIER,
   computeSavingsPct,
   type PlanPricing,
 } from '../utils/subscriptionPlans';
+import {
+  PLAN_PROMOTIONS_COLLECTION,
+  findApplicablePromotion,
+  discountedRupees,
+  formatRupees,
+  type PlanPromotion,
+} from '../utils/planPromotions';
 
 declare global {
   interface Window {
@@ -138,9 +145,22 @@ export default function PricingPage() {
   // Super Admin edit is reflected here immediately.
   const [pricingByCatalog, setPricingByCatalog] = useState<Record<string, PlanPricing>>({});
   const [plansLoading, setPlansLoading] = useState(true);
+  // Active promotions streamed from `planPromotions` (isActive filter satisfies the
+  // security rule). Applied on top of the base price per plan/cycle/date at render.
+  const [promotions, setPromotions] = useState<PlanPromotion[]>([]);
 
   useEffect(() => {
     loadRazorpayScript();
+  }, []);
+
+  // Subscribe to active promotions only (rule allows reading isActive == true).
+  useEffect(() => {
+    const unsub = onSnapshot(
+      query(collection(db, PLAN_PROMOTIONS_COLLECTION), where('isActive', '==', true)),
+      snap => setPromotions(snap.docs.map(d => ({ id: d.id, ...(d.data() as Omit<PlanPromotion, 'id'>) }))),
+      () => setPromotions([]),
+    );
+    return () => unsub();
   }, []);
 
   // Subscribe to the authoritative plan catalogue. Falls back to defaults on error
@@ -339,6 +359,16 @@ export default function PricingPage() {
           const isBusy = paying === plan.id || verifying === plan.id;
           const anyBusy = !!(paying || verifying);
 
+          // Active promotion for this plan + selected cycle (highest % wins).
+          const promo = findApplicablePromotion(promotions, plan.id, cycle);
+          const pct = promo?.discountPct ?? 0;
+          // The amount actually charged for the selected cycle, discounted.
+          const baseCharged = cycle === 'yearly' ? plan.yearlyPrice : plan.monthlyPrice;
+          const discCharged = pct ? discountedRupees(baseCharged, pct) : baseCharged;
+          // Per-month figures for the headline price (yearly shown as /mo equivalent).
+          const origPerMo = cycle === 'yearly' ? plan.yearlyPrice / 12 : plan.monthlyPrice;
+          const discPerMo = cycle === 'yearly' ? discCharged / 12 : discCharged;
+
           return (
             <div
               key={plan.id}
@@ -370,13 +400,35 @@ export default function PricingPage() {
                     <div style={{ fontSize: '0.82rem', color: 'var(--text-secondary)' }}>{plan.tagline}</div>
                   </div>
                 </div>
-                <div style={{ display: 'flex', alignItems: 'flex-end', gap: '0.25rem', marginTop: '1rem' }}>
-                  <span style={{ fontSize: '2.5rem', fontWeight: 900, color: plan.color, lineHeight: 1 }}>₹{price.toLocaleString('en-IN')}</span>
+                {/* Promotion ribbon — shown only when a promotion applies */}
+                {pct > 0 && (
+                  <div style={{ display: 'inline-flex', alignItems: 'center', gap: '0.35rem', marginTop: '0.75rem', padding: '0.25rem 0.65rem', background: plan.gradient, color: '#fff', borderRadius: '8px', fontSize: '0.74rem', fontWeight: 800 }}>
+                    <Tag size={12} /> {pct}% OFF{promo?.label ? ` · ${promo.label}` : ''}
+                  </div>
+                )}
+                <div style={{ display: 'flex', alignItems: 'flex-end', gap: '0.4rem', marginTop: '1rem' }}>
+                  <span style={{ fontSize: '2.5rem', fontWeight: 900, color: plan.color, lineHeight: 1 }}>₹{formatRupees(pct > 0 ? discPerMo : price)}</span>
+                  {pct > 0 && (
+                    <span style={{ color: 'var(--text-tertiary)', fontSize: '1.1rem', textDecoration: 'line-through', marginBottom: '0.35rem' }}>
+                      ₹{formatRupees(origPerMo)}
+                    </span>
+                  )}
                   <span style={{ color: 'var(--text-secondary)', fontSize: '0.9rem', marginBottom: '0.4rem' }}>/mo</span>
                 </div>
-                {cycle === 'yearly' && (
+                {cycle === 'yearly' ? (
                   <div style={{ fontSize: '0.78rem', color: 'var(--text-secondary)', marginTop: '0.25rem' }}>
-                    ₹{plan.yearlyPrice.toLocaleString('en-IN')}/yr{savingsText(plan) ? ` · ${savingsText(plan)}` : ''}
+                    {pct > 0 ? (
+                      <>
+                        <span style={{ fontWeight: 700 }}>₹{formatRupees(discCharged)}/yr</span>{' '}
+                        <span style={{ textDecoration: 'line-through', color: 'var(--text-tertiary)' }}>₹{plan.yearlyPrice.toLocaleString('en-IN')}</span>
+                      </>
+                    ) : (
+                      <>₹{plan.yearlyPrice.toLocaleString('en-IN')}/yr{savingsText(plan) ? ` · ${savingsText(plan)}` : ''}</>
+                    )}
+                  </div>
+                ) : pct > 0 && (
+                  <div style={{ fontSize: '0.78rem', color: 'var(--text-secondary)', marginTop: '0.25rem' }}>
+                    Was ₹{plan.monthlyPrice.toLocaleString('en-IN')}/mo · you save {pct}%
                   </div>
                 )}
               </div>

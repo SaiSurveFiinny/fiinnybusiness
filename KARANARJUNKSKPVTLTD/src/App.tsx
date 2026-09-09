@@ -1,6 +1,6 @@
 import { useState, useEffect, lazy, Suspense, startTransition } from 'react';
 import { BrowserRouter, Routes, Route, Link, useLocation, Navigate, useNavigate } from 'react-router-dom';
-import { Home, Users, UserPlus, LogOut, ReceiptText, ShieldAlert, Calculator, Settings, Package, ChevronDown, Layers, Truck, ShoppingCart, BarChart3, Activity, Bell, ClipboardList, Star, Link2, Bot, Loader2, Menu, X, Target, Sun, Moon, Receipt, HelpCircle, ArrowLeft } from 'lucide-react';
+import { Home, Users, UserPlus, LogOut, ReceiptText, ShieldAlert, Calculator, Settings, Package, ChevronDown, Layers, Truck, ShoppingCart, BarChart3, Activity, Bell, ClipboardList, Star, Link2, Bot, Loader2, Menu, X, Target, Sun, Moon, Receipt, HelpCircle, LifeBuoy, ArrowLeft } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import LanguageSwitcher from './components/LanguageSwitcher';
 import EnvBadge from './components/EnvBadge';
@@ -94,6 +94,7 @@ const ExpensePage             = lazy(() => import('./pages/ExpensePage'));
 const NotFoundPage            = lazy(() => import('./pages/NotFoundPage'));
 const HelpCenterPage          = lazy(() => import('./pages/HelpCenterPage'));
 const HelpArticlePage         = lazy(() => import('./pages/HelpArticlePage'));
+const SupportTicketsPage      = lazy(() => import('./pages/SupportTicketsPage'));
 
 // Full-page spinner shown while a lazy chunk is loading
 function PageLoader() {
@@ -528,6 +529,9 @@ function Layout({ children, currentTheme, toggleTheme }: { children: React.React
             <Link to="/help" style={navLinkStyle('/help')} onClick={() => setDrawerOpen(false)}>
               <HelpCircle size={19} /> Help Center
             </Link>
+            <Link to="/support" style={navLinkStyle('/support')} onClick={() => setDrawerOpen(false)}>
+              <LifeBuoy size={19} /> Support Tickets
+            </Link>
           </div>
         )}
 
@@ -615,8 +619,8 @@ function AppRoutes() {
   // configurable (settings/roleLandingPages, surfaced via AuthContext); each role
   // falls back to a built-in default when unset. Confined roles (retailer / sales)
   // only honour a configured landing that stays inside their allowed paths.
-  const RETAILER_ALLOWED_PATHS = ['/worklist', '/settings', '/help'];
-  const SALES_ALLOWED_PATHS = ['/sales-targets', '/worklist', '/help'];
+  const RETAILER_ALLOWED_PATHS = ['/worklist', '/settings', '/help', '/support'];
+  const SALES_ALLOWED_PATHS = ['/sales-targets', '/worklist', '/help', '/support'];
   const DEFAULT_LANDING: Record<string, string> = {
     admin: '/dashboard', analyst: '/dashboard', shopkeeper: '/pos',
     sales: '/sales-targets', retailer: '/worklist', manufacturer: '/manufacturer-portal',
@@ -802,6 +806,9 @@ function AppRoutes() {
       {/* Help Center */}
       <Route path="/help" element={<ProtectedRoute><HelpCenterPage /></ProtectedRoute>} />
       <Route path="/help/:articleId" element={<ProtectedRoute><HelpArticlePage /></ProtectedRoute>} />
+
+      {/* Support Tickets — available to every authenticated tenant user/role */}
+      <Route path="/support" element={<ProtectedRoute><SupportTicketsPage /></ProtectedRoute>} />
 
       {/* Catch-all: 404 for logged-in users, /login redirect for guests */}
       <Route path="*" element={<NotFoundPage />} />
