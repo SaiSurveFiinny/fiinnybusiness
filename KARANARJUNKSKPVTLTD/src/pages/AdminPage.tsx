@@ -328,9 +328,9 @@ export default function AdminPage() {
                 logAudit({ db, tenantId, userId: currentUser.uid, userName: userName || currentUser.email || 'Admin', userRole: userRole || 'admin', module: 'Manage Users', action: 'Update', entityName: editUserForm.name || editUserForm.email || editUserForm.id, entityId: editUserForm.id, remarks: 'Password reset' });
             }
 
-            setResetPassword('');
-            setResetPasswordConfirm('');
             showToast(t('admin.reset_password_success'), 'success');
+            // Auto-close the reset-password form/modal and return to the user view.
+            closeEditUser();
         } catch (error: any) {
             console.error('Error resetting password:', error);
             setResetPasswordError(error?.message || t('admin.reset_password_error'));
