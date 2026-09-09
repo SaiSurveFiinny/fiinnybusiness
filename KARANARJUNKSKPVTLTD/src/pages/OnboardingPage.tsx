@@ -8,6 +8,7 @@ import { useAuth } from '../contexts/AuthContext';
 import { useToast } from '../contexts/ToastContext';
 import { getTenantCollection } from '../utils/tenantPath';
 import { LOCATION_DATA, STATES } from '../utils/locationData';
+import { checkContactNumber } from '../utils/phoneValidator';
 
 const INITIAL_FORM = {
     name: '',
@@ -29,6 +30,7 @@ export default function OnboardingPage() {
 
     const [isSubmitting, setIsSubmitting] = useState(false);
     const [submitStatus, setSubmitStatus] = useState<'idle' | 'success' | 'error'>('idle');
+    const [numberError, setNumberError] = useState<string | null>(null);
     const { t } = useTranslation();
 
     const navigate = useNavigate();
@@ -82,6 +84,7 @@ export default function OnboardingPage() {
     const handleChange = (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => {
         const { name, value } = e.target;
         setFormData(prev => ({ ...prev, [name]: value }));
+        if (name === 'number' && numberError) setNumberError(null);
     };
 
     const { tenantId } = useAuth();
@@ -89,6 +92,14 @@ export default function OnboardingPage() {
     const handleSubmit = async (e: React.FormEvent) => {
         e.preventDefault();
         if (!tenantId) return;
+
+        const numberCheck = checkContactNumber(formData.number);
+        if (!numberCheck.valid) {
+            setNumberError(numberCheck.error || 'Enter a valid contact number');
+            return;
+        }
+        setNumberError(null);
+
         setIsSubmitting(true);
         setSubmitStatus('idle');
 
@@ -153,7 +164,13 @@ export default function OnboardingPage() {
                                 placeholder="+91..."
                                 value={formData.number}
                                 onChange={handleChange}
+                                aria-invalid={!!numberError}
                             />
+                            {numberError && (
+                                <span style={{ color: 'var(--danger)', fontSize: '0.8rem', marginTop: '0.25rem', display: 'block' }}>
+                                    {numberError}
+                                </span>
+                            )}
                         </div>
 
                         <div className="input-group animate-slide-in delay-200" style={{ animationFillMode: 'forwards' }}>
