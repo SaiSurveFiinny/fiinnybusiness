@@ -42,6 +42,7 @@ const TermsPage              = lazy(() => import('./pages/TermsPage'));
 const BlogPage               = lazy(() => import('./pages/BlogPage'));
 const ChangelogPage          = lazy(() => import('./pages/ChangelogPage'));
 const DownloadPage           = lazy(() => import('./pages/DownloadPage'));
+const CareersPage            = lazy(() => import('./pages/CareersPage'));
 const ClientOnboardingPage   = lazy(() => import('./pages/ClientOnboardingPage'));
 const OnlineOrdersPage       = lazy(() => import('./pages/OnlineOrdersPage'));
 const OnlineDashboardPage    = lazy(() => import('./pages/OnlineDashboardPage').then(m => ({ default: m.OnlineDashboardPage })));
@@ -150,7 +151,7 @@ function Layout({ children, currentTheme, toggleTheme }: { children: React.React
   const [adminExpanded, setAdminExpanded] = useState(true);
   const [drawerOpen, setDrawerOpen] = useState(false);
 
-  const publicPaths = ['/', '/login', '/about', '/privacy', '/terms', '/blog', '/changelog', '/download'];
+  const publicPaths = ['/', '/login', '/about', '/privacy', '/terms', '/blog', '/changelog', '/download', '/careers'];
   if (publicPaths.includes(location.pathname)) return <>{children}</>;
 
   // Fully standalone public pages — no nav, no sidebar
@@ -665,7 +666,7 @@ function AppRoutes() {
 
   // Force incomplete setups to finish onboarding — but ONLY for protected routes.
   // Super admin is exempt: it intentionally has no tenant.
-  const publicPaths = ['/', '/about', '/privacy', '/terms', '/blog', '/changelog', '/download', '/login'];
+  const publicPaths = ['/', '/about', '/privacy', '/terms', '/blog', '/changelog', '/download', '/careers', '/login'];
   if (currentUser && !tenantId && !isSuperAdmin && !publicPaths.includes(locationHook.pathname) && locationHook.pathname !== '/client-onboarding') {
     return <Navigate to="/client-onboarding" replace />;
   }
@@ -684,6 +685,7 @@ function AppRoutes() {
       <Route path="/blog" element={<BlogPage />} />
       <Route path="/changelog" element={<ChangelogPage />} />
       <Route path="/download" element={<DownloadPage />} />
+      <Route path="/careers" element={<CareersPage />} />
 
       {/* Onboarding */}
       <Route path="/client-onboarding" element={<ProtectedRoute><ClientOnboardingPage /></ProtectedRoute>} />

@@ -1,10 +1,11 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import {
     ShieldCheck, Save, Layers, Building2, RefreshCw, Check, Info, ArrowLeft, Loader2, LayoutDashboard,
     LayoutGrid, Pencil, X, Calendar, CreditCard, Plus, Trash2, Tag, Zap, Rocket, Crown, Eye,
+    Search, ArrowDown, ArrowUp, Filter, Briefcase, ExternalLink,
 } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
-import { collection, getDocs, doc, setDoc, serverTimestamp, query, orderBy } from 'firebase/firestore';
+import { collection, getDocs, doc, setDoc, addDoc, deleteDoc, serverTimestamp, query, orderBy } from 'firebase/firestore';
 import { db } from '../firebase';
 import { useAuth } from '../contexts/AuthContext';
 import { useToast } from '../contexts/ToastContext';
@@ -24,6 +25,13 @@ import {
     buildPlanEntitlement,
     derivePlanEditorState,
 } from '../utils/subscriptionCatalog';
+import {
+    JOB_OPENINGS_COLLECTION,
+    EMPLOYMENT_TYPES,
+    JOB_STATUS_OPTIONS,
+    type JobOpening,
+    type JobStatus,
+} from '../types/careers';
 
 // Plans shown in the catalogue, in tier order. Reuses the Phase 2A seed defaults.
 const PLAN_ORDER: PlanId[] = ['retailer', 'distributor', 'manufacturer'];
@@ -138,11 +146,41 @@ const formatDate = (ts: unknown): string => {
     }
 };
 
+// Firestore Timestamp | Date | millis → epoch millis, or 0 when absent/invalid.
+// Used to sort the Businesses table by Created date.
+const tsToMillis = (ts: unknown): number => {
+    if (!ts) return 0;
+    try {
+        const d = typeof ts === 'object' && ts !== null && 'toDate' in ts
+            ? (ts as { toDate: () => Date }).toDate()
+            : new Date(ts as string | number);
+        const m = d.getTime();
+        return isNaN(m) ? 0 : m;
+    } catch {
+        return 0;
+    }
+};
+
 interface TenantRow {
     tenantId: string;
     businessName: string;
+    createdAt: unknown;  // tenant document creation timestamp (actual business creation date)
     subscription: TenantSubscription | null;
 }
+
+// Subscription filter options for the Businesses table. Plan ids map to a tenant's
+// subscription.planId; 'none' matches tenants without any subscription.
+const SUB_FILTER_OPTIONS: { value: string; label: string }[] = [
+    { value: 'manufacturer', label: 'Manufacturer' },
+    { value: 'retailer',     label: 'Retailer' },
+    { value: 'distributor',  label: 'Distributor' },
+    { value: 'none',         label: 'No Subscription' },
+];
+
+// A business's creation date: the tenant document's own createdAt, falling back
+// to its subscription start date when the tenant doc carries no timestamp. Used
+// for both the Created column display and its sort.
+const businessCreatedAt = (row: TenantRow): unknown => row.createdAt ?? row.subscription?.startedAt ?? null;
 
 // Row shape mirrors exactly the fields written by verifySaaSPayment (functions/src/payments.ts).
 // No field is read that the ledger does not store; razorpay_signature is never persisted.
@@ -158,7 +196,7 @@ interface SaasPaymentRow {
     createdAt?: unknown;
 }
 
-type Section = 'overview' | 'businesses' | 'plans' | 'payments';
+type Section = 'overview' | 'businesses' | 'plans' | 'payments' | 'careers';
 
 // Every section is addressable via a stable hash (/super-admin#<id>). Adding a
 // future section only requires appending an entry here.
@@ -167,7 +205,32 @@ const SIDEBAR_SECTIONS: { id: Section; label: string; icon: typeof LayoutGrid }[
     { id: 'businesses', label: 'Businesses', icon: Building2 },
     { id: 'plans',      label: 'Plans',      icon: Layers },
     { id: 'payments',   label: 'Payments',   icon: CreditCard },
+    { id: 'careers',    label: 'Careers',    icon: Briefcase },
 ];
+
+// Compact colour map for a job opening's lifecycle status badge.
+const JOB_STATUS_BADGE: Record<JobStatus, { bg: string; fg: string; label: string }> = {
+    published: { bg: 'hsla(152,60%,40%,0.15)', fg: 'hsl(152,55%,38%)',      label: 'Published' },
+    draft:     { bg: 'hsla(38,92%,50%,0.15)',  fg: 'hsl(38,80%,45%)',       label: 'Draft' },
+    closed:    { bg: 'var(--surface-border)',  fg: 'var(--text-secondary)', label: 'Closed' },
+};
+
+// Local editor form shape. `requirementsText` is a textarea (one requirement per
+// line); it is split into the stored string[] on save.
+interface JobFormState {
+    title: string;
+    department: string;
+    location: string;
+    employmentType: string;
+    description: string;
+    requirementsText: string;
+    status: JobStatus;
+}
+
+const EMPTY_JOB_FORM: JobFormState = {
+    title: '', department: '', location: '', employmentType: 'Full-time',
+    description: '', requirementsText: '', status: 'draft',
+};
 
 const SECTION_IDS: Section[] = SIDEBAR_SECTIONS.map(s => s.id);
 
@@ -232,6 +295,20 @@ export default function SuperAdminSubscriptionsPage() {
     const [savingTenant, setSavingTenant] = useState<string | null>(null);
     // Business whose subscription is being edited in the modal (null = closed).
     const [editingTenant, setEditingTenant] = useState<TenantRow | null>(null);
+    // Businesses table controls: name search, subscription filter (empty = all),
+    // and Created sort direction (default newest-first).
+    const [businessSearch, setBusinessSearch] = useState('');
+    const [subFilter, setSubFilter] = useState<Set<string>>(new Set());
+    const [createdSort, setCreatedSort] = useState<'desc' | 'asc'>('desc');
+
+    // ── Careers state ──
+    const [jobs, setJobs] = useState<JobOpening[]>([]);
+    const [jobsLoading, setJobsLoading] = useState(false);
+    const [jobsError, setJobsError] = useState(false);
+    // Editor modal: null = closed, an object = open (a job = edit, EMPTY = create).
+    const [editingJob, setEditingJob] = useState<JobOpening | 'new' | null>(null);
+    const [savingJob, setSavingJob] = useState(false);
+    const [deletingJob, setDeletingJob] = useState<string | null>(null);
 
     // ── SaaS payments ledger state ──
     const [payments, setPayments] = useState<SaasPaymentRow[]>([]);
@@ -266,17 +343,21 @@ export default function SuperAdminSubscriptionsPage() {
             const subs: Record<string, TenantSubscription> = {};
             subsSnap.docs.forEach(d => { subs[d.id] = d.data() as TenantSubscription; });
 
-            const rows: TenantRow[] = tenantsSnap.docs.map(d => ({
-                tenantId: d.id,
-                businessName: (d.data() as { businessName?: string }).businessName || d.id,
-                subscription: subs[d.id] || null,
-            }));
+            const rows: TenantRow[] = tenantsSnap.docs.map(d => {
+                const data = d.data() as { businessName?: string; createdAt?: unknown };
+                return {
+                    tenantId: d.id,
+                    businessName: data.businessName || d.id,
+                    createdAt: data.createdAt ?? null,
+                    subscription: subs[d.id] || null,
+                };
+            });
 
             // The master tenant uses root-level collections and may have no
             // /tenants/master doc — surface it explicitly so it can be assigned a
             // plan like every other tenant.
             if (!rows.some(r => r.tenantId === 'master')) {
-                rows.unshift({ tenantId: 'master', businessName: 'KaranArjun (Master)', subscription: subs['master'] || null });
+                rows.unshift({ tenantId: 'master', businessName: 'KaranArjun (Master)', createdAt: null, subscription: subs['master'] || null });
             }
             setTenants(rows.sort((a, b) => (a.tenantId === 'master' ? -1 : a.businessName.localeCompare(b.businessName))));
         } catch {
@@ -305,6 +386,22 @@ export default function SuperAdminSubscriptionsPage() {
         }
     }, [showToast]);
 
+    // Super admin reads the full openings collection (drafts + published + closed),
+    // newest-first. Single-field orderBy needs no composite index.
+    const loadJobs = useCallback(async () => {
+        setJobsLoading(true);
+        setJobsError(false);
+        try {
+            const snap = await getDocs(query(collection(db, JOB_OPENINGS_COLLECTION), orderBy('createdAt', 'desc')));
+            setJobs(snap.docs.map(d => ({ id: d.id, ...(d.data() as Omit<JobOpening, 'id'>) })));
+        } catch {
+            setJobsError(true);
+            showToast('Failed to load job openings.', 'error');
+        } finally {
+            setJobsLoading(false);
+        }
+    }, [showToast]);
+
     // Keep the active section in sync with the URL hash (back/forward + refresh).
     useEffect(() => {
         const onHashChange = () => setSectionState(readHashSection());
@@ -321,6 +418,9 @@ export default function SuperAdminSubscriptionsPage() {
     useEffect(() => {
         if (isSuperAdmin && section === 'payments') loadPayments();
     }, [isSuperAdmin, section, loadPayments]);
+    useEffect(() => {
+        if (isSuperAdmin && section === 'careers') loadJobs();
+    }, [isSuperAdmin, section, loadJobs]);
 
     // Initialise the editor when a plan is opened (fall back to seed defaults).
     useEffect(() => {
@@ -450,11 +550,107 @@ export default function SuperAdminSubscriptionsPage() {
         }
     };
 
+    // ── Careers actions ─────────────────────────────────────────────────────────
+    // Create a new opening or update an existing one from the editor form.
+    const saveJob = async (form: JobFormState, existing: JobOpening | null) => {
+        setSavingJob(true);
+        try {
+            const requirements = form.requirementsText
+                .split('\n')
+                .map(l => l.trim())
+                .filter(Boolean);
+            const base = {
+                title: form.title.trim(),
+                department: form.department.trim(),
+                location: form.location.trim(),
+                employmentType: form.employmentType,
+                description: form.description.trim(),
+                requirements,
+                status: form.status,
+                updatedAt: serverTimestamp(),
+            };
+            if (existing) {
+                await setDoc(doc(db, JOB_OPENINGS_COLLECTION, existing.id), base, { merge: true });
+                showToast(`"${base.title}" updated.`, 'success');
+            } else {
+                await addDoc(collection(db, JOB_OPENINGS_COLLECTION), { ...base, createdAt: serverTimestamp() });
+                showToast(`"${base.title}" created.`, 'success');
+            }
+            setEditingJob(null);
+            await loadJobs();
+        } catch {
+            showToast('Failed to save job opening.', 'error');
+        } finally {
+            setSavingJob(false);
+        }
+    };
+
+    // Publish / close / re-draft an opening inline from the table.
+    const setJobStatus = async (job: JobOpening, status: JobStatus) => {
+        setDeletingJob(job.id); // reuse the per-row busy marker to disable actions
+        try {
+            await setDoc(doc(db, JOB_OPENINGS_COLLECTION, job.id), { status, updatedAt: serverTimestamp() }, { merge: true });
+            setJobs(prev => prev.map(j => j.id === job.id ? { ...j, status } : j));
+            const verb = status === 'published' ? 'published' : status === 'closed' ? 'closed' : 'moved to draft';
+            showToast(`"${job.title}" ${verb}.`, 'success');
+        } catch {
+            showToast('Failed to update status.', 'error');
+        } finally {
+            setDeletingJob(null);
+        }
+    };
+
+    const deleteJob = async (job: JobOpening) => {
+        if (!window.confirm(`Delete "${job.title}"? This cannot be undone.`)) return;
+        setDeletingJob(job.id);
+        try {
+            await deleteDoc(doc(db, JOB_OPENINGS_COLLECTION, job.id));
+            setJobs(prev => prev.filter(j => j.id !== job.id));
+            showToast(`"${job.title}" deleted.`, 'success');
+        } catch {
+            showToast('Failed to delete job opening.', 'error');
+        } finally {
+            setDeletingJob(null);
+        }
+    };
+
+    // Open the real public careers page in a new tab, deep-linked to this opening.
+    const previewJob = (job: JobOpening) => {
+        window.open(`/careers?job=${encodeURIComponent(job.id)}`, '_blank', 'noopener');
+    };
+
     // Save enables only when the editor differs from the plan as loaded (either the
     // module/landing entitlements or the customer-facing pricing content).
     const planDirty =
         serializeEditor(editKeys, editSections, editDefaultLanding) !== planBaseline ||
         JSON.stringify(editPricing) !== pricingBaseline;
+
+    const toggleSubFilter = (value: string) => {
+        setSubFilter(prev => {
+            const next = new Set(prev);
+            if (next.has(value)) next.delete(value); else next.add(value);
+            return next;
+        });
+    };
+
+    // Businesses table: apply name search + subscription filter, then sort by
+    // Created date in the chosen direction. The underlying `tenants` list is left
+    // untouched so Overview/Payments keep using it.
+    const visibleTenants = (() => {
+        const q = businessSearch.trim().toLowerCase();
+        const filtered = tenants.filter(row => {
+            if (q && !row.businessName.toLowerCase().includes(q)) return false;
+            if (subFilter.size > 0) {
+                const key = row.subscription ? row.subscription.planId : 'none';
+                if (!subFilter.has(key)) return false;
+            }
+            return true;
+        });
+        return [...filtered].sort((a, b) => {
+            const diff = tsToMillis(businessCreatedAt(a)) - tsToMillis(businessCreatedAt(b));
+            return createdSort === 'desc' ? -diff : diff;
+        });
+    })();
 
     // Overview metrics
     const activeCount = tenants.filter(t => t.subscription && ['active', 'trial', 'past_due'].includes(t.subscription.status)).length;
@@ -499,8 +695,6 @@ export default function SuperAdminSubscriptionsPage() {
                         active={activeCount}
                         noSub={noSubCount}
                         plansConfigured={plansConfigured}
-                        onManageBusinesses={() => goToSection('businesses')}
-                        onManagePlans={() => goToSection('plans')}
                     />
                 )}
 
@@ -517,7 +711,24 @@ export default function SuperAdminSubscriptionsPage() {
                             }
                         />
 
-                        <div className="glass-panel" style={{ overflow: 'hidden' }}>
+                        {/* Business-name search */}
+                        <div className="glass-panel" style={{ padding: '1rem 1.25rem', marginBottom: '1.25rem' }}>
+                            <div style={{ position: 'relative', maxWidth: '360px' }}>
+                                <Search size={16} style={{ position: 'absolute', left: '0.7rem', top: '50%', transform: 'translateY(-50%)', color: 'var(--text-tertiary)' }} />
+                                <input
+                                    className="input-field"
+                                    type="text"
+                                    value={businessSearch}
+                                    onChange={e => setBusinessSearch(e.target.value)}
+                                    placeholder="Search by business name…"
+                                    style={{ width: '100%', paddingLeft: '2.1rem' }}
+                                />
+                            </div>
+                        </div>
+
+                        {/* overflow visible so the Subscription filter popover in the table
+                            header is never clipped by the panel's rounded bounds. */}
+                        <div className="glass-panel" style={{ overflow: 'visible' }}>
                             {tenantsLoading ? (
                                 <div style={{ padding: '2.5rem', textAlign: 'center', color: 'var(--text-tertiary)' }}>
                                     <Loader2 size={22} className="animate-spin" style={{ marginBottom: '0.5rem' }} />
@@ -530,18 +741,24 @@ export default function SuperAdminSubscriptionsPage() {
                                 </div>
                             ) : tenants.length === 0 ? (
                                 <div style={{ padding: '2.5rem', textAlign: 'center', color: 'var(--text-tertiary)' }}>No businesses found.</div>
+                            ) : visibleTenants.length === 0 ? (
+                                <div style={{ padding: '2.5rem', textAlign: 'center', color: 'var(--text-tertiary)' }}>No businesses match the current search or filters.</div>
                             ) : (
                                 <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.88rem' }}>
                                     <thead>
                                         <tr style={{ textAlign: 'left', color: 'var(--text-tertiary)', fontSize: '0.72rem', textTransform: 'uppercase', letterSpacing: '0.04em' }}>
                                             <th style={thStyle}>Business Name</th>
-                                            <th style={thStyle}>Subscription</th>
-                                            <th style={thStyle}>Created</th>
+                                            <th style={thStyle}>
+                                                <SubscriptionFilterHeader selected={subFilter} onToggle={toggleSubFilter} />
+                                            </th>
+                                            <th style={thStyle}>
+                                                <CreatedSortHeader dir={createdSort} onToggle={() => setCreatedSort(prev => (prev === 'desc' ? 'asc' : 'desc'))} />
+                                            </th>
                                             <th style={{ ...thStyle, textAlign: 'right' }}>Actions</th>
                                         </tr>
                                     </thead>
                                     <tbody>
-                                        {tenants.map(row => (
+                                        {visibleTenants.map(row => (
                                             <tr key={row.tenantId} style={{ borderTop: '1px solid var(--surface-border)' }}>
                                                 <td style={tdStyle}>
                                                     <div style={{ fontWeight: 600, color: 'var(--text-primary)' }}>{row.businessName}</div>
@@ -553,7 +770,7 @@ export default function SuperAdminSubscriptionsPage() {
                                                 <td style={{ ...tdStyle, color: 'var(--text-secondary)', whiteSpace: 'nowrap' }}>
                                                     <span style={{ display: 'inline-flex', alignItems: 'center', gap: '0.35rem' }}>
                                                         <Calendar size={13} style={{ color: 'var(--text-tertiary)' }} />
-                                                        {formatDate(row.subscription?.startedAt)}
+                                                        {formatDate(businessCreatedAt(row))}
                                                     </span>
                                                 </td>
                                                 <td style={{ ...tdStyle, textAlign: 'right', whiteSpace: 'nowrap' }}>
@@ -825,7 +1042,141 @@ export default function SuperAdminSubscriptionsPage() {
                         </div>
                     </>
                 )}
+
+                {section === 'careers' && (
+                    <>
+                        <SectionHeader
+                            title="Careers"
+                            subtitle="Manage the job openings shown on the public /careers page. Only Published openings are visible to the public."
+                            actions={
+                                <div style={{ display: 'inline-flex', gap: '0.5rem' }}>
+                                    <button onClick={loadJobs} disabled={jobsLoading} className="btn btn-secondary"
+                                        style={{ display: 'inline-flex', alignItems: 'center', gap: '0.4rem', fontSize: '0.85rem' }}>
+                                        {jobsLoading ? <Loader2 size={15} className="animate-spin" /> : <RefreshCw size={15} />} Refresh
+                                    </button>
+                                    <button onClick={() => setEditingJob('new')} className="btn btn-primary"
+                                        style={{ display: 'inline-flex', alignItems: 'center', gap: '0.4rem', fontSize: '0.85rem' }}>
+                                        <Plus size={15} /> Add Job Opening
+                                    </button>
+                                </div>
+                            }
+                        />
+
+                        <div className="glass-panel" style={{ overflowX: 'auto' }}>
+                            {jobsLoading ? (
+                                <div style={{ padding: '2.5rem', textAlign: 'center', color: 'var(--text-tertiary)' }}>
+                                    <Loader2 size={22} className="animate-spin" style={{ marginBottom: '0.5rem' }} />
+                                    <div>Loading job openings…</div>
+                                </div>
+                            ) : jobsError ? (
+                                <div style={{ padding: '2.5rem', textAlign: 'center', color: 'var(--danger)' }}>
+                                    Couldn't load job openings.{' '}
+                                    <button onClick={loadJobs} className="btn btn-secondary" style={{ marginLeft: '0.5rem', fontSize: '0.82rem' }}>Retry</button>
+                                </div>
+                            ) : jobs.length === 0 ? (
+                                <div style={{ padding: '2.5rem', textAlign: 'center', color: 'var(--text-tertiary)' }}>
+                                    No job openings yet. Click “Add Job Opening” to create one.
+                                </div>
+                            ) : (
+                                <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.88rem', minWidth: '820px' }}>
+                                    <thead>
+                                        <tr style={{ textAlign: 'left', color: 'var(--text-tertiary)', fontSize: '0.72rem', textTransform: 'uppercase', letterSpacing: '0.04em' }}>
+                                            <th style={thStyle}>Job Title</th>
+                                            <th style={thStyle}>Department</th>
+                                            <th style={thStyle}>Location</th>
+                                            <th style={thStyle}>Status</th>
+                                            <th style={thStyle}>Created</th>
+                                            <th style={{ ...thStyle, textAlign: 'right' }}>Actions</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        {jobs.map(job => {
+                                            const badge = JOB_STATUS_BADGE[job.status] ?? JOB_STATUS_BADGE.draft;
+                                            const busy = deletingJob === job.id;
+                                            return (
+                                                <tr key={job.id} style={{ borderTop: '1px solid var(--surface-border)', opacity: busy ? 0.55 : 1 }}>
+                                                    <td style={{ ...tdStyle, fontWeight: 600, color: 'var(--text-primary)' }}>{job.title}</td>
+                                                    <td style={{ ...tdStyle, color: 'var(--text-secondary)' }}>{job.department}</td>
+                                                    <td style={{ ...tdStyle, color: 'var(--text-secondary)' }}>{job.location}</td>
+                                                    <td style={tdStyle}>
+                                                        <span style={{ ...badgeBase, background: badge.bg, color: badge.fg }}>{badge.label}</span>
+                                                    </td>
+                                                    <td style={{ ...tdStyle, color: 'var(--text-secondary)', whiteSpace: 'nowrap' }}>
+                                                        <span style={{ display: 'inline-flex', alignItems: 'center', gap: '0.35rem' }}>
+                                                            <Calendar size={13} style={{ color: 'var(--text-tertiary)' }} />
+                                                            {formatDate(job.createdAt)}
+                                                        </span>
+                                                    </td>
+                                                    <td style={{ ...tdStyle, textAlign: 'right', whiteSpace: 'nowrap' }}>
+                                                        <div style={{ display: 'inline-flex', gap: '0.35rem', justifyContent: 'flex-end', flexWrap: 'wrap' }}>
+                                                            <button
+                                                                onClick={() => previewJob(job)}
+                                                                title="Preview on the public careers page (new tab)"
+                                                                className="btn btn-secondary"
+                                                                style={jobActionBtn}
+                                                            >
+                                                                <ExternalLink size={14} /> View
+                                                            </button>
+                                                            {job.status !== 'published' ? (
+                                                                <button
+                                                                    onClick={() => setJobStatus(job, 'published')}
+                                                                    disabled={busy}
+                                                                    title="Publish — make visible on /careers"
+                                                                    className="btn btn-secondary"
+                                                                    style={jobActionBtn}
+                                                                >
+                                                                    <Check size={14} /> Publish
+                                                                </button>
+                                                            ) : (
+                                                                <button
+                                                                    onClick={() => setJobStatus(job, 'closed')}
+                                                                    disabled={busy}
+                                                                    title="Close — remove from /careers"
+                                                                    className="btn btn-secondary"
+                                                                    style={jobActionBtn}
+                                                                >
+                                                                    <X size={14} /> Close
+                                                                </button>
+                                                            )}
+                                                            <button
+                                                                onClick={() => setEditingJob(job)}
+                                                                title="Edit opening"
+                                                                className="btn btn-primary"
+                                                                style={jobActionBtn}
+                                                            >
+                                                                <Pencil size={14} /> Edit
+                                                            </button>
+                                                            <button
+                                                                onClick={() => deleteJob(job)}
+                                                                disabled={busy}
+                                                                title="Delete opening"
+                                                                className="btn btn-secondary"
+                                                                style={jobActionBtn}
+                                                            >
+                                                                <Trash2 size={14} />
+                                                            </button>
+                                                        </div>
+                                                    </td>
+                                                </tr>
+                                            );
+                                        })}
+                                    </tbody>
+                                </table>
+                            )}
+                        </div>
+                    </>
+                )}
             </div>
+
+            {/* Job opening editor — create (editingJob === 'new') or edit an existing one */}
+            {editingJob && (
+                <JobOpeningModal
+                    job={editingJob === 'new' ? null : editingJob}
+                    saving={savingJob}
+                    onSave={saveJob}
+                    onClose={() => setEditingJob(null)}
+                />
+            )}
 
             {/* Edit Subscription modal — reuses assignTenant + the plan/status selectors */}
             {editingTenant && (
@@ -860,6 +1211,78 @@ function SectionHeader({ title, subtitle, actions }: { title: string; subtitle: 
     );
 }
 
+// SUBSCRIPTION header with an inline multi-select filter popover. Selecting plan
+// ids / "No Subscription" drives the visibleTenants filter in the parent.
+function SubscriptionFilterHeader({ selected, onToggle }: { selected: Set<string>; onToggle: (value: string) => void }) {
+    const [open, setOpen] = useState(false);
+    const ref = useRef<HTMLDivElement>(null);
+    const active = selected.size > 0;
+
+    useEffect(() => {
+        if (!open) return;
+        const onDocClick = (e: MouseEvent) => {
+            if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+        };
+        document.addEventListener('mousedown', onDocClick);
+        return () => document.removeEventListener('mousedown', onDocClick);
+    }, [open]);
+
+    return (
+        <div ref={ref} style={{ position: 'relative', display: 'inline-flex', alignItems: 'center', gap: '0.35rem' }}>
+            Subscription
+            <button
+                onClick={() => setOpen(o => !o)}
+                aria-label="Filter by subscription"
+                title="Filter by subscription"
+                style={{
+                    display: 'inline-flex', alignItems: 'center', justifyContent: 'center', padding: '0.2rem',
+                    border: 'none', borderRadius: '6px', cursor: 'pointer',
+                    background: active ? 'var(--primary)' : 'transparent',
+                    color: active ? '#fff' : 'var(--text-tertiary)',
+                }}
+            >
+                <Filter size={13} />
+            </button>
+            {open && (
+                <div className="glass-panel" style={{
+                    position: 'absolute', top: 'calc(100% + 0.45rem)', left: 0, zIndex: 50, padding: '0.6rem 0.75rem',
+                    minWidth: '180px', display: 'flex', flexDirection: 'column', gap: '0.45rem',
+                    textTransform: 'none', letterSpacing: 'normal',
+                }}>
+                    {SUB_FILTER_OPTIONS.map(opt => (
+                        <label key={opt.value} style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', cursor: 'pointer', fontSize: '0.84rem', fontWeight: 500, color: 'var(--text-secondary)' }}>
+                            <input
+                                type="checkbox"
+                                checked={selected.has(opt.value)}
+                                onChange={() => onToggle(opt.value)}
+                                style={{ width: '1rem', height: '1rem', accentColor: 'var(--primary-light)' }}
+                            />
+                            {opt.label}
+                        </label>
+                    ))}
+                </div>
+            )}
+        </div>
+    );
+}
+
+// CREATED header with a sort-direction toggle (newest ⇄ oldest first).
+function CreatedSortHeader({ dir, onToggle }: { dir: 'desc' | 'asc'; onToggle: () => void }) {
+    return (
+        <button
+            onClick={onToggle}
+            title={dir === 'desc' ? 'Sorted newest first — click for oldest first' : 'Sorted oldest first — click for newest first'}
+            style={{
+                display: 'inline-flex', alignItems: 'center', gap: '0.3rem', padding: 0,
+                background: 'transparent', border: 'none', cursor: 'pointer', font: 'inherit',
+                color: 'inherit', textTransform: 'inherit', letterSpacing: 'inherit',
+            }}
+        >
+            Created {dir === 'desc' ? <ArrowDown size={13} /> : <ArrowUp size={13} />}
+        </button>
+    );
+}
+
 function SubscriptionCell({ subscription, planName }: { subscription: TenantSubscription | null; planName: string | null }) {
     if (!subscription) {
         return (
@@ -879,6 +1302,11 @@ function SubscriptionCell({ subscription, planName }: { subscription: TenantSubs
 
 const badgeBase: React.CSSProperties = {
     fontSize: '0.7rem', fontWeight: 600, padding: '0.15rem 0.55rem', borderRadius: '999px', whiteSpace: 'nowrap',
+};
+
+// Compact button used for each Careers table row action.
+const jobActionBtn: React.CSSProperties = {
+    display: 'inline-flex', alignItems: 'center', gap: '0.35rem', fontSize: '0.8rem', padding: '0.35rem 0.7rem',
 };
 
 // Colour map for the Razorpay payment status stored in saasPayments (currently
@@ -901,10 +1329,9 @@ function PAYMENT_STATUS_BADGE(status: string): { bg: string; fg: string; label: 
 }
 
 function OverviewSection({
-    loading, total, active, noSub, plansConfigured, onManageBusinesses, onManagePlans,
+    loading, total, active, noSub, plansConfigured,
 }: {
     loading: boolean; total: number; active: number; noSub: number; plansConfigured: number;
-    onManageBusinesses: () => void; onManagePlans: () => void;
 }) {
     const cards = [
         { label: 'Total businesses', value: total, icon: Building2 },
@@ -926,14 +1353,6 @@ function OverviewSection({
                         </div>
                     </div>
                 ))}
-            </div>
-            <div style={{ display: 'flex', gap: '0.6rem', flexWrap: 'wrap' }}>
-                <button onClick={onManageBusinesses} className="btn btn-primary" style={{ display: 'inline-flex', alignItems: 'center', gap: '0.4rem', fontSize: '0.85rem' }}>
-                    <Building2 size={15} /> Manage Businesses
-                </button>
-                <button onClick={onManagePlans} className="btn btn-secondary" style={{ display: 'inline-flex', alignItems: 'center', gap: '0.4rem', fontSize: '0.85rem' }}>
-                    <Layers size={15} /> Manage Plans
-                </button>
             </div>
         </>
     );
@@ -996,6 +1415,140 @@ function EditSubscriptionModal({
                         style={{ display: 'inline-flex', alignItems: 'center', gap: '0.4rem', fontSize: '0.85rem', opacity: (saving || !dirty || !planExists(planId)) ? 0.55 : 1 }}
                     >
                         {saving ? <Loader2 size={14} className="animate-spin" /> : <Check size={14} />} {current ? 'Update' : 'Assign'}
+                    </button>
+                </div>
+            </div>
+        </div>
+    );
+}
+
+// ─── Job Opening editor modal ─────────────────────────────────────────────────
+// Create (job === null) or edit an existing opening. Requirements are entered one
+// per line and stored as string[]. The Save button writes with the currently
+// selected status; convenience buttons set status = draft / published then save.
+const jobFieldLabel: React.CSSProperties = {
+    display: 'block', fontSize: '0.8rem', fontWeight: 600, marginBottom: '0.3rem', color: 'var(--text-secondary)',
+};
+
+function JobOpeningModal({
+    job, saving, onSave, onClose,
+}: {
+    job: JobOpening | null;
+    saving: boolean;
+    onSave: (form: JobFormState, existing: JobOpening | null) => void;
+    onClose: () => void;
+}) {
+    const [form, setForm] = useState<JobFormState>(
+        job
+            ? {
+                title: job.title ?? '',
+                department: job.department ?? '',
+                location: job.location ?? '',
+                employmentType: job.employmentType || 'Full-time',
+                description: job.description ?? '',
+                requirementsText: (job.requirements ?? []).join('\n'),
+                status: job.status ?? 'draft',
+            }
+            : EMPTY_JOB_FORM,
+    );
+    const set = <K extends keyof JobFormState>(k: K, v: JobFormState[K]) => setForm(prev => ({ ...prev, [k]: v }));
+
+    // Validation — returns a user-facing message or null when the form is valid.
+    const validate = (): string | null => {
+        if (!form.title.trim()) return 'Job title is required.';
+        if (!form.department.trim()) return 'Department is required.';
+        if (!form.location.trim()) return 'Location is required.';
+        if (!form.employmentType.trim()) return 'Employment type is required.';
+        if (!form.description.trim()) return 'Description is required.';
+        return null;
+    };
+    const validationError = validate();
+
+    // Save with the currently selected status (dropdown is the source of truth).
+    const submit = () => {
+        if (validationError) return;
+        onSave(form, job);
+    };
+
+    // Primary button label reflects the chosen status so Draft/Publish/Close are explicit.
+    const saveLabel = form.status === 'published' ? 'Publish'
+        : form.status === 'closed' ? 'Save as Closed'
+        : 'Save as Draft';
+
+    return (
+        <div
+            onClick={onClose}
+            style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.45)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000, padding: '1rem' }}
+        >
+            <div onClick={e => e.stopPropagation()} className="glass-panel" style={{ width: '100%', maxWidth: '560px', maxHeight: '90vh', overflowY: 'auto', padding: '1.5rem' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '1.25rem' }}>
+                    <div>
+                        <h2 style={{ fontSize: '1.15rem', margin: '0 0 0.2rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                            <Briefcase size={18} /> {job ? 'Edit Job Opening' : 'Add Job Opening'}
+                        </h2>
+                        <div style={{ fontSize: '0.85rem', color: 'var(--text-secondary)' }}>
+                            {job ? 'Update this opening. Changes go live immediately for published roles.' : 'Create a new opening for the public Careers page.'}
+                        </div>
+                    </div>
+                    <button onClick={onClose} aria-label="Close" style={{ background: 'transparent', border: 'none', cursor: 'pointer', color: 'var(--text-tertiary)', padding: '0.2rem' }}>
+                        <X size={20} />
+                    </button>
+                </div>
+
+                <label style={jobFieldLabel}>Job Title *</label>
+                <input className="input-field" style={{ width: '100%', marginBottom: '1rem' }} value={form.title}
+                    placeholder="e.g. Senior Frontend Engineer" onChange={e => set('title', e.target.value)} />
+
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem', marginBottom: '1rem' }}>
+                    <div>
+                        <label style={jobFieldLabel}>Department *</label>
+                        <input className="input-field" style={{ width: '100%' }} value={form.department}
+                            placeholder="e.g. Engineering" onChange={e => set('department', e.target.value)} />
+                    </div>
+                    <div>
+                        <label style={jobFieldLabel}>Location *</label>
+                        <input className="input-field" style={{ width: '100%' }} value={form.location}
+                            placeholder="e.g. Bengaluru · Hybrid" onChange={e => set('location', e.target.value)} />
+                    </div>
+                </div>
+
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem', marginBottom: '1rem' }}>
+                    <div>
+                        <label style={jobFieldLabel}>Employment Type *</label>
+                        <select className="input-field" style={{ width: '100%' }} value={form.employmentType} onChange={e => set('employmentType', e.target.value)}>
+                            {EMPLOYMENT_TYPES.map(t => <option key={t} value={t}>{t}</option>)}
+                        </select>
+                    </div>
+                    <div>
+                        <label style={jobFieldLabel}>Status</label>
+                        <select className="input-field" style={{ width: '100%' }} value={form.status} onChange={e => set('status', e.target.value as JobStatus)}>
+                            {JOB_STATUS_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+                        </select>
+                    </div>
+                </div>
+
+                <label style={jobFieldLabel}>Description *</label>
+                <textarea className="input-field" style={{ width: '100%', minHeight: '96px', resize: 'vertical', marginBottom: '1rem' }} value={form.description}
+                    placeholder="What the role is about and what the person will own." onChange={e => set('description', e.target.value)} />
+
+                <label style={jobFieldLabel}>Requirements</label>
+                <textarea className="input-field" style={{ width: '100%', minHeight: '96px', resize: 'vertical', marginBottom: '0.35rem' }} value={form.requirementsText}
+                    placeholder={'One requirement per line, e.g.\n5+ years with React & TypeScript\nStrong eye for UI detail'} onChange={e => set('requirementsText', e.target.value)} />
+                <div style={{ fontSize: '0.74rem', color: 'var(--text-tertiary)', marginBottom: '1.25rem' }}>One requirement per line.</div>
+
+                {validationError && (
+                    <div style={{ fontSize: '0.8rem', color: 'var(--danger)', marginBottom: '1rem' }}>{validationError}</div>
+                )}
+
+                <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '0.6rem', flexWrap: 'wrap' }}>
+                    <button onClick={onClose} className="btn btn-secondary" style={{ fontSize: '0.85rem' }}>Cancel</button>
+                    <button
+                        onClick={submit}
+                        disabled={saving || !!validationError}
+                        className="btn btn-primary"
+                        style={{ display: 'inline-flex', alignItems: 'center', gap: '0.4rem', fontSize: '0.85rem', opacity: (saving || validationError) ? 0.55 : 1, cursor: (saving || validationError) ? 'not-allowed' : 'pointer' }}
+                    >
+                        {saving ? <Loader2 size={14} className="animate-spin" /> : form.status === 'published' ? <Check size={14} /> : <Save size={14} />} {saveLabel}
                     </button>
                 </div>
             </div>
