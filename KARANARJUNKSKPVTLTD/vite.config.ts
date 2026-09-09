@@ -36,6 +36,16 @@ return {
         changeOrigin: true,
         rewrite: () => `${emulatorBase}/getSaaSSubscription`,
       },
+      // reset-password uses the DEPLOYED Cloud Function, not the emulator. The
+      // function is not directly invokable (org policy blocks allUsers); it only
+      // works through the Hosting rewrite, which invokes it with proper creds. So
+      // proxy to the deployed Hosting URL and keep the /api/users/reset-password
+      // path intact so the rewrite (firebase.json) fires server-side.
+      '/api/users/reset-password': {
+        target: `https://${projectId}.web.app`,
+        changeOrigin: true,
+        secure: true,
+      },
     },
   },
   plugins: [
