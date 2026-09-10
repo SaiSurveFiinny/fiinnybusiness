@@ -12,7 +12,7 @@ import { cn } from "../../../dashboard/_lib/cn";
 import { PendingSignupPanel, type PendingPanelManufacturer } from "../../_components/pending-signup-panel";
 import { getUsers, getSubscriptions, getProducts } from "../../_lib/admin-data";
 import { selectUserProductDocs } from "../../../firebase";
-import { collection, doc, serverTimestamp, writeBatch } from "firebase/firestore";
+import { collection, doc, getDocs, query, where, serverTimestamp, writeBatch } from "firebase/firestore";
 
 // ─── Shared helpers ────────────────────────────────────────────────────────────
 
@@ -40,7 +40,16 @@ type TemplateId =
   | "product_assignment_pending_signup"
   | "subscription_expiry"
   | "retailer_seat_promotion"
-  | "add_product_reminder";
+  | "add_product_reminder"
+  | "kyc_pending"
+  | "kyc_success"
+  | "app_update";
+
+/**
+ * Cost of a single delivered WhatsApp Marketing message, in INR. Defined once
+ * here so it can be updated in one place if Meta pricing changes.
+ */
+const MARKETING_MSG_COST_INR = 0.86;
 
 const TEMPLATES: { id: TemplateId; label: string; description: string }[] = [
   {
@@ -67,6 +76,21 @@ const TEMPLATES: { id: TemplateId; label: string; description: string }[] = [
     id: "add_product_reminder",
     label: "Add Product Reminder",
     description: "Remind active-subscribed retailers who haven't added any products yet.",
+  },
+  {
+    id: "kyc_pending",
+    label: "KYC Pending",
+    description: "Remind subscribed retailers/manufacturers whose payout KYC is not yet verified.",
+  },
+  {
+    id: "kyc_success",
+    label: "KYC Success",
+    description: "Congratulate retailers/manufacturers whose payout KYC is verified and point them to payouts.",
+  },
+  {
+    id: "app_update",
+    label: "App Update (Marketing)",
+    description: "Ask retailers, manufacturers or customers to update the app. Marketing template — billed per message.",
   },
 ];
 
@@ -1775,10 +1799,1514 @@ function AddProductReminderFlow() {
   );
 }
 
+// ─── KYC Pending flow ─────────────────────────────────────────────────────────
+
+type KycRow = {
+  userId: string;
+  phone: string;         // normalized E.164 (no '+')
+  ownerName: string;     // {{1}} primary — owner/person name
+  businessName: string;  // {{1}} fallback + display
+  shopName: string;      // {{1}} secondary fallback
+  role: string;
+  kycStatus: "pending_verification" | "rejected" | "not_started";
+};
+
+type KycResult = {
+  userId: string;
+  phone: string;
+  businessName: string;
+  ok: boolean;
+  error?: string;
+};
+
+const KYC_STATUS_LABEL: Record<KycRow["kycStatus"], string> = {
+  pending_verification: "Pending verification",
+  rejected: "Rejected",
+  not_started: "Not started",
+};
+
+function KycPendingFlow() {
+  const [rows, setRows] = useState<KycRow[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [search, setSearch] = useState("");
+  const [step, setStep] = useState<"list" | "confirm" | "sending" | "done">("list");
+  const [sendResults, setSendResults] = useState<KycResult[]>([]);
+  const sendingRef = useRef(false);
+  const masterCheckboxRef = useRef<HTMLInputElement>(null);
+
+  const loadData = useCallback(async () => {
+    setLoading(true);
+    try {
+      // KYC status lives on payoutAccounts/{phone}.status — the exact field the
+      // admin Payouts review page reads. No duplicate KYC field is introduced.
+      const [users, payoutSnap] = await Promise.all([
+        getUsers(),
+        getDocs(collection(db, "payoutAccounts")),
+      ]);
+
+      // Map normalized phone → KYC status. Doc id is the seller phone.
+      const kycByPhone = new Map<string, string>();
+      payoutSnap.docs.forEach((d) => {
+        const status = String((d.data() as { status?: string }).status ?? "pending_verification");
+        kycByPhone.set(toE164(d.id), status);
+      });
+
+      const built: KycRow[] = [];
+      for (const u of users as any[]) {
+        const role: string = u.role ?? "";
+        if (role !== "retailer" && role !== "manufacturer") continue;
+
+        // Subscribed only — active plan or paid flag.
+        const subscribed = u.subscriptionStatus === "active" || u.isPaid === true;
+        if (!subscribed) continue;
+
+        // Require a valid WhatsApp/phone number.
+        const candidates = [u.phone, u.id].filter(Boolean).map(String);
+        const phone = candidates.find(isValidIndianPhone) ?? "";
+        if (!phone) continue;
+        const normPhone = toE164(phone);
+
+        // KYC status: exclude anyone already verified; keep pending / rejected /
+        // not-started (no payoutAccounts doc = KYC never completed).
+        const status = kycByPhone.get(normPhone);
+        if (status === "verified") continue;
+        const kycStatus: KycRow["kycStatus"] =
+          status === "rejected"
+            ? "rejected"
+            : status === "pending_verification"
+            ? "pending_verification"
+            : "not_started";
+
+        const ownerName: string = u.ownerName || u.name || "";
+        const businessName: string = u.businessName || "";
+        const shopName: string = u.shopName || "";
+
+        built.push({
+          userId: u.id,
+          phone: normPhone,
+          ownerName,
+          businessName,
+          shopName,
+          role,
+          kycStatus,
+        });
+      }
+
+      built.sort((a, b) =>
+        (a.ownerName || a.businessName || a.phone).localeCompare(
+          b.ownerName || b.businessName || b.phone,
+        ),
+      );
+      setRows(built);
+      // Default selection is none — nothing is pre-selected on load.
+      setSelectedIds(new Set());
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => { void loadData(); }, [loadData]);
+
+  // Search by business name or owner/person name.
+  const filteredRows = (() => {
+    const q = search.trim().toLowerCase();
+    if (!q) return rows;
+    return rows.filter(
+      (r) =>
+        r.ownerName.toLowerCase().includes(q) ||
+        r.businessName.toLowerCase().includes(q) ||
+        r.shopName.toLowerCase().includes(q),
+    );
+  })();
+
+  useEffect(() => {
+    const el = masterCheckboxRef.current;
+    if (!el) return;
+    const visibleIds = filteredRows.map((r) => r.userId);
+    const selectedVisible = visibleIds.filter((id) => selectedIds.has(id)).length;
+    const all = visibleIds.length > 0 && selectedVisible >= visibleIds.length;
+    const none = selectedVisible === 0;
+    el.checked = all;
+    el.indeterminate = !all && !none;
+  }, [selectedIds, filteredRows]);
+
+  const toggleRow = (id: string) =>
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+
+  const selectedRows = rows.filter((r) => selectedIds.has(r.userId));
+
+  // Display value for {{1}} — owner name, falling back to business/shop name.
+  const displayName = (r: KycRow) => r.ownerName || r.businessName || r.shopName || "—";
+
+  // Phone shown without the country-code prefix (stored as E.164, e.g. "919876543210").
+  const displayPhone = (raw: string) => {
+    const digits = raw.replace(/\D/g, "");
+    return digits.length === 12 && digits.startsWith("91") ? digits.slice(2) : digits;
+  };
+
+  const handleSend = async () => {
+    if (sendingRef.current || selectedRows.length === 0) return;
+    sendingRef.current = true;
+    setStep("sending");
+
+    const results: KycResult[] = [];
+    const now = serverTimestamp();
+    const waRef = collection(db, "waNotifications");
+    const CHUNK = 400;
+
+    for (let i = 0; i < selectedRows.length; i += CHUNK) {
+      const chunk = selectedRows.slice(i, i + CHUNK);
+      const batch = writeBatch(db);
+      for (const row of chunk) {
+        batch.set(doc(waRef), {
+          phone: row.phone,
+          message: "",
+          template: "kyc_pending",
+          // Resolver picks businessName → shopName → ownerName for the single {{1}}.
+          payload: {
+            ownerName: row.ownerName,
+            businessName: row.businessName,
+            shopName: row.shopName,
+          },
+          source: {
+            event: "admin_manual_kyc_pending_reminder",
+            entityType: "users",
+            entityId: row.userId,
+          },
+          status: "pending",
+          type: "general",
+          metaMessageId: null,
+          createdAt: now,
+          sentAt: null,
+          deliveredAt: null,
+          readAt: null,
+          failedAt: null,
+          retryCount: 0,
+          maxRetries: 3,
+          lastError: null,
+        });
+      }
+      try {
+        await batch.commit();
+        for (const row of chunk) {
+          results.push({ userId: row.userId, phone: row.phone, businessName: displayName(row), ok: true });
+        }
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : "Batch write failed";
+        for (const row of chunk) {
+          results.push({ userId: row.userId, phone: row.phone, businessName: displayName(row), ok: false, error: msg });
+        }
+      }
+    }
+
+    setSendResults(results);
+    setStep("done");
+    sendingRef.current = false;
+  };
+
+  const handleReset = () => {
+    setStep("list");
+    setSendResults([]);
+    void loadData();
+  };
+
+  if (step === "sending") {
+    return (
+      <div className="flex flex-col items-center justify-center gap-3 py-16 text-on-surface-variant">
+        <Loader2 className="w-8 h-8 animate-spin text-primary" />
+        <p className="text-sm font-medium">Queuing {selectedRows.length} notification{selectedRows.length !== 1 ? "s" : ""}…</p>
+      </div>
+    );
+  }
+
+  if (step === "done") {
+    const successCount = sendResults.filter((r) => r.ok).length;
+    const failCount = sendResults.filter((r) => !r.ok).length;
+    return (
+      <div className="space-y-4">
+        <div className="flex gap-3">
+          {successCount > 0 && (
+            <div className="flex-1 bg-green-50 border border-green-200 rounded-xl p-3 text-center">
+              <p className="text-2xl font-bold text-green-700">{successCount}</p>
+              <p className="text-xs text-green-600 font-medium">Queued</p>
+            </div>
+          )}
+          {failCount > 0 && (
+            <div className="flex-1 bg-red-50 border border-red-200 rounded-xl p-3 text-center">
+              <p className="text-2xl font-bold text-red-700">{failCount}</p>
+              <p className="text-xs text-red-600 font-medium">Failed</p>
+            </div>
+          )}
+        </div>
+        <div className="border border-gray-200 rounded-xl overflow-hidden">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="bg-gray-50 border-b border-gray-200">
+                <th className="text-left px-3 py-2.5 text-xs font-semibold text-gray-500 uppercase tracking-wide">Recipient</th>
+                <th className="text-left px-3 py-2.5 text-xs font-semibold text-gray-500 uppercase tracking-wide">Phone</th>
+                <th className="text-left px-3 py-2.5 text-xs font-semibold text-gray-500 uppercase tracking-wide">Result</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-gray-100">
+              {sendResults.map((r) => (
+                <tr key={r.userId} className={cn(r.ok ? "bg-green-50/30" : "bg-red-50/30")}>
+                  <td className="px-3 py-2.5 text-xs text-gray-800">{r.businessName || "—"}</td>
+                  <td className="px-3 py-2.5 font-mono text-xs text-gray-600">{displayPhone(r.phone)}</td>
+                  <td className="px-3 py-2.5">
+                    {r.ok ? (
+                      <span className="inline-flex items-center gap-1 text-green-700 text-xs font-medium">
+                        <CheckCircle className="w-3.5 h-3.5" /> Queued
+                      </span>
+                    ) : (
+                      <span className="inline-flex items-center gap-1 text-red-700 text-xs font-medium" title={r.error}>
+                        <XCircle className="w-3.5 h-3.5" /> Failed
+                      </span>
+                    )}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+        <button
+          onClick={handleReset}
+          className="px-4 py-2.5 border border-gray-300 text-gray-700 rounded-xl text-sm font-medium hover:bg-gray-50 transition-colors"
+        >
+          Back to List
+        </button>
+      </div>
+    );
+  }
+
+  if (step === "confirm") {
+    return (
+      <div className="space-y-4">
+        <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-4 space-y-2">
+          <p className="text-sm font-bold text-amber-800">Confirm before sending</p>
+          <ul className="text-sm text-amber-700 space-y-1 list-disc list-inside">
+            <li>Template: <span className="font-mono text-xs">kyc_pending</span></li>
+            <li>Variable: <span className="font-mono text-xs">{"{{1}}"}</span> = Business / Shop name (falls back to Owner name)</li>
+            <li>Recipients: <span className="font-semibold">{selectedRows.length} seller{selectedRows.length !== 1 ? "s" : ""}</span></li>
+          </ul>
+          <p className="text-xs text-amber-600 mt-1">
+            Queues {selectedRows.length} doc{selectedRows.length !== 1 ? "s" : ""} to{" "}
+            <code className="font-mono">waNotifications</code>. No user records will be modified.
+          </p>
+        </div>
+
+        <div className="border border-gray-200 rounded-xl overflow-hidden max-h-96 overflow-y-auto">
+          <table className="w-full text-sm">
+            <thead className="sticky top-0 bg-gray-50 border-b border-gray-200">
+              <tr>
+                <th className="text-left px-3 py-2.5 text-xs font-semibold text-gray-500 uppercase tracking-wide">Recipient</th>
+                <th className="text-left px-3 py-2.5 text-xs font-semibold text-gray-500 uppercase tracking-wide">Phone</th>
+                <th className="text-left px-3 py-2.5 text-xs font-semibold text-gray-500 uppercase tracking-wide">KYC Status</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-gray-100">
+              {selectedRows.map((r) => (
+                <tr key={r.userId}>
+                  <td className="px-3 py-2.5 text-xs text-gray-800">{displayName(r)}</td>
+                  <td className="px-3 py-2.5 font-mono text-xs text-gray-600">{displayPhone(r.phone)}</td>
+                  <td className="px-3 py-2.5 text-xs text-gray-600">{KYC_STATUS_LABEL[r.kycStatus]}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+
+        <div className="flex gap-3">
+          <button
+            onClick={() => setStep("list")}
+            className="px-4 py-2.5 border border-gray-300 text-gray-700 rounded-xl text-sm font-medium hover:bg-gray-50 transition-colors"
+          >
+            Back
+          </button>
+          <button
+            onClick={handleSend}
+            className="flex items-center gap-2 px-5 py-2.5 bg-primary text-white rounded-xl text-sm font-semibold hover:bg-primary/90 transition-colors"
+          >
+            <Send className="w-4 h-4" />
+            Send {selectedRows.length} Notification{selectedRows.length !== 1 ? "s" : ""}
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  // ── "list" step ───────────────────────────────────────────────────────────────
+  return (
+    <div className="space-y-5">
+      {/* Controls row */}
+      <div className="flex items-center gap-3">
+        <p className="flex-1 text-sm font-medium text-gray-700">
+          {loading ? "Loading…" : (
+            <>
+              {search.trim()
+                ? `${filteredRows.length} of ${rows.length} seller${rows.length !== 1 ? "s" : ""}`
+                : `${rows.length} eligible seller${rows.length !== 1 ? "s" : ""}`}
+              {selectedIds.size > 0 && selectedIds.size < rows.length && (
+                <span className="ml-1.5 text-on-surface-variant font-normal">
+                  · {selectedIds.size} selected
+                </span>
+              )}
+            </>
+          )}
+        </p>
+        <button
+          onClick={() => void loadData()}
+          disabled={loading}
+          className="flex items-center gap-1.5 rounded-xl border border-gray-300 px-3 py-2 text-xs font-medium text-gray-600 hover:bg-gray-50 disabled:opacity-50"
+        >
+          <RefreshCw className={cn("w-3.5 h-3.5", loading && "animate-spin")} />
+          Refresh
+        </button>
+      </div>
+
+      {/* Search by business name or owner name */}
+      <div className="relative max-w-sm">
+        <Search className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
+        <input
+          type="text"
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          placeholder="Search by business or owner name…"
+          className="w-full border border-gray-300 rounded-xl pl-9 pr-3 py-2 text-sm text-gray-800 bg-white focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent placeholder:text-gray-400"
+        />
+      </div>
+
+      {loading ? (
+        <div className="flex h-28 items-center justify-center gap-2 text-sm text-gray-400">
+          <Loader2 className="w-4 h-4 animate-spin" /> Loading sellers…
+        </div>
+      ) : rows.length === 0 ? (
+        <div className="rounded-2xl border border-dashed border-gray-300 px-6 py-10 text-center text-sm text-gray-400">
+          No subscribed retailers or manufacturers with pending KYC found.
+        </div>
+      ) : filteredRows.length === 0 ? (
+        <div className="rounded-2xl border border-dashed border-gray-300 px-6 py-10 text-center text-sm text-gray-400">
+          No sellers match &quot;{search.trim()}&quot;.
+        </div>
+      ) : (
+        <>
+          <div className="border border-gray-200 rounded-xl overflow-hidden">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="bg-gray-50 border-b border-gray-200">
+                  <th className="px-3 py-2.5 w-8 text-center">
+                    <input
+                      ref={masterCheckboxRef}
+                      type="checkbox"
+                      onChange={(e) =>
+                        setSelectedIds((prev) => {
+                          const next = new Set(prev);
+                          if (e.target.checked) filteredRows.forEach((r) => next.add(r.userId));
+                          else filteredRows.forEach((r) => next.delete(r.userId));
+                          return next;
+                        })
+                      }
+                      className="h-4 w-4 rounded border-gray-300 text-primary focus:ring-primary/30 cursor-pointer"
+                    />
+                  </th>
+                  <th className="text-left px-3 py-2.5 text-xs font-semibold text-gray-500 uppercase tracking-wide">Owner / Business</th>
+                  <th className="text-left px-3 py-2.5 text-xs font-semibold text-gray-500 uppercase tracking-wide">Phone</th>
+                  <th className="text-left px-3 py-2.5 text-xs font-semibold text-gray-500 uppercase tracking-wide hidden sm:table-cell">Role</th>
+                  <th className="text-left px-3 py-2.5 text-xs font-semibold text-gray-500 uppercase tracking-wide">KYC Status</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-gray-100">
+                {filteredRows.map((r) => {
+                  const checked = selectedIds.has(r.userId);
+                  return (
+                    <tr
+                      key={r.userId}
+                      className={cn(
+                        "cursor-pointer transition-colors",
+                        checked ? "bg-primary/5" : "hover:bg-gray-50",
+                      )}
+                      onClick={() => toggleRow(r.userId)}
+                    >
+                      <td className="px-3 py-2.5 text-center">
+                        <input
+                          type="checkbox"
+                          checked={checked}
+                          onChange={() => toggleRow(r.userId)}
+                          onClick={(e) => e.stopPropagation()}
+                          className="h-4 w-4 rounded border-gray-300 text-primary focus:ring-primary/30"
+                        />
+                      </td>
+                      <td className="px-3 py-2.5">
+                        <p className="text-xs font-semibold text-gray-800 truncate max-w-xs">
+                          {displayName(r)}
+                        </p>
+                        {r.businessName && r.businessName !== r.ownerName && (
+                          <p className="text-[10px] text-gray-400 truncate max-w-xs">{r.businessName}</p>
+                        )}
+                      </td>
+                      <td className="px-3 py-2.5 font-mono text-xs text-gray-600">{displayPhone(r.phone)}</td>
+                      <td className="px-3 py-2.5 hidden sm:table-cell">
+                        <span className="text-xs px-1.5 py-0.5 rounded-full bg-gray-100 text-gray-600 capitalize">
+                          {r.role}
+                        </span>
+                      </td>
+                      <td className="px-3 py-2.5">
+                        <span className={cn(
+                          "text-xs px-1.5 py-0.5 rounded-full font-medium",
+                          r.kycStatus === "rejected"
+                            ? "bg-red-50 text-red-600"
+                            : "bg-amber-50 text-amber-700",
+                        )}>
+                          {KYC_STATUS_LABEL[r.kycStatus]}
+                        </span>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+
+          <button
+            onClick={() => setStep("confirm")}
+            disabled={selectedIds.size === 0}
+            className="flex items-center gap-2 px-5 py-2.5 bg-primary text-white rounded-xl text-sm font-semibold hover:bg-primary/90 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+          >
+            <Send className="w-4 h-4" />
+            Review &amp; Send ({selectedIds.size} selected)
+          </button>
+        </>
+      )}
+    </div>
+  );
+}
+
+// ─── KYC Success flow ─────────────────────────────────────────────────────────
+
+type KycSuccessRow = {
+  userId: string;
+  phone: string;         // normalized E.164 (no '+')
+  ownerName: string;
+  businessName: string;  // {{1}} primary
+  shopName: string;      // {{1}} secondary fallback
+  alreadySent: boolean;  // kyc_success already queued/sent to this number
+  sentAt: Date | null;   // when it was sent (for "Sent 3 days ago")
+};
+
+type KycSuccessResult = {
+  userId: string;
+  phone: string;
+  businessName: string;
+  ok: boolean;
+  error?: string;
+};
+
+/** Short relative-time label, e.g. "3 days ago", "5 hours ago", "just now". */
+function formatTimeAgo(d: Date): string {
+  const diffMs = Date.now() - d.getTime();
+  const mins = Math.floor(diffMs / 60000);
+  if (mins < 1) return "just now";
+  if (mins < 60) return `${mins} minute${mins !== 1 ? "s" : ""} ago`;
+  const hours = Math.floor(mins / 60);
+  if (hours < 24) return `${hours} hour${hours !== 1 ? "s" : ""} ago`;
+  const days = Math.floor(hours / 24);
+  return `${days} day${days !== 1 ? "s" : ""} ago`;
+}
+
+function KycSuccessFlow() {
+  const [rows, setRows] = useState<KycSuccessRow[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [search, setSearch] = useState("");
+  const [step, setStep] = useState<"list" | "confirm" | "sending" | "done">("list");
+  const [sendResults, setSendResults] = useState<KycSuccessResult[]>([]);
+  const sendingRef = useRef(false);
+  const masterCheckboxRef = useRef<HTMLInputElement>(null);
+
+  const loadData = useCallback(async () => {
+    setLoading(true);
+    try {
+      // KYC status lives on payoutAccounts/{phone}.status — "verified" means the
+      // seller's payout KYC succeeded (same field the admin Payouts review reads).
+      // Existing kyc_success sends are read from waNotifications so we never send
+      // the template to the same retailer twice.
+      const [users, payoutSnap, sentSnap] = await Promise.all([
+        getUsers(),
+        getDocs(collection(db, "payoutAccounts")),
+        getDocs(query(collection(db, "waNotifications"), where("template", "==", "kyc_success"))),
+      ]);
+
+      // Map normalized phone → KYC status. Doc id is the seller phone.
+      const kycByPhone = new Map<string, string>();
+      payoutSnap.docs.forEach((d) => {
+        const status = String((d.data() as { status?: string }).status ?? "");
+        kycByPhone.set(toE164(d.id), status);
+      });
+
+      // Map normalized phone → most recent kyc_success send time.
+      const sentByPhone = new Map<string, Date>();
+      sentSnap.docs.forEach((d) => {
+        const data = d.data() as { phone?: string; sentAt?: any; createdAt?: any };
+        if (!data.phone) return;
+        const ts = data.sentAt ?? data.createdAt;
+        const when: Date | null = ts?.toDate ? ts.toDate() : ts ? new Date(ts) : null;
+        const norm = toE164(data.phone);
+        const prev = sentByPhone.get(norm);
+        if (when && (!prev || when.getTime() > prev.getTime())) sentByPhone.set(norm, when);
+        else if (!when && !prev) sentByPhone.set(norm, new Date(0)); // sent, time unknown
+      });
+
+      const built: KycSuccessRow[] = [];
+      for (const u of users as any[]) {
+        // Retailers and manufacturers.
+        if (u.role !== "retailer" && u.role !== "manufacturer") continue;
+
+        // Only successfully-verified KYC.
+        const candidates = [u.phone, u.id].filter(Boolean).map(String);
+        const phone = candidates.find(isValidIndianPhone) ?? "";
+        if (!phone) continue; // require a valid WhatsApp/phone number
+        const normPhone = toE164(phone);
+
+        if (kycByPhone.get(normPhone) !== "verified") continue;
+
+        const sentAt = sentByPhone.get(normPhone) ?? null;
+
+        built.push({
+          userId: u.id,
+          phone: normPhone,
+          ownerName: u.ownerName || u.name || "",
+          businessName: u.businessName || "",
+          shopName: u.shopName || "",
+          alreadySent: sentByPhone.has(normPhone),
+          sentAt: sentAt && sentAt.getTime() > 0 ? sentAt : null,
+        });
+      }
+
+      built.sort((a, b) =>
+        (a.businessName || a.shopName || a.ownerName || a.phone).localeCompare(
+          b.businessName || b.shopName || b.ownerName || b.phone,
+        ),
+      );
+      setRows(built);
+      // Default selection is none.
+      setSelectedIds(new Set());
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => { void loadData(); }, [loadData]);
+
+  // Search by business, shop or owner name.
+  const filteredRows = (() => {
+    const q = search.trim().toLowerCase();
+    if (!q) return rows;
+    return rows.filter(
+      (r) =>
+        r.businessName.toLowerCase().includes(q) ||
+        r.shopName.toLowerCase().includes(q) ||
+        r.ownerName.toLowerCase().includes(q),
+    );
+  })();
+
+  // Only retailers who have NOT already received kyc_success are selectable.
+  const selectableFiltered = filteredRows.filter((r) => !r.alreadySent);
+  const eligibleCount = rows.filter((r) => !r.alreadySent).length;
+
+  useEffect(() => {
+    const el = masterCheckboxRef.current;
+    if (!el) return;
+    const visibleIds = selectableFiltered.map((r) => r.userId);
+    const selectedVisible = visibleIds.filter((id) => selectedIds.has(id)).length;
+    const all = visibleIds.length > 0 && selectedVisible >= visibleIds.length;
+    const none = selectedVisible === 0;
+    el.checked = all;
+    el.indeterminate = !all && !none;
+  }, [selectedIds, selectableFiltered]);
+
+  const toggleRow = (row: KycSuccessRow) => {
+    if (row.alreadySent) return; // excluded — cannot be selected
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(row.userId)) next.delete(row.userId); else next.add(row.userId);
+      return next;
+    });
+  };
+
+  const selectedRows = rows.filter((r) => selectedIds.has(r.userId) && !r.alreadySent);
+
+  // {{1}} display — business/shop name, falling back to owner name.
+  const displayName = (r: KycSuccessRow) => r.businessName || r.shopName || r.ownerName || "—";
+
+  const displayPhone = (raw: string) => {
+    const digits = raw.replace(/\D/g, "");
+    return digits.length === 12 && digits.startsWith("91") ? digits.slice(2) : digits;
+  };
+
+  const handleSend = async () => {
+    if (sendingRef.current || selectedRows.length === 0) return;
+    sendingRef.current = true;
+    setStep("sending");
+
+    const results: KycSuccessResult[] = [];
+    const now = serverTimestamp();
+    const waRef = collection(db, "waNotifications");
+    const CHUNK = 400;
+
+    for (let i = 0; i < selectedRows.length; i += CHUNK) {
+      const chunk = selectedRows.slice(i, i + CHUNK);
+      const batch = writeBatch(db);
+      for (const row of chunk) {
+        batch.set(doc(waRef), {
+          phone: row.phone,
+          message: "",
+          template: "kyc_success",
+          // Resolver picks businessName → shopName → ownerName for the single {{1}}.
+          payload: {
+            ownerName: row.ownerName,
+            businessName: row.businessName,
+            shopName: row.shopName,
+          },
+          source: {
+            event: "admin_manual_kyc_success",
+            entityType: "users",
+            entityId: row.userId,
+          },
+          status: "pending",
+          type: "general",
+          metaMessageId: null,
+          createdAt: now,
+          sentAt: null,
+          deliveredAt: null,
+          readAt: null,
+          failedAt: null,
+          retryCount: 0,
+          maxRetries: 3,
+          lastError: null,
+        });
+      }
+      try {
+        await batch.commit();
+        for (const row of chunk) {
+          results.push({ userId: row.userId, phone: row.phone, businessName: displayName(row), ok: true });
+        }
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : "Batch write failed";
+        for (const row of chunk) {
+          results.push({ userId: row.userId, phone: row.phone, businessName: displayName(row), ok: false, error: msg });
+        }
+      }
+    }
+
+    setSendResults(results);
+    setStep("done");
+    sendingRef.current = false;
+  };
+
+  const handleReset = () => {
+    setStep("list");
+    setSendResults([]);
+    void loadData();
+  };
+
+  if (step === "sending") {
+    return (
+      <div className="flex flex-col items-center justify-center gap-3 py-16 text-on-surface-variant">
+        <Loader2 className="w-8 h-8 animate-spin text-primary" />
+        <p className="text-sm font-medium">Queuing {selectedRows.length} notification{selectedRows.length !== 1 ? "s" : ""}…</p>
+      </div>
+    );
+  }
+
+  if (step === "done") {
+    const successCount = sendResults.filter((r) => r.ok).length;
+    const failCount = sendResults.filter((r) => !r.ok).length;
+    return (
+      <div className="space-y-4">
+        <div className="flex gap-3">
+          {successCount > 0 && (
+            <div className="flex-1 bg-green-50 border border-green-200 rounded-xl p-3 text-center">
+              <p className="text-2xl font-bold text-green-700">{successCount}</p>
+              <p className="text-xs text-green-600 font-medium">Queued</p>
+            </div>
+          )}
+          {failCount > 0 && (
+            <div className="flex-1 bg-red-50 border border-red-200 rounded-xl p-3 text-center">
+              <p className="text-2xl font-bold text-red-700">{failCount}</p>
+              <p className="text-xs text-red-600 font-medium">Failed</p>
+            </div>
+          )}
+        </div>
+        <div className="border border-gray-200 rounded-xl overflow-hidden">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="bg-gray-50 border-b border-gray-200">
+                <th className="text-left px-3 py-2.5 text-xs font-semibold text-gray-500 uppercase tracking-wide">Recipient</th>
+                <th className="text-left px-3 py-2.5 text-xs font-semibold text-gray-500 uppercase tracking-wide">Phone</th>
+                <th className="text-left px-3 py-2.5 text-xs font-semibold text-gray-500 uppercase tracking-wide">Result</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-gray-100">
+              {sendResults.map((r) => (
+                <tr key={r.userId} className={cn(r.ok ? "bg-green-50/30" : "bg-red-50/30")}>
+                  <td className="px-3 py-2.5 text-xs text-gray-800">{r.businessName || "—"}</td>
+                  <td className="px-3 py-2.5 font-mono text-xs text-gray-600">{displayPhone(r.phone)}</td>
+                  <td className="px-3 py-2.5">
+                    {r.ok ? (
+                      <span className="inline-flex items-center gap-1 text-green-700 text-xs font-medium">
+                        <CheckCircle className="w-3.5 h-3.5" /> Queued
+                      </span>
+                    ) : (
+                      <span className="inline-flex items-center gap-1 text-red-700 text-xs font-medium" title={r.error}>
+                        <XCircle className="w-3.5 h-3.5" /> Failed
+                      </span>
+                    )}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+        <button
+          onClick={handleReset}
+          className="px-4 py-2.5 border border-gray-300 text-gray-700 rounded-xl text-sm font-medium hover:bg-gray-50 transition-colors"
+        >
+          Back to List
+        </button>
+      </div>
+    );
+  }
+
+  if (step === "confirm") {
+    return (
+      <div className="space-y-4">
+        <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-4 space-y-2">
+          <p className="text-sm font-bold text-amber-800">Confirm before sending</p>
+          <ul className="text-sm text-amber-700 space-y-1 list-disc list-inside">
+            <li>Template: <span className="font-mono text-xs">kyc_success</span></li>
+            <li>Variable: <span className="font-mono text-xs">{"{{1}}"}</span> = Business / Shop name (falls back to Owner name)</li>
+            <li>Recipients: <span className="font-semibold">{selectedRows.length} seller{selectedRows.length !== 1 ? "s" : ""}</span></li>
+          </ul>
+          <p className="text-xs text-amber-600 mt-1">
+            Queues {selectedRows.length} doc{selectedRows.length !== 1 ? "s" : ""} to{" "}
+            <code className="font-mono">waNotifications</code>. No user records will be modified.
+          </p>
+        </div>
+
+        <div className="border border-gray-200 rounded-xl overflow-hidden max-h-96 overflow-y-auto">
+          <table className="w-full text-sm">
+            <thead className="sticky top-0 bg-gray-50 border-b border-gray-200">
+              <tr>
+                <th className="text-left px-3 py-2.5 text-xs font-semibold text-gray-500 uppercase tracking-wide">Recipient</th>
+                <th className="text-left px-3 py-2.5 text-xs font-semibold text-gray-500 uppercase tracking-wide">Phone</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-gray-100">
+              {selectedRows.map((r) => (
+                <tr key={r.userId}>
+                  <td className="px-3 py-2.5 text-xs text-gray-800">{displayName(r)}</td>
+                  <td className="px-3 py-2.5 font-mono text-xs text-gray-600">{displayPhone(r.phone)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+
+        <div className="flex gap-3">
+          <button
+            onClick={() => setStep("list")}
+            className="px-4 py-2.5 border border-gray-300 text-gray-700 rounded-xl text-sm font-medium hover:bg-gray-50 transition-colors"
+          >
+            Back
+          </button>
+          <button
+            onClick={handleSend}
+            className="flex items-center gap-2 px-5 py-2.5 bg-primary text-white rounded-xl text-sm font-semibold hover:bg-primary/90 transition-colors"
+          >
+            <Send className="w-4 h-4" />
+            Send {selectedRows.length} Notification{selectedRows.length !== 1 ? "s" : ""}
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  // ── "list" step ───────────────────────────────────────────────────────────────
+  return (
+    <div className="space-y-5">
+      {/* Controls row */}
+      <div className="flex items-center gap-3">
+        <p className="flex-1 text-sm font-medium text-gray-700">
+          {loading ? "Loading…" : (
+            <>
+              {search.trim()
+                ? `${filteredRows.length} of ${rows.length} seller${rows.length !== 1 ? "s" : ""}`
+                : `${rows.length} verified seller${rows.length !== 1 ? "s" : ""}`}
+              {eligibleCount !== rows.length && (
+                <span className="ml-1.5 text-on-surface-variant font-normal">
+                  · {eligibleCount} not yet sent
+                </span>
+              )}
+              {selectedIds.size > 0 && (
+                <span className="ml-1.5 text-on-surface-variant font-normal">
+                  · {selectedIds.size} selected
+                </span>
+              )}
+            </>
+          )}
+        </p>
+        <button
+          onClick={() => void loadData()}
+          disabled={loading}
+          className="flex items-center gap-1.5 rounded-xl border border-gray-300 px-3 py-2 text-xs font-medium text-gray-600 hover:bg-gray-50 disabled:opacity-50"
+        >
+          <RefreshCw className={cn("w-3.5 h-3.5", loading && "animate-spin")} />
+          Refresh
+        </button>
+      </div>
+
+      {/* Search by business, shop or owner name */}
+      <div className="relative max-w-sm">
+        <Search className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
+        <input
+          type="text"
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          placeholder="Search by business or owner name…"
+          className="w-full border border-gray-300 rounded-xl pl-9 pr-3 py-2 text-sm text-gray-800 bg-white focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent placeholder:text-gray-400"
+        />
+      </div>
+
+      {loading ? (
+        <div className="flex h-28 items-center justify-center gap-2 text-sm text-gray-400">
+          <Loader2 className="w-4 h-4 animate-spin" /> Loading sellers…
+        </div>
+      ) : rows.length === 0 ? (
+        <div className="rounded-2xl border border-dashed border-gray-300 px-6 py-10 text-center text-sm text-gray-400">
+          No retailers or manufacturers with verified KYC found.
+        </div>
+      ) : filteredRows.length === 0 ? (
+        <div className="rounded-2xl border border-dashed border-gray-300 px-6 py-10 text-center text-sm text-gray-400">
+          No sellers match &quot;{search.trim()}&quot;.
+        </div>
+      ) : (
+        <>
+          <div className="border border-gray-200 rounded-xl overflow-hidden">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="bg-gray-50 border-b border-gray-200">
+                  <th className="px-3 py-2.5 w-8 text-center">
+                    <input
+                      ref={masterCheckboxRef}
+                      type="checkbox"
+                      onChange={(e) =>
+                        setSelectedIds((prev) => {
+                          const next = new Set(prev);
+                          // Select All applies only to not-yet-sent retailers.
+                          if (e.target.checked) selectableFiltered.forEach((r) => next.add(r.userId));
+                          else selectableFiltered.forEach((r) => next.delete(r.userId));
+                          return next;
+                        })
+                      }
+                      className="h-4 w-4 rounded border-gray-300 text-primary focus:ring-primary/30 cursor-pointer"
+                    />
+                  </th>
+                  <th className="text-left px-3 py-2.5 text-xs font-semibold text-gray-500 uppercase tracking-wide">Business / Owner</th>
+                  <th className="text-left px-3 py-2.5 text-xs font-semibold text-gray-500 uppercase tracking-wide">Phone</th>
+                  <th className="text-left px-3 py-2.5 text-xs font-semibold text-gray-500 uppercase tracking-wide">Status</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-gray-100">
+                {filteredRows.map((r) => {
+                  const checked = selectedIds.has(r.userId);
+                  return (
+                    <tr
+                      key={r.userId}
+                      className={cn(
+                        "transition-colors",
+                        r.alreadySent
+                          ? "opacity-60 cursor-not-allowed"
+                          : checked
+                          ? "bg-primary/5 cursor-pointer"
+                          : "hover:bg-gray-50 cursor-pointer",
+                      )}
+                      onClick={() => toggleRow(r)}
+                    >
+                      <td className="px-3 py-2.5 text-center">
+                        <input
+                          type="checkbox"
+                          checked={checked}
+                          disabled={r.alreadySent}
+                          onChange={() => toggleRow(r)}
+                          onClick={(e) => e.stopPropagation()}
+                          className="h-4 w-4 rounded border-gray-300 text-primary focus:ring-primary/30 disabled:opacity-50 disabled:cursor-not-allowed"
+                        />
+                      </td>
+                      <td className="px-3 py-2.5">
+                        <p className="text-xs font-semibold text-gray-800 truncate max-w-xs">
+                          {displayName(r)}
+                        </p>
+                        {r.ownerName && r.ownerName !== displayName(r) && (
+                          <p className="text-[10px] text-gray-400 truncate max-w-xs">{r.ownerName}</p>
+                        )}
+                      </td>
+                      <td className="px-3 py-2.5 font-mono text-xs text-gray-600">{displayPhone(r.phone)}</td>
+                      <td className="px-3 py-2.5">
+                        {r.alreadySent ? (
+                          <span className="inline-flex items-center gap-1 text-xs text-gray-500" title="kyc_success already sent">
+                            <CheckCircle className="w-3.5 h-3.5 text-gray-400" />
+                            {r.sentAt ? `Sent ${formatTimeAgo(r.sentAt)}` : "Already sent"}
+                          </span>
+                        ) : (
+                          <span className="text-xs px-1.5 py-0.5 rounded-full font-medium bg-green-50 text-green-700">
+                            KYC verified
+                          </span>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+
+          <button
+            onClick={() => setStep("confirm")}
+            disabled={selectedIds.size === 0}
+            className="flex items-center gap-2 px-5 py-2.5 bg-primary text-white rounded-xl text-sm font-semibold hover:bg-primary/90 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+          >
+            <Send className="w-4 h-4" />
+            Review &amp; Send ({selectedIds.size} selected)
+          </button>
+        </>
+      )}
+    </div>
+  );
+}
+
+// ─── App Update (Marketing) flow ──────────────────────────────────────────────
+
+type AppUpdateAudience = "manufacturer" | "retailer" | "customer";
+
+type AppUpdateRow = {
+  userId: string;
+  phone: string;         // normalized E.164 (no '+')
+  ownerName: string;
+  businessName: string;  // {{1}} primary
+  shopName: string;      // {{1}} secondary fallback
+  audience: AppUpdateAudience;
+};
+
+type AppUpdateResult = {
+  userId: string;
+  phone: string;
+  businessName: string;
+  ok: boolean;
+  error?: string;
+};
+
+const AUDIENCE_LABEL: Record<AppUpdateAudience, string> = {
+  manufacturer: "Manufacturer",
+  retailer: "Retailer",
+  customer: "Customer",
+};
+
+/** Maps a raw user role to one of the three targetable audiences, or null for
+ *  staff (admin / team) who should never receive a marketing blast. Mirrors the
+ *  admin Users tab rule: a customer is role "customer"/"consumer" or no role. */
+function classifyAudience(role: string): AppUpdateAudience | null {
+  if (role === "manufacturer") return "manufacturer";
+  if (role === "retailer") return "retailer";
+  if (!role || role === "customer" || role === "consumer") return "customer";
+  return null; // admin, team, …
+}
+
+const fmtCount = (n: number) => n.toLocaleString("en-IN");
+const fmtMoney = (n: number) =>
+  n.toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+
+function AppUpdateFlow() {
+  const [rows, setRows] = useState<AppUpdateRow[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [search, setSearch] = useState("");
+  const [audienceFilters, setAudienceFilters] = useState<Record<AppUpdateAudience, boolean>>({
+    manufacturer: true,
+    retailer: true,
+    customer: true,
+  });
+  const [step, setStep] = useState<"list" | "confirm" | "sending" | "done">("list");
+  const [sendResults, setSendResults] = useState<AppUpdateResult[]>([]);
+  const sendingRef = useRef(false);
+  const masterCheckboxRef = useRef<HTMLInputElement>(null);
+
+  const loadData = useCallback(async () => {
+    setLoading(true);
+    try {
+      const users = await getUsers();
+
+      const built: AppUpdateRow[] = [];
+      for (const u of users as any[]) {
+        const audience = classifyAudience(String(u.role ?? ""));
+        if (!audience) continue; // exclude admins / team
+
+        // Require a valid WhatsApp/phone number.
+        const candidates = [u.phone, u.id].filter(Boolean).map(String);
+        const phone = candidates.find(isValidIndianPhone) ?? "";
+        if (!phone) continue;
+
+        built.push({
+          userId: u.id,
+          phone: toE164(phone),
+          ownerName: u.ownerName || u.name || "",
+          businessName: u.businessName || "",
+          shopName: u.shopName || "",
+          audience,
+        });
+      }
+
+      built.sort((a, b) =>
+        (a.businessName || a.shopName || a.ownerName || a.phone).localeCompare(
+          b.businessName || b.shopName || b.ownerName || b.phone,
+        ),
+      );
+      setRows(built);
+      // Default selection is none.
+      setSelectedIds(new Set());
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => { void loadData(); }, [loadData]);
+
+  // Apply audience filters + search. Both narrow the visible rows only —
+  // clearing either never changes the selection.
+  const filteredRows = (() => {
+    const q = search.trim().toLowerCase();
+    return rows.filter((r) => {
+      if (!audienceFilters[r.audience]) return false;
+      if (!q) return true;
+      return (
+        r.businessName.toLowerCase().includes(q) ||
+        r.shopName.toLowerCase().includes(q) ||
+        r.ownerName.toLowerCase().includes(q)
+      );
+    });
+  })();
+
+  useEffect(() => {
+    const el = masterCheckboxRef.current;
+    if (!el) return;
+    const visibleIds = filteredRows.map((r) => r.userId);
+    const selectedVisible = visibleIds.filter((id) => selectedIds.has(id)).length;
+    const all = visibleIds.length > 0 && selectedVisible >= visibleIds.length;
+    const none = selectedVisible === 0;
+    el.checked = all;
+    el.indeterminate = !all && !none;
+  }, [selectedIds, filteredRows]);
+
+  const toggleRow = (id: string) =>
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+
+  const toggleAudience = (a: AppUpdateAudience) =>
+    setAudienceFilters((prev) => ({ ...prev, [a]: !prev[a] }));
+
+  const selectedRows = rows.filter((r) => selectedIds.has(r.userId));
+  const estimatedCost = selectedIds.size * MARKETING_MSG_COST_INR;
+
+  // {{1}} display — business/shop name, falling back to owner name.
+  const displayName = (r: AppUpdateRow) => r.businessName || r.shopName || r.ownerName || "—";
+
+  const displayPhone = (raw: string) => {
+    const digits = raw.replace(/\D/g, "");
+    return digits.length === 12 && digits.startsWith("91") ? digits.slice(2) : digits;
+  };
+
+  const handleSend = async () => {
+    if (sendingRef.current || selectedRows.length === 0) return;
+    sendingRef.current = true;
+    setStep("sending");
+
+    const results: AppUpdateResult[] = [];
+    const now = serverTimestamp();
+    const waRef = collection(db, "waNotifications");
+    const CHUNK = 400;
+
+    for (let i = 0; i < selectedRows.length; i += CHUNK) {
+      const chunk = selectedRows.slice(i, i + CHUNK);
+      const batch = writeBatch(db);
+      for (const row of chunk) {
+        batch.set(doc(waRef), {
+          phone: row.phone,
+          message: "",
+          template: "app_update",
+          // Resolver picks businessName → shopName → ownerName for the single {{1}}.
+          payload: {
+            ownerName: row.ownerName,
+            businessName: row.businessName,
+            shopName: row.shopName,
+          },
+          source: {
+            event: "admin_manual_app_update",
+            entityType: "users",
+            entityId: row.userId,
+          },
+          status: "pending",
+          type: "marketing",
+          metaMessageId: null,
+          createdAt: now,
+          sentAt: null,
+          deliveredAt: null,
+          readAt: null,
+          failedAt: null,
+          retryCount: 0,
+          maxRetries: 3,
+          lastError: null,
+        });
+      }
+      try {
+        await batch.commit();
+        for (const row of chunk) {
+          results.push({ userId: row.userId, phone: row.phone, businessName: displayName(row), ok: true });
+        }
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : "Batch write failed";
+        for (const row of chunk) {
+          results.push({ userId: row.userId, phone: row.phone, businessName: displayName(row), ok: false, error: msg });
+        }
+      }
+    }
+
+    setSendResults(results);
+    setStep("done");
+    sendingRef.current = false;
+  };
+
+  const handleReset = () => {
+    setStep("list");
+    setSendResults([]);
+    void loadData();
+  };
+
+  if (step === "sending") {
+    return (
+      <div className="flex flex-col items-center justify-center gap-3 py-16 text-on-surface-variant">
+        <Loader2 className="w-8 h-8 animate-spin text-primary" />
+        <p className="text-sm font-medium">Queuing {selectedRows.length} notification{selectedRows.length !== 1 ? "s" : ""}…</p>
+      </div>
+    );
+  }
+
+  if (step === "done") {
+    const successCount = sendResults.filter((r) => r.ok).length;
+    const failCount = sendResults.filter((r) => !r.ok).length;
+    return (
+      <div className="space-y-4">
+        <div className="flex gap-3">
+          {successCount > 0 && (
+            <div className="flex-1 bg-green-50 border border-green-200 rounded-xl p-3 text-center">
+              <p className="text-2xl font-bold text-green-700">{successCount}</p>
+              <p className="text-xs text-green-600 font-medium">Queued</p>
+            </div>
+          )}
+          {failCount > 0 && (
+            <div className="flex-1 bg-red-50 border border-red-200 rounded-xl p-3 text-center">
+              <p className="text-2xl font-bold text-red-700">{failCount}</p>
+              <p className="text-xs text-red-600 font-medium">Failed</p>
+            </div>
+          )}
+        </div>
+        <div className="border border-gray-200 rounded-xl overflow-hidden">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="bg-gray-50 border-b border-gray-200">
+                <th className="text-left px-3 py-2.5 text-xs font-semibold text-gray-500 uppercase tracking-wide">Recipient</th>
+                <th className="text-left px-3 py-2.5 text-xs font-semibold text-gray-500 uppercase tracking-wide">Phone</th>
+                <th className="text-left px-3 py-2.5 text-xs font-semibold text-gray-500 uppercase tracking-wide">Result</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-gray-100">
+              {sendResults.map((r) => (
+                <tr key={r.userId} className={cn(r.ok ? "bg-green-50/30" : "bg-red-50/30")}>
+                  <td className="px-3 py-2.5 text-xs text-gray-800">{r.businessName || "—"}</td>
+                  <td className="px-3 py-2.5 font-mono text-xs text-gray-600">{displayPhone(r.phone)}</td>
+                  <td className="px-3 py-2.5">
+                    {r.ok ? (
+                      <span className="inline-flex items-center gap-1 text-green-700 text-xs font-medium">
+                        <CheckCircle className="w-3.5 h-3.5" /> Queued
+                      </span>
+                    ) : (
+                      <span className="inline-flex items-center gap-1 text-red-700 text-xs font-medium" title={r.error}>
+                        <XCircle className="w-3.5 h-3.5" /> Failed
+                      </span>
+                    )}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+        <button
+          onClick={handleReset}
+          className="px-4 py-2.5 border border-gray-300 text-gray-700 rounded-xl text-sm font-medium hover:bg-gray-50 transition-colors"
+        >
+          Back to List
+        </button>
+      </div>
+    );
+  }
+
+  if (step === "confirm") {
+    return (
+      <div className="space-y-4">
+        <div className="rounded-xl border border-amber-300 bg-amber-50 px-4 py-4 space-y-2">
+          <p className="text-sm font-bold text-amber-800">⚠️ Confirm Marketing send</p>
+          <ul className="text-sm text-amber-700 space-y-1 list-disc list-inside">
+            <li>Template: <span className="font-mono text-xs">app_update</span> (Marketing · Marathi)</li>
+            <li>Variable: <span className="font-mono text-xs">{"{{1}}"}</span> = Business / Shop name (falls back to Owner name)</li>
+            <li>Recipients: <span className="font-semibold">{fmtCount(selectedRows.length)}</span></li>
+            <li>
+              Estimated cost:{" "}
+              <span className="font-semibold">
+                ₹{fmtCount(selectedRows.length)} × {MARKETING_MSG_COST_INR} = ₹{fmtMoney(estimatedCost)}
+              </span>
+            </li>
+          </ul>
+          <p className="text-xs text-amber-600 mt-1">
+            Queues {fmtCount(selectedRows.length)} doc{selectedRows.length !== 1 ? "s" : ""} to{" "}
+            <code className="font-mono">waNotifications</code>. No user records will be modified.
+          </p>
+        </div>
+
+        <div className="border border-gray-200 rounded-xl overflow-hidden max-h-96 overflow-y-auto">
+          <table className="w-full text-sm">
+            <thead className="sticky top-0 bg-gray-50 border-b border-gray-200">
+              <tr>
+                <th className="text-left px-3 py-2.5 text-xs font-semibold text-gray-500 uppercase tracking-wide">Recipient</th>
+                <th className="text-left px-3 py-2.5 text-xs font-semibold text-gray-500 uppercase tracking-wide">Phone</th>
+                <th className="text-left px-3 py-2.5 text-xs font-semibold text-gray-500 uppercase tracking-wide">Audience</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-gray-100">
+              {selectedRows.map((r) => (
+                <tr key={r.userId}>
+                  <td className="px-3 py-2.5 text-xs text-gray-800">{displayName(r)}</td>
+                  <td className="px-3 py-2.5 font-mono text-xs text-gray-600">{displayPhone(r.phone)}</td>
+                  <td className="px-3 py-2.5 text-xs text-gray-600">{AUDIENCE_LABEL[r.audience]}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+
+        <div className="flex gap-3">
+          <button
+            onClick={() => setStep("list")}
+            className="px-4 py-2.5 border border-gray-300 text-gray-700 rounded-xl text-sm font-medium hover:bg-gray-50 transition-colors"
+          >
+            Back
+          </button>
+          <button
+            onClick={handleSend}
+            className="flex items-center gap-2 px-5 py-2.5 bg-amber-600 text-white rounded-xl text-sm font-semibold hover:bg-amber-700 transition-colors"
+          >
+            <Send className="w-4 h-4" />
+            Send {fmtCount(selectedRows.length)} · ₹{fmtMoney(estimatedCost)}
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  // ── "list" step ───────────────────────────────────────────────────────────────
+  return (
+    <div className="space-y-5">
+      {/* Marketing cost warning */}
+      <div className="rounded-xl border border-amber-300 bg-amber-50 px-4 py-3 space-y-1.5">
+        <p className="text-sm font-bold text-amber-800">
+          ⚠️ This is a Marketing WhatsApp message.
+        </p>
+        <p className="text-xs text-amber-700">
+          Estimated cost: ₹{MARKETING_MSG_COST_INR} per delivered message.
+        </p>
+        <div className="flex flex-wrap items-center gap-x-4 gap-y-1 pt-1 text-sm text-amber-800">
+          <span>Selected: <span className="font-bold">{fmtCount(selectedIds.size)}</span></span>
+          <span>
+            Estimated cost:{" "}
+            <span className="font-bold">
+              ₹{fmtCount(selectedIds.size)} × {MARKETING_MSG_COST_INR} = ₹{fmtMoney(estimatedCost)}
+            </span>
+          </span>
+        </div>
+      </div>
+
+      {/* Controls row */}
+      <div className="flex items-center gap-3">
+        <p className="flex-1 text-sm font-medium text-gray-700">
+          {loading ? "Loading…" : (
+            <>
+              {search.trim() || !(audienceFilters.manufacturer && audienceFilters.retailer && audienceFilters.customer)
+                ? `${fmtCount(filteredRows.length)} of ${fmtCount(rows.length)} user${rows.length !== 1 ? "s" : ""}`
+                : `${fmtCount(rows.length)} user${rows.length !== 1 ? "s" : ""}`}
+              {selectedIds.size > 0 && (
+                <span className="ml-1.5 text-on-surface-variant font-normal">
+                  · {fmtCount(selectedIds.size)} selected
+                </span>
+              )}
+            </>
+          )}
+        </p>
+        <button
+          onClick={() => void loadData()}
+          disabled={loading}
+          className="flex items-center gap-1.5 rounded-xl border border-gray-300 px-3 py-2 text-xs font-medium text-gray-600 hover:bg-gray-50 disabled:opacity-50"
+        >
+          <RefreshCw className={cn("w-3.5 h-3.5", loading && "animate-spin")} />
+          Refresh
+        </button>
+      </div>
+
+      {/* Audience filters + search */}
+      <div className="flex flex-wrap items-center gap-3">
+        <div className="flex items-center gap-1.5">
+          {(Object.keys(AUDIENCE_LABEL) as AppUpdateAudience[]).map((a) => {
+            const active = audienceFilters[a];
+            return (
+              <button
+                key={a}
+                onClick={() => toggleAudience(a)}
+                className={cn(
+                  "px-3 py-1.5 rounded-full text-xs font-medium border transition-colors",
+                  active
+                    ? "bg-primary/10 border-primary/30 text-primary"
+                    : "bg-white border-gray-300 text-gray-500 hover:bg-gray-50",
+                )}
+              >
+                {AUDIENCE_LABEL[a]}
+              </button>
+            );
+          })}
+        </div>
+        <div className="relative max-w-sm flex-1 min-w-[200px]">
+          <Search className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
+          <input
+            type="text"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder="Search by business or owner name…"
+            className="w-full border border-gray-300 rounded-xl pl-9 pr-3 py-2 text-sm text-gray-800 bg-white focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent placeholder:text-gray-400"
+          />
+        </div>
+      </div>
+
+      {loading ? (
+        <div className="flex h-28 items-center justify-center gap-2 text-sm text-gray-400">
+          <Loader2 className="w-4 h-4 animate-spin" /> Loading users…
+        </div>
+      ) : rows.length === 0 ? (
+        <div className="rounded-2xl border border-dashed border-gray-300 px-6 py-10 text-center text-sm text-gray-400">
+          No users with a valid phone number found.
+        </div>
+      ) : filteredRows.length === 0 ? (
+        <div className="rounded-2xl border border-dashed border-gray-300 px-6 py-10 text-center text-sm text-gray-400">
+          No users match the current filters.
+        </div>
+      ) : (
+        <>
+          <div className="border border-gray-200 rounded-xl overflow-hidden">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="bg-gray-50 border-b border-gray-200">
+                  <th className="px-3 py-2.5 w-8 text-center">
+                    <input
+                      ref={masterCheckboxRef}
+                      type="checkbox"
+                      onChange={(e) =>
+                        setSelectedIds((prev) => {
+                          const next = new Set(prev);
+                          // Select All applies to the currently filtered rows only.
+                          if (e.target.checked) filteredRows.forEach((r) => next.add(r.userId));
+                          else filteredRows.forEach((r) => next.delete(r.userId));
+                          return next;
+                        })
+                      }
+                      className="h-4 w-4 rounded border-gray-300 text-primary focus:ring-primary/30 cursor-pointer"
+                    />
+                  </th>
+                  <th className="text-left px-3 py-2.5 text-xs font-semibold text-gray-500 uppercase tracking-wide">Business / Owner</th>
+                  <th className="text-left px-3 py-2.5 text-xs font-semibold text-gray-500 uppercase tracking-wide">Phone</th>
+                  <th className="text-left px-3 py-2.5 text-xs font-semibold text-gray-500 uppercase tracking-wide">Audience</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-gray-100">
+                {filteredRows.map((r) => {
+                  const checked = selectedIds.has(r.userId);
+                  return (
+                    <tr
+                      key={r.userId}
+                      className={cn(
+                        "cursor-pointer transition-colors",
+                        checked ? "bg-primary/5" : "hover:bg-gray-50",
+                      )}
+                      onClick={() => toggleRow(r.userId)}
+                    >
+                      <td className="px-3 py-2.5 text-center">
+                        <input
+                          type="checkbox"
+                          checked={checked}
+                          onChange={() => toggleRow(r.userId)}
+                          onClick={(e) => e.stopPropagation()}
+                          className="h-4 w-4 rounded border-gray-300 text-primary focus:ring-primary/30"
+                        />
+                      </td>
+                      <td className="px-3 py-2.5">
+                        <p className="text-xs font-semibold text-gray-800 truncate max-w-xs">
+                          {displayName(r)}
+                        </p>
+                        {r.ownerName && r.ownerName !== displayName(r) && (
+                          <p className="text-[10px] text-gray-400 truncate max-w-xs">{r.ownerName}</p>
+                        )}
+                      </td>
+                      <td className="px-3 py-2.5 font-mono text-xs text-gray-600">{displayPhone(r.phone)}</td>
+                      <td className="px-3 py-2.5">
+                        <span className="text-xs px-1.5 py-0.5 rounded-full bg-gray-100 text-gray-600">
+                          {AUDIENCE_LABEL[r.audience]}
+                        </span>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+
+          <button
+            onClick={() => setStep("confirm")}
+            disabled={selectedIds.size === 0}
+            className="flex items-center gap-2 px-5 py-2.5 bg-primary text-white rounded-xl text-sm font-semibold hover:bg-primary/90 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+          >
+            <Send className="w-4 h-4" />
+            Review &amp; Send ({fmtCount(selectedIds.size)} · ₹{fmtMoney(estimatedCost)})
+          </button>
+        </>
+      )}
+    </div>
+  );
+}
+
 // ─── Page ─────────────────────────────────────────────────────────────────────
 
 export default function SendMessagesPage() {
-  const [templateId, setTemplateId] = useState<TemplateId>("payment_failed_app_update");
+  const [templateId, setTemplateId] = useState<TemplateId>("product_assignment_pending_signup");
   const selected = TEMPLATES.find((t) => t.id === templateId)!;
 
   return (
@@ -1826,6 +3354,9 @@ export default function SendMessagesPage() {
         {templateId === "subscription_expiry" && <SubscriptionExpiryFlow />}
         {templateId === "retailer_seat_promotion" && <RetailerSeatPromotionFlow />}
         {templateId === "add_product_reminder" && <AddProductReminderFlow />}
+        {templateId === "kyc_pending" && <KycPendingFlow />}
+        {templateId === "kyc_success" && <KycSuccessFlow />}
+        {templateId === "app_update" && <AppUpdateFlow />}
       </div>
     </div>
   );
