@@ -6,41 +6,32 @@ import { VitePWA } from 'vite-plugin-pwa'
 export default defineConfig(({ mode }) => {
 const env = loadEnv(mode, process.cwd(), '')
 const projectId = env.VITE_FIREBASE_PROJECT_ID || 'karanarjun-pvt-ltd'
-const emulatorBase = `/${projectId}/asia-south1`
 
 return {
   build: {
     chunkSizeWarningLimit: 1500,
   },
-  // Local dev only: mimic the Firebase Hosting rewrites (firebase.json) that map
-  // /api/saas/* → deployed Cloud Functions. Vite's dev server does not read
-  // firebase.json, so we proxy these paths to the Functions Emulator on :5001 and
-  // rewrite each short name to its actual function export name.
-  // Use 127.0.0.1 (not "localhost"): the emulator binds IPv4 only, but Node 18+
-  // resolves "localhost" to IPv6 (::1) first, so a localhost target fails with
-  // ECONNREFUSED even though the emulator is running.
+  
   server: {
     proxy: {
       '/api/saas/order': {
-        target: 'http://127.0.0.1:5001',
+        target: `https://${projectId}.web.app`,
         changeOrigin: true,
-        rewrite: () => `${emulatorBase}/createSaaSOrder`,
+        secure: true,
       },
+  
       '/api/saas/verify': {
-        target: 'http://127.0.0.1:5001',
+        target: `https://${projectId}.web.app`,
         changeOrigin: true,
-        rewrite: () => `${emulatorBase}/verifySaaSPayment`,
+        secure: true,
       },
+  
       '/api/saas/subscription': {
-        target: 'http://127.0.0.1:5001',
+        target: `https://${projectId}.web.app`,
         changeOrigin: true,
-        rewrite: () => `${emulatorBase}/getSaaSSubscription`,
+        secure: true,
       },
-      // reset-password uses the DEPLOYED Cloud Function, not the emulator. The
-      // function is not directly invokable (org policy blocks allUsers); it only
-      // works through the Hosting rewrite, which invokes it with proper creds. So
-      // proxy to the deployed Hosting URL and keep the /api/users/reset-password
-      // path intact so the rewrite (firebase.json) fires server-side.
+  
       '/api/users/reset-password': {
         target: `https://${projectId}.web.app`,
         changeOrigin: true,
