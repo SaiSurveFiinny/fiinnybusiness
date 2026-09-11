@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { collection, onSnapshot, query, where } from 'firebase/firestore';
 import { db } from '../firebase';
+import { functionUrl } from '../utils/functionsUrl';
 import { useAuth } from '../contexts/AuthContext';
 import { useToast } from '../contexts/ToastContext';
 import { useTranslation } from 'react-i18next';
@@ -83,25 +84,17 @@ function buildPlan(
 }
 
 // ─── API helper ──────────────────────────────────────────────────────────────
-// Functions are now onRequest endpoints proxied through Firebase Hosting rewrites.
-// In development (emulator), point at localhost:5001; otherwise use the relative
-// /api path which the hosting rewrite maps to the deployed Cloud Function.
-const EMULATOR_BASE =
-  `http://localhost:5001/${import.meta.env.VITE_FIREBASE_PROJECT_ID}/asia-south1`;
-const API_BASE =
-  import.meta.env.DEV && import.meta.env.VITE_USE_EMULATOR === 'true'
-    ? EMULATOR_BASE
-    : '/api/saas';
-
+// The SaaS functions are deployed 1st-gen `onRequest` endpoints called DIRECTLY
+// over HTTPS (no Hosting rewrite, no Vite proxy). functionUrl() derives the URL
+// from the active Firebase project id + region, so `npm run dev` hits production
+// and `npm run dev:uat` hits UAT automatically. Auth is enforced inside the
+// function via the Firebase ID token sent as `Authorization: Bearer <token>`.
 async function callFunction(
-  path: string,
+  fnName: string,
   idToken: string,
   body: Record<string, unknown>
 ): Promise<any> {
-  const url = import.meta.env.DEV && import.meta.env.VITE_USE_EMULATOR === 'true'
-    ? `${EMULATOR_BASE}/${path}`
-    : `/api/saas/${path}`;
-  const res = await fetch(url, {
+  const res = await fetch(functionUrl(fnName), {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -113,9 +106,6 @@ async function callFunction(
   if (!res.ok) throw new Error(json.error ?? `Request failed (${res.status})`);
   return json;
 }
-
-// Silence unused var — API_BASE is the conceptual default, callFunction builds its own URL.
-void API_BASE;
 
 function loadRazorpayScript(): Promise<boolean> {
   return new Promise((resolve) => {
@@ -209,7 +199,7 @@ export default function PricingPage() {
       //    and the public key_id — the secret key never leaves the server.
       const idToken = await currentUser.getIdToken();
       const { order_id, key_id, amount } = await callFunction(
-        'order', idToken, { plan: plan.id, cycle, tenantId }
+        'createSaaSOrder', idToken, { plan: plan.id, cycle, tenantId }
       );
 
       // 2. Open the Razorpay checkout modal. Wrapping in a Promise lets us await
@@ -242,7 +232,7 @@ export default function PricingPage() {
             setPaying(null);
             setVerifying(plan.id);
             try {
-              await callFunction('verify', idToken, {
+              await callFunction('verifySaaSPayment', idToken, {
                 razorpay_payment_id: response.razorpay_payment_id,
                 razorpay_order_id: response.razorpay_order_id,
                 razorpay_signature: response.razorpay_signature,

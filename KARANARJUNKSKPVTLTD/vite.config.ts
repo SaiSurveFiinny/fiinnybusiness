@@ -1,44 +1,17 @@
-import { defineConfig, loadEnv } from 'vite'
+import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 import { VitePWA } from 'vite-plugin-pwa'
 
 // https://vite.dev/config/
-export default defineConfig(({ mode }) => {
-const env = loadEnv(mode, process.cwd(), '')
-const projectId = env.VITE_FIREBASE_PROJECT_ID || 'karanarjun-pvt-ltd'
-
-return {
+export default defineConfig(() => {
+  return {
   build: {
     chunkSizeWarningLimit: 1500,
   },
-  
-  server: {
-    proxy: {
-      '/api/saas/order': {
-        target: `https://${projectId}.web.app`,
-        changeOrigin: true,
-        secure: true,
-      },
-  
-      '/api/saas/verify': {
-        target: `https://${projectId}.web.app`,
-        changeOrigin: true,
-        secure: true,
-      },
-  
-      '/api/saas/subscription': {
-        target: `https://${projectId}.web.app`,
-        changeOrigin: true,
-        secure: true,
-      },
-  
-      '/api/users/reset-password': {
-        target: `https://${projectId}.web.app`,
-        changeOrigin: true,
-        secure: true,
-      },
-    },
-  },
+
+  // No dev proxy: the SaaS/reset-password functions are called directly over
+  // HTTPS at their asia-south1 cloudfunctions.net URLs (see src/utils/functionsUrl.ts),
+  // so `/api/*` no longer needs proxying in `npm run dev` / `npm run dev:uat`.
   plugins: [
     react(),
     VitePWA({
