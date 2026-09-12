@@ -155,6 +155,7 @@ class ManufacturerRepository {
     String? city,
     String? state,
     String? pincode,
+    GeoPoint? geo,
   }) async {
     final manufacturerId = FirebaseAuth.instance.currentUser?.uid ?? '';
     final code = _generateInviteCode();
@@ -187,6 +188,7 @@ class ManufacturerRepository {
       'subscriptionStatus': 'free',
       'createdAt': now,
       'updatedAt': now,
+      if (geo != null) 'geo': geo,
     };
     batch.set(retailerRef, retailerPayload, SetOptions(merge: true));
 
@@ -216,6 +218,7 @@ class ManufacturerRepository {
         'state': state?.trim() ?? '',
         'pincode': pincode?.trim() ?? '',
       },
+      if (geo != null) 'geo': geo,
     };
     batch.set(inviteRef, invitePayload);
 
@@ -232,6 +235,7 @@ class ManufacturerRepository {
       'onboardingStatus': 'pending',
       'addedAt': now,
       'updatedAt': now,
+      if (geo != null) 'geo': geo,
     };
     batch.set(mirrorRef, mirrorPayload, SetOptions(merge: true));
 
@@ -275,6 +279,7 @@ class ManufacturerRepository {
     String? city,
     String? state,
     String? pincode,
+    GeoPoint? geo,
   }) async {
     final now = FieldValue.serverTimestamp();
     final normalizedPhone = PhoneUtils.normalize(phone);
@@ -294,6 +299,7 @@ class ManufacturerRepository {
       'retailerDocId': normalizedPhone,
       'retailerEmail': email.trim().toLowerCase(),
       if (hasAddress) 'address': address,
+      if (geo != null) 'geo': geo,
       'updatedAt': now,
     });
 
@@ -305,6 +311,7 @@ class ManufacturerRepository {
         'ownerName': ownerName.trim(),
         'email': email.trim().toLowerCase(),
         if (hasAddress) 'address': address,
+        if (geo != null) 'geo': geo,
         'updatedAt': now,
       }, SetOptions(merge: true));
     } catch (_) {
@@ -321,6 +328,8 @@ class ManufacturerRepository {
         'manufacturerPhone': manufacturerPhone,
         'shopName': shopName.trim(),
         'ownerName': ownerName.trim(),
+        if (hasAddress) 'address': address,
+        if (geo != null) 'geo': geo,
         'updatedAt': now,
       }, SetOptions(merge: true));
     }
