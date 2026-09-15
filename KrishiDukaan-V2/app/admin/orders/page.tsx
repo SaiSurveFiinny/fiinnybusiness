@@ -54,6 +54,14 @@ const NO_PAYMENT_BADGE = "bg-gray-100 text-gray-500";
 type StatusFilter = "all" | OrderStatus;
 type PaymentFilter = "all" | PaymentStatus | "none";
 type SellerFilter = "all" | "retailer" | "manufacturer";
+type DateFilter = "all" | "today" | "7d" | "30d" | "custom";
+
+function toDateInputValue(d: Date): string {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
 
 function toMillis(createdAt: unknown): number {
   return (createdAt as any)?.toMillis?.() ?? 0;
@@ -238,6 +246,9 @@ export default function AdminOrdersPage() {
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
   const [paymentFilter, setPaymentFilter] = useState<PaymentFilter>("all");
   const [sellerFilter, setSellerFilter] = useState<SellerFilter>("all");
+  const [dateFilter, setDateFilter] = useState<DateFilter>("all");
+  const [customFrom, setCustomFrom] = useState("");
+  const [customTo, setCustomTo] = useState("");
   const [expanded, setExpanded] = useState<string | null>(null);
 
   const loadOrders = (force = false) => {
@@ -274,6 +285,30 @@ export default function AdminOrdersPage() {
     };
   }, [orders]);
 
+  // Bounds derived once per render of the filter, not per order — a fresh
+  // `new Date()` per row would just be wasted work in a filter this size.
+  const dateBounds = useMemo((): { from: number | null; to: number | null } => {
+    const now = Date.now();
+    switch (dateFilter) {
+      case "today": {
+        const start = new Date();
+        start.setHours(0, 0, 0, 0);
+        return { from: start.getTime(), to: null };
+      }
+      case "7d":
+        return { from: now - 7 * 24 * 60 * 60 * 1000, to: null };
+      case "30d":
+        return { from: now - 30 * 24 * 60 * 60 * 1000, to: null };
+      case "custom":
+        return {
+          from: customFrom ? new Date(`${customFrom}T00:00:00`).getTime() : null,
+          to: customTo ? new Date(`${customTo}T23:59:59.999`).getTime() : null,
+        };
+      default:
+        return { from: null, to: null };
+    }
+  }, [dateFilter, customFrom, customTo]);
+
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
     return orders.filter((o) => {
@@ -281,6 +316,11 @@ export default function AdminOrdersPage() {
       if (sellerFilter !== "all" && o.sellerType !== sellerFilter) return false;
       if (paymentFilter === "none" && o.payment) return false;
       if (paymentFilter !== "all" && paymentFilter !== "none" && o.payment?.status !== paymentFilter) return false;
+      if (dateBounds.from !== null || dateBounds.to !== null) {
+        const ms = toMillis(o.createdAt);
+        if (dateBounds.from !== null && ms < dateBounds.from) return false;
+        if (dateBounds.to !== null && ms > dateBounds.to) return false;
+      }
       if (!q) return true;
       // Searched haystack deliberately includes Razorpay IDs and product names —
       // the two things an admin has in hand when reconciling a payout.
@@ -303,7 +343,7 @@ export default function AdminOrdersPage() {
         .toLowerCase();
       return haystack.includes(q);
     });
-  }, [orders, search, statusFilter, paymentFilter, sellerFilter]);
+  }, [orders, search, statusFilter, paymentFilter, sellerFilter, dateBounds]);
 
   const exportCsv = () => {
     const header = [
@@ -457,7 +497,53 @@ export default function AdminOrdersPage() {
                 { key: "manufacturer", label: "Manufacturers" },
               ]}
             />
+            <FilterPills<DateFilter>
+              value={dateFilter}
+              onChange={setDateFilter}
+              options={[
+                { key: "all", label: "Any date" },
+                { key: "today", label: "Today" },
+                { key: "7d", label: "Last 7 days" },
+                { key: "30d", label: "Last 30 days" },
+                { key: "custom", label: "Custom range" },
+              ]}
+            />
           </div>
+
+          {dateFilter === "custom" && (
+            <div className="flex flex-wrap items-end gap-3 rounded-xl border border-outline-variant/30 bg-surface-container-low/60 p-3">
+              <label className="flex flex-col text-xs font-semibold text-on-surface-variant">
+                From
+                <input
+                  type="date"
+                  value={customFrom}
+                  max={customTo || undefined}
+                  onChange={(e) => setCustomFrom(e.target.value)}
+                  className="mt-1 rounded-lg border border-outline-variant/40 bg-surface-container-lowest px-2 py-1 text-sm text-on-surface"
+                />
+              </label>
+              <label className="flex flex-col text-xs font-semibold text-on-surface-variant">
+                To
+                <input
+                  type="date"
+                  value={customTo}
+                  min={customFrom || undefined}
+                  max={toDateInputValue(new Date())}
+                  onChange={(e) => setCustomTo(e.target.value)}
+                  className="mt-1 rounded-lg border border-outline-variant/40 bg-surface-container-lowest px-2 py-1 text-sm text-on-surface"
+                />
+              </label>
+              {(customFrom || customTo) && (
+                <button
+                  type="button"
+                  onClick={() => { setCustomFrom(""); setCustomTo(""); }}
+                  className="rounded-lg px-3 py-1.5 text-xs font-semibold text-on-surface-variant hover:text-on-surface"
+                >
+                  Clear dates
+                </button>
+              )}
+            </div>
+          )}
         </div>
 
         <p className="text-xs text-on-surface-variant">
