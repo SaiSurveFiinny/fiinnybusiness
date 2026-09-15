@@ -795,6 +795,8 @@ function AppRoutes() {
       <Route path="/admin/manage-roles" element={<Navigate to="/admin#feature-permissions" replace />} />
       <Route path="/admin/data-security" element={<Navigate to="/admin#data-security" replace />} />
       <Route path="/admin/audit-log" element={<Navigate to="/admin#audit-log" replace />} />
+      {/* Platform Super Admin audit logs live in the /super-admin console. */}
+      <Route path="/admin/audit-logs" element={<Navigate to="/super-admin#audit-logs" replace />} />
       <Route path="/admin/manage-retailers" element={<Navigate to="/admin#manage-retailers" replace />} />
       <Route path="/admin/manufacturers" element={<Navigate to="/admin#manufacturers" replace />} />
       <Route path="/admin/invoice-settings" element={<Navigate to="/admin#invoice-branding" replace />} />
