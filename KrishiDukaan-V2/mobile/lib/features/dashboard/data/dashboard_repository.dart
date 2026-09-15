@@ -1328,8 +1328,11 @@ class DashboardRepository {
         if (expiry != null && expiry.toDate().isBefore(now)) continue;
         final seats = (d['seatsPurchased'] as num?)?.toInt() ?? 0;
         totalPurchased += seats;
+        // Web's tile is labelled "Subscriptions in 30 days" (isExpiringSoon,
+        // app/dashboard/_lib/subscriptions-firestore.ts) - this used to say
+        // <= 5, so the count almost never matched what the label promised.
         if (expiry != null &&
-            expiry.toDate().difference(now).inDays <= 5) {
+            expiry.toDate().difference(now).inDays <= 30) {
           expiringSoon++;
         }
       }
