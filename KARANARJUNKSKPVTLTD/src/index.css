@@ -543,3 +543,11 @@ select.input-field option {
 @media (max-width: 560px) {
   .home-steps-grid { grid-template-columns: 1fr !important; }
 }
+
+/* Landing navbar: collapse desktop nav into a hamburger + mobile panel. */
+@media (max-width: 900px) {
+  .home-nav-desktop { display: none !important; }
+  .home-nav-actions-desktop { display: none !important; }
+  .home-nav-hamburger { display: inline-flex !important; }
+  .home-nav-mobile { display: flex !important; }
+}
