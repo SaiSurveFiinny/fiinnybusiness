@@ -20,6 +20,7 @@ class NetworkRetailerModel {
   final String onboardingStatus;
   final String retailerDocId;
   final String retailerId;
+  final GeoPoint? geo;
 
   const NetworkRetailerModel({
     required this.id,
@@ -38,6 +39,7 @@ class NetworkRetailerModel {
     required this.onboardingStatus,
     required this.retailerDocId,
     required this.retailerId,
+    this.geo,
   });
 
   bool get isActive => status == 'active';
@@ -63,6 +65,7 @@ class NetworkRetailerModel {
       onboardingStatus: d['onboardingStatus'] as String? ?? 'pending',
       retailerDocId: d['retailerDocId'] as String? ?? '',
       retailerId: d['retailerId'] as String? ?? '',
+      geo: d['geo'] as GeoPoint?,
     );
   }
 }

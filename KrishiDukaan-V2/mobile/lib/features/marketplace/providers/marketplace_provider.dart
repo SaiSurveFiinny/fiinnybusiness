@@ -424,17 +424,51 @@ final allMergedProductsProvider = Provider<AsyncValue<List<CatalogModel>>>((ref)
   );
 });
 
+/// Bounded product feed backing Home's three rails (Trending / Featured /
+/// Top Deals) — see [CatalogRepository.fetchHomeRailProducts] for why this
+/// is deliberately NOT [allMergedProductsProvider]: that one scans the whole
+/// products + productReviews collections on every load, which was the main
+/// cause of a slow Home screen. Distance enrichment works the same way as
+/// allMergedProductsProvider (non-blocking on the stores list).
+final rawHomeRailProductsProvider = FutureProvider<List<CatalogModel>>((
+  ref,
+) async {
+  return ref.read(catalogRepositoryProvider).fetchHomeRailProducts();
+});
+
+final homeRailProductsProvider = Provider<AsyncValue<List<CatalogModel>>>((
+  ref,
+) {
+  final productsAsync = ref.watch(rawHomeRailProductsProvider);
+  final storesAsync = ref.watch(storesListProvider);
+  final userLocation = ref.watch(locationProvider).value;
+
+  return productsAsync.when(
+    data: (products) {
+      final stores = storesAsync.value ?? [];
+      final enriched = enrichProductsWithNearestStoreDistance(
+        products: products,
+        stores: stores,
+        userLocation: userLocation,
+      );
+      return AsyncValue.data(enriched);
+    },
+    error: (err, stack) => AsyncValue.error(err, stack),
+    loading: () => const AsyncValue.loading(),
+  );
+});
+
 /// "Featured Products" — the slice AFTER the one Trending shows.
 ///
-/// Both rails read the same merged catalogue, so taking from the top for both
+/// Both rails read the same bounded feed, so taking from the top for both
 /// would render two identical rows now that each shows 10 instead of 3. This
 /// offsets past Trending's window, mirroring how `_ReelsRail(skipCount:)`
 /// already keeps the home page's two reel rows from repeating themselves.
-/// When the catalogue is too small to offer a disjoint slice, it falls back to
+/// When the feed is too small to offer a disjoint slice, it falls back to
 /// the top of the list rather than rendering an empty section.
 final featuredProductsProvider = Provider<AsyncValue<List<CatalogModel>>>((ref) {
   const railSize = 10;
-  final allAsync = ref.watch(allMergedProductsProvider);
+  final allAsync = ref.watch(homeRailProductsProvider);
   return allAsync.when(
     data: (all) {
       final distinct = all.skip(railSize).take(railSize).toList();
@@ -447,10 +481,12 @@ final featuredProductsProvider = Provider<AsyncValue<List<CatalogModel>>>((ref) 
   );
 });
 
-/// Products with the biggest seller discounts, highest first — powers the
-/// "Top Deals" rail on the home page.
+/// Products with the biggest discounts, highest first — powers the "Top
+/// Deals" rail on the home page. Not merged across sellers (see
+/// fetchHomeRailProducts), so this reflects each canonical product's own
+/// discount rather than the highest offered by any of its retailer copies.
 final topDealsProvider = Provider<AsyncValue<List<CatalogModel>>>((ref) {
-  final allAsync = ref.watch(allMergedProductsProvider);
+  final allAsync = ref.watch(homeRailProductsProvider);
   return allAsync.when(
     data: (all) {
       final deals = all.where((p) => p.maxDiscountPct > 0).toList()
@@ -464,7 +500,7 @@ final topDealsProvider = Provider<AsyncValue<List<CatalogModel>>>((ref) {
 
 /// "Trending Near You" — exactly as it works on the web (taking the top products)
 final trendingProductsProvider = Provider<AsyncValue<List<CatalogModel>>>((ref) {
-  final allAsync = ref.watch(allMergedProductsProvider);
+  final allAsync = ref.watch(homeRailProductsProvider);
   return allAsync.when(
     data: (all) => AsyncValue.data(all.take(10).toList()),
     error: (err, stack) => AsyncValue.error(err, stack),
