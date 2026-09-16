@@ -1,11 +1,10 @@
 import { motion } from 'framer-motion';
 import { Link } from 'react-router-dom';
-import { ArrowRight, ShieldCheck, Wifi, FileCheck2, Sprout } from 'lucide-react';
+import { ArrowRight, ShieldCheck, FileCheck2, Sprout } from 'lucide-react';
 import { home, container } from './tokens';
 
 const trustPoints = [
     { icon: FileCheck2, label: 'GST-ready invoicing' },
-    { icon: Wifi, label: 'Works offline (PWA)' },
     { icon: ShieldCheck, label: 'Tenant-isolated & private' },
 ];
 

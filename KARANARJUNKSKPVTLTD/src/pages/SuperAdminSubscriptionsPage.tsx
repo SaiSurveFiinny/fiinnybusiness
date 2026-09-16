@@ -3,7 +3,7 @@ import {
     ShieldCheck, Save, Layers, Building2, RefreshCw, Check, Info, ArrowLeft, Loader2, LayoutDashboard,
     LayoutGrid, Pencil, X, Calendar, CreditCard, Plus, Trash2, Tag, Zap, Rocket, Crown, Eye,
     Search, ArrowDown, ArrowUp, Filter, Briefcase, ExternalLink, LifeBuoy, MessageSquare, Paperclip, Mail,
-    ChevronDown, ChevronRight, Percent, Power,
+    ChevronDown, ChevronRight, Percent, Power, ScrollText,
 } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { collection, getDocs, doc, setDoc, addDoc, deleteDoc, serverTimestamp, query, orderBy } from 'firebase/firestore';
@@ -54,6 +54,8 @@ import {
     type PromoBillingCycle,
     type PromoTier,
 } from '../utils/planPromotions';
+import { logPlatformAudit } from '../utils/platformAuditLog';
+import AuditLogsSection from '../components/AuditLogsSection';
 
 // Plans shown in the catalogue, in tier order. Reuses the Phase 2A seed defaults.
 const PLAN_ORDER: PlanId[] = ['retailer', 'distributor', 'manufacturer'];
@@ -218,7 +220,7 @@ interface SaasPaymentRow {
     createdAt?: unknown;
 }
 
-type Section = 'overview' | 'businesses' | 'plans' | 'promotions' | 'payments' | 'careers' | 'support';
+type Section = 'overview' | 'businesses' | 'plans' | 'promotions' | 'payments' | 'careers' | 'support' | 'audit-logs';
 
 // Every section is addressable via a stable hash (/super-admin#<id>). Adding a
 // future section only requires appending an entry here.
@@ -230,6 +232,7 @@ const SIDEBAR_SECTIONS: { id: Section; label: string; icon: typeof LayoutGrid }[
     { id: 'payments',   label: 'Payments',   icon: CreditCard },
     { id: 'careers',    label: 'Careers',    icon: Briefcase },
     { id: 'support',    label: 'Support',    icon: LifeBuoy },
+    { id: 'audit-logs', label: 'Audit Logs', icon: ScrollText },
 ];
 
 // Compact colour map for a support ticket's lifecycle status badge.
@@ -339,9 +342,32 @@ const formatAmount = (paise?: number, currency = 'INR'): string => {
 };
 
 export default function SuperAdminSubscriptionsPage() {
-    const { isSuperAdmin, currentUser, enterTenantView } = useAuth();
+    const { isSuperAdmin, currentUser, userRole, enterTenantView } = useAuth();
     const { showToast } = useToast();
     const navigate = useNavigate();
+
+    // Verified actor for audit entries. actorUid is checked against the auth token
+    // in firestore.rules, so this identity cannot be forged from the client.
+    const auditActor = {
+        uid: currentUser?.uid || '',
+        email: currentUser?.email || '',
+        role: userRole || (isSuperAdmin ? 'superadmin' : 'unknown'),
+    };
+
+    // Record a single Super Admin sign-in security event per browser session.
+    // Guarded by sessionStorage so token refreshes / remounts don't duplicate it.
+    useEffect(() => {
+        if (!isSuperAdmin || !currentUser?.uid) return;
+        const flag = `platformAuditLogin:${currentUser.uid}`;
+        if (sessionStorage.getItem(flag)) return;
+        sessionStorage.setItem(flag, '1');
+        logPlatformAudit({
+            actor: { uid: currentUser.uid, email: currentUser.email || '', role: userRole || 'superadmin' },
+            category: 'security', action: 'login',
+            resourceType: 'session', resourceName: currentUser.email || currentUser.uid,
+            description: `Super Admin signed in to the platform console`,
+        });
+    }, [isSuperAdmin, currentUser?.uid, currentUser?.email, userRole]);
 
     // Open a tenant's normal ERP dashboard with full Super Admin access.
     const openTenantDashboard = (row: TenantRow) => {
@@ -646,6 +672,13 @@ export default function SuperAdminSubscriptionsPage() {
             await setDoc(doc(db, 'plans', selectedPlan), payload, { merge: true });
             setPlans(prev => ({ ...prev, [selectedPlan]: payload }));
             showToast(`Plan "${payload.name}" saved.`, 'success');
+            logPlatformAudit({
+                actor: auditActor, category: 'plan', action: existing ? 'update' : 'create',
+                resourceType: 'plan', resourceId: selectedPlan, resourceName: payload.name,
+                description: `Plan "${payload.name}" ${existing ? 'updated' : 'created'}`,
+                before: existing ? { isActive: existing.isActive, screens: existing.screens?.length, pricing: existing.pricing } : undefined,
+                after: { isActive: payload.isActive, screens: payload.screens.length, pricing: payload.pricing },
+            });
         } catch {
             showToast('Failed to save plan.', 'error');
         } finally {
@@ -656,6 +689,7 @@ export default function SuperAdminSubscriptionsPage() {
     const seedDefaults = async () => {
         setSeeding(true);
         try {
+            const seeded: string[] = [];
             for (const id of PLAN_ORDER) {
                 if (plans[id]) continue; // never overwrite an edited plan
                 const seed = DEFAULT_PLAN_CATALOGUE[id as keyof typeof DEFAULT_PLAN_CATALOGUE];
@@ -664,9 +698,18 @@ export default function SuperAdminSubscriptionsPage() {
                     createdAt: serverTimestamp(),
                     updatedAt: serverTimestamp(),
                 }, { merge: true });
+                seeded.push(id);
             }
             await loadPlans();
             showToast('Missing plans seeded from defaults.', 'success');
+            if (seeded.length) {
+                logPlatformAudit({
+                    actor: auditActor, category: 'plan', action: 'seed',
+                    resourceType: 'plan', resourceName: 'Plan catalogue defaults',
+                    description: `Seeded default plan(s): ${seeded.join(', ')}`,
+                    after: { seeded },
+                });
+            }
         } catch {
             showToast('Failed to seed plans.', 'error');
         } finally {
@@ -691,6 +734,18 @@ export default function SuperAdminSubscriptionsPage() {
             await setDoc(doc(db, 'tenantSubscriptions', row.tenantId), payload, { merge: true });
             setTenants(prev => prev.map(t => t.tenantId === row.tenantId ? { ...t, subscription: payload } : t));
             showToast(`${row.businessName} → ${plans[planId]?.name || planId} (${status}).`, 'success');
+            const prevStatus = existing?.status;
+            const action = status === 'suspended'
+                ? 'suspend'
+                : (prevStatus === 'suspended' ? 'activate' : 'update');
+            logPlatformAudit({
+                actor: auditActor, category: 'business', action,
+                resourceType: 'subscription', resourceId: row.tenantId, resourceName: row.businessName,
+                tenantId: row.tenantId, tenantName: row.businessName,
+                description: `Subscription set to ${plans[planId]?.name || planId} · status ${status}`,
+                before: existing ? { planId: existing.planId, status: existing.status } : undefined,
+                after: { planId, status },
+            });
             setEditingTenant(null);
         } catch {
             showToast('Failed to update subscription.', 'error');
@@ -718,13 +773,22 @@ export default function SuperAdminSubscriptionsPage() {
                 status: form.status,
                 updatedAt: serverTimestamp(),
             };
+            let resourceId = existing?.id;
             if (existing) {
                 await setDoc(doc(db, JOB_OPENINGS_COLLECTION, existing.id), base, { merge: true });
                 showToast(`"${base.title}" updated.`, 'success');
             } else {
-                await addDoc(collection(db, JOB_OPENINGS_COLLECTION), { ...base, createdAt: serverTimestamp() });
+                const ref = await addDoc(collection(db, JOB_OPENINGS_COLLECTION), { ...base, createdAt: serverTimestamp() });
+                resourceId = ref.id;
                 showToast(`"${base.title}" created.`, 'success');
             }
+            logPlatformAudit({
+                actor: auditActor, category: 'career', action: existing ? 'update' : 'create',
+                resourceType: 'jobOpening', resourceId, resourceName: base.title,
+                description: `Job opening "${base.title}" ${existing ? 'updated' : 'created'} · status ${base.status}`,
+                before: existing ? { title: existing.title, status: existing.status, department: existing.department } : undefined,
+                after: { title: base.title, status: base.status, department: base.department, location: base.location },
+            });
             setEditingJob(null);
             await loadJobs();
         } catch {
@@ -742,6 +806,13 @@ export default function SuperAdminSubscriptionsPage() {
             setJobs(prev => prev.map(j => j.id === job.id ? { ...j, status } : j));
             const verb = status === 'published' ? 'published' : status === 'closed' ? 'closed' : 'moved to draft';
             showToast(`"${job.title}" ${verb}.`, 'success');
+            logPlatformAudit({
+                actor: auditActor, category: 'career',
+                action: status === 'published' ? 'publish' : status === 'closed' ? 'close' : 'status_change',
+                resourceType: 'jobOpening', resourceId: job.id, resourceName: job.title,
+                description: `Job opening "${job.title}" ${verb}`,
+                before: { status: job.status }, after: { status },
+            });
         } catch {
             showToast('Failed to update status.', 'error');
         } finally {
@@ -756,6 +827,12 @@ export default function SuperAdminSubscriptionsPage() {
             await deleteDoc(doc(db, JOB_OPENINGS_COLLECTION, job.id));
             setJobs(prev => prev.filter(j => j.id !== job.id));
             showToast(`"${job.title}" deleted.`, 'success');
+            logPlatformAudit({
+                actor: auditActor, category: 'career', action: 'delete',
+                resourceType: 'jobOpening', resourceId: job.id, resourceName: job.title,
+                description: `Job opening "${job.title}" deleted`,
+                before: { title: job.title, status: job.status, department: job.department },
+            });
         } catch {
             showToast('Failed to delete job opening.', 'error');
         } finally {
@@ -787,6 +864,15 @@ export default function SuperAdminSubscriptionsPage() {
             setTickets(prev => prev.map(t => t.id === ticket.id ? { ...t, ...payload } : t));
             setSelectedTicket(null);
             showToast('Ticket updated.', 'success');
+            logPlatformAudit({
+                actor: auditActor, category: 'support',
+                action: changes.status !== ticket.status ? 'status_change' : 'update',
+                resourceType: 'ticket', resourceId: ticket.id, resourceName: ticket.subject,
+                tenantId: ticket.tenantId, tenantName: ticket.businessName,
+                description: `Ticket "${ticket.subject}" updated · status ${changes.status} · priority ${changes.priority}`,
+                before: { status: ticket.status, priority: ticket.priority, hasResponse: !!ticket.adminResponse },
+                after: { status: changes.status, priority: changes.priority, hasResponse: !!changes.adminResponse.trim() },
+            });
         } catch {
             showToast('Failed to update ticket.', 'error');
         } finally {
@@ -815,17 +901,26 @@ export default function SuperAdminSubscriptionsPage() {
                 isActive: form.isActive,
                 updatedAt: serverTimestamp(),
             };
+            let resourceId = existing?.id;
             if (existing) {
                 await setDoc(doc(db, PLAN_PROMOTIONS_COLLECTION, existing.id), base, { merge: true });
                 showToast(`Promotion "${base.label}" updated.`, 'success');
             } else {
-                await addDoc(collection(db, PLAN_PROMOTIONS_COLLECTION), {
+                const ref = await addDoc(collection(db, PLAN_PROMOTIONS_COLLECTION), {
                     ...base,
                     createdBy: currentUser?.email || currentUser?.uid || 'superadmin',
                     createdAt: serverTimestamp(),
                 });
+                resourceId = ref.id;
                 showToast(`Promotion "${base.label}" created.`, 'success');
             }
+            logPlatformAudit({
+                actor: auditActor, category: 'promotion', action: existing ? 'update' : 'create',
+                resourceType: 'promotion', resourceId, resourceName: base.label,
+                description: `Promotion "${base.label}" ${existing ? 'updated' : 'created'} · ${base.discountPct}% off`,
+                before: existing ? { discountPct: existing.discountPct, tiers: existing.tiers, billingCycle: existing.billingCycle, isActive: existing.isActive, startDate: existing.startDate, endDate: existing.endDate } : undefined,
+                after: { discountPct: base.discountPct, tiers: base.tiers, billingCycle: base.billingCycle, isActive: base.isActive, startDate: base.startDate, endDate: base.endDate },
+            });
             setEditingPromo(null);
             await loadPromotions();
         } catch {
@@ -843,6 +938,12 @@ export default function SuperAdminSubscriptionsPage() {
             await setDoc(doc(db, PLAN_PROMOTIONS_COLLECTION, promo.id), { isActive: next, updatedAt: serverTimestamp() }, { merge: true });
             setPromotions(prev => prev.map(p => p.id === promo.id ? { ...p, isActive: next } : p));
             showToast(`Promotion "${promo.label}" ${next ? 'activated' : 'deactivated'}.`, 'success');
+            logPlatformAudit({
+                actor: auditActor, category: 'promotion', action: next ? 'activate' : 'deactivate',
+                resourceType: 'promotion', resourceId: promo.id, resourceName: promo.label,
+                description: `Promotion "${promo.label}" ${next ? 'activated' : 'deactivated'}`,
+                before: { isActive: promo.isActive }, after: { isActive: next },
+            });
         } catch {
             showToast('Failed to update promotion.', 'error');
         } finally {
@@ -857,6 +958,12 @@ export default function SuperAdminSubscriptionsPage() {
             await deleteDoc(doc(db, PLAN_PROMOTIONS_COLLECTION, promo.id));
             setPromotions(prev => prev.filter(p => p.id !== promo.id));
             showToast(`Promotion "${promo.label}" deleted.`, 'success');
+            logPlatformAudit({
+                actor: auditActor, category: 'promotion', action: 'delete',
+                resourceType: 'promotion', resourceId: promo.id, resourceName: promo.label,
+                description: `Promotion "${promo.label}" deleted`,
+                before: { discountPct: promo.discountPct, tiers: promo.tiers, isActive: promo.isActive },
+            });
         } catch {
             showToast('Failed to delete promotion.', 'error');
         } finally {
@@ -1683,6 +1790,8 @@ export default function SuperAdminSubscriptionsPage() {
                         </div>
                     </>
                 )}
+
+                {section === 'audit-logs' && <AuditLogsSection />}
             </div>
 
             {/* Support ticket detail / management modal */}

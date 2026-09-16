@@ -6,8 +6,6 @@ import HomeProblems from '../components/landing/home/HomeProblems';
 import HomeHowItWorks from '../components/landing/home/HomeHowItWorks';
 import HomeSolutions from '../components/landing/home/HomeSolutions';
 import HomeShowcase from '../components/landing/home/HomeShowcase';
-import HomeWhyFiinny from '../components/landing/home/HomeWhyFiinny';
-import HomeTestimonials from '../components/landing/home/HomeTestimonials';
 import HomePricingPreview from '../components/landing/home/HomePricingPreview';
 import HomeFAQ from '../components/landing/home/HomeFAQ';
 import HomeFinalCTA from '../components/landing/home/HomeFinalCTA';
@@ -30,8 +28,6 @@ export default function LandingPage() {
                 <HomeHowItWorks />
                 <HomeSolutions />
                 <HomeShowcase />
-                <HomeWhyFiinny />
-                <HomeTestimonials />
                 <HomePricingPreview />
                 <HomeFAQ />
                 <HomeFinalCTA />
