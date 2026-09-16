@@ -12,7 +12,6 @@ import {
     type Plan,
     type TenantSubscription,
 } from '../utils/subscriptionPlans';
-import { FEATURE_ON } from '../utils/subscriptionCatalog';
 
 // 'retailer' is a read-only portal for shops that buy FROM this tenant (see
 // RETAILER_ALLOWED_PATHS in App.tsx). 'shopkeeper' is the opposite: a shop owner
@@ -92,21 +91,6 @@ export const defaultPermissions: RolePermissions = {
     shopkeeper: { dashboard: false, b2c_dashboard: true, online_dashboard: true, analytics: true, retailers: false, worklist: true, khata: true, dispatch: false, pos: true, inventory: true, online_orders: true, order_history: true, settings: true, admin: false, manufacturers: false, invoice_templates: false, invoice_settings: true, schema_builder: false, manage_retailers: false, manage_store: false, krishidukan: true, loyalty: false, accounts: false, ar: false, ap: false, cash: false, credit: false, collections: false, disputes: false, promotions: false, contracts: false, finance_analytics: false, expenses: false, audit_log: false, customers: true },
     manufacturer: { dashboard: false, b2c_dashboard: false, online_dashboard: false, analytics: false, retailers: false, worklist: false, khata: false, dispatch: false, pos: false, inventory: false, online_orders: false, order_history: false, settings: true, admin: false, manufacturers: false, invoice_templates: false, invoice_settings: false, schema_builder: false, manage_retailers: false, manage_store: false, krishidukan: false, loyalty: false, accounts: false, ar: false, ap: false, cash: false, credit: false, collections: false, disputes: false, promotions: false, contracts: false, finance_analytics: false, expenses: false, audit_log: false, customers: false },
     customer: { dashboard: false, b2c_dashboard: false, online_dashboard: false, analytics: false, retailers: false, worklist: false, khata: false, dispatch: false, pos: false, inventory: false, online_orders: false, order_history: false, settings: true, admin: false, manufacturers: false, invoice_templates: false, invoice_settings: false, schema_builder: false, manage_retailers: false, manage_store: false, krishidukan: false, loyalty: false, accounts: false, ar: false, ap: false, cash: false, credit: false, collections: false, disputes: false, promotions: false, contracts: false, finance_analytics: false, expenses: false, audit_log: false, customers: false }
-};
-
-// Full, unrestricted plan entitlements. Used ONLY when the platform Super Admin is
-// "viewing" a tenant (see impersonation below) so the tenant's own plan never hides a
-// screen from the Super Admin. Built from the admin permission row so it always covers
-// every AppScreen the app knows about. The teamPerformance FEATURE_ON marker unlocks the
-// one screenless nav group (see isFeatureGroupAllowed in subscriptionCatalog).
-const UNLIMITED_ENTITLEMENTS: PlanEntitlements = {
-    planId: null,
-    status: 'active',
-    hasSubscription: true,
-    screens: new Set<AppScreen>(Object.keys(defaultPermissions.admin) as AppScreen[]),
-    features: new Set<string>([`teamPerformance.${FEATURE_ON}`]),
-    modules: null,
-    defaultLandingPath: null,
 };
 
 // sessionStorage keys for the Super Admin's active "view business" selection. Session-
@@ -219,6 +203,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         const name = sessionStorage.getItem(VIEW_TENANT_NAME_KEY);
         return name ? { businessName: name } : null;
     });
+    // The viewed tenant's OWN resolved entitlements while the Super Admin is viewing
+    // its dashboard. Resolved from the exact same authoritative source as a business
+    // admin (tenantSubscriptions/{id} → plans/{planId}), so the Super Admin sees the
+    // business scoped precisely to its subscription. Fail-closed to RESTRICTED.
+    const [impersonatedEntitlements, setImpersonatedEntitlements] = useState<PlanEntitlements>(RESTRICTED_ENTITLEMENTS);
+    const [impersonatedSubscriptionLoading, setImpersonatedSubscriptionLoading] = useState(false);
 
     useEffect(() => {
         let unsubscribePerms: (() => void) | null = null;
@@ -575,6 +565,40 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         return () => { cancelled = true; };
     }, [isSuperAdmin, impersonatedTenantId]);
 
+    // Load the viewed tenant's OWN subscription entitlements so the Super Admin's
+    // dashboard is scoped exactly like that business's Business Admin. Reuses the
+    // identical resolver as the normal per-tenant loader above — no second
+    // subscription system. Fail CLOSED (RESTRICTED) on missing sub / rules / error,
+    // matching how a real tenant with no subscription is treated.
+    useEffect(() => {
+        if (!isSuperAdmin || !impersonatedTenantId) {
+            setImpersonatedEntitlements(RESTRICTED_ENTITLEMENTS);
+            setImpersonatedSubscriptionLoading(false);
+            return;
+        }
+        setImpersonatedSubscriptionLoading(true);
+        const subRef = doc(db, 'tenantSubscriptions', impersonatedTenantId);
+        const unsub = onSnapshot(subRef, async (subSnap) => {
+            if (!subSnap.exists()) {
+                setImpersonatedEntitlements(RESTRICTED_ENTITLEMENTS);
+                setImpersonatedSubscriptionLoading(false);
+                return;
+            }
+            const subscription = subSnap.data() as TenantSubscription;
+            let plan: Plan | null = null;
+            if (subscription.planId) {
+                const planSnap = await getDoc(doc(db, 'plans', subscription.planId));
+                if (planSnap.exists()) plan = planSnap.data() as Plan;
+            }
+            setImpersonatedEntitlements(resolveEntitlements(subscription, plan));
+            setImpersonatedSubscriptionLoading(false);
+        }, () => {
+            setImpersonatedEntitlements(RESTRICTED_ENTITLEMENTS);
+            setImpersonatedSubscriptionLoading(false);
+        });
+        return () => unsub();
+    }, [isSuperAdmin, impersonatedTenantId]);
+
     const logout = () => {
         // Never carry a Super Admin's tenant view across a logout.
         exitTenantView();
@@ -584,8 +608,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     const isImpersonating = isSuperAdmin && !!impersonatedTenantId;
 
     const hasModule = (moduleId: string): boolean => enabledModules.includes(moduleId);
-    // While impersonating, entitlements are UNLIMITED so this reflects full access.
-    const effectiveEntitlements = isImpersonating ? UNLIMITED_ENTITLEMENTS : planEntitlements;
+    // While impersonating, entitlements come from the VIEWED tenant's own subscription
+    // so the Super Admin's dashboard is scoped exactly like that business's admin.
+    const effectiveEntitlements = isImpersonating ? impersonatedEntitlements : planEntitlements;
     const hasPlanScreen = (screen: AppScreen): boolean => isScreenAllowedByPlan(screen, effectiveEntitlements);
 
     // When the Super Admin is viewing a tenant, transparently override the tenant-scoped
@@ -613,7 +638,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         hasModule,
         planEntitlements: effectiveEntitlements,
         hasPlanScreen,
-        subscriptionLoading: isImpersonating ? false : subscriptionLoading,
+        subscriptionLoading: isImpersonating ? impersonatedSubscriptionLoading : subscriptionLoading,
         isSuperAdmin,
         isImpersonating,
         impersonatedTenantId,

@@ -23,6 +23,9 @@ export type WaTemplate =
   | "payment_failed_app_update"
   | "retailer_seat_promotion"
   | "add_product_reminder"
+  | "kyc_pending"
+  | "kyc_success"
+  | "app_update"
   | "generic";
 
 /** Dynamic values substituted into the template at render time (for audit/debug). */

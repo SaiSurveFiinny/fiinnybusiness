@@ -116,6 +116,36 @@ export function resolveTemplateComponents(
       // No buttons.
       return [body(p("businessName") || p("shopName") || p("name") || "Business")];
 
+    case "kyc_pending": {
+      // Manual admin campaign — never triggered automatically.
+      // Sent to subscribed retailers/manufacturers whose payout KYC is not yet
+      // verified (payoutAccounts.status !== "verified", or no account at all).
+      // Body has exactly ONE variable: {{1}} = businessName → shopName → ownerName → "User".
+      // Only this single body parameter is sent — no header or button components.
+      const displayName = p("businessName") || p("shopName") || p("ownerName") || "User";
+      return [body(displayName)];
+    }
+
+    case "kyc_success": {
+      // Manual admin campaign — never triggered automatically.
+      // Sent to direct retailers whose payout KYC is verified
+      // (payoutAccounts.status === "verified").
+      // Body has exactly ONE variable: {{1}} = businessName → shopName → ownerName → "User".
+      // CTA is a static URL button (https://krishidukan.com/dashboard/payouts) —
+      // no button component is sent.
+      const displayName = p("businessName") || p("shopName") || p("ownerName") || "User";
+      return [body(displayName)];
+    }
+
+    case "app_update": {
+      // Manual admin Marketing campaign — never triggered automatically.
+      // Sent to retailers / manufacturers / customers to prompt an app update.
+      // Body has exactly ONE variable: {{1}} = businessName → shopName → ownerName → "User".
+      // CTA is a static URL button (Play Store listing) — no button component is sent.
+      const displayName = p("businessName") || p("shopName") || p("ownerName") || "User";
+      return [body(displayName)];
+    }
+
     case "generic":
     default:
       // No template — caller must provide a plain-text message instead

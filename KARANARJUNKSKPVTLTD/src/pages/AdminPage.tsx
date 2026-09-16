@@ -4,6 +4,7 @@ import { initializeApp, deleteApp } from "firebase/app";
 import { getAuth, createUserWithEmailAndPassword } from 'firebase/auth';
 import { firebaseConfig, db } from '../firebase';
 import { getTenantCollection } from '../utils/tenantPath';
+import { functionUrl } from '../utils/functionsUrl';
 import { logAudit } from '../utils/auditLog';
 import { Shield, ShieldAlert, UserCog, UserPlus, Loader2, Mail, Lock, User as UserIcon, Edit2, Trash2, X, Save, Store, Factory, Trash, KeyRound } from 'lucide-react';
 import RecentlyDeletedPage from './RecentlyDeletedPage';
@@ -307,16 +308,13 @@ export default function AdminPage() {
         setResetPasswordLoading(true);
         try {
             if (!currentUser) throw new Error('Not signed in');
-            // Invoked via the Firebase Hosting rewrite (/api/users/reset-password),
-            // not a public callable, so it works despite the org policy that blocks
-            // `allUsers` invokers. The server verifies the caller is a business admin
-            // of the target's tenant and applies the password via the Admin SDK —
-            // the password never touches Firestore and is not logged.
+            // Deployed 1st-gen HTTP function called directly over HTTPS
+            // (functionUrl derives the URL from the active Firebase project +
+            // region). The server verifies the caller is a business admin of the
+            // target's tenant and applies the password via the Admin SDK — the
+            // password never touches Firestore and is not logged.
             const idToken = await currentUser.getIdToken();
-            const url = import.meta.env.DEV && import.meta.env.VITE_USE_EMULATOR === 'true'
-                ? `http://localhost:5001/${import.meta.env.VITE_FIREBASE_PROJECT_ID}/asia-south1/resetTenantUserPassword`
-                : '/api/users/reset-password';
-            const res = await fetch(url, {
+            const res = await fetch(functionUrl('resetTenantUserPassword'), {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${idToken}` },
                 body: JSON.stringify({ targetUid: editUserForm.id, newPassword: resetPassword }),
@@ -328,9 +326,9 @@ export default function AdminPage() {
                 logAudit({ db, tenantId, userId: currentUser.uid, userName: userName || currentUser.email || 'Admin', userRole: userRole || 'admin', module: 'Manage Users', action: 'Update', entityName: editUserForm.name || editUserForm.email || editUserForm.id, entityId: editUserForm.id, remarks: 'Password reset' });
             }
 
-            setResetPassword('');
-            setResetPasswordConfirm('');
             showToast(t('admin.reset_password_success'), 'success');
+            // Auto-close the reset-password form/modal and return to the user view.
+            closeEditUser();
         } catch (error: any) {
             console.error('Error resetting password:', error);
             setResetPasswordError(error?.message || t('admin.reset_password_error'));

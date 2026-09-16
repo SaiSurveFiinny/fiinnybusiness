@@ -341,7 +341,16 @@
     "processing": "प्रसंस्करण...",
     "you": "आप",
     "edit_user": "यूजर को संपादित करो",
-    "delete_user": "उपयोगकर्ता हटाएँ"
+    "delete_user": "उपयोगकर्ता हटाएँ",
+    "reset_password": "पासवर्ड रीसेट करें",
+    "reset_password_hint": "इस उपयोगकर्ता के लिए नया पासवर्ड सेट करें। वे अगली बार साइन इन करते समय इसका उपयोग करेंगे।",
+    "new_password": "नया पासवर्ड",
+    "confirm_password": "पासवर्ड की पुष्टि करें",
+    "reset_password_button": "पासवर्ड रीसेट करें",
+    "password_min_length": "पासवर्ड कम से कम 6 अक्षरों का होना चाहिए।",
+    "password_mismatch": "पासवर्ड मेल नहीं खाते।",
+    "reset_password_success": "पासवर्ड सफलतापूर्वक रीसेट किया गया!",
+    "reset_password_error": "पासवर्ड रीसेट करने में विफल।"
   },
   "pos": {
     "title": "पीओएस बिलिंग",
