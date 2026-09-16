@@ -1,6 +1,6 @@
 import { useState, useEffect, lazy, Suspense, startTransition } from 'react';
 import { BrowserRouter, Routes, Route, Link, useLocation, Navigate, useNavigate } from 'react-router-dom';
-import { Home, Users, UserPlus, LogOut, ReceiptText, ShieldAlert, Calculator, Settings, Package, ChevronDown, Layers, Truck, ShoppingCart, BarChart3, Activity, Bell, ClipboardList, Star, Link2, Bot, Loader2, Menu, X, Target, Sun, Moon, Receipt, HelpCircle, ArrowLeft } from 'lucide-react';
+import { Home, Users, UserPlus, LogOut, ReceiptText, ShieldAlert, Calculator, Settings, Package, ChevronDown, Layers, Truck, ShoppingCart, BarChart3, Activity, Bell, ClipboardList, Star, Link2, Bot, Loader2, Menu, X, Target, Sun, Moon, Receipt, HelpCircle, LifeBuoy, ArrowLeft } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import LanguageSwitcher from './components/LanguageSwitcher';
 import EnvBadge from './components/EnvBadge';
@@ -42,6 +42,7 @@ const TermsPage              = lazy(() => import('./pages/TermsPage'));
 const BlogPage               = lazy(() => import('./pages/BlogPage'));
 const ChangelogPage          = lazy(() => import('./pages/ChangelogPage'));
 const DownloadPage           = lazy(() => import('./pages/DownloadPage'));
+const CareersPage            = lazy(() => import('./pages/CareersPage'));
 const ClientOnboardingPage   = lazy(() => import('./pages/ClientOnboardingPage'));
 const OnlineOrdersPage       = lazy(() => import('./pages/OnlineOrdersPage'));
 const OnlineDashboardPage    = lazy(() => import('./pages/OnlineDashboardPage').then(m => ({ default: m.OnlineDashboardPage })));
@@ -93,6 +94,7 @@ const ExpensePage             = lazy(() => import('./pages/ExpensePage'));
 const NotFoundPage            = lazy(() => import('./pages/NotFoundPage'));
 const HelpCenterPage          = lazy(() => import('./pages/HelpCenterPage'));
 const HelpArticlePage         = lazy(() => import('./pages/HelpArticlePage'));
+const SupportTicketsPage      = lazy(() => import('./pages/SupportTicketsPage'));
 
 // Full-page spinner shown while a lazy chunk is loading
 function PageLoader() {
@@ -150,7 +152,7 @@ function Layout({ children, currentTheme, toggleTheme }: { children: React.React
   const [adminExpanded, setAdminExpanded] = useState(true);
   const [drawerOpen, setDrawerOpen] = useState(false);
 
-  const publicPaths = ['/', '/login', '/about', '/privacy', '/terms', '/blog', '/changelog', '/download'];
+  const publicPaths = ['/', '/login', '/about', '/privacy', '/terms', '/blog', '/changelog', '/download', '/careers'];
   if (publicPaths.includes(location.pathname)) return <>{children}</>;
 
   // Fully standalone public pages — no nav, no sidebar
@@ -527,6 +529,9 @@ function Layout({ children, currentTheme, toggleTheme }: { children: React.React
             <Link to="/help" style={navLinkStyle('/help')} onClick={() => setDrawerOpen(false)}>
               <HelpCircle size={19} /> Help Center
             </Link>
+            <Link to="/support" style={navLinkStyle('/support')} onClick={() => setDrawerOpen(false)}>
+              <LifeBuoy size={19} /> Support Tickets
+            </Link>
           </div>
         )}
 
@@ -614,8 +619,8 @@ function AppRoutes() {
   // configurable (settings/roleLandingPages, surfaced via AuthContext); each role
   // falls back to a built-in default when unset. Confined roles (retailer / sales)
   // only honour a configured landing that stays inside their allowed paths.
-  const RETAILER_ALLOWED_PATHS = ['/worklist', '/settings', '/help'];
-  const SALES_ALLOWED_PATHS = ['/sales-targets', '/worklist', '/help'];
+  const RETAILER_ALLOWED_PATHS = ['/worklist', '/settings', '/help', '/support'];
+  const SALES_ALLOWED_PATHS = ['/sales-targets', '/worklist', '/help', '/support'];
   const DEFAULT_LANDING: Record<string, string> = {
     admin: '/dashboard', analyst: '/dashboard', shopkeeper: '/pos',
     sales: '/sales-targets', retailer: '/worklist', manufacturer: '/manufacturer-portal',
@@ -665,7 +670,7 @@ function AppRoutes() {
 
   // Force incomplete setups to finish onboarding — but ONLY for protected routes.
   // Super admin is exempt: it intentionally has no tenant.
-  const publicPaths = ['/', '/about', '/privacy', '/terms', '/blog', '/changelog', '/download', '/login'];
+  const publicPaths = ['/', '/about', '/privacy', '/terms', '/blog', '/changelog', '/download', '/careers', '/login'];
   if (currentUser && !tenantId && !isSuperAdmin && !publicPaths.includes(locationHook.pathname) && locationHook.pathname !== '/client-onboarding') {
     return <Navigate to="/client-onboarding" replace />;
   }
@@ -684,6 +689,7 @@ function AppRoutes() {
       <Route path="/blog" element={<BlogPage />} />
       <Route path="/changelog" element={<ChangelogPage />} />
       <Route path="/download" element={<DownloadPage />} />
+      <Route path="/careers" element={<CareersPage />} />
 
       {/* Onboarding */}
       <Route path="/client-onboarding" element={<ProtectedRoute><ClientOnboardingPage /></ProtectedRoute>} />
@@ -800,6 +806,9 @@ function AppRoutes() {
       {/* Help Center */}
       <Route path="/help" element={<ProtectedRoute><HelpCenterPage /></ProtectedRoute>} />
       <Route path="/help/:articleId" element={<ProtectedRoute><HelpArticlePage /></ProtectedRoute>} />
+
+      {/* Support Tickets — available to every authenticated tenant user/role */}
+      <Route path="/support" element={<ProtectedRoute><SupportTicketsPage /></ProtectedRoute>} />
 
       {/* Catch-all: 404 for logged-in users, /login redirect for guests */}
       <Route path="*" element={<NotFoundPage />} />

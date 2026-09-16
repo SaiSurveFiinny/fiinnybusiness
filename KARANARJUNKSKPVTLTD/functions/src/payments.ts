@@ -90,6 +90,79 @@ async function resolvePlanAmounts(
   return PLAN_AMOUNTS[pricingTier] ?? null;
 }
 
+// ─── Plan promotions ────────────────────────────────────────────────────────
+// A promotion is a time-boxed % discount applied ON TOP of the authoritative base
+// price. The base price (resolvePlanAmounts) is never overwritten. This logic
+// mirrors src/utils/planPromotions.ts — that module cannot be imported here (it
+// lives in the frontend package), so the maths is intentionally duplicated. Keep
+// the two in sync. Dates are interpreted at UTC day boundaries so the price the
+// customer saw on /pricing and the price charged here always agree.
+const PLAN_PROMOTIONS_COLLECTION = 'planPromotions';
+
+function promoStartMs(d?: string): number | null {
+  if (!d) return null;
+  const ms = Date.parse(`${d}T00:00:00Z`);
+  return Number.isNaN(ms) ? null : ms;
+}
+function promoEndMs(d?: string): number | null {
+  if (!d) return null;
+  const ms = Date.parse(`${d}T23:59:59.999Z`);
+  return Number.isNaN(ms) ? null : ms;
+}
+function isPromoLive(startDate?: string, endDate?: string, nowMs = Date.now()): boolean {
+  const start = promoStartMs(startDate);
+  const end = promoEndMs(endDate);
+  if (start !== null && nowMs < start) return false;
+  if (end !== null && nowMs > end) return false;
+  return true;
+}
+function isValidPct(pct: unknown): pct is number {
+  return typeof pct === 'number' && Number.isFinite(pct) && pct > 0 && pct <= 100;
+}
+
+/** Apply a % discount to a paise amount (integer paise in, integer paise out). */
+function applyDiscountPaise(basePaise: number, pct: number): number {
+  if (!isValidPct(pct)) return basePaise;
+  return Math.round((basePaise * (100 - pct)) / 100);
+}
+
+/**
+ * Resolve the best (highest-%) ACTIVE, in-window promotion for a pricing tier +
+ * billing cycle, or null when none applies. Reads the SAME `planPromotions`
+ * collection the /pricing page shows. Never throws — a lookup failure means "no
+ * promotion" so a full-price order is still created.
+ */
+async function resolveActivePromotion(
+  pricingTier: string,
+  cycle: 'monthly' | 'yearly',
+): Promise<{ id: string; pct: number } | null> {
+  try {
+    const snap = await admin.firestore()
+      .collection(PLAN_PROMOTIONS_COLLECTION)
+      .where('isActive', '==', true)
+      .get();
+    const now = Date.now();
+    let best: { id: string; pct: number } | null = null;
+    snap.forEach(d => {
+      const p = d.data() as {
+        tiers?: string[]; billingCycle?: string; discountPct?: number;
+        startDate?: string; endDate?: string;
+      };
+      if (!Array.isArray(p.tiers) || !p.tiers.includes(pricingTier)) return;
+      if (p.billingCycle !== 'both' && p.billingCycle !== cycle) return;
+      if (!isValidPct(p.discountPct)) return;
+      if (!isPromoLive(p.startDate, p.endDate, now)) return;
+      if (!best || (p.discountPct as number) > best.pct) best = { id: d.id, pct: p.discountPct as number };
+    });
+    return best;
+  } catch (err) {
+    functions.logger.warn('[payments] Could not read plan promotions; charging full price', {
+      pricingTier, cycle, err,
+    });
+    return null;
+  }
+}
+
 const PLAN_MODULE_MAP: Record<string, string[]> = {
   starter: ['fast_checkout', 'vpay', 'whatsapp_integration', 'cash_drawer'],
   growth: [
@@ -215,7 +288,14 @@ export const createSaaSOrder = functions
     // Authoritative price (same source as /pricing); never trust a client amount.
     const planAmounts = await resolvePlanAmounts(plan);
     if (!planAmounts) throw httpError(500, `Pricing unavailable for plan: ${plan}`);
-    const amountInPaise = (cycle === 'yearly' ? planAmounts.yearly : planAmounts.monthly) * 100;
+    const baseInPaise = (cycle === 'yearly' ? planAmounts.yearly : planAmounts.monthly) * 100;
+
+    // Apply the best active promotion (if any) ON TOP of the base price. The
+    // resolved %/id is bound into the order notes so verifySaaSPayment re-derives
+    // the exact same amount even if the promotion changes/expires afterwards.
+    const promo = await resolveActivePromotion(plan, cycle);
+    const discountPct = promo ? promo.pct : 0;
+    const amountInPaise = applyDiscountPaise(baseInPaise, discountPct);
     const rzp = getRazorpay();
 
     try {
@@ -223,7 +303,11 @@ export const createSaaSOrder = functions
         amount: amountInPaise,
         currency: 'INR',
         receipt: `rcpt_${tenantId}_${Date.now()}`.substring(0, 40),
-        notes: { tenantId, plan, cycle },
+        notes: {
+          tenantId, plan, cycle,
+          promoId: promo?.id ?? '',
+          discountPct: String(discountPct),
+        },
       });
       res.json({ order_id: order.id, key_id: getKeyId(), amount: order.amount });
     } catch (err: any) {
@@ -279,6 +363,7 @@ export const verifySaaSPayment = functions
 
     const notes = (order.notes ?? {}) as unknown as {
       tenantId?: string; plan?: string; cycle?: string;
+      promoId?: string; discountPct?: string;
     };
     if (notes.tenantId !== tenantId) {
       functions.logger.warn('[payments] Order tenant mismatch', {
@@ -296,12 +381,17 @@ export const verifySaaSPayment = functions
     if (!planAmounts) throw httpError(500, `Pricing unavailable for plan: ${plan}`);
 
     // Defense in depth: the amount actually charged must equal the authoritative
-    // catalogue price for the order's plan/cycle — blocks any amount/plan tampering.
-    // (Both order creation and this check read the SAME resolvePlanAmounts source.)
-    const amountInPaise = (cycle === 'yearly' ? planAmounts.yearly : planAmounts.monthly) * 100;
+    // catalogue price for the order's plan/cycle, LESS the discount that was bound
+    // into the order at creation — blocks any amount/plan/discount tampering. The
+    // discount % comes from the server-set order notes (the client can never set
+    // notes), so re-deriving it here is stable even if the promotion later expired.
+    const baseInPaise = (cycle === 'yearly' ? planAmounts.yearly : planAmounts.monthly) * 100;
+    const notedPct = Number(notes.discountPct);
+    const discountPct = isValidPct(notedPct) ? notedPct : 0;
+    const amountInPaise = applyDiscountPaise(baseInPaise, discountPct);
     if (Number(order.amount) !== amountInPaise) {
       functions.logger.warn('[payments] Order amount mismatch', {
-        razorpay_order_id, orderAmount: order.amount, amountInPaise,
+        razorpay_order_id, orderAmount: order.amount, amountInPaise, discountPct,
       });
       throw httpError(400, 'Order amount does not match plan pricing');
     }
@@ -324,6 +414,9 @@ export const verifySaaSPayment = functions
       cycle,
       amount: amountInPaise,
       currency: 'INR',
+      // Audit trail of the discount that was applied to this charge (0 when none).
+      discountPct,
+      ...(notes.promoId ? { promoId: notes.promoId } : {}),
       razorpayOrderId: razorpay_order_id,
       razorpayPaymentId: razorpay_payment_id,
       status: 'captured',

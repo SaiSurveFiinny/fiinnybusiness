@@ -341,7 +341,16 @@
     "processing": "प्रक्रिया करत आहे...",
     "you": "आपण",
     "edit_user": "वापरकर्ता संपादित करा",
-    "delete_user": "वापरकर्ता हटवा"
+    "delete_user": "वापरकर्ता हटवा",
+    "reset_password": "पासवर्ड रीसेट करा",
+    "reset_password_hint": "या वापरकर्त्यासाठी नवीन पासवर्ड सेट करा. पुढच्या वेळी साइन इन करताना ते याचा वापर करतील.",
+    "new_password": "नवीन पासवर्ड",
+    "confirm_password": "पासवर्डची पुष्टी करा",
+    "reset_password_button": "पासवर्ड रीसेट करा",
+    "password_min_length": "पासवर्ड किमान 6 अक्षरांचा असावा.",
+    "password_mismatch": "पासवर्ड जुळत नाहीत.",
+    "reset_password_success": "पासवर्ड यशस्वीरित्या रीसेट झाला!",
+    "reset_password_error": "पासवर्ड रीसेट करण्यात अयशस्वी."
   },
   "pos": {
     "title": "POS बिलिंग",

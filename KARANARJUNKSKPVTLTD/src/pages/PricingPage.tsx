@@ -1,17 +1,25 @@
 import { useState, useEffect } from 'react';
-import { collection, onSnapshot } from 'firebase/firestore';
+import { collection, onSnapshot, query, where } from 'firebase/firestore';
 import { db } from '../firebase';
+import { functionUrl } from '../utils/functionsUrl';
 import { useAuth } from '../contexts/AuthContext';
 import { useToast } from '../contexts/ToastContext';
 import { useTranslation } from 'react-i18next';
 import { useNavigate } from 'react-router-dom';
-import { Check, Zap, Building2, Rocket, Star, Shield, ArrowRight, Crown, Loader2, CheckCircle2 } from 'lucide-react';
+import { Check, Zap, Building2, Rocket, Star, Shield, ArrowRight, Crown, Loader2, CheckCircle2, Tag } from 'lucide-react';
 import {
   DEFAULT_PLAN_PRICING,
   PLAN_ID_TO_PRICING_TIER,
   computeSavingsPct,
   type PlanPricing,
 } from '../utils/subscriptionPlans';
+import {
+  PLAN_PROMOTIONS_COLLECTION,
+  findApplicablePromotion,
+  discountedRupees,
+  formatRupees,
+  type PlanPromotion,
+} from '../utils/planPromotions';
 
 declare global {
   interface Window {
@@ -76,25 +84,17 @@ function buildPlan(
 }
 
 // ─── API helper ──────────────────────────────────────────────────────────────
-// Functions are now onRequest endpoints proxied through Firebase Hosting rewrites.
-// In development (emulator), point at localhost:5001; otherwise use the relative
-// /api path which the hosting rewrite maps to the deployed Cloud Function.
-const EMULATOR_BASE =
-  `http://localhost:5001/${import.meta.env.VITE_FIREBASE_PROJECT_ID}/asia-south1`;
-const API_BASE =
-  import.meta.env.DEV && import.meta.env.VITE_USE_EMULATOR === 'true'
-    ? EMULATOR_BASE
-    : '/api/saas';
-
+// The SaaS functions are deployed 1st-gen `onRequest` endpoints called DIRECTLY
+// over HTTPS (no Hosting rewrite, no Vite proxy). functionUrl() derives the URL
+// from the active Firebase project id + region, so `npm run dev` hits production
+// and `npm run dev:uat` hits UAT automatically. Auth is enforced inside the
+// function via the Firebase ID token sent as `Authorization: Bearer <token>`.
 async function callFunction(
-  path: string,
+  fnName: string,
   idToken: string,
   body: Record<string, unknown>
 ): Promise<any> {
-  const url = import.meta.env.DEV && import.meta.env.VITE_USE_EMULATOR === 'true'
-    ? `${EMULATOR_BASE}/${path}`
-    : `/api/saas/${path}`;
-  const res = await fetch(url, {
+  const res = await fetch(functionUrl(fnName), {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -106,9 +106,6 @@ async function callFunction(
   if (!res.ok) throw new Error(json.error ?? `Request failed (${res.status})`);
   return json;
 }
-
-// Silence unused var — API_BASE is the conceptual default, callFunction builds its own URL.
-void API_BASE;
 
 function loadRazorpayScript(): Promise<boolean> {
   return new Promise((resolve) => {
@@ -138,9 +135,22 @@ export default function PricingPage() {
   // Super Admin edit is reflected here immediately.
   const [pricingByCatalog, setPricingByCatalog] = useState<Record<string, PlanPricing>>({});
   const [plansLoading, setPlansLoading] = useState(true);
+  // Active promotions streamed from `planPromotions` (isActive filter satisfies the
+  // security rule). Applied on top of the base price per plan/cycle/date at render.
+  const [promotions, setPromotions] = useState<PlanPromotion[]>([]);
 
   useEffect(() => {
     loadRazorpayScript();
+  }, []);
+
+  // Subscribe to active promotions only (rule allows reading isActive == true).
+  useEffect(() => {
+    const unsub = onSnapshot(
+      query(collection(db, PLAN_PROMOTIONS_COLLECTION), where('isActive', '==', true)),
+      snap => setPromotions(snap.docs.map(d => ({ id: d.id, ...(d.data() as Omit<PlanPromotion, 'id'>) }))),
+      () => setPromotions([]),
+    );
+    return () => unsub();
   }, []);
 
   // Subscribe to the authoritative plan catalogue. Falls back to defaults on error
@@ -189,7 +199,7 @@ export default function PricingPage() {
       //    and the public key_id — the secret key never leaves the server.
       const idToken = await currentUser.getIdToken();
       const { order_id, key_id, amount } = await callFunction(
-        'order', idToken, { plan: plan.id, cycle, tenantId }
+        'createSaaSOrder', idToken, { plan: plan.id, cycle, tenantId }
       );
 
       // 2. Open the Razorpay checkout modal. Wrapping in a Promise lets us await
@@ -222,7 +232,7 @@ export default function PricingPage() {
             setPaying(null);
             setVerifying(plan.id);
             try {
-              await callFunction('verify', idToken, {
+              await callFunction('verifySaaSPayment', idToken, {
                 razorpay_payment_id: response.razorpay_payment_id,
                 razorpay_order_id: response.razorpay_order_id,
                 razorpay_signature: response.razorpay_signature,
@@ -339,6 +349,16 @@ export default function PricingPage() {
           const isBusy = paying === plan.id || verifying === plan.id;
           const anyBusy = !!(paying || verifying);
 
+          // Active promotion for this plan + selected cycle (highest % wins).
+          const promo = findApplicablePromotion(promotions, plan.id, cycle);
+          const pct = promo?.discountPct ?? 0;
+          // The amount actually charged for the selected cycle, discounted.
+          const baseCharged = cycle === 'yearly' ? plan.yearlyPrice : plan.monthlyPrice;
+          const discCharged = pct ? discountedRupees(baseCharged, pct) : baseCharged;
+          // Per-month figures for the headline price (yearly shown as /mo equivalent).
+          const origPerMo = cycle === 'yearly' ? plan.yearlyPrice / 12 : plan.monthlyPrice;
+          const discPerMo = cycle === 'yearly' ? discCharged / 12 : discCharged;
+
           return (
             <div
               key={plan.id}
@@ -370,13 +390,35 @@ export default function PricingPage() {
                     <div style={{ fontSize: '0.82rem', color: 'var(--text-secondary)' }}>{plan.tagline}</div>
                   </div>
                 </div>
-                <div style={{ display: 'flex', alignItems: 'flex-end', gap: '0.25rem', marginTop: '1rem' }}>
-                  <span style={{ fontSize: '2.5rem', fontWeight: 900, color: plan.color, lineHeight: 1 }}>₹{price.toLocaleString('en-IN')}</span>
+                {/* Promotion ribbon — shown only when a promotion applies */}
+                {pct > 0 && (
+                  <div style={{ display: 'inline-flex', alignItems: 'center', gap: '0.35rem', marginTop: '0.75rem', padding: '0.25rem 0.65rem', background: plan.gradient, color: '#fff', borderRadius: '8px', fontSize: '0.74rem', fontWeight: 800 }}>
+                    <Tag size={12} /> {pct}% OFF{promo?.label ? ` · ${promo.label}` : ''}
+                  </div>
+                )}
+                <div style={{ display: 'flex', alignItems: 'flex-end', gap: '0.4rem', marginTop: '1rem' }}>
+                  <span style={{ fontSize: '2.5rem', fontWeight: 900, color: plan.color, lineHeight: 1 }}>₹{formatRupees(pct > 0 ? discPerMo : price)}</span>
+                  {pct > 0 && (
+                    <span style={{ color: 'var(--text-tertiary)', fontSize: '1.1rem', textDecoration: 'line-through', marginBottom: '0.35rem' }}>
+                      ₹{formatRupees(origPerMo)}
+                    </span>
+                  )}
                   <span style={{ color: 'var(--text-secondary)', fontSize: '0.9rem', marginBottom: '0.4rem' }}>/mo</span>
                 </div>
-                {cycle === 'yearly' && (
+                {cycle === 'yearly' ? (
                   <div style={{ fontSize: '0.78rem', color: 'var(--text-secondary)', marginTop: '0.25rem' }}>
-                    ₹{plan.yearlyPrice.toLocaleString('en-IN')}/yr{savingsText(plan) ? ` · ${savingsText(plan)}` : ''}
+                    {pct > 0 ? (
+                      <>
+                        <span style={{ fontWeight: 700 }}>₹{formatRupees(discCharged)}/yr</span>{' '}
+                        <span style={{ textDecoration: 'line-through', color: 'var(--text-tertiary)' }}>₹{plan.yearlyPrice.toLocaleString('en-IN')}</span>
+                      </>
+                    ) : (
+                      <>₹{plan.yearlyPrice.toLocaleString('en-IN')}/yr{savingsText(plan) ? ` · ${savingsText(plan)}` : ''}</>
+                    )}
+                  </div>
+                ) : pct > 0 && (
+                  <div style={{ fontSize: '0.78rem', color: 'var(--text-secondary)', marginTop: '0.25rem' }}>
+                    Was ₹{plan.monthlyPrice.toLocaleString('en-IN')}/mo · you save {pct}%
                   </div>
                 )}
               </div>
