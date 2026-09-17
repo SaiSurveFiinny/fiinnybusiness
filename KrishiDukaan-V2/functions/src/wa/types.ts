@@ -22,7 +22,7 @@ export type WaTemplate =
   | "manufacturer_network_summary"
   | "payment_failed_app_update"
   | "retailer_seat_promotion"
-  | "add_product_reminder"
+  | "new_product_reminder"
   | "kyc_pending"
   | "kyc_success"
   | "app_update"

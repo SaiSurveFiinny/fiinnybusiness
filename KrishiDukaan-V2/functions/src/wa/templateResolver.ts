@@ -109,12 +109,13 @@ export function resolveTemplateComponents(
       ];
     }
 
-    case "add_product_reminder":
-      // Manual admin campaign — never triggered automatically.
-      // Sent to active-subscribed retailers who have zero products.
-      // {{1}} = businessName → shopName → name → "Business"
-      // No buttons.
-      return [body(p("businessName") || p("shopName") || p("name") || "Business")];
+    case "new_product_reminder":
+      // Manual admin Marketing campaign (Marathi) — never triggered automatically.
+      // Sent to active-subscribed retailers who still have vacant/unused product seats.
+      // {{1}} = ownerName → businessName → shopName → "User" (retailer/owner name)
+      // {{2}} = vacantSeats (number of unused product seats)
+      // Both CTAs are static URL buttons (video + inventory) — no button components sent.
+      return [body(name(), p("vacantSeats"))];
 
     case "kyc_pending": {
       // Manual admin campaign — never triggered automatically.

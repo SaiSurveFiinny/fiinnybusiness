@@ -10,8 +10,7 @@ import {
 import Link from "next/link";
 import { cn } from "../../../dashboard/_lib/cn";
 import { PendingSignupPanel, type PendingPanelManufacturer } from "../../_components/pending-signup-panel";
-import { getUsers, getSubscriptions, getProducts } from "../../_lib/admin-data";
-import { selectUserProductDocs } from "../../../firebase";
+import { getUsers, getSubscriptions } from "../../_lib/admin-data";
 import { collection, doc, getDocs, query, where, serverTimestamp, writeBatch } from "firebase/firestore";
 
 // ─── Shared helpers ────────────────────────────────────────────────────────────
@@ -40,7 +39,7 @@ type TemplateId =
   | "product_assignment_pending_signup"
   | "subscription_expiry"
   | "retailer_seat_promotion"
-  | "add_product_reminder"
+  | "new_product_reminder"
   | "kyc_pending"
   | "kyc_success"
   | "app_update";
@@ -50,6 +49,11 @@ type TemplateId =
  * here so it can be updated in one place if Meta pricing changes.
  */
 const MARKETING_MSG_COST_INR = 0.86;
+
+/** Locale-aware integer / money formatters, shared across the Marketing flows. */
+const fmtCount = (n: number) => n.toLocaleString("en-IN");
+const fmtMoney = (n: number) =>
+  n.toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
 const TEMPLATES: { id: TemplateId; label: string; description: string }[] = [
   {
@@ -73,9 +77,9 @@ const TEMPLATES: { id: TemplateId; label: string; description: string }[] = [
     description: "Promote seat subscriptions to retailers/manufacturers not yet subscribed.",
   },
   {
-    id: "add_product_reminder",
-    label: "Add Product Reminder",
-    description: "Remind active-subscribed retailers who haven't added any products yet.",
+    id: "new_product_reminder",
+    label: "New Product Reminder (Marketing)",
+    description: "Remind active-subscribed retailers who still have vacant product seats to add more products. Marketing template — billed per message.",
   },
   {
     id: "kyc_pending",
@@ -1412,17 +1416,21 @@ function RetailerSeatPromotionFlow() {
   );
 }
 
-// ─── Add Product Reminder flow ───────────────────────────────────────────────
+// ─── New Product Reminder flow (Marketing) ───────────────────────────────────
 
-type AddProdRow = {
+type NewProdRow = {
   userId: string;
-  phone: string;
-  businessName: string;
-  role: string;
-  subscriptionStatus: string;
+  phone: string;         // normalized E.164 (no '+')
+  ownerName: string;     // {{1}} primary — owner/person name
+  businessName: string;  // {{1}} fallback + display
+  shopName: string;      // {{1}} secondary fallback
+  vacantSeats: number;   // {{2}} — allocated seats − used product seats
+  allocatedSeats: number; // Total Seats
+  usedSeats: number;
+  lastNotifiedAt: Date | null; // last successful new_product_reminder send
 };
 
-type AddProdResult = {
+type NewProdResult = {
   userId: string;
   phone: string;
   businessName: string;
@@ -1430,46 +1438,143 @@ type AddProdResult = {
   error?: string;
 };
 
-function AddProductReminderFlow() {
-  const [rows, setRows] = useState<AddProdRow[]>([]);
+/** Millis of a Firestore Timestamp, JS Date or ISO string field — 0 if absent. */
+function fieldToMs(v: unknown): number {
+  if (!v) return 0;
+  const anyV = v as { toMillis?: () => number; toDate?: () => Date };
+  if (typeof anyV.toMillis === "function") return anyV.toMillis();
+  if (typeof anyV.toDate === "function") return anyV.toDate().getTime();
+  const d = new Date(v as string | number);
+  return Number.isNaN(d.getTime()) ? 0 : d.getTime();
+}
+
+/** Human "Last Notification" label by calendar-day difference: Never / Today / N days ago. */
+function formatLastNotification(d: Date | null): string {
+  if (!d) return "Never";
+  const startOfDay = (x: Date) => new Date(x.getFullYear(), x.getMonth(), x.getDate()).getTime();
+  const days = Math.floor((startOfDay(new Date()) - startOfDay(d)) / 86400000);
+  if (days <= 0) return "Today";
+  return `${days} day${days !== 1 ? "s" : ""} ago`;
+}
+
+function NewProductReminderFlow() {
+  const [rows, setRows] = useState<NewProdRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [search, setSearch] = useState("");
   const [step, setStep] = useState<"list" | "confirm" | "sending" | "done">("list");
-  const [sendResults, setSendResults] = useState<AddProdResult[]>([]);
+  const [sendResults, setSendResults] = useState<NewProdResult[]>([]);
   const sendingRef = useRef(false);
   const masterCheckboxRef = useRef<HTMLInputElement>(null);
 
   const loadData = useCallback(async () => {
     setLoading(true);
     try {
-      const [users, products] = await Promise.all([getUsers(), getProducts()]);
-      const built: AddProdRow[] = [];
+      const now = Date.now();
+      // Reuse the app's canonical seat model:
+      //   allocated seats = Σ seatsPurchased over the retailer's ACTIVE subscriptions
+      //   used seats      = the retailer's ACTIVE product seat listings (1 product = 1 seat)
+      //   vacant seats    = allocated − used
+      // Mirrors computeSeatStats() / isSubscriptionActive() / isListingActive() in
+      // dashboard/_lib/subscriptions-firestore.ts — no new fields are introduced.
+      // Prior new_product_reminder sends are read from the existing waNotifications
+      // history (same source the KYC flows use) — no separate tracking is added.
+      const [users, subs, seatSnap, notifSnap] = await Promise.all([
+        getUsers(),
+        getSubscriptions(),
+        getDocs(collection(db, "retailerSeatListings")),
+        getDocs(query(collection(db, "waNotifications"), where("template", "==", "new_product_reminder"))),
+      ]);
 
+      // Active seat listings: status "active" AND not yet expired.
+      const activeListings = seatSnap.docs
+        .map((d) => d.data() as Record<string, unknown>)
+        .filter((l) => l.status === "active" && fieldToMs(l.expiresAt) > now);
+
+      // Active subscriptions: status "active" AND not yet expired.
+      const activeSubs = (subs as any[]).filter(
+        (s) => s.subscriptionStatus === "active" && fieldToMs(s.expiryDate) > now,
+      );
+
+      // Map normalized phone → most recent SUCCESSFUL send time. A send counts as
+      // successful once Meta accepted it (status sent/delivered/read or a
+      // metaMessageId exists); pending/failed/cancelled docs are ignored.
+      const SUCCESS_STATUSES = new Set(["sent", "delivered", "read"]);
+      const lastSentByPhone = new Map<string, number>();
+      notifSnap.docs.forEach((d) => {
+        const data = d.data() as {
+          phone?: string;
+          status?: string;
+          metaMessageId?: string | null;
+          sentAt?: unknown;
+        };
+        if (!data.phone) return;
+        const success = (data.status && SUCCESS_STATUSES.has(data.status)) || !!data.metaMessageId;
+        if (!success) return;
+        const ms = fieldToMs(data.sentAt);
+        if (!ms) return;
+        const norm = toE164(data.phone);
+        const prev = lastSentByPhone.get(norm) ?? 0;
+        if (ms > prev) lastSentByPhone.set(norm, ms);
+      });
+
+      const built: NewProdRow[] = [];
       for (const u of users as any[]) {
         if (u.role !== "retailer") continue;
-        if (u.subscriptionStatus !== "active") continue;
 
-        const phone: string = u.id || u.phone || "";
-        if (!phone) continue;
+        // Every identifier this retailer's subs/listings could be keyed by.
+        const keys = new Set<string>();
+        for (const k of [u.uid, u.phone, u.id]) if (k) keys.add(String(k));
+        for (const k of [u.phone, u.id]) {
+          if (k && isValidIndianPhone(String(k))) keys.add(toE164(String(k)));
+        }
+        if (keys.size === 0) continue;
 
-        const userProducts = selectUserProductDocs(products, { id: u.id, uid: u.uid, phone: u.phone });
-        if (userProducts.length > 0) continue;
+        const rawPhone: string = u.id || u.phone || "";
+        if (!rawPhone || !isValidIndianPhone(rawPhone)) continue;
 
-        const businessName: string =
-          u.businessName || u.shopName || u.name || u.ownerName || "";
+        const matchesKeys = (a: unknown, b: unknown) =>
+          (a && keys.has(String(a))) || (b && keys.has(String(b)));
+
+        const allocatedSeats = activeSubs
+          .filter((s) => matchesKeys(s.ownerId, s.ownerPhone))
+          .reduce((sum, s) => sum + (Number(s.seatsPurchased) || 0), 0);
+        if (allocatedSeats <= 0) continue;
+
+        const usedSeats = activeListings.filter((l) =>
+          matchesKeys(l.ownerId, l.ownerPhone),
+        ).length;
+
+        const vacantSeats = allocatedSeats - usedSeats;
+        if (vacantSeats <= 0) continue;
+
+        const normPhone = toE164(rawPhone);
+        const lastMs = lastSentByPhone.get(normPhone) ?? 0;
 
         built.push({
           userId: u.id,
-          phone,
-          businessName,
-          role: u.role,
-          subscriptionStatus: u.subscriptionStatus,
+          phone: normPhone,
+          ownerName: u.ownerName || u.name || "",
+          businessName: u.businessName || "",
+          shopName: u.shopName || "",
+          vacantSeats,
+          allocatedSeats,
+          usedSeats,
+          lastNotifiedAt: lastMs ? new Date(lastMs) : null,
         });
       }
 
-      built.sort((a, b) => (a.businessName || a.phone).localeCompare(b.businessName || b.phone));
+      // Most vacant seats first, then by name.
+      built.sort(
+        (a, b) =>
+          b.vacantSeats - a.vacantSeats ||
+          (a.businessName || a.shopName || a.ownerName || a.phone).localeCompare(
+            b.businessName || b.shopName || b.ownerName || b.phone,
+          ),
+      );
       setRows(built);
-      setSelectedIds(new Set(built.map((r) => r.userId)));
+      // Default selection is none — clearing search never selects everyone.
+      setSelectedIds(new Set());
     } finally {
       setLoading(false);
     }
@@ -1477,14 +1582,28 @@ function AddProductReminderFlow() {
 
   useEffect(() => { void loadData(); }, [loadData]);
 
+  // Search by business / shop / owner name — narrows visible rows only.
+  const filteredRows = (() => {
+    const q = search.trim().toLowerCase();
+    if (!q) return rows;
+    return rows.filter(
+      (r) =>
+        r.businessName.toLowerCase().includes(q) ||
+        r.shopName.toLowerCase().includes(q) ||
+        r.ownerName.toLowerCase().includes(q),
+    );
+  })();
+
   useEffect(() => {
     const el = masterCheckboxRef.current;
     if (!el) return;
-    const all = rows.length > 0 && selectedIds.size >= rows.length;
-    const none = selectedIds.size === 0;
+    const visibleIds = filteredRows.map((r) => r.userId);
+    const selectedVisible = visibleIds.filter((id) => selectedIds.has(id)).length;
+    const all = visibleIds.length > 0 && selectedVisible >= visibleIds.length;
+    const none = selectedVisible === 0;
     el.checked = all;
     el.indeterminate = !all && !none;
-  }, [selectedIds, rows]);
+  }, [selectedIds, filteredRows]);
 
   const toggleRow = (id: string) =>
     setSelectedIds((prev) => {
@@ -1494,13 +1613,22 @@ function AddProductReminderFlow() {
     });
 
   const selectedRows = rows.filter((r) => selectedIds.has(r.userId));
+  const estimatedCost = selectedIds.size * MARKETING_MSG_COST_INR;
+
+  // {{1}} display — business/shop name, falling back to owner name.
+  const displayName = (r: NewProdRow) => r.businessName || r.shopName || r.ownerName || "—";
+
+  const displayPhone = (raw: string) => {
+    const digits = raw.replace(/\D/g, "");
+    return digits.length === 12 && digits.startsWith("91") ? digits.slice(2) : digits;
+  };
 
   const handleSend = async () => {
     if (sendingRef.current || selectedRows.length === 0) return;
     sendingRef.current = true;
     setStep("sending");
 
-    const results: AddProdResult[] = [];
+    const results: NewProdResult[] = [];
     const now = serverTimestamp();
     const waRef = collection(db, "waNotifications");
     const CHUNK = 400;
@@ -1512,15 +1640,21 @@ function AddProductReminderFlow() {
         batch.set(doc(waRef), {
           phone: row.phone,
           message: "",
-          template: "add_product_reminder",
-          payload: { businessName: row.businessName },
+          template: "new_product_reminder",
+          // Resolver: {{1}} = ownerName → businessName → shopName; {{2}} = vacantSeats.
+          payload: {
+            ownerName: row.ownerName,
+            businessName: row.businessName,
+            shopName: row.shopName,
+            vacantSeats: String(row.vacantSeats),
+          },
           source: {
-            event: "admin_manual_add_product_reminder",
+            event: "admin_manual_new_product_reminder",
             entityType: "users",
             entityId: row.userId,
           },
           status: "pending",
-          type: "general",
+          type: "marketing",
           metaMessageId: null,
           createdAt: now,
           sentAt: null,
@@ -1535,12 +1669,12 @@ function AddProductReminderFlow() {
       try {
         await batch.commit();
         for (const row of chunk) {
-          results.push({ userId: row.userId, phone: row.phone, businessName: row.businessName, ok: true });
+          results.push({ userId: row.userId, phone: row.phone, businessName: displayName(row), ok: true });
         }
       } catch (e) {
         const msg = e instanceof Error ? e.message : "Batch write failed";
         for (const row of chunk) {
-          results.push({ userId: row.userId, phone: row.phone, businessName: row.businessName, ok: false, error: msg });
+          results.push({ userId: row.userId, phone: row.phone, businessName: displayName(row), ok: false, error: msg });
         }
       }
     }
@@ -1627,15 +1761,24 @@ function AddProductReminderFlow() {
   if (step === "confirm") {
     return (
       <div className="space-y-4">
-        <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-4 space-y-2">
-          <p className="text-sm font-bold text-amber-800">Confirm before sending</p>
+        <div className="rounded-xl border border-amber-300 bg-amber-50 px-4 py-4 space-y-2">
+          <p className="text-sm font-bold text-amber-800">⚠️ Confirm Marketing send</p>
           <ul className="text-sm text-amber-700 space-y-1 list-disc list-inside">
-            <li>Template: <span className="font-mono text-xs">add_product_reminder</span></li>
-            <li>Variable: <span className="font-mono text-xs">{"{{1}}"}</span> = Business Name only</li>
-            <li>Recipients: <span className="font-semibold">{selectedRows.length} retailer{selectedRows.length !== 1 ? "s" : ""}</span></li>
+            <li>Template: <span className="font-mono text-xs">new_product_reminder</span> (Marketing · Marathi)</li>
+            <li>
+              Variables: <span className="font-mono text-xs">{"{{1}}"}</span> = Owner / Business name,{" "}
+              <span className="font-mono text-xs">{"{{2}}"}</span> = Vacant seats
+            </li>
+            <li>Recipients: <span className="font-semibold">{fmtCount(selectedRows.length)} retailer{selectedRows.length !== 1 ? "s" : ""}</span></li>
+            <li>
+              Estimated cost:{" "}
+              <span className="font-semibold">
+                ₹{fmtCount(selectedRows.length)} × {MARKETING_MSG_COST_INR} = ₹{fmtMoney(estimatedCost)}
+              </span>
+            </li>
           </ul>
           <p className="text-xs text-amber-600 mt-1">
-            Queues {selectedRows.length} doc{selectedRows.length !== 1 ? "s" : ""} to{" "}
+            Queues {fmtCount(selectedRows.length)} doc{selectedRows.length !== 1 ? "s" : ""} to{" "}
             <code className="font-mono">waNotifications</code>. No user records will be modified.
           </p>
         </div>
@@ -1644,18 +1787,19 @@ function AddProductReminderFlow() {
           <table className="w-full text-sm">
             <thead className="sticky top-0 bg-gray-50 border-b border-gray-200">
               <tr>
-                <th className="text-left px-3 py-2.5 text-xs font-semibold text-gray-500 uppercase tracking-wide">Business Name</th>
+                <th className="text-left px-3 py-2.5 text-xs font-semibold text-gray-500 uppercase tracking-wide">Owner / Business</th>
                 <th className="text-left px-3 py-2.5 text-xs font-semibold text-gray-500 uppercase tracking-wide">Phone</th>
-                <th className="text-left px-3 py-2.5 text-xs font-semibold text-gray-500 uppercase tracking-wide">Role</th>
+                <th className="text-left px-3 py-2.5 text-xs font-semibold text-gray-500 uppercase tracking-wide">Vacant Seats</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-100">
               {selectedRows.map((r) => (
                 <tr key={r.userId}>
-                  <td className="px-3 py-2.5 text-xs text-gray-800">{r.businessName || "—"}</td>
-                  <td className="px-3 py-2.5 font-mono text-xs text-gray-600">{r.phone}</td>
-                  <td className="px-3 py-2.5">
-                    <span className="text-xs px-1.5 py-0.5 rounded-full bg-gray-100 text-gray-600 capitalize">{r.role}</span>
+                  <td className="px-3 py-2.5 text-xs text-gray-800">{displayName(r)}</td>
+                  <td className="px-3 py-2.5 font-mono text-xs text-gray-600">{displayPhone(r.phone)}</td>
+                  <td className="px-3 py-2.5 text-xs text-gray-600">
+                    <span className="font-semibold text-gray-800">{r.vacantSeats}</span>
+                    <span className="text-gray-400"> / {r.allocatedSeats}</span>
                   </td>
                 </tr>
               ))}
@@ -1672,10 +1816,10 @@ function AddProductReminderFlow() {
           </button>
           <button
             onClick={handleSend}
-            className="flex items-center gap-2 px-5 py-2.5 bg-primary text-white rounded-xl text-sm font-semibold hover:bg-primary/90 transition-colors"
+            className="flex items-center gap-2 px-5 py-2.5 bg-amber-600 text-white rounded-xl text-sm font-semibold hover:bg-amber-700 transition-colors"
           >
             <Send className="w-4 h-4" />
-            Send {selectedRows.length} Notification{selectedRows.length !== 1 ? "s" : ""}
+            Send {fmtCount(selectedRows.length)} · ₹{fmtMoney(estimatedCost)}
           </button>
         </div>
       </div>
@@ -1685,15 +1829,36 @@ function AddProductReminderFlow() {
   // ── "list" step ───────────────────────────────────────────────────────────────
   return (
     <div className="space-y-5">
+      {/* Marketing cost warning */}
+      <div className="rounded-xl border border-amber-300 bg-amber-50 px-4 py-3 space-y-1.5">
+        <p className="text-sm font-bold text-amber-800">
+          ⚠️ This is a Marketing WhatsApp message.
+        </p>
+        <p className="text-xs text-amber-700">
+          Cost: ₹{MARKETING_MSG_COST_INR} per delivered message.
+        </p>
+        <div className="flex flex-wrap items-center gap-x-4 gap-y-1 pt-1 text-sm text-amber-800">
+          <span>Selected: <span className="font-bold">{fmtCount(selectedIds.size)}</span></span>
+          <span>
+            Estimated cost:{" "}
+            <span className="font-bold">
+              ₹{fmtCount(selectedIds.size)} × {MARKETING_MSG_COST_INR} = ₹{fmtMoney(estimatedCost)}
+            </span>
+          </span>
+        </div>
+      </div>
+
       {/* Controls row */}
       <div className="flex items-center gap-3">
         <p className="flex-1 text-sm font-medium text-gray-700">
           {loading ? "Loading…" : (
             <>
-              {rows.length} eligible retailer{rows.length !== 1 ? "s" : ""}
-              {selectedIds.size > 0 && selectedIds.size < rows.length && (
+              {search.trim()
+                ? `${fmtCount(filteredRows.length)} of ${fmtCount(rows.length)} retailer${rows.length !== 1 ? "s" : ""} with vacant seats`
+                : `${fmtCount(rows.length)} retailer${rows.length !== 1 ? "s" : ""} with vacant seats`}
+              {selectedIds.size > 0 && (
                 <span className="ml-1.5 text-on-surface-variant font-normal">
-                  · {selectedIds.size} selected
+                  · {fmtCount(selectedIds.size)} selected
                 </span>
               )}
             </>
@@ -1709,13 +1874,29 @@ function AddProductReminderFlow() {
         </button>
       </div>
 
+      {/* Search by business / shop / owner name */}
+      <div className="relative max-w-sm">
+        <Search className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
+        <input
+          type="text"
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          placeholder="Search by business or owner name…"
+          className="w-full border border-gray-300 rounded-xl pl-9 pr-3 py-2 text-sm text-gray-800 bg-white focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent placeholder:text-gray-400"
+        />
+      </div>
+
       {loading ? (
         <div className="flex h-28 items-center justify-center gap-2 text-sm text-gray-400">
           <Loader2 className="w-4 h-4 animate-spin" /> Loading retailers…
         </div>
       ) : rows.length === 0 ? (
         <div className="rounded-2xl border border-dashed border-gray-300 px-6 py-10 text-center text-sm text-gray-400">
-          No active-subscribed retailers with zero products found.
+          No active-subscribed retailers with vacant product seats found.
+        </div>
+      ) : filteredRows.length === 0 ? (
+        <div className="rounded-2xl border border-dashed border-gray-300 px-6 py-10 text-center text-sm text-gray-400">
+          No retailers match &quot;{search.trim()}&quot;.
         </div>
       ) : (
         <>
@@ -1728,22 +1909,31 @@ function AddProductReminderFlow() {
                       ref={masterCheckboxRef}
                       type="checkbox"
                       onChange={(e) =>
-                        setSelectedIds(
-                          e.target.checked ? new Set(rows.map((r) => r.userId)) : new Set(),
-                        )
+                        setSelectedIds((prev) => {
+                          const next = new Set(prev);
+                          // Select All applies to the currently filtered rows only.
+                          if (e.target.checked) filteredRows.forEach((r) => next.add(r.userId));
+                          else filteredRows.forEach((r) => next.delete(r.userId));
+                          return next;
+                        })
                       }
                       className="h-4 w-4 rounded border-gray-300 text-primary focus:ring-primary/30 cursor-pointer"
                     />
                   </th>
-                  <th className="text-left px-3 py-2.5 text-xs font-semibold text-gray-500 uppercase tracking-wide">Business Name</th>
-                  <th className="text-left px-3 py-2.5 text-xs font-semibold text-gray-500 uppercase tracking-wide">Phone</th>
-                  <th className="text-left px-3 py-2.5 text-xs font-semibold text-gray-500 uppercase tracking-wide hidden sm:table-cell">Role</th>
-                  <th className="text-left px-3 py-2.5 text-xs font-semibold text-gray-500 uppercase tracking-wide hidden sm:table-cell">Subscription</th>
+                  <th className="text-left px-3 py-2.5 text-xs font-semibold text-gray-500 uppercase tracking-wide">Retailer / Business</th>
+                  <th className="text-right px-3 py-2.5 text-xs font-semibold text-gray-500 uppercase tracking-wide">Total Seats</th>
+                  <th className="text-right px-3 py-2.5 text-xs font-semibold text-gray-500 uppercase tracking-wide">Used Seats</th>
+                  <th className="text-right px-3 py-2.5 text-xs font-semibold text-gray-500 uppercase tracking-wide">Vacant Seats</th>
+                  <th className="text-right px-3 py-2.5 text-xs font-semibold text-gray-500 uppercase tracking-wide">Vacant %</th>
+                  <th className="text-left px-3 py-2.5 text-xs font-semibold text-gray-500 uppercase tracking-wide hidden sm:table-cell">Last Notification</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-100">
-                {rows.map((r) => {
+                {filteredRows.map((r) => {
                   const checked = selectedIds.has(r.userId);
+                  const vacantPct = r.allocatedSeats > 0
+                    ? Math.round((r.vacantSeats / r.allocatedSeats) * 100)
+                    : 0;
                   return (
                     <tr
                       key={r.userId}
@@ -1764,19 +1954,20 @@ function AddProductReminderFlow() {
                       </td>
                       <td className="px-3 py-2.5">
                         <p className="text-xs font-semibold text-gray-800 truncate max-w-xs">
-                          {r.businessName || <span className="italic text-gray-400">—</span>}
+                          {displayName(r)}
                         </p>
+                        <p className="text-[10px] text-gray-400 font-mono truncate max-w-xs">{displayPhone(r.phone)}</p>
                       </td>
-                      <td className="px-3 py-2.5 font-mono text-xs text-gray-600">{r.phone}</td>
-                      <td className="px-3 py-2.5 hidden sm:table-cell">
-                        <span className="text-xs px-1.5 py-0.5 rounded-full bg-gray-100 text-gray-600 capitalize">
-                          {r.role}
+                      <td className="px-3 py-2.5 text-right text-xs text-gray-700 tabular-nums">{r.allocatedSeats}</td>
+                      <td className="px-3 py-2.5 text-right text-xs text-gray-700 tabular-nums">{r.usedSeats}</td>
+                      <td className="px-3 py-2.5 text-right">
+                        <span className="text-xs px-1.5 py-0.5 rounded-full font-semibold bg-primary/10 text-primary tabular-nums">
+                          {r.vacantSeats}
                         </span>
                       </td>
-                      <td className="px-3 py-2.5 hidden sm:table-cell">
-                        <span className="text-xs px-1.5 py-0.5 rounded-full font-medium bg-green-50 text-green-700">
-                          Active
-                        </span>
+                      <td className="px-3 py-2.5 text-right text-xs text-gray-700 tabular-nums">{vacantPct}%</td>
+                      <td className="px-3 py-2.5 hidden sm:table-cell text-xs text-gray-500">
+                        {formatLastNotification(r.lastNotifiedAt)}
                       </td>
                     </tr>
                   );
@@ -1791,7 +1982,7 @@ function AddProductReminderFlow() {
             className="flex items-center gap-2 px-5 py-2.5 bg-primary text-white rounded-xl text-sm font-semibold hover:bg-primary/90 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
           >
             <Send className="w-4 h-4" />
-            Review &amp; Send ({selectedIds.size} selected)
+            Review &amp; Send ({fmtCount(selectedIds.size)} · ₹{fmtMoney(estimatedCost)})
           </button>
         </>
       )}
@@ -2825,10 +3016,6 @@ function classifyAudience(role: string): AppUpdateAudience | null {
   return null; // admin, team, …
 }
 
-const fmtCount = (n: number) => n.toLocaleString("en-IN");
-const fmtMoney = (n: number) =>
-  n.toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-
 function AppUpdateFlow() {
   const [rows, setRows] = useState<AppUpdateRow[]>([]);
   const [loading, setLoading] = useState(true);
@@ -3353,7 +3540,7 @@ export default function SendMessagesPage() {
         {templateId === "product_assignment_pending_signup" && <PendingSignupFlow />}
         {templateId === "subscription_expiry" && <SubscriptionExpiryFlow />}
         {templateId === "retailer_seat_promotion" && <RetailerSeatPromotionFlow />}
-        {templateId === "add_product_reminder" && <AddProductReminderFlow />}
+        {templateId === "new_product_reminder" && <NewProductReminderFlow />}
         {templateId === "kyc_pending" && <KycPendingFlow />}
         {templateId === "kyc_success" && <KycSuccessFlow />}
         {templateId === "app_update" && <AppUpdateFlow />}
