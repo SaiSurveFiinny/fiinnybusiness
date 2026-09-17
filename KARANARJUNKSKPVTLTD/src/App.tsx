@@ -132,7 +132,7 @@ function Layout({ children, currentTheme, toggleTheme }: { children: React.React
   const location = useLocation();
   const navigate = useNavigate();
   const { t } = useTranslation();
-  const { currentUser, userRole, tenantData, tenantId, permissions, logout, hasPlanScreen, planEntitlements, subscriptionLoading, isSuperAdmin, isImpersonating, exitTenantView } = useAuth();
+  const { currentUser, userRole, tenantData, tenantId, permissions, logout, hasPlanScreen, planEntitlements, loading, subscriptionLoading, isSuperAdmin, isImpersonating, exitTenantView } = useAuth();
   const can = useFeaturePermissions();
 
   const handleLogout = () => {
@@ -159,6 +159,32 @@ function Layout({ children, currentTheme, toggleTheme }: { children: React.React
   // Fully standalone public pages — no nav, no sidebar
   const standalonePathPrefixes = ['/feedback-submit', '/v-checkout/', '/pay/', '/receipt/'];
   if (standalonePathPrefixes.some(p => location.pathname.startsWith(p))) return <>{children}</>;
+
+  // Public pricing page for logged-out visitors — a minimal marketing shell (brand
+  // + language + Log in), no ERP sidebar or tenant data. Authenticated users fall
+  // through to the normal shells below (the subscription gate for unsubscribed
+  // tenants, or the full ERP layout), keeping the in-app upgrade flow unchanged.
+  if (location.pathname === '/pricing' && !currentUser) {
+    // Wait for auth to resolve first, so a logged-in user who deep-links to /pricing
+    // gets the ERP/gate shell below (not a flash of this public shell).
+    if (loading) return <PageLoader />;
+    return (
+      <div style={{ minHeight: '100vh', background: 'var(--surface-base)', display: 'flex', flexDirection: 'column' }}>
+        <header style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '1rem 1.5rem', background: 'var(--surface-raised)', borderBottom: '1px solid var(--surface-border)' }}>
+          <button onClick={() => navigate('/')} style={{ background: 'transparent', border: 'none', cursor: 'pointer', padding: 0 }}>
+            <h2 className="primary-gradient-text" style={{ fontSize: '1.35rem', margin: 0, letterSpacing: '-0.03em' }}>Fiinny ERP</h2>
+          </button>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
+            <LanguageSwitcher />
+            <button onClick={() => navigate('/login')} style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', padding: '0.5rem 1.1rem', background: 'var(--primary-light)', border: 'none', borderRadius: '8px', cursor: 'pointer', color: '#fff', font: 'inherit', fontSize: '0.875rem', fontWeight: 600 }}>
+              Log in
+            </button>
+          </div>
+        </header>
+        <main style={{ flex: 1, padding: '2rem', overflowY: 'auto' }}>{children}</main>
+      </div>
+    );
+  }
 
   // Platform super admin — fully standalone layout, no tenant nav or business data.
   if (location.pathname.startsWith('/super-admin') && isSuperAdmin) {
@@ -743,9 +769,12 @@ function AppRoutes() {
       <Route path="/inventory-batches" element={<ProtectedRoute requireRole={['admin', 'analyst', 'shopkeeper']} appScreen="inventory"><InventoryBatchPage /></ProtectedRoute>} />
       <Route path="/barcode" element={<ProtectedRoute requireRole={['admin', 'analyst', 'shopkeeper']} appScreen="inventory"><BarcodePage /></ProtectedRoute>} />
       <Route path="/manage-transport" element={<ProtectedRoute requireRole={['admin', 'analyst']} appScreen="inventory"><ManageTransportPage /></ProtectedRoute>} />
-      {/* Pricing is always accessible to authenticated tenant users regardless of plan,
-          so new tenants can select a plan after signup. No appScreen gate here. */}
-      <Route path="/pricing" element={<ProtectedRoute requireRole={['admin', 'analyst', 'shopkeeper']}><PricingPage /></ProtectedRoute>} />
+      {/* Pricing is PUBLIC — anyone (logged-out included) can view and compare plans.
+          It stays accessible to authenticated tenant users regardless of plan too, so
+          new tenants can select a plan after signup. The page only shows plan DATA;
+          the "Choose Plan" CTA routes logged-out users to /login (see PricingPage),
+          and subscription/payment remains gated by the auth-checked Cloud Functions. */}
+      <Route path="/pricing" element={<PricingPage />} />
       <Route path="/payment-links" element={<ProtectedRoute requireRole={['admin', 'analyst', 'shopkeeper']} appScreen="worklist"><PaymentLinkPage /></ProtectedRoute>} />
       <Route path="/ai-advisor" element={<ProtectedRoute requireRole={['admin', 'analyst']} appScreen="analytics"><AIAdvisorPage /></ProtectedRoute>} />
       {/* Module system */}

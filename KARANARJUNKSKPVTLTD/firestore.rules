@@ -141,6 +141,18 @@ service cloud.firestore {
       allow write: if request.auth != null && isSuperAdmin();
     }
 
+    // ── Global: Public pricing projection (read-only mirror of plans/*.pricing) ─
+    // A world-readable copy of ONLY the customer-facing pricing subset (name,
+    // tagline, prices, features, limits, badge) so the landing page and logged-out
+    // /pricing show the same Super-Admin-managed prices as authenticated users.
+    // NEVER contains entitlement config (screens/features/modules/landing path).
+    // Writable only by the platform super admin — mirrors the plans/* write rule —
+    // and written alongside the authoritative plans/{id} doc.
+    match /publicPlans/{planId} {
+      allow read:  if true;
+      allow write: if request.auth != null && isSuperAdmin();
+    }
+
     // ── Global: Plan promotions (time-boxed % discounts) ──────────────────────
     // Discounts applied ON TOP of a plan's base price; the base price in
     // plans/{id}.pricing is never overwritten. Applied dynamically by the public
