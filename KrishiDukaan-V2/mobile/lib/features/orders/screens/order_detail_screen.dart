@@ -1,8 +1,13 @@
+import 'dart:convert';
+
+import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:http/http.dart' as http;
 import 'package:intl/intl.dart';
 import 'package:url_launcher/url_launcher.dart';
 import '../../../core/constants/app_colors.dart';
+import '../../../core/constants/app_config.dart';
 import '../../../core/constants/app_text_styles.dart';
 import '../../../core/utils/currency_utils.dart';
 import '../../../core/widgets/error_view.dart';
@@ -168,6 +173,19 @@ class OrderDetailScreen extends ConsumerWidget {
                     ],
                   ),
                 ),
+                // Self-service cancel — only while the seller hasn't
+                // dispatched yet, matching the seller's own reject window
+                // (seller_orders_screen.dart) and the check the server
+                // enforces (POST /api/orders/cancel).
+                if (order.status == 'placed' || order.status == 'accepted') ...[
+                  const SizedBox(height: 16),
+                  _CancelOrderButton(
+                    orderId: order.id,
+                    onCancelled: () =>
+                        ref.invalidate(orderDetailProvider(orderId)),
+                  ),
+                ],
+
                 const SizedBox(height: 32),
               ],
             ),
@@ -185,6 +203,7 @@ class OrderDetailScreen extends ConsumerWidget {
       'out_for_delivery' => AppColors.statusDispatched,
       'delivered' => AppColors.statusDelivered,
       'rejected' => AppColors.statusCancelled,
+      'cancelled' => AppColors.statusCancelled,
       _ => AppColors.onSurfaceVariant,
     };
     return Container(
@@ -198,6 +217,120 @@ class OrderDetailScreen extends ConsumerWidget {
         status[0].toUpperCase() + status.substring(1),
         style: AppTextStyles.caption
             .copyWith(color: color, fontWeight: FontWeight.w600),
+      ),
+    );
+  }
+}
+
+/// "Cancel Order" — full self-service refund via POST /api/orders/cancel.
+/// Only shown while the order is still "placed" or "accepted"; the server
+/// enforces the same window, so this button never gets a stale 409.
+class _CancelOrderButton extends StatefulWidget {
+  final String orderId;
+  final VoidCallback onCancelled;
+  const _CancelOrderButton({required this.orderId, required this.onCancelled});
+
+  @override
+  State<_CancelOrderButton> createState() => _CancelOrderButtonState();
+}
+
+class _CancelOrderButtonState extends State<_CancelOrderButton> {
+  bool _busy = false;
+
+  Future<void> _cancel() async {
+    final reasonCtrl = TextEditingController();
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Cancel this order?'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text(
+                "If you paid online, you'll be refunded automatically."),
+            const SizedBox(height: 12),
+            TextField(
+              controller: reasonCtrl,
+              decoration: const InputDecoration(
+                labelText: 'Reason (optional)',
+                border: OutlineInputBorder(),
+              ),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(ctx, false),
+              child: const Text('Keep order')),
+          FilledButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            style: FilledButton.styleFrom(backgroundColor: AppColors.error),
+            child: const Text('Cancel order'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
+
+    setState(() => _busy = true);
+    try {
+      final token = await FirebaseAuth.instance.currentUser?.getIdToken();
+      final res = await http.post(
+        Uri.parse('${AppConfig.apiBaseUrl}/api/orders/cancel'),
+        headers: {
+          'Content-Type': 'application/json',
+          if (token != null) 'Authorization': 'Bearer $token',
+        },
+        body: jsonEncode({
+          'orderId': widget.orderId,
+          'reason': reasonCtrl.text.trim(),
+        }),
+      );
+      final body = jsonDecode(res.body) as Map<String, dynamic>;
+      if (res.statusCode != 200) {
+        throw Exception(body['error'] ?? 'Could not cancel the order.');
+      }
+      widget.onCancelled();
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(body['refunded'] == true
+                ? 'Order cancelled and refunded.'
+                : 'Order cancelled.'),
+            backgroundColor: AppColors.success,
+          ),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text('$e')));
+      }
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return SizedBox(
+      width: double.infinity,
+      child: OutlinedButton.icon(
+        onPressed: _busy ? null : _cancel,
+        icon: _busy
+            ? const SizedBox(
+                width: 16,
+                height: 16,
+                child: CircularProgressIndicator(strokeWidth: 2))
+            : const Icon(Icons.cancel_outlined, size: 18),
+        label: Text(_busy ? 'Cancelling…' : 'Cancel Order'),
+        style: OutlinedButton.styleFrom(
+          foregroundColor: AppColors.error,
+          side: const BorderSide(color: AppColors.error),
+          padding: const EdgeInsets.symmetric(vertical: 12),
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+        ),
       ),
     );
   }

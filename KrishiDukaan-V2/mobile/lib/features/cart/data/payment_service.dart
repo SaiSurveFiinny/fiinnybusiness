@@ -66,6 +66,16 @@ class PaymentService {
     required String userId,
     required double clientDelivery,
     required double clientGst,
+    /// Checkout details sent BEFORE payment. Until these were sent, the
+    /// address only reached the server in createOrdersAfterPayment — the one
+    /// step that can fail after Razorpay has already captured the money
+    /// (killed app, dropped network, late UPI confirmation). With them on the
+    /// server up front, the payment.captured webhook can rebuild a complete
+    /// order even when that step never runs.
+    String? customerName,
+    String? customerPhone,
+    Map<String, dynamic>? customerAddress,
+    Map<String, double>? deliveryBySeller,
   }) async {
     final token = await FirebaseAuth.instance.currentUser?.getIdToken();
     if (token == null) throw Exception('Not authenticated');
@@ -109,6 +119,10 @@ class PaymentService {
         'clientDelivery': deliveryPlusGst,
         'clientGrandTotal': clientGrandTotal,
         'note': 'Mobile Cart Order',
+        'customerName': ?customerName,
+        'customerPhone': ?customerPhone,
+        'customerAddress': ?customerAddress,
+        'deliveryBySeller': ?deliveryBySeller,
       }),
     );
 

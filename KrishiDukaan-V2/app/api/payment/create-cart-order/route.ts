@@ -67,6 +67,10 @@ export async function POST(request: Request) {
       clientDelivery,
       clientGrandTotal,
       note,
+      customerName,
+      customerPhone,
+      customerAddress,
+      deliveryBySeller,
     } = body as {
       items:             CartItemInput[];
       userId:            string;
@@ -74,6 +78,13 @@ export async function POST(request: Request) {
       clientDelivery?:   number;
       clientGrandTotal?: number;
       note?:             string;
+      // Captured before payment so a payment.captured webhook can rebuild the
+      // order server-side if the client never gets to write it. Optional:
+      // an older app build that doesn't send them still checks out fine.
+      customerName?:     string;
+      customerPhone?:    string;
+      customerAddress?:  unknown;
+      deliveryBySeller?: Record<string, number>;
     };
 
     console.log('[create-cart-order] received:', {
@@ -312,6 +323,11 @@ export async function POST(request: Request) {
       items:           pricedItems,
       source:          request.headers.get('x-client') === 'mobile' ? 'mobile' : 'web',
       note:            note || 'Cart Order',
+      customerName:    typeof customerName === 'string' ? customerName.trim() : undefined,
+      customerPhone:   typeof customerPhone === 'string' ? customerPhone.trim() : undefined,
+      customerAddress: customerAddress ?? undefined,
+      deliveryBySeller:
+        deliveryBySeller && typeof deliveryBySeller === 'object' ? deliveryBySeller : undefined,
     });
 
     return NextResponse.json({

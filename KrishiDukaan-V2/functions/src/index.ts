@@ -884,7 +884,11 @@ export const notifyCustomerOnOrderStatus = onDocumentWritten(
       ],
       rejected: [
         "Order declined ❌",
-        `${store} couldn't fulfil your order for ${itemSummary}`,
+        `${store} couldn't fulfil your order for ${itemSummary}. If you paid online, it's been refunded automatically.`,
+      ],
+      cancelled: [
+        "Order cancelled",
+        `Your order for ${itemSummary} was cancelled. If you paid online, it's been refunded automatically.`,
       ],
     };
     const msg = messages[status];

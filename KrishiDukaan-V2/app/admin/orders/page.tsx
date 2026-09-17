@@ -10,6 +10,7 @@
  */
 
 import { useEffect, useMemo, useState } from "react";
+import { getAuth } from "firebase/auth";
 import {
   ShoppingCart,
   Search,
@@ -26,6 +27,8 @@ import {
   MapPin,
   FileText,
   X,
+  Undo2,
+  Loader2,
 } from "lucide-react";
 import { getOrders, invalidateCache, CACHE_KEYS } from "../_lib/admin-data";
 import { formatCustomerAddress, normalizeOrderItems, orderGrandTotal } from "../../../types/order";
@@ -39,6 +42,7 @@ const STATUS_META: Record<OrderStatus, { label: string; badge: string }> = {
   out_for_delivery: { label: "Out for Delivery", badge: "bg-purple-100 text-purple-700" },
   delivered:        { label: "Delivered",        badge: "bg-green-100 text-green-700" },
   rejected:         { label: "Rejected",         badge: "bg-red-100 text-red-700" },
+  cancelled:        { label: "Cancelled",        badge: "bg-red-100 text-red-700" },
 };
 
 const PAYMENT_META: Record<PaymentStatus, { label: string; badge: string }> = {
@@ -126,8 +130,134 @@ function FilterPills<T extends string>({ value, onChange, options }: {
   );
 }
 
+/**
+ * Admin's general-purpose refund tool — issue a full or partial refund on any
+ * order, any status, via /api/admin/order-refund (which reverses the
+ * seller's Route transfer first when one already went out, then refunds the
+ * customer through Razorpay). Distinct from the seller/customer flows that
+ * refund automatically as part of rejecting or cancelling — this is for the
+ * cases neither of those cover: a damaged item after delivery, a partial
+ * refund, or admin acting because the customer called support instead of
+ * using their own Cancel Order button.
+ */
+function RefundPanel({ order, onRefunded }: { order: OrderDoc; onRefunded: () => void }) {
+  const [open, setOpen] = useState(false);
+  const [amount, setAmount] = useState("");
+  const [reason, setReason] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [result, setResult] = useState<{ refundId: string; refundAmount: number; full: boolean } | null>(null);
+
+  const payment = order.payment;
+  const alreadyRefunded = Boolean((payment as any)?.refundId);
+
+  if (!payment?.razorpayPaymentId) {
+    return (
+      <p className="text-xs text-on-surface-variant">No online payment on this order to refund.</p>
+    );
+  }
+  if (alreadyRefunded) {
+    return (
+      <p className="flex items-center gap-1.5 text-xs font-semibold text-green-700">
+        <Undo2 className="h-3.5 w-3.5" /> Refunded — {(payment as any).refundId}
+        {(payment as any).refundedAmount ? ` (${inr((payment as any).refundedAmount)})` : ""}
+      </p>
+    );
+  }
+
+  const submit = async () => {
+    const trimmedReason = reason.trim();
+    if (!trimmedReason) {
+      setError("A refund reason is required.");
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    try {
+      const token = await getAuth().currentUser?.getIdToken();
+      const res = await fetch("/api/admin/order-refund", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token ?? ""}` },
+        body: JSON.stringify({
+          orderId: order.id,
+          reason: trimmedReason,
+          ...(amount.trim() ? { amount: Number(amount) } : {}),
+        }),
+      });
+      const json = await res.json();
+      if (!res.ok) throw new Error(json.error ?? "Refund failed.");
+      setResult({ refundId: json.refundId, refundAmount: json.refundAmount, full: json.full });
+      onRefunded();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Refund failed.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  if (result) {
+    return (
+      <p className="flex items-center gap-1.5 text-xs font-semibold text-green-700">
+        <Undo2 className="h-3.5 w-3.5" /> Refunded {inr(result.refundAmount)} — {result.refundId}
+      </p>
+    );
+  }
+
+  if (!open) {
+    return (
+      <button
+        type="button"
+        onClick={() => setOpen(true)}
+        className="inline-flex items-center gap-1.5 rounded-lg border border-red-200 bg-white px-2.5 py-1.5 text-xs font-bold text-red-700 hover:bg-red-50"
+      >
+        <Undo2 className="h-3.5 w-3.5" /> Refund
+      </button>
+    );
+  }
+
+  return (
+    <div className="flex flex-col gap-2 rounded-xl border border-red-200 bg-red-50/40 p-3">
+      <div className="flex flex-wrap items-center gap-2">
+        <input
+          type="number"
+          value={amount}
+          onChange={(e) => setAmount(e.target.value)}
+          placeholder={`Full (${inr(orderTotal(order))})`}
+          className="w-36 rounded-lg border border-outline-variant/40 bg-white px-2.5 py-1.5 text-xs outline-none focus:border-primary"
+        />
+        <input
+          type="text"
+          value={reason}
+          onChange={(e) => setReason(e.target.value)}
+          placeholder="Reason (shown on the refund record)"
+          className="min-w-[220px] flex-1 rounded-lg border border-outline-variant/40 bg-white px-2.5 py-1.5 text-xs outline-none focus:border-primary"
+        />
+      </div>
+      {error && <p className="text-xs text-red-700">{error}</p>}
+      <div className="flex gap-2">
+        <button
+          type="button"
+          disabled={busy}
+          onClick={() => void submit()}
+          className="inline-flex items-center gap-1.5 rounded-lg bg-red-600 px-3 py-1.5 text-xs font-bold text-white hover:bg-red-700 disabled:opacity-50"
+        >
+          {busy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Undo2 className="h-3.5 w-3.5" />}
+          {busy ? "Refunding…" : "Confirm refund"}
+        </button>
+        <button
+          type="button"
+          onClick={() => setOpen(false)}
+          className="rounded-lg border border-outline-variant/40 px-3 py-1.5 text-xs font-semibold text-on-surface-variant"
+        >
+          Cancel
+        </button>
+      </div>
+    </div>
+  );
+}
+
 /** Line items + payment/delivery detail — the "what and where" of the order. */
-function OrderDetail({ order }: { order: OrderDoc }) {
+function OrderDetail({ order, onRefunded }: { order: OrderDoc; onRefunded: () => void }) {
   return (
     <div className="bg-surface-container-low/60 px-4 sm:px-5 py-4 space-y-4">
       <div>
@@ -213,6 +343,9 @@ function OrderDetail({ order }: { order: OrderDoc }) {
                   Paid {new Date(order.payment.paidAt).toLocaleString("en-IN")}
                 </p>
               )}
+              <div className="pt-1">
+                <RefundPanel order={order} onRefunded={onRefunded} />
+              </div>
             </>
           ) : (
             <p className="text-xs text-on-surface-variant">No payment record on this order (cash / pre-Razorpay).</p>
@@ -621,7 +754,7 @@ export default function AdminOrdersPage() {
                     </div>
                   </button>
 
-                  {isOpen && <OrderDetail order={o} />}
+                  {isOpen && <OrderDetail order={o} onRefunded={() => loadOrders(true)} />}
                 </div>
               );
             })}
