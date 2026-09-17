@@ -2,23 +2,13 @@ import { motion } from 'framer-motion';
 import { Link } from 'react-router-dom';
 import { Check, ArrowRight } from 'lucide-react';
 import { home, container, eyebrow } from './tokens';
-import { DEFAULT_PLAN_PRICING } from '../../../utils/subscriptionPlans';
-
-// Prices, names and top features come straight from the plan source of truth.
-const plans = (['retailer', 'distributor', 'manufacturer'] as const).map((id) => {
-    const p = DEFAULT_PLAN_PRICING[id];
-    return {
-        id,
-        name: p.displayName,
-        tagline: p.tagline,
-        monthlyPrice: p.monthlyPrice,
-        badge: p.badgeVisible ? p.badge : undefined,
-        featured: id === 'distributor',
-        features: p.features.slice(0, 4),
-    };
-});
+import { usePricingPlans } from '../../../hooks/usePricingPlans';
 
 export default function HomePricingPreview() {
+    // Prices, names, badges and top features stream from the single pricing DATA
+    // source shared with /pricing — any Super Admin edit is reflected here live.
+    const { plans } = usePricingPlans();
+
     return (
         <section id="pricing" style={{ background: home.color.surface, padding: '6.5rem 2rem' }}>
             <div style={container}>
@@ -54,7 +44,7 @@ export default function HomePricingPreview() {
                                 display: 'flex', flexDirection: 'column',
                             }}
                         >
-                            {plan.badge && (
+                            {plan.badge && plan.badgeVisible && (
                                 <span style={{
                                     position: 'absolute', top: '1.5rem', right: '1.5rem',
                                     background: home.color.gold, color: home.color.forestInk,
@@ -79,7 +69,7 @@ export default function HomePricingPreview() {
                                 </span>
                             </div>
                             <ul style={{ listStyle: 'none', padding: 0, margin: '0 0 1.75rem', display: 'flex', flexDirection: 'column', gap: '0.8rem', flex: 1 }}>
-                                {plan.features.map((f) => (
+                                {plan.features.slice(0, 4).map((f) => (
                                     <li key={f} style={{
                                         display: 'flex', alignItems: 'flex-start', gap: '0.6rem',
                                         fontFamily: home.font.body, fontSize: '0.93rem',
