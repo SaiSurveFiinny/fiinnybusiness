@@ -94,6 +94,18 @@ class _CheckoutScreenState extends ConsumerState<CheckoutScreen> {
         userId: user.uid,
         clientDelivery: delivery.totalCharge,
         clientGst: gst,
+        // Same values createOrdersAfterPayment writes later — sent now so
+        // the server can rebuild the order if that later step never runs.
+        customerName: _nameCtrl.text.trim(),
+        customerPhone: _phoneCtrl.text.trim(),
+        customerAddress: {
+          'name': _nameCtrl.text.trim(),
+          'phone': _phoneCtrl.text.trim(),
+          'address': _addressCtrl.text.trim(),
+          'city': _cityCtrl.text.trim(),
+          'pincode': _pincodeCtrl.text.trim(),
+        },
+        deliveryBySeller: delivery.bySellerCharge,
       );
 
       // The Razorpay API returns the order ID in the 'id' field, not 'orderId'

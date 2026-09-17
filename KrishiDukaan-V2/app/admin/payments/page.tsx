@@ -232,10 +232,14 @@ export default function AdminPaymentsPage() {
     return c;
   }, [attempts]);
 
+  // Only genuinely failed payments — a Razorpay error the customer hit and
+  // couldn't get past. Deliberately excludes "abandoned": that bucket is
+  // someone who simply closed the checkout sheet, which is not money the
+  // gateway ever refused, so counting it here overstates real losses.
   const lostValue = useMemo(
     () =>
       attempts
-        .filter((a) => bucketOf(a) !== "paid")
+        .filter((a) => bucketOf(a) === "failed")
         .reduce((sum, a) => sum + a.amount, 0),
     [attempts],
   );

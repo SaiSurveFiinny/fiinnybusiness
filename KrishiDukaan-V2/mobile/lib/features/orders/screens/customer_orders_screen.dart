@@ -116,6 +116,7 @@ class _StatusChip extends StatelessWidget {
       'out_for_delivery' => AppColors.statusDispatched,
       'delivered' => AppColors.statusDelivered,
       'rejected' => AppColors.statusCancelled,
+      'cancelled' => AppColors.statusCancelled,
       _ => AppColors.onSurfaceVariant,
     };
 
