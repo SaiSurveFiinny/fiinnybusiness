@@ -37,7 +37,7 @@ import { tmpdir } from "os";
 import { join } from "path";
 import { unlink } from "fs/promises";
 import ffmpegPath from "ffmpeg-static";
-import { run, downloadUrl } from "./transcodeReel";
+import { downloadUrl, extractPoster, meanLuma } from "./transcodeReel";
 import { callerIsAdmin } from "./backfillReelTranscodes";
 
 const OUTPUT_NAME = "video_optimized.mp4";
@@ -51,10 +51,22 @@ const PROCESSED_MARKER = "reelOptimized";
 
 const MAX_BATCH = 50;
 const DEFAULT_BATCH = 10;
+/** Same threshold extractPoster uses to reject a frame. */
+const BLACK_LUMA = 24;
+
+/**
+ * "missing": reels with no thumbnailUrl at all (the original purpose).
+ * "black":   reels that HAVE a poster, but it is a solid black frame — what
+ *            the fixed-00:00:01 frame grab produced for any clip opening on a
+ *            fade-in. Each existing thumb is downloaded and measured; only the
+ *            dark ones are regenerated.
+ */
+type Mode = "missing" | "black";
 
 interface ThumbnailReport {
   dryRun: boolean;
-  /** Reels with no thumbnailUrl at the start of this run. */
+  mode: Mode;
+  /** Reels this mode found in need of a poster at the start of this run. */
   pending: number;
   /** Reels given a poster on this run (empty when dryRun). */
   repaired: string[];
@@ -83,6 +95,7 @@ export const backfillReelThumbnails = onCall(
     }
 
     const dryRun = request.data?.dryRun !== false;
+    const mode: Mode = request.data?.mode === "black" ? "black" : "missing";
     const requested = Number(request.data?.limit ?? DEFAULT_BATCH);
     const limit = Math.min(
       Math.max(Number.isFinite(requested) ? Math.floor(requested) : DEFAULT_BATCH, 1),
@@ -95,11 +108,33 @@ export const backfillReelThumbnails = onCall(
       : admin.storage().bucket();
     const bucketName = bucket.name;
 
-    // Every reel missing a poster. `select` keeps the read to one field.
+    // `select` keeps the read to one field.
     const reelDocs = await db.collection("reels").select("thumbnailUrl").get();
-    const pending = reelDocs.docs
-      .filter((d) => !d.data()?.thumbnailUrl)
-      .map((d) => d.id);
+    let pending: string[];
+
+    if (mode === "missing") {
+      pending = reelDocs.docs.filter((d) => !d.data()?.thumbnailUrl).map((d) => d.id);
+    } else {
+      // Measure every existing poster. Thumbs are a few KB each, so even a
+      // full scan is cheap; the expensive part (frame extraction) only runs
+      // for the ones that turn out black.
+      pending = [];
+      for (const d of reelDocs.docs) {
+        if (!d.data()?.thumbnailUrl) continue;
+        const thumbFile = bucket.file(`reels/${d.id}/${THUMB_NAME}`);
+        const [exists] = await thumbFile.exists();
+        if (!exists) continue; // poster lives elsewhere (e.g. a repost) — not ours to judge
+        const local = join(tmpdir(), `${d.id}-check.jpg`);
+        try {
+          await thumbFile.download({ destination: local });
+          if ((await meanLuma(ffmpegPath, local)) < BLACK_LUMA) pending.push(d.id);
+        } catch (err) {
+          logger.warn("[backfill-thumbs] could not measure poster", { reelId: d.id, err: String(err) });
+        } finally {
+          await unlink(local).catch(() => undefined);
+        }
+      }
+    }
 
     const repaired: string[] = [];
     const noVideo: string[] = [];
@@ -128,14 +163,7 @@ export const backfillReelThumbnails = onCall(
           await bucket.file(videoPath).download({ destination: localVideo });
 
           // Identical frame selection to transcodeReel's poster step.
-          await run(ffmpegPath, [
-            "-i", localVideo,
-            "-ss", "00:00:01",
-            "-vframes", "1",
-            "-vf", `scale=${THUMB_WIDTH}:-2`,
-            "-q:v", "5",
-            "-y", localThumb,
-          ]);
+          await extractPoster(ffmpegPath, localVideo, localThumb, THUMB_WIDTH);
 
           const token = randomUUID();
           const thumbPath = `reels/${reelId}/${THUMB_NAME}`;
@@ -174,6 +202,7 @@ export const backfillReelThumbnails = onCall(
 
     const report: ThumbnailReport = {
       dryRun,
+      mode,
       pending: pending.length,
       repaired,
       noVideo,
@@ -183,6 +212,7 @@ export const backfillReelThumbnails = onCall(
 
     logger.info("[backfill-thumbs] run complete", {
       dryRun,
+      mode,
       pending: report.pending,
       repaired: repaired.length,
       noVideo: noVideo.length,
