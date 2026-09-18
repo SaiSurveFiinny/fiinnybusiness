@@ -1015,7 +1015,12 @@ service cloud.firestore {
     // The exec owns their own sessions; the Cloud Function (admin SDK) writes
     // totalDistanceKm + calculatedAt back — admin SDK bypasses client rules.
     match /daySessions/{sessionId} {
-      allow read:   if isAuthed() && resource.data.salesExecutiveId == request.auth.uid;
+      // Owner-scoped for the exec's own /sales portal; admins may also read so
+      // the Admin Panel "Sales Team" section can show an exec's daily sessions
+      // (mirrors the isAdmin() read already granted on dealerVisits & dealers).
+      // Read-only: create/update stay exec-owned, so this grants no admin writes.
+      allow read:   if isAdmin()
+                       || (isAuthed() && resource.data.salesExecutiveId == request.auth.uid);
       allow create: if isSalesExec()
                        && request.resource.data.salesExecutiveId == request.auth.uid
                        && request.resource.data.status == 'ACTIVE';
