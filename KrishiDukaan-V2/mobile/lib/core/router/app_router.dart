@@ -29,6 +29,7 @@ import '../../features/dashboard/screens/subscription_screen.dart';
 import '../../features/dashboard/screens/dashboard_profile_screen.dart';
 import '../../features/dashboard/screens/dashboard_analytics_screen.dart';
 import '../../features/dashboard/screens/dashboard_reviews_screen.dart';
+import '../../features/enquiries/screens/enquiry_screen.dart';
 import '../../features/dashboard/screens/dashboard_reels_screen.dart';
 import '../../features/manufacturer/screens/manufacturer_dashboard_screen.dart';
 import '../../features/manufacturer/screens/retailer_network_screen.dart';
@@ -519,6 +520,13 @@ final routerProvider = Provider<GoRouter>((ref) {
         path: '/dashboard/reviews',
         parentNavigatorKey: _rootKey,
         builder: (_, _) => const _RootBackFallback(child: DashboardReviewsScreen()),
+      ),
+      // Buyer enquiries — lost checkouts this seller can still win back. Path
+      // matches web's /dashboard/enquiry, which the WhatsApp alert links to.
+      GoRoute(
+        path: '/dashboard/enquiry',
+        parentNavigatorKey: _rootKey,
+        builder: (_, _) => const _RootBackFallback(child: EnquiryScreen()),
       ),
       GoRoute(
         path: '/dashboard/reels',

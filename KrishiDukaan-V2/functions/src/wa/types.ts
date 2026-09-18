@@ -9,7 +9,7 @@ export type NotificationStatus =
   | "failed"     // permanently failed after all retries
   | "cancelled"; // cancelled before sending (e.g. order cancelled)
 
-export type NotificationType = "subscription" | "order" | "onboarding" | "general";
+export type NotificationType = "subscription" | "order" | "onboarding" | "enquiry" | "general";
 
 export type WaTemplate =
   | "subscription_welcome"
@@ -23,6 +23,7 @@ export type WaTemplate =
   | "payment_failed_app_update"
   | "retailer_seat_promotion"
   | "add_product_reminder"
+  | "enquiry_notification"
   | "generic";
 
 /** Dynamic values substituted into the template at render time (for audit/debug). */

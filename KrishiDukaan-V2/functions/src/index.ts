@@ -21,6 +21,7 @@ export {
   notifyLowStock,
 } from "./notifications/inventory";
 export { sendStoreAnalyticsDigest } from "./notifications/digest";
+export { raiseAbandonedCheckoutEnquiries } from "./notifications/enquiries";
 export {
   remindIncompleteProfiles,
   remindIncompletePayoutDetails,

@@ -10,10 +10,11 @@ type WaTemplate =
   | "product_assignment_onboarded"
   | "product_assignment_pending_signup"
   | "manufacturer_network_summary"
+  | "enquiry_notification"
   | "generic";
 
 type WaPayload = Record<string, string | number | boolean>;
-type NotificationType = "subscription" | "order" | "onboarding" | "general";
+type NotificationType = "subscription" | "order" | "onboarding" | "enquiry" | "general";
 
 interface WaSourceEvent {
   event: string;

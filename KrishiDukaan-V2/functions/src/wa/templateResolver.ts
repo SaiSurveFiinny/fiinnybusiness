@@ -51,6 +51,21 @@ export function resolveTemplateComponents(
       // Static Orders Dashboard URL button in the template — no button component needed.
       return [body(p("shopName") || p("businessName") || "Retailer")];
 
+    case "enquiry_notification":
+      // Sent to every seller offering a product whose checkout was abandoned.
+      // {{1}} = shopName → businessName → "Retailer"
+      // {{2}} = customerName
+      // {{3}} = product (first item, "+N more" when the basket had several)
+      // Static URL button in the template: https://krishidukan.com/dashboard/enquiry
+      // — static, so no button component is sent from here.
+      return [
+        body(
+          p("shopName") || p("businessName") || "Retailer",
+          p("customerName"),
+          p("product"),
+        ),
+      ];
+
     case "order_confirmation_customer":
       // Sent to the CUSTOMER immediately after order placement.
       // Body:   {{1}} = customerName

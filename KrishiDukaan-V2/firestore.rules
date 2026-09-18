@@ -345,6 +345,41 @@ service cloud.firestore {
       allow write: if false;
     }
 
+    // ─── enquiries ────────────────────────────────────────────────────────────
+    // A lost sale, fanned out to the sellers who could still win it: when a
+    // checkout is abandoned or fails, the scheduled sweep in
+    // functions/src/notifications/enquiries.ts writes one doc per SELLER of the
+    // products involved, carrying only that seller's lines plus the buyer's
+    // name and phone so they can call and follow up.
+    //
+    // Deliberately a separate collection from paymentAttempts: an attempt doc
+    // holds every seller's lines in a multi-seller basket plus the buyer's
+    // delivery address, and rules cannot filter fields — so a seller could
+    // never be given read access to it directly.
+    //
+    // Server-writes only (the sweep uses the Admin SDK, which bypasses these
+    // rules). A seller cannot forge a lead or rewrite what the buyer tried to
+    // order; they may only move their own copy through its follow-up states.
+    match /enquiries/{enquiryId} {
+      // GET (single doc): resource.data is available — check the phone directly.
+      allow get: if isAdmin() || (isAuthed() && (
+        phoneMatches(resource.data.sellerPhone) ||
+        (resource.data.sellerPhones is list &&
+          resource.data.sellerPhones.hasAny([myPhone(), myPhone().replace('+91', '')]))
+      ));
+      // LIST (query): resource.data is NOT available during query evaluation,
+      // same as notifications — the query is always filtered by
+      // `sellerPhones arrayContains <callerPhone>`, so results are already scoped.
+      allow list: if isAuthed();
+      allow update: if isAdmin() || (isAuthed()
+        && (phoneMatches(resource.data.sellerPhone) ||
+            (resource.data.sellerPhones is list &&
+              resource.data.sellerPhones.hasAny([myPhone(), myPhone().replace('+91', '')])))
+        && request.resource.data.diff(resource.data).affectedKeys()
+             .hasOnly(['status', 'sellerNote', 'contactedAt', 'updatedAt']));
+      allow create, delete: if false;
+    }
+
     match /failedPayments/{paymentId} {
       allow read: if isAdmin();
       allow create: if isAuthed() && (

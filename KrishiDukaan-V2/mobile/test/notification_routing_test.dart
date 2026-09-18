@@ -14,6 +14,15 @@ void main() {
       expect(routeForNotification('order_update', {}), '/orders');
     });
 
+    test('abandoned-checkout enquiry opens the seller enquiry list', () {
+      // Must stay in step with web's /dashboard/enquiry — the WhatsApp
+      // template for the same event links there, so the two platforms have to
+      // agree on the path.
+      expect(routeForNotification('enquiry', {'enquiryId': 'e1'}),
+          '/dashboard/enquiry');
+      expect(routeForNotification('enquiry', {}), '/dashboard/enquiry');
+    });
+
     test('inventory and low stock open the product for editing', () {
       expect(
         routeForNotification('inventory_added', {'productId': 'p1'}),
