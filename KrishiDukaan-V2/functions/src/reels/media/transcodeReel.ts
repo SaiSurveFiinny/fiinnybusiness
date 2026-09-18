@@ -44,7 +44,7 @@ const SOURCE_NAME = "video.mp4";
 const OUTPUT_NAME = "video_optimized.mp4";
 const THUMB_NAME = "thumb.jpg";
 
-function run(bin: string, args: string[]): Promise<void> {
+export function run(bin: string, args: string[]): Promise<void> {
   return new Promise((resolve, reject) => {
     const proc = spawn(bin, args);
     let stderr = "";
@@ -65,7 +65,7 @@ function run(bin: string, args: string[]): Promise<void> {
  * Builds the tokenised download URL format the clients already store in
  * `reels/{id}.videoUrl`, so nothing downstream has to learn a second URL shape.
  */
-function downloadUrl(bucket: string, objectPath: string, token: string): string {
+export function downloadUrl(bucket: string, objectPath: string, token: string): string {
   return (
     `https://firebasestorage.googleapis.com/v0/b/${bucket}/o/` +
     `${encodeURIComponent(objectPath)}?alt=media&token=${token}`

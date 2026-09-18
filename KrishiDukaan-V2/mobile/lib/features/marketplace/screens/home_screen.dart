@@ -1064,6 +1064,17 @@ class _ReelsRail extends ConsumerWidget {
   }
 }
 
+/// A reel's poster: its own thumbnail, else the image of the product it
+/// links to. Null when neither exists, so the caller can skip the image
+/// entirely rather than request an empty URL.
+String? _reelThumb(ReelModel reel) {
+  final thumb = reel.thumbnailUrl;
+  if (thumb != null && thumb.isNotEmpty) return thumb;
+  final product = reel.linkedProductImageUrl;
+  if (product != null && product.isNotEmpty) return product;
+  return null;
+}
+
 class _ReelRailCard extends ConsumerWidget {
   final ReelModel reel;
 
@@ -1107,11 +1118,15 @@ class _ReelRailCard extends ConsumerWidget {
         child: Stack(
           fit: StackFit.expand,
           children: [
-            if (reel.thumbnailUrl != null && reel.thumbnailUrl!.isNotEmpty) ...[
+            // Falls back to the linked product image the way the reels feed
+            // already does (reels_feed_screen.dart). Reels uploaded before
+            // server-side poster generation shipped carry no thumbnailUrl, and
+            // without a fallback those cards render as a bare gradient.
+            if (_reelThumb(reel) != null) ...[
               ClipRRect(
                 borderRadius: BorderRadius.circular(12),
                 child: CachedNetworkImage(
-                  imageUrl: resolveImageUrl(reel.thumbnailUrl!),
+                  imageUrl: resolveImageUrl(_reelThumb(reel)),
                   fit: BoxFit.cover,
                   errorWidget: (context, url, error) => const SizedBox.shrink(),
                 ),
