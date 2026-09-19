@@ -155,6 +155,7 @@ class ManufacturerRepository {
     String? city,
     String? state,
     String? pincode,
+    GeoPoint? geo,
   }) async {
     final manufacturerId = FirebaseAuth.instance.currentUser?.uid ?? '';
     final code = _generateInviteCode();
@@ -187,6 +188,7 @@ class ManufacturerRepository {
       'subscriptionStatus': 'free',
       'createdAt': now,
       'updatedAt': now,
+      if (geo != null) 'geo': geo,
     };
     batch.set(retailerRef, retailerPayload, SetOptions(merge: true));
 
@@ -216,6 +218,7 @@ class ManufacturerRepository {
         'state': state?.trim() ?? '',
         'pincode': pincode?.trim() ?? '',
       },
+      if (geo != null) 'geo': geo,
     };
     batch.set(inviteRef, invitePayload);
 
@@ -232,6 +235,7 @@ class ManufacturerRepository {
       'onboardingStatus': 'pending',
       'addedAt': now,
       'updatedAt': now,
+      if (geo != null) 'geo': geo,
     };
     batch.set(mirrorRef, mirrorPayload, SetOptions(merge: true));
 
@@ -275,6 +279,7 @@ class ManufacturerRepository {
     String? city,
     String? state,
     String? pincode,
+    GeoPoint? geo,
   }) async {
     final now = FieldValue.serverTimestamp();
     final normalizedPhone = PhoneUtils.normalize(phone);
@@ -294,6 +299,7 @@ class ManufacturerRepository {
       'retailerDocId': normalizedPhone,
       'retailerEmail': email.trim().toLowerCase(),
       if (hasAddress) 'address': address,
+      if (geo != null) 'geo': geo,
       'updatedAt': now,
     });
 
@@ -305,6 +311,7 @@ class ManufacturerRepository {
         'ownerName': ownerName.trim(),
         'email': email.trim().toLowerCase(),
         if (hasAddress) 'address': address,
+        if (geo != null) 'geo': geo,
         'updatedAt': now,
       }, SetOptions(merge: true));
     } catch (_) {
@@ -321,6 +328,8 @@ class ManufacturerRepository {
         'manufacturerPhone': manufacturerPhone,
         'shopName': shopName.trim(),
         'ownerName': ownerName.trim(),
+        if (hasAddress) 'address': address,
+        if (geo != null) 'geo': geo,
         'updatedAt': now,
       }, SetOptions(merge: true));
     }
@@ -669,6 +678,14 @@ class ManufacturerRepository {
     String sellMode = 'online_delivery',
     bool gstApplicable = false,
     double gstRate = 18.0,
+    // Web-parity product detail fields (see product_form_sections.dart) —
+    // this screen wrote products with none of these until now, so a
+    // manufacturer's catalog entry always lacked the structured detail a
+    // web-created one had.
+    Map<String, dynamic>? categoryInfo,
+    List<Map<String, String>>? composition,
+    List<Map<String, String>>? customFields,
+    String? videoUrl,
   }) async {
     final nameSearch = _buildNameSearch(name);
     final uid = FirebaseAuth.instance.currentUser?.uid;
@@ -684,6 +701,10 @@ class ManufacturerRepository {
       if (nitrogen != null) 'nitrogen': nitrogen,
       if (phosphorus != null) 'phosphorus': phosphorus,
       if (potassium != null) 'potassium': potassium,
+      if (categoryInfo != null && categoryInfo.isNotEmpty) 'categoryInfo': categoryInfo,
+      if (composition != null && composition.isNotEmpty) 'composition': composition,
+      if (customFields != null && customFields.isNotEmpty) 'customFields': customFields,
+      if (videoUrl != null && videoUrl.isNotEmpty) 'videoUrl': videoUrl,
       'createdByPhone': manufacturerPhone,
       'manufacturerPhone': manufacturerPhone,
       'ownerId': uid,

@@ -1036,6 +1036,43 @@ class DashboardRepository {
     }
   }
 
+  /// Mirrors web's enableOnlineDeliveryWithGst (profile-persistence.ts): the
+  /// single combined write that happens only after the seller has confirmed
+  /// their GST number AND agreed to the Online Delivery Terms dialog. Writes
+  /// gstin + gstRegistered + onlineDelivery:true + the terms-acceptance
+  /// receipt across the same three collections as the other mirrors above.
+  Future<void> enableOnlineDeliveryWithGst(
+    String sellerPhone, {
+    required bool isManufacturer,
+    required String gstin,
+    required Map<String, dynamic> termsAcceptance,
+  }) async {
+    if (sellerPhone.isEmpty) return;
+
+    final payload = {
+      'gstin': gstin,
+      'gstRegistered': true,
+      'onlineDelivery': true,
+      'onlineDeliveryTerms': termsAcceptance,
+      'updatedAt': FieldValue.serverTimestamp(),
+    };
+
+    await _db
+        .collection('users')
+        .doc(sellerPhone)
+        .set(payload, SetOptions(merge: true));
+
+    final profileCollection = isManufacturer ? 'manufacturers' : 'retailers';
+    for (final path in [profileCollection, 'profiles']) {
+      try {
+        await _db.collection(path).doc(sellerPhone).update(payload);
+      } catch (_) {
+        // Mirror doesn't exist yet, or isn't writable — users/{phone} above
+        // is already the source of truth the enable-gate itself checks.
+      }
+    }
+  }
+
   /// Reads the seller's account-level online-delivery flag using web's exact
   /// precedence (profiles -> users -> retailers|manufacturers), so the toggle
   /// shows the same state the web dashboard would.
@@ -1211,6 +1248,17 @@ class DashboardRepository {
     return await task.ref.getDownloadURL();
   }
 
+  /// Uploads a seller's shop banner and returns its public download URL. Same
+  /// `profile-images/**` storage.rules prefix as the logo — web's dashboard
+  /// banner uploader (handleBannerFile) writes to `profile-images/banners`.
+  Future<String> uploadProfileBanner(File imageFile, String phone) async {
+    final ref = _storage.ref().child(
+      'profile-images/banners/${DateTime.now().millisecondsSinceEpoch}-$phone.jpg',
+    );
+    final task = await ref.putFile(imageFile);
+    return await task.ref.getDownloadURL();
+  }
+
   // ── Seat stats ────────────────────────────────────────────────────────────
 
   /// Computes real seat stats from `subscriptions` + `retailerSeatListings`,
@@ -1280,8 +1328,11 @@ class DashboardRepository {
         if (expiry != null && expiry.toDate().isBefore(now)) continue;
         final seats = (d['seatsPurchased'] as num?)?.toInt() ?? 0;
         totalPurchased += seats;
+        // Web's tile is labelled "Subscriptions in 30 days" (isExpiringSoon,
+        // app/dashboard/_lib/subscriptions-firestore.ts) - this used to say
+        // <= 5, so the count almost never matched what the label promised.
         if (expiry != null &&
-            expiry.toDate().difference(now).inDays <= 5) {
+            expiry.toDate().difference(now).inDays <= 30) {
           expiringSoon++;
         }
       }

@@ -1079,6 +1079,12 @@ export default function App() {
           clientDelivery,
           clientGrandTotal,
           note: `Cart: ${readyItems.length} item(s)`,
+          // Sent BEFORE payment so the server already holds everything needed
+          // to rebuild this order if the post-payment write below never runs
+          // (closed tab, dropped network). See app/lib/order-recovery.ts.
+          customerName:    checkoutInfo.customerName.trim(),
+          customerPhone:   checkoutInfo.customerPhone.trim(),
+          customerAddress,
         }),
       });
 
