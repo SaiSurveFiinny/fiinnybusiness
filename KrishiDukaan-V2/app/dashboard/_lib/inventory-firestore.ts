@@ -177,6 +177,33 @@ function mapInventory(id: string, data: Record<string, unknown>): InventoryDoc {
  * though they appear in the marketplace (which matches by phone). Each query is
  * individually ownership-scoped so the Firestore `products` rule still covers it.
  */
+/**
+ * Stand-in inventory row built from the product doc itself, for a product
+ * whose `inventory` document is missing. Used only as a fallback so the
+ * product still appears (see fetchRetailerInventoryRows); `inventoryId` is
+ * empty, which is how callers tell a synthetic row from a real one.
+ */
+function syntheticInventoryFor(p: ProductDoc): InventoryDoc {
+  const raw = p as unknown as Record<string, unknown>;
+  const stock = Number(raw.stockQuantity ?? raw.stock ?? 0);
+  return {
+    id: "",
+    productId: p.id,
+    stockQuantity: Number.isFinite(stock) ? stock : 0,
+    sellingPrice: Number(p.price ?? 0),
+    reorderThreshold: 5,
+    updatedAt: (raw.updatedAt as InventoryDoc["updatedAt"]) ?? null,
+    discountEnabled: false,
+    discountType: "percentage",
+    discountPct: 0,
+    discountFixedAmt: 0,
+    discountStartDate: null,
+    discountEndDate: null,
+    bulkDiscountEnabled: false,
+    bulkDiscountTiers: [],
+  } as InventoryDoc;
+}
+
 async function fetchProductsByOwner(
   ownerId: string,
   ownerType: "manufacturer" | "retailer",
@@ -394,8 +421,18 @@ export async function fetchRetailerInventoryRows(
   const inventoryMap = await fetchInventoryForRetailer(ownerId, retailerDocId, retailerPhone);
 
   const rows: InventoryRow[] = products.flatMap((p) => {
-    const inv = inventoryMap.get(p.id);
-    if (!inv) return [];
+    // A product with no `inventory` doc used to be dropped silently — the
+    // seller's own item simply vanished from their dashboard with no error,
+    // and admin viewing that seller saw an empty inventory. It is a real
+    // failure mode: 82 live products across 15 sellers were invisible this
+    // way (assignment flows and older app builds that wrote the product
+    // without its inventory row).
+    //
+    // The product doc already carries price/stockQuantity, so a missing
+    // inventory row is recoverable — fall back to it rather than hiding
+    // stock the seller believes they listed. syntheticInventoryFor keeps
+    // the shape identical so every field below reads the same either way.
+    const inv = inventoryMap.get(p.id) ?? syntheticInventoryFor(p);
     const status = deriveStockStatus(inv.stockQuantity, inv.reorderThreshold);
     const raw = p as unknown as Record<string, unknown>;
     return [

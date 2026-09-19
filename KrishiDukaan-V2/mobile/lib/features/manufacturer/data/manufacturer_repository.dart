@@ -689,7 +689,15 @@ class ManufacturerRepository {
   }) async {
     final nameSearch = _buildNameSearch(name);
     final uid = FirebaseAuth.instance.currentUser?.uid;
-    await _db.collection('catalog').add({
+    // `products` — NOT `catalog`. This used to write to `catalog`, which the
+    // entire website never reads: not the seller dashboard, not admin, not
+    // the marketplace (see app/dashboard/_lib/inventory-firestore.ts, which
+    // queries `products` only). A manufacturer adding a product from the app
+    // therefore created something only the app's own catalog screen could
+    // see — invisible to their own web dashboard, to admin, and to every
+    // customer. `products` is the single source of truth for a listing; see
+    // mobile/CLAUDE.md, which already said so.
+    await _db.collection('products').add({
       'name': name,
       'nameSearch': nameSearch,
       'category': category,
@@ -707,9 +715,19 @@ class ManufacturerRepository {
       if (videoUrl != null && videoUrl.isNotEmpty) 'videoUrl': videoUrl,
       'createdByPhone': manufacturerPhone,
       'manufacturerPhone': manufacturerPhone,
+      'manufacturerId': uid,
       'ownerId': uid,
+      // ownerPhone so the phone-keyed reader path resolves too — web queries
+      // ownerId by BOTH uid and phone (fetchProductsByOwner).
+      'ownerPhone': manufacturerPhone,
       'ownerType': 'manufacturer',
+      'sellerType': 'manufacturer',
       'source': 'manufacturer_inventory',
+      // Marketplace card requirements: fetchMarketplaceProducts drops any
+      // product without a name, an image and a finite price.
+      'isOnline': sellMode != 'offline_store_only',
+      'stock': 'In Stock',
+      'store': '',
       'variants': variants.map((v) => v.toMap()).toList(),
       'isActive': isActive,
       'sellMode': sellMode,
