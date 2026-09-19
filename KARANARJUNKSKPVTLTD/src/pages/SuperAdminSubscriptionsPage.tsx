@@ -1,12 +1,12 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import {
     ShieldCheck, Save, Layers, Building2, RefreshCw, Check, Info, ArrowLeft, Loader2, LayoutDashboard,
-    LayoutGrid, Pencil, X, Calendar, CreditCard, Plus, Trash2, Tag, Zap, Rocket, Crown, Eye,
+    LayoutGrid, Pencil, X, Calendar, CreditCard, Plus, Trash2, Tag, Eye, ArrowRight,
     Search, ArrowDown, ArrowUp, Filter, Briefcase, ExternalLink, LifeBuoy, MessageSquare, Paperclip, Mail,
-    ChevronDown, ChevronRight, Percent, Power,
+    ChevronDown, ChevronRight, Percent, Power, ScrollText,
 } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
-import { collection, getDocs, doc, setDoc, addDoc, deleteDoc, serverTimestamp, query, orderBy } from 'firebase/firestore';
+import { collection, getDocs, doc, setDoc, addDoc, deleteDoc, serverTimestamp, query, orderBy, writeBatch } from 'firebase/firestore';
 import { db } from '../firebase';
 import { useAuth } from '../contexts/AuthContext';
 import { useToast } from '../contexts/ToastContext';
@@ -27,6 +27,15 @@ import {
     buildPlanEntitlement,
     derivePlanEditorState,
 } from '../utils/subscriptionCatalog';
+import {
+    PRICING_TIERS,
+    PRICING_TIER_BY_CATALOG,
+    PUBLIC_PLANS_COLLECTION,
+    buildPricingPlan,
+    type PricingPlan,
+} from '../hooks/usePricingPlans';
+import PricingPlanCard from '../components/pricing/PricingPlanCard';
+import { home } from '../components/landing/home/tokens';
 import {
     JOB_OPENINGS_COLLECTION,
     EMPLOYMENT_TYPES,
@@ -54,21 +63,16 @@ import {
     type PromoBillingCycle,
     type PromoTier,
 } from '../utils/planPromotions';
+import { logPlatformAudit } from '../utils/platformAuditLog';
+import AuditLogsSection from '../components/AuditLogsSection';
 
-// Plans shown in the catalogue, in tier order. Reuses the Phase 2A seed defaults.
-const PLAN_ORDER: PlanId[] = ['retailer', 'distributor', 'manufacturer'];
+// Plans shown in the catalogue, in tier order. Derived from the shared pricing
+// catalogue (single source of truth) so ordering never drifts from /pricing.
+const PLAN_ORDER: PlanId[] = PRICING_TIERS.map(t => t.catalogId);
 
 // Stable signature of the editor's state — used to detect unsaved edits.
 const serializeEditor = (keys: Set<string>, sections: Set<string>, landing: string) =>
     JSON.stringify({ k: [...keys].sort(), s: [...sections].sort(), l: landing });
-
-// Per-plan card visuals for the live preview — mirrors PLAN_VISUALS on the
-// customer PricingPage so the preview looks like the real /pricing card.
-const PLAN_PREVIEW_VISUALS: Record<string, { icon: typeof Zap; color: string; gradient: string }> = {
-    retailer:     { icon: Zap,    color: '#6366f1', gradient: 'linear-gradient(135deg, #6366f1, #8b5cf6)' },
-    distributor:  { icon: Rocket, color: '#10b981', gradient: 'linear-gradient(135deg, #10b981, #059669)' },
-    manufacturer: { icon: Crown,  color: '#f59e0b', gradient: 'linear-gradient(135deg, #f59e0b, #d97706)' },
-};
 
 // A blank pricing block, used when neither the plan doc nor the seed defaults
 // carry pricing (e.g. a future custom plan id).
@@ -218,7 +222,7 @@ interface SaasPaymentRow {
     createdAt?: unknown;
 }
 
-type Section = 'overview' | 'businesses' | 'plans' | 'promotions' | 'payments' | 'careers' | 'support';
+type Section = 'overview' | 'businesses' | 'plans' | 'promotions' | 'payments' | 'careers' | 'support' | 'audit-logs';
 
 // Every section is addressable via a stable hash (/super-admin#<id>). Adding a
 // future section only requires appending an entry here.
@@ -230,6 +234,7 @@ const SIDEBAR_SECTIONS: { id: Section; label: string; icon: typeof LayoutGrid }[
     { id: 'payments',   label: 'Payments',   icon: CreditCard },
     { id: 'careers',    label: 'Careers',    icon: Briefcase },
     { id: 'support',    label: 'Support',    icon: LifeBuoy },
+    { id: 'audit-logs', label: 'Audit Logs', icon: ScrollText },
 ];
 
 // Compact colour map for a support ticket's lifecycle status badge.
@@ -339,9 +344,32 @@ const formatAmount = (paise?: number, currency = 'INR'): string => {
 };
 
 export default function SuperAdminSubscriptionsPage() {
-    const { isSuperAdmin, currentUser, enterTenantView } = useAuth();
+    const { isSuperAdmin, currentUser, userRole, enterTenantView } = useAuth();
     const { showToast } = useToast();
     const navigate = useNavigate();
+
+    // Verified actor for audit entries. actorUid is checked against the auth token
+    // in firestore.rules, so this identity cannot be forged from the client.
+    const auditActor = {
+        uid: currentUser?.uid || '',
+        email: currentUser?.email || '',
+        role: userRole || (isSuperAdmin ? 'superadmin' : 'unknown'),
+    };
+
+    // Record a single Super Admin sign-in security event per browser session.
+    // Guarded by sessionStorage so token refreshes / remounts don't duplicate it.
+    useEffect(() => {
+        if (!isSuperAdmin || !currentUser?.uid) return;
+        const flag = `platformAuditLogin:${currentUser.uid}`;
+        if (sessionStorage.getItem(flag)) return;
+        sessionStorage.setItem(flag, '1');
+        logPlatformAudit({
+            actor: { uid: currentUser.uid, email: currentUser.email || '', role: userRole || 'superadmin' },
+            category: 'security', action: 'login',
+            resourceType: 'session', resourceName: currentUser.email || currentUser.uid,
+            description: `Super Admin signed in to the platform console`,
+        });
+    }, [isSuperAdmin, currentUser?.uid, currentUser?.email, userRole]);
 
     // Open a tenant's normal ERP dashboard with full Super Admin access.
     const openTenantDashboard = (row: TenantRow) => {
@@ -423,7 +451,9 @@ export default function SuperAdminSubscriptionsPage() {
     // Per-row busy marker (activate/deactivate/delete) keyed by promotion id.
     const [busyPromo, setBusyPromo] = useState<string | null>(null);
 
-    // Plan detail: Module Access is collapsible so Pricing & Content is the focus.
+    // Plan detail: both sections are collapsible and collapsed by default; the
+    // Super Admin expands whichever they need to edit.
+    const [pricingContentOpen, setPricingContentOpen] = useState(false);
     const [moduleAccessOpen, setModuleAccessOpen] = useState(false);
 
     // isSuperAdmin comes directly from AuthContext (superadmin@fiinny.com identity check).
@@ -643,9 +673,23 @@ export default function SuperAdminSubscriptionsPage() {
                 createdAt: existing?.createdAt ?? serverTimestamp(),
                 updatedAt: serverTimestamp(),
             };
-            await setDoc(doc(db, 'plans', selectedPlan), payload, { merge: true });
+            // Write the authoritative plan doc AND its public pricing projection in
+            // one atomic batch, so the landing page / logged-out /pricing always show
+            // the same prices as authenticated users. The projection carries ONLY the
+            // customer-facing `pricing` subset — never entitlement config.
+            const batch = writeBatch(db);
+            batch.set(doc(db, 'plans', selectedPlan), payload, { merge: true });
+            batch.set(doc(db, PUBLIC_PLANS_COLLECTION, selectedPlan), { pricing, updatedAt: serverTimestamp() }, { merge: true });
+            await batch.commit();
             setPlans(prev => ({ ...prev, [selectedPlan]: payload }));
             showToast(`Plan "${payload.name}" saved.`, 'success');
+            logPlatformAudit({
+                actor: auditActor, category: 'plan', action: existing ? 'update' : 'create',
+                resourceType: 'plan', resourceId: selectedPlan, resourceName: payload.name,
+                description: `Plan "${payload.name}" ${existing ? 'updated' : 'created'}`,
+                before: existing ? { isActive: existing.isActive, screens: existing.screens?.length, pricing: existing.pricing } : undefined,
+                after: { isActive: payload.isActive, screens: payload.screens.length, pricing: payload.pricing },
+            });
         } catch {
             showToast('Failed to save plan.', 'error');
         } finally {
@@ -656,17 +700,38 @@ export default function SuperAdminSubscriptionsPage() {
     const seedDefaults = async () => {
         setSeeding(true);
         try {
+            const seeded: string[] = [];
             for (const id of PLAN_ORDER) {
-                if (plans[id]) continue; // never overwrite an edited plan
-                const seed = DEFAULT_PLAN_CATALOGUE[id as keyof typeof DEFAULT_PLAN_CATALOGUE];
-                await setDoc(doc(db, 'plans', id), {
-                    ...seed,
-                    createdAt: serverTimestamp(),
-                    updatedAt: serverTimestamp(),
-                }, { merge: true });
+                // Seed the authoritative doc only when missing (never overwrite an edit).
+                if (!plans[id]) {
+                    const seed = DEFAULT_PLAN_CATALOGUE[id as keyof typeof DEFAULT_PLAN_CATALOGUE];
+                    await setDoc(doc(db, 'plans', id), {
+                        ...seed,
+                        createdAt: serverTimestamp(),
+                        updatedAt: serverTimestamp(),
+                    }, { merge: true });
+                    seeded.push(id);
+                }
+                // (Re)publish the public pricing projection for EVERY plan — from the
+                // existing plan's live pricing when present, else the seed defaults.
+                // This backfills projections for plans that predate the projection.
+                const projectionPricing = resolvePricing(id, plans[id]);
+                await setDoc(
+                    doc(db, PUBLIC_PLANS_COLLECTION, id),
+                    { pricing: projectionPricing, updatedAt: serverTimestamp() },
+                    { merge: true },
+                );
             }
             await loadPlans();
-            showToast('Missing plans seeded from defaults.', 'success');
+            showToast('Plans seeded and public pricing published.', 'success');
+            if (seeded.length) {
+                logPlatformAudit({
+                    actor: auditActor, category: 'plan', action: 'seed',
+                    resourceType: 'plan', resourceName: 'Plan catalogue defaults',
+                    description: `Seeded default plan(s): ${seeded.join(', ')}`,
+                    after: { seeded },
+                });
+            }
         } catch {
             showToast('Failed to seed plans.', 'error');
         } finally {
@@ -691,6 +756,18 @@ export default function SuperAdminSubscriptionsPage() {
             await setDoc(doc(db, 'tenantSubscriptions', row.tenantId), payload, { merge: true });
             setTenants(prev => prev.map(t => t.tenantId === row.tenantId ? { ...t, subscription: payload } : t));
             showToast(`${row.businessName} → ${plans[planId]?.name || planId} (${status}).`, 'success');
+            const prevStatus = existing?.status;
+            const action = status === 'suspended'
+                ? 'suspend'
+                : (prevStatus === 'suspended' ? 'activate' : 'update');
+            logPlatformAudit({
+                actor: auditActor, category: 'business', action,
+                resourceType: 'subscription', resourceId: row.tenantId, resourceName: row.businessName,
+                tenantId: row.tenantId, tenantName: row.businessName,
+                description: `Subscription set to ${plans[planId]?.name || planId} · status ${status}`,
+                before: existing ? { planId: existing.planId, status: existing.status } : undefined,
+                after: { planId, status },
+            });
             setEditingTenant(null);
         } catch {
             showToast('Failed to update subscription.', 'error');
@@ -718,13 +795,22 @@ export default function SuperAdminSubscriptionsPage() {
                 status: form.status,
                 updatedAt: serverTimestamp(),
             };
+            let resourceId = existing?.id;
             if (existing) {
                 await setDoc(doc(db, JOB_OPENINGS_COLLECTION, existing.id), base, { merge: true });
                 showToast(`"${base.title}" updated.`, 'success');
             } else {
-                await addDoc(collection(db, JOB_OPENINGS_COLLECTION), { ...base, createdAt: serverTimestamp() });
+                const ref = await addDoc(collection(db, JOB_OPENINGS_COLLECTION), { ...base, createdAt: serverTimestamp() });
+                resourceId = ref.id;
                 showToast(`"${base.title}" created.`, 'success');
             }
+            logPlatformAudit({
+                actor: auditActor, category: 'career', action: existing ? 'update' : 'create',
+                resourceType: 'jobOpening', resourceId, resourceName: base.title,
+                description: `Job opening "${base.title}" ${existing ? 'updated' : 'created'} · status ${base.status}`,
+                before: existing ? { title: existing.title, status: existing.status, department: existing.department } : undefined,
+                after: { title: base.title, status: base.status, department: base.department, location: base.location },
+            });
             setEditingJob(null);
             await loadJobs();
         } catch {
@@ -742,6 +828,13 @@ export default function SuperAdminSubscriptionsPage() {
             setJobs(prev => prev.map(j => j.id === job.id ? { ...j, status } : j));
             const verb = status === 'published' ? 'published' : status === 'closed' ? 'closed' : 'moved to draft';
             showToast(`"${job.title}" ${verb}.`, 'success');
+            logPlatformAudit({
+                actor: auditActor, category: 'career',
+                action: status === 'published' ? 'publish' : status === 'closed' ? 'close' : 'status_change',
+                resourceType: 'jobOpening', resourceId: job.id, resourceName: job.title,
+                description: `Job opening "${job.title}" ${verb}`,
+                before: { status: job.status }, after: { status },
+            });
         } catch {
             showToast('Failed to update status.', 'error');
         } finally {
@@ -756,6 +849,12 @@ export default function SuperAdminSubscriptionsPage() {
             await deleteDoc(doc(db, JOB_OPENINGS_COLLECTION, job.id));
             setJobs(prev => prev.filter(j => j.id !== job.id));
             showToast(`"${job.title}" deleted.`, 'success');
+            logPlatformAudit({
+                actor: auditActor, category: 'career', action: 'delete',
+                resourceType: 'jobOpening', resourceId: job.id, resourceName: job.title,
+                description: `Job opening "${job.title}" deleted`,
+                before: { title: job.title, status: job.status, department: job.department },
+            });
         } catch {
             showToast('Failed to delete job opening.', 'error');
         } finally {
@@ -787,6 +886,15 @@ export default function SuperAdminSubscriptionsPage() {
             setTickets(prev => prev.map(t => t.id === ticket.id ? { ...t, ...payload } : t));
             setSelectedTicket(null);
             showToast('Ticket updated.', 'success');
+            logPlatformAudit({
+                actor: auditActor, category: 'support',
+                action: changes.status !== ticket.status ? 'status_change' : 'update',
+                resourceType: 'ticket', resourceId: ticket.id, resourceName: ticket.subject,
+                tenantId: ticket.tenantId, tenantName: ticket.businessName,
+                description: `Ticket "${ticket.subject}" updated · status ${changes.status} · priority ${changes.priority}`,
+                before: { status: ticket.status, priority: ticket.priority, hasResponse: !!ticket.adminResponse },
+                after: { status: changes.status, priority: changes.priority, hasResponse: !!changes.adminResponse.trim() },
+            });
         } catch {
             showToast('Failed to update ticket.', 'error');
         } finally {
@@ -815,17 +923,26 @@ export default function SuperAdminSubscriptionsPage() {
                 isActive: form.isActive,
                 updatedAt: serverTimestamp(),
             };
+            let resourceId = existing?.id;
             if (existing) {
                 await setDoc(doc(db, PLAN_PROMOTIONS_COLLECTION, existing.id), base, { merge: true });
                 showToast(`Promotion "${base.label}" updated.`, 'success');
             } else {
-                await addDoc(collection(db, PLAN_PROMOTIONS_COLLECTION), {
+                const ref = await addDoc(collection(db, PLAN_PROMOTIONS_COLLECTION), {
                     ...base,
                     createdBy: currentUser?.email || currentUser?.uid || 'superadmin',
                     createdAt: serverTimestamp(),
                 });
+                resourceId = ref.id;
                 showToast(`Promotion "${base.label}" created.`, 'success');
             }
+            logPlatformAudit({
+                actor: auditActor, category: 'promotion', action: existing ? 'update' : 'create',
+                resourceType: 'promotion', resourceId, resourceName: base.label,
+                description: `Promotion "${base.label}" ${existing ? 'updated' : 'created'} · ${base.discountPct}% off`,
+                before: existing ? { discountPct: existing.discountPct, tiers: existing.tiers, billingCycle: existing.billingCycle, isActive: existing.isActive, startDate: existing.startDate, endDate: existing.endDate } : undefined,
+                after: { discountPct: base.discountPct, tiers: base.tiers, billingCycle: base.billingCycle, isActive: base.isActive, startDate: base.startDate, endDate: base.endDate },
+            });
             setEditingPromo(null);
             await loadPromotions();
         } catch {
@@ -843,6 +960,12 @@ export default function SuperAdminSubscriptionsPage() {
             await setDoc(doc(db, PLAN_PROMOTIONS_COLLECTION, promo.id), { isActive: next, updatedAt: serverTimestamp() }, { merge: true });
             setPromotions(prev => prev.map(p => p.id === promo.id ? { ...p, isActive: next } : p));
             showToast(`Promotion "${promo.label}" ${next ? 'activated' : 'deactivated'}.`, 'success');
+            logPlatformAudit({
+                actor: auditActor, category: 'promotion', action: next ? 'activate' : 'deactivate',
+                resourceType: 'promotion', resourceId: promo.id, resourceName: promo.label,
+                description: `Promotion "${promo.label}" ${next ? 'activated' : 'deactivated'}`,
+                before: { isActive: promo.isActive }, after: { isActive: next },
+            });
         } catch {
             showToast('Failed to update promotion.', 'error');
         } finally {
@@ -857,6 +980,12 @@ export default function SuperAdminSubscriptionsPage() {
             await deleteDoc(doc(db, PLAN_PROMOTIONS_COLLECTION, promo.id));
             setPromotions(prev => prev.filter(p => p.id !== promo.id));
             showToast(`Promotion "${promo.label}" deleted.`, 'success');
+            logPlatformAudit({
+                actor: auditActor, category: 'promotion', action: 'delete',
+                resourceType: 'promotion', resourceId: promo.id, resourceName: promo.label,
+                description: `Promotion "${promo.label}" deleted`,
+                before: { discountPct: promo.discountPct, tiers: promo.tiers, isActive: promo.isActive },
+            });
         } catch {
             showToast('Failed to delete promotion.', 'error');
         } finally {
@@ -1146,8 +1275,8 @@ export default function SuperAdminSubscriptionsPage() {
                             title="Plans"
                             subtitle="Configure the plan catalogue. A plan defines the maximum set of screens a tenant can access."
                             actions={
-                                <button onClick={seedDefaults} disabled={seeding} className="btn btn-secondary" style={{ display: 'inline-flex', alignItems: 'center', gap: '0.4rem', fontSize: '0.85rem' }}>
-                                    {seeding ? <Loader2 size={15} className="animate-spin" /> : <RefreshCw size={15} />} Seed missing defaults
+                                <button onClick={seedDefaults} disabled={seeding} title="Seed any missing plans from defaults and (re)publish the public pricing that the landing page and logged-out /pricing read." className="btn btn-secondary" style={{ display: 'inline-flex', alignItems: 'center', gap: '0.4rem', fontSize: '0.85rem' }}>
+                                    {seeding ? <Loader2 size={15} className="animate-spin" /> : <RefreshCw size={15} />} Seed &amp; publish pricing
                                 </button>
                             }
                         />
@@ -1213,16 +1342,34 @@ export default function SuperAdminSubscriptionsPage() {
                             {plans[selectedPlan]?.name || DEFAULT_PLAN_CATALOGUE[selectedPlan as keyof typeof DEFAULT_PLAN_CATALOGUE]?.name}
                         </h2>
                         <p style={{ margin: '0 0 1.25rem', fontSize: '0.85rem', color: 'var(--text-secondary)' }}>
-                            Edit the customer-facing <strong>Pricing &amp; Content</strong> below, then expand
-                            <strong> Module Access</strong> to configure the ERP modules this plan unlocks.
+                            Expand <strong>Pricing &amp; Content</strong> to edit the customer-facing plan shown on
+                            /pricing, and <strong>Module Access</strong> to configure the ERP modules this plan unlocks.
                             The base price here stays the authoritative price — promotions are applied on top in the
                             Promotions section.
                         </p>
 
-                        {/* ── Pricing & Content ─────────────────────────────────────────
+                        {/* ── Pricing & Content (collapsible) ────────────────────────────
                             Customer-facing content shown on /pricing and used to price the
                             Razorpay order server-side. Single source of truth. The editor and
-                            a live /pricing preview sit side by side. */}
+                            a live /pricing preview sit side by side. Collapsed by default. */}
+                        <button
+                            onClick={() => setPricingContentOpen(o => !o)}
+                            aria-expanded={pricingContentOpen}
+                            style={{
+                                display: 'flex', alignItems: 'center', gap: '0.5rem', width: '100%', textAlign: 'left',
+                                margin: '0 0 0.75rem', padding: '0.75rem 1rem', borderRadius: '10px', cursor: 'pointer',
+                                font: 'inherit', border: '1px solid var(--surface-border)', background: 'var(--surface-raised)',
+                            }}
+                        >
+                            {pricingContentOpen ? <ChevronDown size={18} /> : <ChevronRight size={18} />}
+                            <CreditCard size={17} style={{ color: 'var(--primary-light)' }} />
+                            <span style={{ fontSize: '1rem', fontWeight: 600 }}>Pricing &amp; Content</span>
+                            <span style={{ marginLeft: 'auto', fontSize: '0.76rem', color: 'var(--text-tertiary)' }}>
+                                ₹{editPricing.monthlyPrice.toLocaleString('en-IN')}/mo
+                            </span>
+                        </button>
+
+                        {pricingContentOpen && (
                         <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) minmax(300px, 360px)', gap: '1.25rem', alignItems: 'start' }}>
                             <PricingEditor value={editPricing} onChange={setEditPricing} />
                             <div style={{ position: 'sticky', top: '1rem' }}>
@@ -1232,6 +1379,7 @@ export default function SuperAdminSubscriptionsPage() {
                                 <PricingPreviewCard value={editPricing} planId={selectedPlan} />
                             </div>
                         </div>
+                        )}
 
                         {/* ── Module Access (collapsible) ────────────────────────────────
                             Whole-module toggles mirroring the ERP Main Navbar; enabling a
@@ -1683,6 +1831,8 @@ export default function SuperAdminSubscriptionsPage() {
                         </div>
                     </>
                 )}
+
+                {section === 'audit-logs' && <AuditLogsSection />}
             </div>
 
             {/* Support ticket detail / management modal */}
@@ -2387,93 +2537,53 @@ function PricingEditor({ value, onChange }: { value: PlanPricing; onChange: (p: 
 }
 
 // ─── Live /pricing preview card ───────────────────────────────────────────────
-// A faithful, read-only replica of the customer PricingPage card, driven by the
-// editor's in-progress PlanPricing so the Super Admin sees exactly what a
-// customer will see before saving. Has its own monthly/yearly toggle.
+// A faithful, read-only replica of the customer /pricing card — it renders the
+// exact same shared <PricingPlanCard> component, driven by the editor's
+// in-progress PlanPricing, so the Super Admin sees precisely what a customer will
+// see before saving. Has its own monthly/yearly toggle; the CTA is inert (preview).
 function PricingPreviewCard({ value, planId }: { value: PlanPricing; planId: string | null }) {
     const [cycle, setCycle] = useState<'monthly' | 'yearly'>('yearly');
-    const visual = PLAN_PREVIEW_VISUALS[planId ?? ''] ?? PLAN_PREVIEW_VISUALS.retailer;
-    const Icon = visual.icon;
 
-    const monthly = Number.isFinite(value.monthlyPrice) ? value.monthlyPrice : 0;
-    const yearly = Number.isFinite(value.yearlyPrice) ? value.yearlyPrice : 0;
-    const price = cycle === 'yearly' ? Math.round(yearly / 12) : monthly;
-    const savingsPct = computeSavingsPct(monthly, yearly);
-    const savingsText = value.savingsLabel || (savingsPct > 0 ? `Save ${savingsPct}% vs monthly` : '');
-    const showBadge = !!value.badge?.trim() && value.badgeVisible !== false;
-    const isPopular = showBadge && value.badge === 'Most Popular';
-    const features = value.features.map(f => f.trim()).filter(Boolean);
-    const limits = value.limits.map(l => l.trim()).filter(Boolean);
+    // Build through the SAME catalogue model /pricing uses. Blank feature/limit
+    // rows (common mid-edit) are stripped so the preview mirrors the real card.
+    const tier = PRICING_TIER_BY_CATALOG[planId ?? ''] ?? PRICING_TIERS[0];
+    const plan: PricingPlan = {
+        ...buildPricingPlan(tier, value),
+        features: value.features.map(f => f.trim()).filter(Boolean),
+        limits: value.limits.map(l => l.trim()).filter(Boolean),
+    };
+    const featured = plan.featured;
 
     return (
-        <div style={{
-            background: 'var(--surface-raised)',
-            border: isPopular ? `2px solid ${visual.color}` : '1px solid var(--surface-border)',
-            borderRadius: '20px', overflow: 'hidden', position: 'relative',
-            boxShadow: isPopular ? `0 8px 32px ${visual.color}25` : 'none',
-        }}>
-            {/* Billing toggle */}
-            <div style={{ display: 'flex', justifyContent: 'center', padding: '0.75rem 0.75rem 0' }}>
-                <div style={{ display: 'inline-flex', background: 'var(--surface)', border: '1px solid var(--surface-border)', borderRadius: '10px', padding: '3px', gap: '3px' }}>
+        <div>
+            {/* Billing toggle — mirrors the /pricing page-level toggle. */}
+            <div style={{ display: 'flex', justifyContent: 'center', marginBottom: '0.85rem' }}>
+                <div style={{ display: 'inline-flex', background: home.color.surface, border: `1px solid ${home.color.line}`, borderRadius: home.radius.pill, padding: '3px', gap: '3px', boxShadow: home.shadow.card }}>
                     {(['monthly', 'yearly'] as const).map(c => (
                         <button key={c} onClick={() => setCycle(c)} style={{
-                            padding: '0.3rem 0.85rem', borderRadius: '7px', border: 'none', cursor: 'pointer',
-                            fontWeight: c === cycle ? 700 : 500, fontSize: '0.76rem', font: 'inherit',
-                            background: c === cycle ? visual.color : 'transparent',
-                            color: c === cycle ? '#fff' : 'var(--text-secondary)',
+                            padding: '0.35rem 1rem', borderRadius: home.radius.pill, border: 'none', cursor: 'pointer',
+                            fontWeight: c === cycle ? 700 : 500, fontSize: '0.78rem', font: 'inherit', fontFamily: home.font.body,
+                            background: c === cycle ? home.color.forest : 'transparent',
+                            color: c === cycle ? '#fff' : home.color.body,
                         }}>{c === 'monthly' ? 'Monthly' : 'Yearly'}</button>
                     ))}
                 </div>
             </div>
 
-            {showBadge && (
-                <div style={{ position: 'absolute', top: '1rem', right: '1rem', padding: '0.25rem 0.75rem', background: visual.gradient, color: '#fff', borderRadius: '20px', fontSize: '0.68rem', fontWeight: 800, textTransform: 'uppercase', letterSpacing: '0.05em' }}>
-                    {value.badge}
+            <PricingPlanCard plan={plan} cycle={cycle}>
+                {/* Inert CTA styled exactly like /pricing's subscribe button. */}
+                <div style={{
+                    width: '100%', padding: '0.95rem', borderRadius: home.radius.sm,
+                    fontWeight: 700, fontSize: '0.98rem', fontFamily: home.font.body,
+                    display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '0.5rem',
+                    border: featured ? 'none' : `1px solid ${home.color.forest}`,
+                    background: featured ? home.color.gold : 'transparent',
+                    color: featured ? home.color.forestInk : home.color.forest,
+                    cursor: 'default', userSelect: 'none',
+                }}>
+                    Get {plan.name || 'Plan'} <ArrowRight size={16} />
                 </div>
-            )}
-
-            {/* Header */}
-            <div style={{ padding: '1.25rem 1.5rem 1rem', background: `linear-gradient(135deg, ${visual.color}12, ${visual.color}05)`, borderBottom: `1px solid ${visual.color}20`, marginTop: '0.5rem' }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', marginBottom: '0.5rem' }}>
-                    <div style={{ width: 38, height: 38, borderRadius: '11px', background: visual.gradient, display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#fff' }}>
-                        <Icon size={20} />
-                    </div>
-                    <div>
-                        <div style={{ fontWeight: 900, fontSize: '1.1rem' }}>{value.displayName || 'Plan name'}</div>
-                        <div style={{ fontSize: '0.78rem', color: 'var(--text-secondary)' }}>{value.tagline || ' '}</div>
-                    </div>
-                </div>
-                <div style={{ display: 'flex', alignItems: 'flex-end', gap: '0.25rem', marginTop: '0.75rem' }}>
-                    <span style={{ fontSize: '2.1rem', fontWeight: 900, color: visual.color, lineHeight: 1 }}>₹{price.toLocaleString('en-IN')}</span>
-                    <span style={{ color: 'var(--text-secondary)', fontSize: '0.85rem', marginBottom: '0.35rem' }}>/mo</span>
-                </div>
-                {cycle === 'yearly' && (
-                    <div style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', marginTop: '0.25rem' }}>
-                        ₹{yearly.toLocaleString('en-IN')}/yr{savingsText ? ` · ${savingsText}` : ''}
-                    </div>
-                )}
-            </div>
-
-            {/* Features + limits */}
-            <div style={{ padding: '1.25rem 1.5rem' }}>
-                <ul style={{ listStyle: 'none', padding: 0, margin: 0, display: 'flex', flexDirection: 'column', gap: '0.55rem' }}>
-                    {features.length === 0 && (
-                        <li style={{ fontSize: '0.82rem', color: 'var(--text-tertiary)' }}>No features added yet.</li>
-                    )}
-                    {features.map((f, i) => (
-                        <li key={i} style={{ display: 'flex', alignItems: 'flex-start', gap: '0.55rem', fontSize: '0.83rem' }}>
-                            <Check size={14} style={{ color: visual.color, flexShrink: 0, marginTop: '0.1rem' }} />
-                            <span style={{ color: 'var(--text-secondary)' }}>{f}</span>
-                        </li>
-                    ))}
-                    {limits.map((l, i) => (
-                        <li key={`lim-${i}`} style={{ display: 'flex', alignItems: 'flex-start', gap: '0.55rem', fontSize: '0.83rem' }}>
-                            <Building2 size={14} style={{ color: 'var(--text-tertiary)', flexShrink: 0, marginTop: '0.1rem' }} />
-                            <span style={{ color: 'var(--text-tertiary)' }}>{l}</span>
-                        </li>
-                    ))}
-                </ul>
-            </div>
+            </PricingPlanCard>
         </div>
     );
 }

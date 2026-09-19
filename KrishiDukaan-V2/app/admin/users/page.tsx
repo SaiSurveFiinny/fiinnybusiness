@@ -837,8 +837,6 @@ export default function AdminUsersPage() {
                         {(u.role === "retailer" || u.role === "manufacturer") ? (
                           <a
                             href={`/dashboard?adminView=${encodeURIComponent(u.phone || u.id)}`}
-                            target="_blank"
-                            rel="noopener noreferrer"
                             className="inline-flex items-center gap-1.5 rounded-xl border border-blue-200 bg-blue-50 px-3 py-1.5 text-xs font-medium text-blue-700 hover:bg-blue-100 transition-colors"
                             title={`Open ${u.shopName || u.name || u.id}'s dashboard`}
                           >
@@ -885,8 +883,6 @@ export default function AdminUsersPage() {
                     {(u.role === "retailer" || u.role === "manufacturer") ? (
                       <a
                         href={`/dashboard?adminView=${encodeURIComponent(u.phone || u.id)}`}
-                        target="_blank"
-                        rel="noopener noreferrer"
                         className="inline-flex items-center gap-1 rounded-lg border border-blue-200 bg-blue-50 px-2.5 py-1 text-[11px] font-medium text-blue-700 hover:bg-blue-100"
                       >
                         <LayoutDashboard className="h-3 w-3" />

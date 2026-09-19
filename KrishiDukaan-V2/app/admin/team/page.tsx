@@ -46,6 +46,7 @@ const SECTION_LABELS: Record<AdminSection, string> = {
   whatsapp: "WhatsApp",
   blog: "Blog",
   team: "Team",
+  salesTeam: "Sales Team",
 };
 
 const inputCls =

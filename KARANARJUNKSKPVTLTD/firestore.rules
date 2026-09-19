@@ -141,6 +141,18 @@ service cloud.firestore {
       allow write: if request.auth != null && isSuperAdmin();
     }
 
+    // ── Global: Public pricing projection (read-only mirror of plans/*.pricing) ─
+    // A world-readable copy of ONLY the customer-facing pricing subset (name,
+    // tagline, prices, features, limits, badge) so the landing page and logged-out
+    // /pricing show the same Super-Admin-managed prices as authenticated users.
+    // NEVER contains entitlement config (screens/features/modules/landing path).
+    // Writable only by the platform super admin — mirrors the plans/* write rule —
+    // and written alongside the authoritative plans/{id} doc.
+    match /publicPlans/{planId} {
+      allow read:  if true;
+      allow write: if request.auth != null && isSuperAdmin();
+    }
+
     // ── Global: Plan promotions (time-boxed % discounts) ──────────────────────
     // Discounts applied ON TOP of a plan's base price; the base price in
     // plans/{id}.pricing is never overwritten. Applied dynamically by the public
@@ -217,6 +229,22 @@ service cloud.firestore {
       allow update, delete: if request.auth != null && isSuperAdmin();
     }
 
+     // ── Global: Platform audit log (Super Admin action trail) ─────────────────
+    // Append-only record of privileged Super Admin actions in the platform console
+    // (/super-admin). Deliberately separate from the tenant-scoped /auditLogs
+    // (business-level, readable by any master admin) so this trail is
+    // Super-Admin-only and tamper-proof.
+    //   • Read/Create: Super Admin only.
+    //   • Create additionally requires actorUid == the caller's own uid, so the
+    //     actor identity cannot be forged by the client.
+    //   • Update/Delete: never — the log is immutable.
+    match /platformAuditLogs/{logId} {
+      allow read:   if request.auth != null && isSuperAdmin();
+      allow create: if request.auth != null && isSuperAdmin()
+        && request.resource.data.actorUid == request.auth.uid;
+      allow update, delete: if false;
+    }
+    
     // ── Global: Public payment landing pages ──────────────────────────────────
     // Unauthenticated customers open payment links and mark them paid.
     match /paymentLinks_public/{docId} {

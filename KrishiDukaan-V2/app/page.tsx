@@ -24,7 +24,7 @@ import RetailerJoinView from './views/RetailerJoinView';
 import HelpView from './views/HelpView';
 import { fetchManufacturerProfile } from './dashboard/_lib/brand-page-firestore';
 import { motion, AnimatePresence } from 'framer-motion';
-import { auth, db, fetchMarketplaceProducts, fetchStores, getUserProfile, fetchHubs, createOrdersFromCart, updateOrderPayment, trackPageView, requestRoleUpgrade } from './firebase';
+import { auth, db, fetchMarketplaceProducts, fetchStores, getUserProfile, fetchHubs, createOrdersFromCart, updateOrderPayment, trackPageView, trackUserActivity, requestRoleUpgrade } from './firebase';
 import { acceptManufacturerInvite } from './lib/invite/invite-acceptance-service';
 import { fetchInviteDetailsForSignup } from './lib/invite/fetch-invite-for-signup';
 import { onAuthStateChanged, signOut } from 'firebase/auth';
@@ -553,6 +553,13 @@ export default function App() {
         hadUserRef.current = true;
         const profileData = await getUserProfile(firebaseUser.uid);
         if (profileData) {
+          // Activity signal (DAU/MAU/retention). Throttled to ~1 write/user/day
+          // and best-effort — never blocks the login flow.
+          void trackUserActivity({
+            userId: profileData.phone || firebaseUser.uid,
+            role: profileData.role as string | undefined,
+            registeredAt: (profileData as any).createdAt ?? null,
+          });
           setUserRole(profileData.role as UserRole);
           const isPaid = profileData.isPaid || false;
           setUserProfile({

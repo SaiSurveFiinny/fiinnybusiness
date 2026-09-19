@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { Box, LayoutDashboard, Layers, Users, X, Mail, MessageSquare, Building2, BarChart3, CreditCard, BookOpen, Tag, Package, MessageCircle, Video, UserCog, ShoppingCart, IndianRupee, Banknote, ReceiptText, Zap, ShieldAlert } from "lucide-react";
+import { Box, LayoutDashboard, Layers, Users, X, Mail, MessageSquare, Building2, BarChart3, CreditCard, BookOpen, Tag, Package, MessageCircle, Video, UserCog, ShoppingCart, IndianRupee, Banknote, ReceiptText, Zap, ShieldAlert, Contact } from "lucide-react";
 import { cn } from "../../dashboard/_lib/cn";
 import { useAdminAuth, hasSection, type AdminSection } from "../_context/admin-auth-context";
 
@@ -12,6 +12,7 @@ const navItems = [
   { href: "/admin/orders", label: "Orders", icon: ShoppingCart, section: "orders" as AdminSection },
   { href: "/admin/payments", label: "Payments", icon: ReceiptText, section: "payments" as AdminSection },
   { href: "/admin/users", label: "Users & Roles", icon: Users, section: "users" as AdminSection },
+  { href: "/admin/sales-team", label: "Sales Team", icon: Contact, section: "salesTeam" as AdminSection },
   { href: "/admin/subscriptions", label: "Subscriptions", icon: CreditCard, section: "subscriptions" as AdminSection },
   { href: "/admin/payouts", label: "Seller Payouts", icon: Banknote, section: "payouts" as AdminSection },
   { href: "/admin/route-payouts", label: "Route Payouts", icon: Zap, section: "routePayouts" as AdminSection },
