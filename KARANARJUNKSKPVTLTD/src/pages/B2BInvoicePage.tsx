@@ -240,7 +240,7 @@ export default function B2BInvoicePage() {
             buyerGstin: r.gstin || prev.buyerGstin,
             buyerState: r.state || prev.buyerState,
         }));
-        if (!searchParams.get('orderId')) setPreviousBalance(String(Number(r.outstandingAmount) || 0));
+        if (!searchParams.get('orderId')) applyRetailerBalance(r);
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [prefilledRetailerId, retailers]);
 
@@ -327,12 +327,36 @@ export default function B2BInvoicePage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [rows.map(r => r.productId).join(','), tenantId]);
 
-    // Pull the partner's running dues (the same outstandingAmount the Worklist
-    // shows) into Previous Balance. Skipped while editing a saved invoice, whose
-    // own previousBalance is restored from the order and must not be overwritten.
-    const applyRetailerBalance = (r: any) => {
+    // Pull the partner's running dues into Previous Balance, computed the same
+    // way Worklist → Retailer Details derives "Outstanding Dues" — live from
+    // salesOrders + the payments subcollection — rather than the retailer
+    // doc's `outstandingAmount` cache. That cache is a best-effort counter
+    // several flows (Digital Khata entries/payments, some payment edits) never
+    // write back to, so it silently drifts from the real balance shown on the
+    // Retailer Details page. Skipped while editing a saved invoice, whose own
+    // previousBalance is restored from the order and must not be overwritten.
+    const applyRetailerBalance = async (r: any) => {
         if (prefilledOrderId) return;
-        setPreviousBalance(String(Number(r?.outstandingAmount) || 0));
+        if (!tenantId || !r?.id) {
+            setPreviousBalance(String(Number(r?.outstandingAmount) || 0));
+            return;
+        }
+        try {
+            const [ordersSnap, paymentsSnap] = await Promise.all([
+                getDocs(query(getTenantCollection(db, tenantId, 'salesOrders'), where('retailerId', '==', r.id))),
+                getDocs(getTenantCollection(db, tenantId, 'retailers', r.id, 'payments')),
+            ]);
+            const totalSales = ordersSnap.docs.reduce((s, d) => {
+                const so = d.data() as any;
+                if (so.deleted) return s;
+                return s + Number(so.grandTotal ?? so.netAmount ?? so.totalAmount ?? 0);
+            }, 0);
+            const totalPaid = paymentsSnap.docs.reduce((s, d) => s + Number((d.data() as any).amount ?? 0), 0);
+            setPreviousBalance(String(Math.max(0, totalSales - totalPaid)));
+        } catch (e) {
+            console.error('Failed to compute live outstanding balance:', e);
+            setPreviousBalance(String(Number(r?.outstandingAmount) || 0));
+        }
     };
 
     // ─── Auto-fill buyer by phone ───
