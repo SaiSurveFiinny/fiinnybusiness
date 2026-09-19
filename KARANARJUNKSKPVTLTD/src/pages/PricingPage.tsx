@@ -24,17 +24,33 @@ declare global {
 }
 
 // ─── API helper ──────────────────────────────────────────────────────────────
-// The SaaS functions are deployed 1st-gen `onRequest` endpoints called DIRECTLY
-// over HTTPS (no Hosting rewrite, no Vite proxy). functionUrl() derives the URL
-// from the active Firebase project id + region, so `npm run dev` hits production
-// and `npm run dev:uat` hits UAT automatically. Auth is enforced inside the
-// function via the Firebase ID token sent as `Authorization: Bearer <token>`.
+// The SaaS functions are reached through the Firebase Hosting rewrites declared in
+// firebase.json — same-origin `/api/saas/*` paths that Hosting invokes via a service
+// account. This avoids Google's IAM invoker gate, which rejects an anonymous browser
+// call to the direct cloudfunctions.net URL with a 403 (surfaced as a CORS error)
+// BEFORE the function runs — without needing an `allUsers` binding. Auth is still
+// enforced INSIDE the function via the Firebase ID token sent as
+// `Authorization: Bearer <token>`; the rewrite carries the header through unchanged.
+//
+// Local emulator is the exception: Vite does not serve Hosting rewrites, so when
+// VITE_USE_EMULATOR is set we call the emulated function directly via functionUrl().
+const SAAS_REWRITE_PATHS: Record<string, string> = {
+    getSaaSSubscription: '/api/saas/subscription',
+    createSaaSOrder:     '/api/saas/order',
+    verifySaaSPayment:   '/api/saas/verify',
+};
+
+function saasFunctionUrl(fnName: string): string {
+    if (import.meta.env.VITE_USE_EMULATOR === 'true') return functionUrl(fnName);
+    return SAAS_REWRITE_PATHS[fnName] ?? functionUrl(fnName);
+}
+
 async function callFunction(
     fnName: string,
     idToken: string,
     body: Record<string, unknown>
 ): Promise<any> {
-    const res = await fetch(functionUrl(fnName), {
+    const res = await fetch(saasFunctionUrl(fnName), {
         method: 'POST',
         headers: {
             'Content-Type': 'application/json',

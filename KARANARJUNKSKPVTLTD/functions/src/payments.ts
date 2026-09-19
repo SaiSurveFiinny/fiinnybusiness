@@ -1,4 +1,9 @@
-import * as functions from 'firebase-functions/v1';
+// 2nd-gen (Cloud Run) HTTPS functions. 1st-gen Firebase Hosting rewrites only work
+// in us-central1; migrating to 2nd gen lets the asia-south1 rewrites in firebase.json
+// invoke these via the Firebase Hosting service agent (no `allUsers`) so the browser
+// reaches them same-origin at /api/saas/* without hitting Google's IAM invoker 403.
+import { onRequest } from 'firebase-functions/v2/https';
+import * as logger from 'firebase-functions/logger';
 import * as admin from 'firebase-admin';
 // Use the modular FieldValue/Timestamp. The Functions emulator wraps the Admin
 // SDK service accessor so the namespaced statics (FieldValue /
@@ -83,7 +88,7 @@ async function resolvePlanAmounts(
       return { monthly: Math.round(pricing.monthlyPrice), yearly: Math.round(pricing.yearlyPrice) };
     }
   } catch (err) {
-    functions.logger.warn('[payments] Could not read authoritative plan pricing; using fallback', {
+    logger.warn('[payments] Could not read authoritative plan pricing; using fallback', {
       pricingTier, catalogId, err,
     });
   }
@@ -156,7 +161,7 @@ async function resolveActivePromotion(
     });
     return best;
   } catch (err) {
-    functions.logger.warn('[payments] Could not read plan promotions; charging full price', {
+    logger.warn('[payments] Could not read plan promotions; charging full price', {
       pricingTier, cycle, err,
     });
     return null;
@@ -237,7 +242,7 @@ function withCors(
         if (err instanceof HttpError) {
           res.status(err.status).json({ error: err.message });
         } else {
-          functions.logger.error('[payments] Unhandled error', err);
+          logger.error('[payments] Unhandled error', err);
           res.status(500).json({ error: 'Internal server error' });
         }
       }
@@ -246,9 +251,7 @@ function withCors(
 }
 
 // ─── getSaaSSubscription ──────────────────────────────────────────────────────
-export const getSaaSSubscription = functions
-  .region('asia-south1')
-  .https.onRequest(withCors(async (req, res) => {
+export const getSaaSSubscription = onRequest({ region: 'asia-south1' }, withCors(async (req, res) => {
     if (req.method !== 'POST') { res.status(405).json({ error: 'Method not allowed' }); return; }
     const decoded = await authenticate(req);
     const { tenantId } = req.body as { tenantId?: string };
@@ -269,9 +272,7 @@ export const getSaaSSubscription = functions
 // ─── createSaaSOrder ──────────────────────────────────────────────────────────
 // Creates a Razorpay order. Returns order_id + the PUBLIC key_id only.
 // The secret key never leaves this function.
-export const createSaaSOrder = functions
-  .region('asia-south1')
-  .https.onRequest(withCors(async (req, res) => {
+export const createSaaSOrder = onRequest({ region: 'asia-south1' }, withCors(async (req, res) => {
     if (req.method !== 'POST') { res.status(405).json({ error: 'Method not allowed' }); return; }
     const decoded = await authenticate(req);
 
@@ -311,7 +312,7 @@ export const createSaaSOrder = functions
       });
       res.json({ order_id: order.id, key_id: getKeyId(), amount: order.amount });
     } catch (err: any) {
-      functions.logger.error('[payments] Razorpay order creation failed', err);
+      logger.error('[payments] Razorpay order creation failed', err);
       throw httpError(500, 'Could not create Razorpay order');
     }
   }));
@@ -319,9 +320,7 @@ export const createSaaSOrder = functions
 // ─── verifySaaSPayment ────────────────────────────────────────────────────────
 // Validates the Razorpay signature server-side (HMAC-SHA256), then writes the
 // subscription to Firestore. The client never writes subscription data.
-export const verifySaaSPayment = functions
-  .region('asia-south1')
-  .https.onRequest(withCors(async (req, res) => {
+export const verifySaaSPayment = onRequest({ region: 'asia-south1' }, withCors(async (req, res) => {
     if (req.method !== 'POST') { res.status(405).json({ error: 'Method not allowed' }); return; }
     const decoded = await authenticate(req);
 
@@ -345,7 +344,7 @@ export const verifySaaSPayment = functions
       .digest('hex');
 
     if (expectedSig !== razorpay_signature) {
-      functions.logger.warn('[payments] Signature mismatch', { tenantId, razorpay_order_id });
+      logger.warn('[payments] Signature mismatch', { tenantId, razorpay_order_id });
       throw httpError(400, 'Payment signature verification failed');
     }
 
@@ -357,7 +356,7 @@ export const verifySaaSPayment = functions
     try {
       order = await getRazorpay().orders.fetch(razorpay_order_id);
     } catch (err: any) {
-      functions.logger.error('[payments] Could not fetch Razorpay order', err);
+      logger.error('[payments] Could not fetch Razorpay order', err);
       throw httpError(502, 'Could not verify order with payment gateway');
     }
 
@@ -366,7 +365,7 @@ export const verifySaaSPayment = functions
       promoId?: string; discountPct?: string;
     };
     if (notes.tenantId !== tenantId) {
-      functions.logger.warn('[payments] Order tenant mismatch', {
+      logger.warn('[payments] Order tenant mismatch', {
         tenantId, orderTenant: notes.tenantId, razorpay_order_id,
       });
       throw httpError(403, 'Order does not belong to this tenant');
@@ -390,7 +389,7 @@ export const verifySaaSPayment = functions
     const discountPct = isValidPct(notedPct) ? notedPct : 0;
     const amountInPaise = applyDiscountPaise(baseInPaise, discountPct);
     if (Number(order.amount) !== amountInPaise) {
-      functions.logger.warn('[payments] Order amount mismatch', {
+      logger.warn('[payments] Order amount mismatch', {
         razorpay_order_id, orderAmount: order.amount, amountInPaise, discountPct,
       });
       throw httpError(400, 'Order amount does not match plan pricing');
@@ -444,7 +443,7 @@ export const verifySaaSPayment = functions
 
     await batch.commit();
 
-    functions.logger.info('[payments] Subscription activated', {
+    logger.info('[payments] Subscription activated', {
       tenantId, catalogPlanId, cycle, razorpay_payment_id,
     });
     res.json({ success: true, planId: catalogPlanId });
