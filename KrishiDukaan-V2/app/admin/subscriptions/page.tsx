@@ -14,6 +14,7 @@ import {
 import { SearchableDropdown } from "../_components/searchable-dropdown";
 import { getSubscriptions, getUsers, getPlans, invalidateUsers, invalidateSubscriptions } from "../_lib/admin-data";
 import { PLAN_FEATURE_CATALOG, featureLabel } from "../_lib/plan-features";
+import { FinanceOverview } from "../_components/analytics/finance-overview";
 
 // Thin wrapper around the new server-validated admin routes (plan CRUD,
 // subscription assign/edit/cancel) — these mutate pricing/entitlements
@@ -187,7 +188,7 @@ export default function AdminSubscriptionsPage() {
   const [users, setUsers] = useState<any[]>([]);
   const [plans, setPlans] = useState<any[]>([]);
   const [failedPayments, setFailedPayments] = useState<any[]>([]);
-  const [activeTab, setActiveTab] = useState<'subscriptions' | 'plans' | 'failedPayments'>('subscriptions');
+  const [activeTab, setActiveTab] = useState<'subscriptions' | 'plans' | 'failedPayments' | 'finance'>('subscriptions');
   const [loading, setLoading] = useState(true);
   const [failedPaymentsError, setFailedPaymentsError] = useState<string | null>(null);
   const [failedPaymentsSearch, setFailedPaymentsSearch] = useState("");
@@ -678,7 +679,15 @@ export default function AdminSubscriptionsPage() {
             </span>
           )}
         </button>
+        <button
+          onClick={() => setActiveTab('finance')}
+          className={`pb-2 px-1 font-semibold text-sm ${activeTab === 'finance' ? 'border-b-2 border-primary text-primary' : 'text-on-surface-variant hover:text-on-surface'}`}
+        >
+          Finance
+        </button>
       </div>
+
+      {activeTab === 'finance' && <FinanceOverview />}
 
       {activeTab === 'plans' && (
         <PlansTab

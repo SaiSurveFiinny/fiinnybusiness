@@ -21,7 +21,7 @@ import {
 } from "lucide-react";
 import { auth, fetchIncomingOrdersForSeller, updateOrderStatus } from "../../firebase";
 import { PageHeader } from "../_components/page-header";
-import { formatCustomerAddress, normalizeOrderItems } from "../../../types/order";
+import { formatCustomerAddress, normalizeOrderItems, orderGrandTotal } from "../../../types/order";
 import { ORDER_STATUS_FLOW, type OrderDoc, type OrderStatus } from "../../../types/order";
 import { useI18n } from "../../i18n/I18nContext";
 import { openInvoice } from "../../utils/invoice-generator";
@@ -107,7 +107,7 @@ function PayoutBreakdown({ order }: { order: OrderDoc }) {
   const payment = (order as any).payment as
     | { razorpayPaymentId?: string; gatewayFee?: number }
     | undefined;
-  const gross = Number(order.grandTotal ?? order.subtotal ?? 0);
+  const gross = orderGrandTotal(order);
 
   useEffect(() => {
     let cancelled = false;
@@ -663,7 +663,7 @@ export default function OrdersPage() {
                             )}
                           </div>
                           <div className="text-right shrink-0">
-                            <p className="font-black text-secondary text-xl">₹{Number(order.grandTotal ?? order.subtotal ?? 0).toFixed(0)}</p>
+                            <p className="font-black text-secondary text-xl">₹{orderGrandTotal(order).toFixed(0)}</p>
                             {(order.deliveryCharge ?? 0) > 0 && (
                               <p className="text-[10px] text-on-surface-variant">incl. ₹{order.deliveryCharge} delivery</p>
                             )}

@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { fetchOrdersForCustomer } from "../firebase";
-import { ORDER_STATUS_FLOW, type OrderDoc, type OrderStatus } from "../../types/order";
+import { ORDER_STATUS_FLOW, orderGrandTotal, type OrderDoc, type OrderStatus } from "../../types/order";
 import { useI18n } from "../i18n/I18nContext";
 import { openInvoice } from "../utils/invoice-generator";
 
@@ -140,7 +140,7 @@ export default function MyOrdersView({ customerId }: { customerId: string }) {
             </div>
             <div className="text-right shrink-0 flex flex-col items-end gap-1.5">
               <p className="font-black text-secondary text-base">
-                ₹{Number(order.grandTotal ?? order.subtotal ?? 0).toFixed(2)}
+                ₹{orderGrandTotal(order).toFixed(2)}
               </p>
               {(order.deliveryCharge ?? 0) > 0 && (
                 <p className="text-[10px] text-on-surface-variant">incl. ₹{order.deliveryCharge} delivery</p>

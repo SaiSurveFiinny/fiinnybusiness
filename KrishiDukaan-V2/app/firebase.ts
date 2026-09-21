@@ -2063,6 +2063,77 @@ export async function trackPageView(page: string = 'home') {
   }
 }
 
+/**
+ * Records that a logged-in user was active today (DAU/MAU/retention signal).
+ *
+ * The ONLY client write in the whole activity pipeline. It is throttled to at
+ * most one write per user per calendar day via localStorage — the same user
+ * opening ten screens still writes zero extra times. The presence doc ID is the
+ * user's stable phone, so a re-write on the same day is an idempotent overwrite;
+ * the aggregation Cloud Function keys off create-only, so a user is never
+ * double-counted (see functions/src/analytics/activity.ts).
+ *
+ * `userId` must be the users/{id} document key (normalized phone for phone
+ * accounts, uid for legacy email accounts) so it matches the identity used
+ * everywhere else and dedupes correctly across sessions.
+ */
+export async function trackUserActivity(opts: {
+  userId: string;
+  role?: string | null;
+  registeredAt?: Timestamp | Date | string | null;
+}) {
+  try {
+    const userId = String(opts.userId ?? '').trim();
+    if (!userId) return;
+
+    const dayKey = getLocalDayKey();
+    const throttleKey = `kd_active_${userId}`;
+    if (typeof window !== 'undefined') {
+      // Cheap client-side throttle — no Firestore read needed to decide.
+      if (window.localStorage.getItem(throttleKey) === dayKey) return;
+    }
+
+    // Registration day drives the retention cohort; carry it on the presence
+    // doc so the Cloud Function needs no extra read.
+    let registeredDayKey: string | null = null;
+    const reg = opts.registeredAt;
+    if (reg) {
+      if (typeof reg === 'string') registeredDayKey = reg.slice(0, 10);
+      else if (reg instanceof Date) registeredDayKey = getLocalDayKey(reg);
+      else if (typeof (reg as Timestamp).toDate === 'function') {
+        registeredDayKey = getLocalDayKey((reg as Timestamp).toDate());
+      }
+    }
+
+    await setDoc(
+      doc(db, 'activeUsers', dayKey, 'presence', userId),
+      {
+        role: opts.role ?? null,
+        registeredDayKey,
+        platform: 'web',
+        at: serverTimestamp(),
+      },
+      { merge: true },
+    );
+
+    // Best-effort per-user last-active field. Same throttle window, so at most
+    // one write/user/day here too.
+    await setDoc(
+      doc(db, 'users', userId),
+      { lastActiveAt: serverTimestamp() },
+      { merge: true },
+    );
+
+    // Only mark done AFTER a successful write, so a transient failure retries
+    // on the next app open rather than silently skipping the day.
+    if (typeof window !== 'undefined') {
+      window.localStorage.setItem(throttleKey, dayKey);
+    }
+  } catch {
+    // silent fail — analytics must never break the app
+  }
+}
+
 export async function trackProductImpression(productId: string, position: number) {
   try {
     const ref = doc(db, 'products', productId);
