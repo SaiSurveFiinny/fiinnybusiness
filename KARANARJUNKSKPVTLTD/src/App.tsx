@@ -1,6 +1,6 @@
 import { useState, useEffect, lazy, Suspense, startTransition } from 'react';
 import { BrowserRouter, Routes, Route, Link, useLocation, Navigate, useNavigate } from 'react-router-dom';
-import { Home, Users, UserPlus, LogOut, ReceiptText, ShieldAlert, Calculator, Settings, Package, ChevronDown, Layers, Truck, ShoppingCart, BarChart3, Activity, Bell, ClipboardList, Star, Link2, Bot, Loader2, Menu, X, Target, Sun, Moon, Receipt, HelpCircle, LifeBuoy, ArrowLeft } from 'lucide-react';
+import { Home, Users, UserPlus, LogOut, ReceiptText, ShieldAlert, Calculator, Settings, Package, ChevronDown, Layers, Truck, ShoppingCart, BarChart3, Activity, Bell, ClipboardList, Star, Link2, Bot, Loader2, Menu, X, Target, Sun, Moon, Receipt, HelpCircle, LifeBuoy, ArrowLeft, RotateCcw } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import LanguageSwitcher from './components/LanguageSwitcher';
 import EnvBadge from './components/EnvBadge';
@@ -74,10 +74,10 @@ const AIAdvisorPage          = lazy(() => import('./pages/AIAdvisorPage'));
 const DigitalReceiptPage     = lazy(() => import('./pages/DigitalReceiptPage'));
 const DigitalKhataPage       = lazy(() => import('./pages/DigitalKhataPage'));
 const ModuleMarketplacePage  = lazy(() => import('./pages/ModuleMarketplacePage'));
-// TEMPORARILY DISABLED (2026-07-03)
-// Returns & Exchanges module is incomplete.
-// Hidden until the feature is redesigned and rebuilt.
-// const ReturnsPage            = lazy(() => import('./pages/ReturnsPage'));
+// B2C Sales Return (Credit Note) — Iteration 1.
+const ReturnsPage            = lazy(() => import('./pages/ReturnsPage'));
+// B2C Sales Returns — read-only history/viewing of returned orders.
+const SalesReturnsPage       = lazy(() => import('./pages/SalesReturnsPage'));
 const LoyaltyPage            = lazy(() => import('./pages/LoyaltyPage'));
 // TEMPORARILY DISABLED (2026-07-06)
 // Customer Feedback module is under redevelopment.
@@ -296,10 +296,7 @@ function Layout({ children, currentTheme, toggleTheme }: { children: React.React
     { path: '/modules', icon: <Package size={19} />, label: '🧩 Module Marketplace', screenKey: 'analytics' },
     { path: '/payment-links', icon: <Link2 size={19} />, label: '💳 Payment Links', screenKey: 'worklist' },
     { path: '/ai-advisor', icon: <Bot size={19} />, label: '🤖 AI Advisor', screenKey: 'analytics' },
-    // TEMPORARILY DISABLED (2026-07-03)
-    // Returns & Exchanges module is incomplete.
-    // Hidden until the feature is redesigned and rebuilt.
-    // { path: '/returns', icon: <ReceiptText size={19} />, label: 'Returns & Exchanges', screenKey: 'pos' },
+    { path: '/returns', icon: <ReceiptText size={19} />, label: 'New Sales Return', screenKey: 'pos' },
     { path: '/loyalty', icon: <Star size={19} />, label: 'Loyalty & Memberships', screenKey: 'loyalty' },
     // TEMPORARILY DISABLED (2026-07-06)
     // Customer Feedback module is under redevelopment.
@@ -307,6 +304,7 @@ function Layout({ children, currentTheme, toggleTheme }: { children: React.React
     // { path: '/feedback', icon: <Users size={19} />, label: 'Customer Feedback', screenKey: 'pos' },
     { path: '/rates', icon: <Package size={19} />, label: t('common.inventory'), screenKey: 'inventory' },
     { path: '/order-history', icon: <ReceiptText size={19} />, label: 'Order History', screenKey: 'order_history' },
+    { path: '/sales-returns', icon: <RotateCcw size={19} />, label: 'Sales Returns', screenKey: 'pos' },
     { path: '/online-orders', icon: <ShoppingCart size={19} />, label: 'Online Orders', screenKey: 'online_orders' },
   ];
 
@@ -764,10 +762,10 @@ function AppRoutes() {
       <Route path="/modules" element={<ProtectedRoute requireRole={['admin', 'analyst', 'shopkeeper']} appScreen="analytics"><ModuleMarketplacePage /></ProtectedRoute>} />
 
       {/* POS add-on pages */}
-      {/* TEMPORARILY DISABLED (2026-07-03)
-          Returns & Exchanges module is incomplete.
-          Hidden until the feature is redesigned and rebuilt. */}
-      {/* <Route path="/returns" element={<ProtectedRoute requireRole={['admin', 'analyst']} appScreen="pos"><ReturnsPage /></ProtectedRoute>} /> */}
+      {/* B2C Sales Return — admin/analyst only, matching the tenant `returns` + stock write rules. */}
+      <Route path="/returns" element={<ProtectedRoute requireRole={['admin', 'analyst']} appScreen="pos"><ReturnsPage /></ProtectedRoute>} />
+      {/* B2C Sales Returns — read-only history/viewing of returned orders. */}
+      <Route path="/sales-returns" element={<ProtectedRoute requireRole={['admin', 'analyst']} appScreen="pos"><SalesReturnsPage /></ProtectedRoute>} />
       <Route path="/loyalty" element={<ProtectedRoute requireRole={['admin', 'analyst']} appScreen="loyalty"><ModuleGate moduleId="loyalty" moduleName="Loyalty & Memberships"><LoyaltyPage /></ModuleGate></ProtectedRoute>} />
       {/* TEMPORARILY DISABLED (2026-07-06)
           Customer Feedback module is under redevelopment.

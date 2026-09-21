@@ -5,6 +5,7 @@ import {
   arrayUnion,
   collection,
   deleteDoc,
+  deleteField,
   doc,
   getDoc,
   getCountFromServer,
@@ -3341,6 +3342,99 @@ export async function importHubs(hubsList: Hub[]): Promise<void> {
       source: 'admin_import'
     });
   }
+}
+
+// ─── Homepage Banners ─────────────────────────────────────────────────────────
+// Collection: banners/{bannerId}
+//
+// Drives the homepage hero carousel (app/views/HomeView.tsx). The schema is
+// deliberately wider than what the current UI renders — badge/ctaButtons/
+// countdown/video/schedule/analytics are reserved for future carousel
+// features so they can be added without a document shape migration. Only
+// `enabled && status === 'published'` banners render on the public site,
+// sorted by `order` ascending.
+export type BannerCtaLink = {
+  /** 'internal' -> a Next.js route (e.g. /market); 'external' -> full URL, opened as-is. */
+  type: 'internal' | 'external';
+  value: string;
+};
+
+export type Banner = {
+  id: string;
+  title: string;
+  subtitle: string;
+  bgImg: string;
+  /** Optional mobile-specific background; falls back to bgImg when unset. */
+  bgImgMobile?: string;
+  /** Optional foreground/product image shown beside the text block. */
+  imgUrl?: string;
+  /** Tailwind gradient classes applied over bgImg, e.g. "from-emerald-950 via-emerald-900/85 to-emerald-700/10". */
+  bgClass: string;
+  ctaLabel: string;
+  ctaEnabled: boolean;
+  ctaLink: BannerCtaLink;
+  enabled: boolean;
+  status: 'draft' | 'published';
+  order: number;
+  createdAt?: any;
+  updatedAt?: any;
+  // Reserved for future features — intentionally unused by the current UI.
+  badge?: { label: string; color?: string };
+  ctaButtons?: { label: string; link: BannerCtaLink }[];
+  countdown?: { endsAt: any };
+  video?: { url: string; poster?: string };
+  schedule?: { startsAt?: any; endsAt?: any };
+  analytics?: { impressions?: number; clicks?: number };
+};
+
+export async function fetchBanners(): Promise<Banner[]> {
+  const snapshot = await getDocs(query(collection(db, 'banners'), orderBy('order', 'asc')));
+  return snapshot.docs.map(d => ({ id: d.id, ...d.data() } as Banner));
+}
+
+// Firestore's addDoc/setDoc reject a literal `undefined` field value outright
+// (throws "Unsupported field value: undefined") rather than treating it as
+// "omit this field" the way object spreads elsewhere in this file assume.
+// Optional Banner fields (bgImgMobile, imgUrl) are built with `|| undefined`
+// to mean "not set" — saveBanner (fresh doc) uses the shared stripUndefined()
+// below since there's nothing to clear. updateBanner is a merge write onto an
+// existing doc, where simply dropping the key would leave any previously
+// saved value untouched (e.g. clearing "Mobile Background Image" back to
+// empty would silently keep showing the old image), so it maps undefined to
+// deleteField() instead, which actually removes the field from the document.
+function undefinedToDeleteField(obj: Record<string, any>): Record<string, any> {
+  const out = { ...obj };
+  for (const key of Object.keys(out)) {
+    if (out[key] === undefined) out[key] = deleteField();
+  }
+  return out;
+}
+
+export async function saveBanner(banner: Omit<Banner, 'id'>): Promise<string> {
+  const ref = await addDoc(collection(db, 'banners'), stripUndefined({
+    ...banner,
+    createdAt: serverTimestamp(),
+    updatedAt: serverTimestamp(),
+  }));
+  return ref.id;
+}
+
+export async function updateBanner(bannerId: string, banner: Partial<Omit<Banner, 'id'>>): Promise<void> {
+  await setDoc(doc(db, 'banners', bannerId), undefinedToDeleteField({ ...banner, updatedAt: serverTimestamp() }), { merge: true });
+}
+
+export async function deleteBanner(bannerId: string): Promise<void> {
+  await deleteDoc(doc(db, 'banners', bannerId));
+}
+
+export async function duplicateBanner(banner: Banner): Promise<string> {
+  const { id, createdAt, updatedAt, ...rest } = banner;
+  return saveBanner({
+    ...rest,
+    title: banner.title ? `${banner.title} (Copy)` : '',
+    status: 'draft',
+    order: banner.order + 1,
+  });
 }
 
 // ─── Company Pages (Brand Pages) ──────────────────────────────────────────────

@@ -429,6 +429,13 @@ service cloud.firestore {
       allow write: if isAdmin();
     }
 
+    // ─── banners ─────────────────────────────────────────────────────────────
+    // Homepage hero carousel, managed from the admin Banner Management module.
+    match /banners/{bannerId} {
+      allow read: if true;
+      allow write: if isAdmin();
+    }
+
     // ─── adminLogs ───────────────────────────────────────────────────────────
     match /adminLogs/{docId} {
       allow read: if isAdmin();
@@ -828,43 +835,6 @@ service cloud.firestore {
     match /appVersion/{vId} {
       allow read: if true;
       allow write: if isAdmin();
-    }
-
-    // ─── activeUsers (DAU + activity signal) ───────────────────────────────────
-    // Daily rollup summary is written ONLY by the aggregation Cloud Function
-    // (admin SDK bypasses rules) and read by admins. Each logged-in user may
-    // create/merge their OWN presence doc once a day; the doc ID is their phone
-    // (or uid for legacy email accounts), so they can only write their own.
-    match /activeUsers/{date} {
-      allow read: if isAdmin();
-      allow write: if false; // summary is CF-only
-      match /presence/{userId} {
-        allow read: if isAdmin();
-        allow create, update: if isAuthed()
-          && (userId == myPhone() || userId == request.auth.uid);
-      }
-    }
-
-    // ─── mau (monthly active users) ────────────────────────────────────────────
-    // Entirely CF-maintained; admins read the summary. No client writes.
-    match /mau/{month} {
-      allow read: if isAdmin();
-      allow write: if false;
-      match /presence/{userId} {
-        allow read: if isAdmin();
-        allow write: if false;
-      }
-    }
-
-    // ─── retention cohorts ─────────────────────────────────────────────────────
-    // Entirely CF-maintained; admins read the summary. No client writes.
-    match /retention/{cohort} {
-      allow read: if isAdmin();
-      allow write: if false;
-      match /{window}/{userId} {
-        allow read: if isAdmin();
-        allow write: if false;
-      }
     }
 
     // ─── productReviews & storeReviews ───────────────────────────────────────
