@@ -46,6 +46,9 @@ interface KhataEntry {
     pin?: string;
     status?: string;
     items?: any[];
+    // Cumulative ₹ returned against this bill via B2C Sales Returns (additive
+    // linkage written by ReturnsPage; nets the bill's outstanding down).
+    returnTotal?: number;
     // Set on entries created directly from this page (not via POS) — gates the
     // Edit/Delete actions so POS-origin bills (inventory postings, invoice
     // numbering) are never touched by them.
@@ -171,7 +174,11 @@ export default function DigitalKhataPage({ fullWidth = false }: { fullWidth?: bo
     // Compute per-entry outstanding. Cancelled bills (superseded by a corrected
     // re-issue from POS) must not count towards anyone's dues.
     const enriched = useMemo(() => entries.filter(e => String(e.status || '').toLowerCase() !== 'cancelled').map(e => {
-        const total = Number(e.grandTotal || e.netAmount || e.totalAmount || e.amount || 0);
+        // Net the bill down by any B2C sales returns booked against it (additive
+        // returnTotal linkage on the original salesOrder; 0/absent for bills with
+        // no return, so this leaves them unchanged and never mutates grandTotal).
+        const totalBase = Number(e.grandTotal || e.netAmount || e.totalAmount || e.amount || 0);
+        const total = Math.max(0, totalBase - Number(e.returnTotal || 0));
         // POS writes amountPaid; other writers used paidAmount. Reading only the
         // latter made every settled cash bill look like unpaid udhari.
         const rawPaid = e.amountPaid ?? e.paidAmount;

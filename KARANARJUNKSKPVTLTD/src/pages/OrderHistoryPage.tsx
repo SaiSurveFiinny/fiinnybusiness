@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { ShoppingCart, FileText, Loader2, Search, ExternalLink } from 'lucide-react';
+import { ShoppingCart, FileText, Loader2, Search, ExternalLink, RotateCcw } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { query, onSnapshot, orderBy } from 'firebase/firestore';
 import { db } from '../firebase';
@@ -47,6 +47,16 @@ interface SalesOrder {
     roundOff?: number;
     previousBalance?: number;
     netBalance?: number;
+    // B2C Sales Return linkage (additive; absent on bills with no returns).
+    hasReturns?: boolean;
+    returnTotal?: number;
+    deleted?: boolean;
+}
+
+// A bill is B2C (returnable) when it is neither a B2B GST invoice nor a plain
+// B2B Sales Order (orderNumber 'SO-…') — mirrors ReturnsPage.isB2C.
+function isB2C(o: SalesOrder): boolean {
+    return o.invoiceType !== 'B2B_GST' && !(o.orderNumber || '').startsWith('SO-');
 }
 
 /** Read amount from any known field name */
@@ -213,6 +223,11 @@ export default function OrderHistoryPage({ fullWidth = false }: { fullWidth?: bo
                                             <span style={{ fontSize: '0.75rem', padding: '2px 8px', borderRadius: '99px', background: order.invoiceType === 'B2B_GST' ? 'rgba(139,92,246,0.15)' : 'rgba(16,185,129,0.12)', color: order.invoiceType === 'B2B_GST' ? '#a78bfa' : '#10b981', fontWeight: 600 }}>
                                                 {order.invoiceType === 'B2B_GST' ? 'B2B' : 'POS'}
                                             </span>
+                                            {order.hasReturns && (
+                                                <span title={`Returned ₹${Number(order.returnTotal || 0).toLocaleString('en-IN')}`} style={{ marginLeft: '0.4rem', fontSize: '0.7rem', padding: '2px 8px', borderRadius: '99px', background: 'rgba(245,158,11,0.15)', color: '#f59e0b', fontWeight: 700 }}>
+                                                    Returned
+                                                </span>
+                                            )}
                                         </td>
                                         <td style={{ padding: '1rem', textAlign: 'right', fontWeight: 700, color: 'var(--primary-light)', fontSize: '1rem' }}>
                                             ₹{amount.toLocaleString('en-IN')}
@@ -239,6 +254,15 @@ export default function OrderHistoryPage({ fullWidth = false }: { fullWidth?: bo
                                                 >
                                                     <FileText size={13} /> Reprint
                                                 </button>
+                                                {isB2C(order) && !order.deleted && (
+                                                    <button
+                                                        onClick={() => navigate(`/returns?orderId=${encodeURIComponent(order.id)}`)}
+                                                        title="Sales Return / Credit Note"
+                                                        style={{ display: 'flex', alignItems: 'center', gap: '0.25rem', padding: '0.3rem 0.7rem', background: 'rgba(245,158,11,0.1)', color: '#f59e0b', border: '1px solid rgba(245,158,11,0.25)', borderRadius: '8px', cursor: 'pointer', fontSize: '0.8rem', fontWeight: 600, fontFamily: 'inherit' }}
+                                                    >
+                                                        <RotateCcw size={13} /> Return
+                                                    </button>
+                                                )}
                                             </div>
                                         </td>
                                     </tr>

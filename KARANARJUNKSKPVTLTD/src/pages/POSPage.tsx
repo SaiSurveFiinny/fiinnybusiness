@@ -146,7 +146,11 @@ async function fetchLiveOutstanding(
             // name when this customer has one, else fall back to phone.
             const isMatch = nameKey ? eName === nameKey : ePhone.slice(-10) === phoneDigits.slice(-10);
             if (!isMatch) continue;
-            const grand = Number(e.grandTotal ?? e.netAmount ?? e.totalAmount ?? e.amount ?? 0);
+            // Net the bill down by any B2C sales returns booked against it
+            // (additive returnTotal linkage; absent/0 on non-returned bills, so
+            // this is a no-op for them). Never overwrites the original grandTotal.
+            const grandBase = Number(e.grandTotal ?? e.netAmount ?? e.totalAmount ?? e.amount ?? 0);
+            const grand = Math.max(0, grandBase - Number(e.returnTotal || 0));
             const rawPaid = e.amountPaid ?? e.paidAmount;
             const paid = rawPaid !== undefined && rawPaid !== null
                 ? Number(rawPaid) || 0
@@ -1611,11 +1615,12 @@ export default function POSPage() {
                         );
                     })()}
 
-                    {/* Invoice card + compact Live Stock panel side-by-side. The card keeps
-                        its own maxWidth/auto-margins so it centers as before when the panel
-                        isn't shown; flexWrap lets the panel drop below the bill on narrow
-                        (mobile) screens instead of squeezing the invoice. */}
-                    <div className="no-print" style={{ display: 'flex', gap: '1rem', alignItems: 'flex-start', flexWrap: 'wrap' }}>
+                    {/* Invoice card. Live Stock is a POS-only trailing column INSIDE the
+                        items table (right of the Delete column) — the whole card is no-print
+                        and the printed copy is rendered separately by PosInvoicePreview, so
+                        the Live Stock / Delete columns never reach paper. Keeping them as real
+                        table columns is what guarantees each value lines up with its row. */}
+                    <div className="no-print" style={{ display: 'flex', alignItems: 'flex-start' }}>
                     {/* Invoice card (editable on screen; printed copy is rendered separately) */}
                     <div style={{ flex: 1, maxWidth: billFormat === 'A5' ? '970px' : '1040px', margin: '0 auto', background: '#fff', color: '#000', fontFamily: billFormat === 'A5' ? 'Arial, Helvetica, sans-serif' : "'Times New Roman', serif", boxShadow: '0 4px 24px rgba(0,0,0,0.10)', borderRadius: billFormat === 'A5' ? '3px' : '10px', border: 'none', padding: billFormat === 'A5' ? '0' : '16px 18px' }}>
 
@@ -1797,7 +1802,8 @@ export default function POSPage() {
                                             {/* Rate */}    <col style={{ width: '10%' }} />
                                             {/* GST% */}    <col style={{ width: '5%' }} />
                                             {/* Amount */}  <col style={{ width: '12%' }} />
-                                            {/* Del */}     <col style={{ width: '2.5%' }} />
+                                            {/* Del (POS-only) */}       <col style={{ width: '2.5%' }} />
+                                            {/* Live Stock (POS-only) */} <col style={{ width: '5.5%' }} />
                                         </colgroup>
                                         <thead>
                                             <tr style={{ background: '#f5f5f5', borderBottom: '1.5px solid #333' }}>
@@ -1817,7 +1823,11 @@ export default function POSPage() {
                                                         {label}
                                                     </th>
                                                 ))}
-                                                <th style={{ border: '1px solid #ccc' }}></th>
+                                                {/* POS-only columns — Delete + Live Stock. The 2px left border marks
+                                                    where the printable bill ends (at Amount); everything to its right
+                                                    is on-screen only and never prints (PosInvoicePreview omits it). */}
+                                                <th style={{ border: '1px solid #ccc', borderLeft: '2px solid #333' }}></th>
+                                                <th style={{ border: '1px solid #ccc', padding: '3px 2px', textAlign: 'center', fontWeight: 700, fontSize: '0.66rem', lineHeight: 1.1, color: '#555', whiteSpace: 'normal' }}>{L('live_stock')}</th>
                                             </tr>
                                         </thead>
                                         <tbody>
@@ -1852,11 +1862,14 @@ export default function POSPage() {
                                                             onWheel={e => e.currentTarget.blur()} />
                                                     </td>
                                                     <td style={{ border: '1px solid #e8e8e8', padding: '3px 4px', textAlign: 'right', fontWeight: 700, fontSize: '0.78rem' }}>{item.cartTotal ? invFmt(item.cartTotal) : ''}</td>
-                                                    <td style={{ border: '1px solid #e8e8e8', padding: '1px', textAlign: 'center' }}>
+                                                    <td style={{ border: '1px solid #e8e8e8', borderLeft: '2px solid #333', padding: '1px', textAlign: 'center' }}>
                                                         <button onClick={() => removeCartItem(item.id)} style={{ border: 'none', background: 'transparent', cursor: 'pointer', color: '#e53935', padding: '2px' }}>
                                                             <Trash2 size={12} />
                                                         </button>
                                                     </td>
+                                                    {(() => { const liveStock = remainingStockFor(item); return (
+                                                        <td style={{ border: '1px solid #e8e8e8', padding: '3px 2px', textAlign: 'center', fontWeight: 800, fontSize: '0.82rem', color: liveStock < 0 ? '#c62828' : '#2E7D32' }}>{liveStock}</td>
+                                                    ); })()}
                                                 </tr>
                                             ))}
                                             {/* Add-product search row */}
@@ -1897,13 +1910,14 @@ export default function POSPage() {
                                                         </>);
                                                     })()}
                                                 </td>
-                                                <td colSpan={7} style={{ border: '1px solid #e8e8e8' }}></td>
+                                                {/* +1 colSpan vs. the bill columns to cover the POS-only Delete + Live Stock cells */}
+                                                <td colSpan={8} style={{ border: '1px solid #e8e8e8' }}></td>
                                             </tr>
                                             {/* Empty padding rows */}
                                             {Array.from({ length: Math.max(0, (editingOrder ? EDIT_BILL_ROW_COUNT : FRESH_BILL_ROW_COUNT) - 1 - cart.length) }).map((_, i) => (
                                                 <tr key={`pad-${i}`} style={{ height: '26px' }}>
                                                     <td style={{ border: '1px solid #e8e8e8', color: '#ccc', textAlign: 'center', fontSize: '0.74rem', padding: '2px' }}>{cart.length + 2 + i}</td>
-                                                    {Array.from({ length: 10 }).map((_, j) => <td key={j} style={{ border: '1px solid #e8e8e8' }}></td>)}
+                                                    {Array.from({ length: 11 }).map((_, j) => <td key={j} style={{ border: '1px solid #e8e8e8' }}></td>)}
                                                 </tr>
                                             ))}
                                             {/* Total row */}
@@ -1912,6 +1926,7 @@ export default function POSPage() {
                                                 <td style={{ border: '1px solid #ccc', padding: '4px 1px', textAlign: 'center', fontWeight: 900, fontSize: '0.78rem' }}>{cartTotalQty}</td>
                                                 <td colSpan={2} style={{ border: '1px solid #ccc' }}></td>
                                                 <td style={{ border: '1px solid #ccc', padding: '4px 4px', textAlign: 'right', fontWeight: 900, fontSize: '0.88rem' }}>{invFmt(cartSubtotal)}</td>
+                                                <td style={{ border: '1px solid #ccc', borderLeft: '2px solid #333' }}></td>
                                                 <td style={{ border: '1px solid #ccc' }}></td>
                                             </tr>
                                         </tbody>
@@ -2175,7 +2190,11 @@ export default function POSPage() {
                                                 <th style={{ width: '68px' }}>{L('rate')}</th>
                                                 <th style={{ width: '46px' }}>{L('gst_pct')}</th>
                                                 <th style={{ width: '86px' }}>{L('gross_amount')}</th>
-                                                <th style={{ width: '30px' }}></th>
+                                                {/* POS-only columns — Delete + Live Stock. The 2px left border marks
+                                                    where the printable bill ends (at Amount); both are on-screen only
+                                                    and never print (PosInvoicePreview omits them). */}
+                                                <th style={{ width: '30px', borderLeft: '2px solid #333' }}></th>
+                                                <th style={{ width: '50px', fontSize: '0.68rem', lineHeight: 1.1, whiteSpace: 'normal' }}>{L('live_stock')}</th>
                                             </tr>
                                         </thead>
                                         <tbody>
@@ -2201,11 +2220,14 @@ export default function POSPage() {
                                                         onChange={e => setCart(prev => prev.map(c => c.id === item.id ? { ...c, gstPct: Number(e.target.value) } : c))}
                                                         onWheel={e => e.currentTarget.blur()} /></td>
                                                     <td style={{ textAlign: 'center', fontWeight: 600 }}>{item.cartTotal ? invFmt(item.cartTotal) : ''}</td>
-                                                    <td style={{ textAlign: 'center', padding: '2px' }}>
+                                                    <td style={{ textAlign: 'center', padding: '2px', borderLeft: '2px solid #333' }}>
                                                         <button onClick={() => removeCartItem(item.id)} style={{ border: 'none', background: 'transparent', cursor: 'pointer', color: '#e53935', padding: '2px' }}>
                                                             <Trash2 size={14} />
                                                         </button>
                                                     </td>
+                                                    {(() => { const liveStock = remainingStockFor(item); return (
+                                                        <td style={{ textAlign: 'center', fontWeight: 800, color: liveStock < 0 ? '#c62828' : '#2E7D32' }}>{liveStock}</td>
+                                                    ); })()}
                                                 </tr>
                                             ))}
                                             {/* Add-product search row */}
@@ -2251,13 +2273,14 @@ export default function POSPage() {
                                                         </>);
                                                     })()}
                                                 </td>
-                                                <td colSpan={7}></td>
+                                                {/* +1 colSpan vs. the bill columns to cover the POS-only Delete + Live Stock cells */}
+                                                <td colSpan={8}></td>
                                             </tr>
                                             {/* Padding rows so the grid reads like a printed invoice */}
                                             {Array.from({ length: Math.max(0, (editingOrder ? EDIT_BILL_ROW_COUNT : FRESH_BILL_ROW_COUNT) - 1 - cart.length) }).map((_, i) => (
                                                 <tr key={`pad-${i}`}>
                                                     <td style={{ textAlign: 'center', color: '#bbb' }}>{cart.length + 2 + i}</td>
-                                                    <td></td><td></td><td></td><td></td><td></td><td></td><td></td><td></td><td></td><td></td>
+                                                    <td></td><td></td><td></td><td></td><td></td><td></td><td></td><td></td><td></td><td></td><td></td>
                                                 </tr>
                                             ))}
                                             {/* TOTAL row */}
@@ -2267,6 +2290,7 @@ export default function POSPage() {
                                                 <td></td>
                                                 <td></td>
                                                 <td style={{ textAlign: 'center' }}>{invFmt(cartSubtotal)}</td>
+                                                <td style={{ borderLeft: '2px solid #333' }}></td>
                                                 <td></td>
                                             </tr>
                                         </tbody>
@@ -2367,35 +2391,6 @@ export default function POSPage() {
                             </>
                         )}
                     </div>
-
-                    {/* ── LIVE STOCK panel ─────────────────────────────────────────────
-                        Compact, informational, sits beside the bill (drops below on narrow
-                        screens via the wrapper's flexWrap). For each product in the bill it
-                        shows the name and its Live Stock = on-hand minus the qty currently
-                        selected, using the shared remainingStockFor() — no second stock
-                        calculation, and inventory deduction at checkout is untouched. */}
-                    {cart.length > 0 && (
-                        <div style={{ flex: '1 1 200px', maxWidth: '280px', minWidth: '180px', position: 'sticky', top: '1.25rem', background: 'var(--surface-base)', border: '1px solid var(--surface-border)', borderRadius: '10px', padding: '0.85rem' }}>
-                            <div style={{ fontSize: '0.78rem', fontWeight: 800, letterSpacing: '0.04em', color: 'var(--text-secondary)', textTransform: 'uppercase', marginBottom: '0.75rem' }}>
-                                {L('live_stock')}
-                            </div>
-                            <div style={{ display: 'flex', flexDirection: 'column', gap: '0.6rem' }}>
-                                {cart.map(item => {
-                                    const liveStock = remainingStockFor(item);
-                                    return (
-                                        <div key={item.id} style={{ borderBottom: '1px solid var(--surface-border)', paddingBottom: '0.5rem' }}>
-                                            <div style={{ fontSize: '0.82rem', fontWeight: 600, color: 'var(--text-primary)', lineHeight: 1.25, overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                                                {item.name}
-                                            </div>
-                                            <div style={{ fontSize: '1.05rem', fontWeight: 800, marginTop: '0.15rem', color: liveStock < 0 ? 'var(--danger)' : 'var(--primary-light)' }}>
-                                                {liveStock}
-                                            </div>
-                                        </div>
-                                    );
-                                })}
-                            </div>
-                        </div>
-                    )}
 
                     </div>
 

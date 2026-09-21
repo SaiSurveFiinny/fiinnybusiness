@@ -148,6 +148,11 @@ interface Props {
     previousOutstanding?: number;
     L?: (key: string) => string;
     activeCats?: string[];
+    // Sales Return / Credit Note reuse: overrides the "GST INVOICE" header title
+    // and, when set, prints the original bill reference. Both default to the
+    // normal invoice behaviour, so existing POS bill printing is unaffected.
+    documentTitle?: string;
+    originalBillNumber?: string;
 }
 
 // ── Component — single source of truth for the POS GST invoice layout ────────
@@ -169,6 +174,8 @@ export function PosInvoicePreview({
     previousOutstanding = 0,
     L = defaultL,
     activeCats: activeCatsProp,
+    documentTitle,
+    originalBillNumber,
 }: Props) {
     const fmt = (n: number) => (Number.isFinite(n) ? n : 0).toFixed(2);
     const lineGst = (i: PosInvoiceItem) => (typeof i.gstPct === 'number' ? i.gstPct : 5);
@@ -232,7 +239,7 @@ export function PosInvoicePreview({
 
                         {/* Center: GST INVOICE (primary) + Business info */}
                         <div style={{ borderRight: '1px solid #aaa', padding: '4px 10px', textAlign: 'center' as const, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: '1.5px' }}>
-                            <div style={{ fontWeight: 900, fontSize: '0.82rem', letterSpacing: '0.10em', textTransform: 'uppercase' as const, color: '#111', lineHeight: 1.1 }}>GST INVOICE</div>
+                            <div style={{ fontWeight: 900, fontSize: '0.82rem', letterSpacing: '0.10em', textTransform: 'uppercase' as const, color: '#111', lineHeight: 1.1 }}>{documentTitle || 'GST INVOICE'}</div>
                             <div style={{ display: 'flex', alignItems: 'center', gap: '5px', justifyContent: 'center' }}>
                                 {branding?.logoUrl && <img src={branding.logoUrl} alt="Logo" style={{ height: '18px', objectFit: 'contain' }} />}
                                 <div style={{ fontWeight: 800, fontSize: '0.68rem', lineHeight: 1.15 }}>{sellerName}</div>
@@ -247,7 +254,8 @@ export function PosInvoicePreview({
 
                         {/* Right: Bill meta */}
                         <div style={{ padding: '4px 7px', display: 'flex', flexDirection: 'column', justifyContent: 'center', fontSize: '0.52rem', gap: '2.5px' }}>
-                            <div style={{ display: 'flex', gap: '3px' }}><strong style={{ whiteSpace: 'nowrap' }}>Bill No:</strong><span style={{ fontWeight: 900 }}>{billNumber}</span></div>
+                            <div style={{ display: 'flex', gap: '3px' }}><strong style={{ whiteSpace: 'nowrap' }}>{originalBillNumber ? 'CN No:' : 'Bill No:'}</strong><span style={{ fontWeight: 900 }}>{billNumber}</span></div>
+                            {originalBillNumber && <div style={{ display: 'flex', gap: '3px' }}><strong style={{ whiteSpace: 'nowrap' }}>Ref Bill:</strong><span>{originalBillNumber}</span></div>}
                             <div style={{ display: 'flex', gap: '3px' }}><strong style={{ whiteSpace: 'nowrap' }}>Date:</strong><span>{dateLabel}</span></div>
                             <div style={{ display: 'flex', gap: '3px' }}><strong style={{ whiteSpace: 'nowrap' }}>Mode:</strong><strong style={{ fontWeight: 900 }}>{modeOfPayment}</strong></div>
                         </div>
@@ -444,7 +452,7 @@ export function PosInvoicePreview({
             ) : (
                 // ── A4 PORTRAIT ───────────────────────────────────────────────
                 <>
-                    <div style={{ textAlign: 'center', fontWeight: 700, letterSpacing: '0.15em', marginBottom: '2px' }}>{L('gst_invoice')}</div>
+                    <div style={{ textAlign: 'center', fontWeight: 700, letterSpacing: '0.15em', marginBottom: '2px' }}>{documentTitle || L('gst_invoice')}</div>
                     <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', borderBottom: '2px solid #111', paddingBottom: '6px', marginBottom: '8px', gap: '8px' }}>
                         <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
                             {branding?.logoUrl && <img src={branding.logoUrl} alt="Logo" style={{ height: '44px', objectFit: 'contain' }} />}
@@ -464,7 +472,7 @@ export function PosInvoicePreview({
                             </div>
                         </div>
                         <div style={{ textAlign: 'right', fontWeight: 700, border: '2px solid #111', padding: '3px 10px', borderRadius: '6px', whiteSpace: 'nowrap' }}>
-                            {modeOfPayment === 'Khata' || modeOfPayment === 'Credit' ? L('credit_bill') : L('cash_bill')}
+                            {originalBillNumber ? 'CREDIT NOTE' : (modeOfPayment === 'Khata' || modeOfPayment === 'Credit' ? L('credit_bill') : L('cash_bill'))}
                         </div>
                     </div>
 
@@ -476,7 +484,8 @@ export function PosInvoicePreview({
                             {customer.phone && <div>{L('contact')}: {customer.phone}</div>}
                         </div>
                         <div style={{ padding: '6px', display: 'flex', flexDirection: 'column', gap: '3px' }}>
-                            <div style={{ display: 'flex', justifyContent: 'space-between' }}><strong>{L('bill_no')} :</strong><span>{billNumber}</span></div>
+                            <div style={{ display: 'flex', justifyContent: 'space-between' }}><strong>{originalBillNumber ? 'Credit Note No' : L('bill_no')} :</strong><span>{billNumber}</span></div>
+                            {originalBillNumber && <div style={{ display: 'flex', justifyContent: 'space-between' }}><strong>Ref Bill No :</strong><span>{originalBillNumber}</span></div>}
                             <div style={{ display: 'flex', justifyContent: 'space-between' }}><strong>{L('bill_date')} :</strong><span>{dateLabel}</span></div>
                             <div style={{ display: 'flex', justifyContent: 'space-between' }}><strong>{L('mode_of_payment')} :</strong><span>{modeOfPayment}</span></div>
                         </div>
