@@ -5,6 +5,8 @@ import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
 import '../../../core/utils/image_utils.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+// StateProvider moved to the legacy export in Riverpod 3.
+import 'package:flutter_riverpod/legacy.dart';
 import 'package:go_router/go_router.dart';
 import '../../../core/constants/app_colors.dart';
 import '../../../core/constants/app_text_styles.dart';
@@ -21,6 +23,25 @@ import '../../reels/providers/reels_provider.dart';
 import '../../reels/screens/shop_profile_screen.dart' show StandaloneReelsFeed;
 import '../../../core/models/reel_model.dart';
 import '../../../core/utils/format_count.dart';
+
+/// Re-rolled on every pull-to-refresh so Home's two reel rails show a
+/// different pick each time. Lives at module level so BOTH rails read the
+/// same value — they shuffle one shared list with it and then take disjoint
+/// slices, which is what guarantees a reel never shows up in both sections.
+final homeReelsShuffleProvider =
+    StateProvider<int>((ref) => DateTime.now().millisecondsSinceEpoch);
+
+/// The slice of the feed one reel rail shows: shuffle the whole feed with
+/// [seed], then take 4 starting at [skipCount]. Both rails call this with the
+/// same list and seed but different offsets (0 and 4), so their results are
+/// disjoint by construction — that's what keeps the same reel out of both
+/// sections. Generic so the invariant can be unit-tested without building
+/// ReelModels.
+@visibleForTesting
+List<T> homeRailSlice<T>(List<T> feed, int seed, int skipCount) {
+  final shuffled = [...feed]..shuffle(Random(seed));
+  return shuffled.skip(skipCount).take(4).toList();
+}
 
 class HomeScreen extends ConsumerWidget {
   const HomeScreen({super.key});
@@ -41,13 +62,37 @@ class HomeScreen extends ConsumerWidget {
     return ('Good evening', '🌾');
   }
 
+  /// Pull-to-refresh. Re-rolls the reel shuffle and refetches what Home
+  /// renders, awaiting the new futures so the spinner stays up until the
+  /// fresh data has actually landed instead of snapping away instantly.
+  Future<void> _refresh(WidgetRef ref) async {
+    ref.read(homeReelsShuffleProvider.notifier).state =
+        DateTime.now().millisecondsSinceEpoch;
+    ref.invalidate(reelsFeedProvider);
+    ref.invalidate(rawHomeRailProductsProvider);
+    try {
+      await Future.wait([
+        ref.read(reelsFeedProvider.future),
+        ref.read(rawHomeRailProductsProvider.future),
+      ]);
+    } catch (_) {
+      // Each rail renders its own empty/error state — a failed refetch should
+      // just end the spinner, not throw out of the refresh gesture.
+    }
+  }
+
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final userAsync = ref.watch(currentUserProvider);
 
     return Scaffold(
       backgroundColor: AppColors.background,
-      body: CustomScrollView(
+      body: RefreshIndicator(
+        color: AppColors.primary,
+        onRefresh: () => _refresh(ref),
+        child: CustomScrollView(
+        // Always scrollable so the pull gesture still works on a short page.
+        physics: const AlwaysScrollableScrollPhysics(),
         slivers: [
           SliverAppBar(
             floating: true,
@@ -247,6 +292,7 @@ class HomeScreen extends ConsumerWidget {
             ),
           ),
         ],
+        ),
       ),
     );
   }
@@ -954,30 +1000,24 @@ class _ReelsRail extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final reelsAsync = ref.watch(reelsFeedProvider);
+    final shuffleSeed = ref.watch(homeReelsShuffleProvider);
     return reelsAsync.maybeWhen(
       data: (reels) {
         if (reels.isEmpty) return const SizedBox.shrink();
-        
-        // Seeded from the feed's identity so the selection is stable across
-        // rebuilds (an unseeded shuffle changed which reels the cards showed
-        // on every home rebuild, so the tapped thumbnail no longer matched
-        // what the card was rendering).
-        final seed = reels.length ^ reels.first.id.hashCode;
-        List<ReelModel> displayReels;
-        if (skipCount > 0) {
-          if (reels.length > 4) {
-            final remaining = reels.skip(skipCount).toList();
-            remaining.shuffle(Random(seed));
-            displayReels = remaining.take(4).toList();
-          } else {
-            // Not enough reels to be entirely disjoint. Just mix the existing ones.
-            final mixed = reels.toList();
-            mixed.shuffle(Random(seed));
-            displayReels = mixed.take(4).toList();
-          }
-        } else {
-          displayReels = reels.take(4).toList();
-        }
+
+        // Both rails shuffle the SAME feed with the SAME seed and then take
+        // disjoint windows out of it — [0..4) up top, [4..8) at the bottom —
+        // so a reel can never land in both sections. The old code took the
+        // feed's first 4 for the top rail (so it never changed at all) and
+        // shuffled the rest with a seed derived from the feed's contents (so
+        // it never changed either), and when fewer than 5 reels existed the
+        // bottom rail re-shuffled the whole list and repeated the top four.
+        //
+        // The seed only moves on pull-to-refresh, so the cards stay put while
+        // the page is scrolled: an unseeded shuffle re-rolled on every
+        // rebuild, and a tapped thumbnail then opened a different reel than
+        // the one it was showing.
+        final displayReels = homeRailSlice(reels, shuffleSeed, skipCount);
 
         if (displayReels.isEmpty) return const SizedBox.shrink();
         return Column(
@@ -1024,6 +1064,17 @@ class _ReelsRail extends ConsumerWidget {
   }
 }
 
+/// A reel's poster: its own thumbnail, else the image of the product it
+/// links to. Null when neither exists, so the caller can skip the image
+/// entirely rather than request an empty URL.
+String? _reelThumb(ReelModel reel) {
+  final thumb = reel.thumbnailUrl;
+  if (thumb != null && thumb.isNotEmpty) return thumb;
+  final product = reel.linkedProductImageUrl;
+  if (product != null && product.isNotEmpty) return product;
+  return null;
+}
+
 class _ReelRailCard extends ConsumerWidget {
   final ReelModel reel;
 
@@ -1067,11 +1118,15 @@ class _ReelRailCard extends ConsumerWidget {
         child: Stack(
           fit: StackFit.expand,
           children: [
-            if (reel.thumbnailUrl != null && reel.thumbnailUrl!.isNotEmpty) ...[
+            // Falls back to the linked product image the way the reels feed
+            // already does (reels_feed_screen.dart). Reels uploaded before
+            // server-side poster generation shipped carry no thumbnailUrl, and
+            // without a fallback those cards render as a bare gradient.
+            if (_reelThumb(reel) != null) ...[
               ClipRRect(
                 borderRadius: BorderRadius.circular(12),
                 child: CachedNetworkImage(
-                  imageUrl: resolveImageUrl(reel.thumbnailUrl!),
+                  imageUrl: resolveImageUrl(_reelThumb(reel)),
                   fit: BoxFit.cover,
                   errorWidget: (context, url, error) => const SizedBox.shrink(),
                 ),

@@ -37,6 +37,13 @@ String? routeForNotification(String? type, Map<String, dynamic> data) {
     case 'network':
       return '/dashboard';
 
+    // A buyer abandoned a checkout for one of this seller's products. The
+    // list is the useful landing place — it carries the buyer's number and
+    // the follow-up actions. Mirrors web's /dashboard/enquiry, which the
+    // WhatsApp alert for the same event links to.
+    case 'enquiry':
+      return '/dashboard/enquiry';
+
     // Seller added or was assigned a product, and low-stock alerts, both open
     // the inventory list scrolled to (and editing) that product.
     case 'inventory_added':
