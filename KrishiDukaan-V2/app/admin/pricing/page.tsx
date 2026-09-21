@@ -160,7 +160,7 @@ export default function AdminPricingPage() {
   }
 
   return (
-    <div className="mx-auto max-w-3xl space-y-10 py-8">
+    <div className="space-y-10 py-8">
       {/* ── Pricing ladder ── */}
       <section>
         <h1 className="text-xl font-black text-on-surface">Subscription pricing</h1>
@@ -189,7 +189,7 @@ export default function AdminPricingPage() {
           {rows.map((r, i) => (
             <div
               key={i}
-              className="grid grid-cols-1 gap-3 rounded-2xl border border-surface-container bg-white p-4 sm:grid-cols-[110px_130px_130px_130px_1fr_130px_auto]"
+              className="grid grid-cols-1 gap-3 rounded-2xl border border-surface-container bg-white p-4 sm:grid-cols-[110px_130px_130px_130px_minmax(140px,260px)_150px_auto]"
             >
               <label className="text-sm">
                 <span className="block text-[10px] font-black uppercase tracking-wide text-on-surface-variant">

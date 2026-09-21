@@ -1,8 +1,10 @@
 import 'dart:async';
+import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:geolocator/geolocator.dart';
+import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'package:intl/intl.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:firebase_auth/firebase_auth.dart';
@@ -1041,7 +1043,12 @@ class _EditRetailerSheetState extends State<_EditRetailerSheet> {
   late final _stateCtrl = TextEditingController(text: widget.retailer.state ?? '');
   late final _pincodeCtrl =
       TextEditingController(text: widget.retailer.pincode ?? '');
+  final _mapsLinkCtrl = TextEditingController();
   bool _saving = false;
+  bool _locating = false;
+  bool _parsingLink = false;
+  bool _showMapsLinkField = false;
+  late GeoPoint? _geo = widget.retailer.geo;
 
   @override
   void dispose() {
@@ -1053,7 +1060,106 @@ class _EditRetailerSheetState extends State<_EditRetailerSheet> {
     _cityCtrl.dispose();
     _stateCtrl.dispose();
     _pincodeCtrl.dispose();
+    _mapsLinkCtrl.dispose();
     super.dispose();
+  }
+
+  /// Same flow as _NewRetailerFormState._useCurrentLocation — matches web's
+  /// edit-retailer-modal handleUseCurrentLocation (Use current location).
+  Future<void> _useCurrentLocation() async {
+    setState(() => _locating = true);
+    try {
+      LocationPermission perm = await Geolocator.checkPermission();
+      if (perm == LocationPermission.denied) {
+        perm = await Geolocator.requestPermission();
+      }
+      if (perm == LocationPermission.denied ||
+          perm == LocationPermission.deniedForever) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Location permission denied')),
+          );
+        }
+        return;
+      }
+      final pos = await Geolocator.getCurrentPosition(
+        locationSettings: const LocationSettings(
+          accuracy: LocationAccuracy.medium,
+          timeLimit: Duration(seconds: 10),
+        ),
+      );
+      final details = await PlacesService.reverseGeocode(
+          pos.latitude, pos.longitude, AppConfig.googleMapsApiKey);
+      if (mounted) {
+        setState(() {
+          _geo = GeoPoint(pos.latitude, pos.longitude);
+          if (details != null) {
+            if (details.city?.isNotEmpty == true) _cityCtrl.text = details.city!;
+            if (details.state?.isNotEmpty == true) _stateCtrl.text = details.state!;
+            if (details.pincode?.isNotEmpty == true) _pincodeCtrl.text = details.pincode!;
+            if (details.formattedAddress?.isNotEmpty == true) {
+              _line1Ctrl.text = details.formattedAddress!;
+            }
+          }
+        });
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text('Location error: $e')));
+      }
+    } finally {
+      if (mounted) setState(() => _locating = false);
+    }
+  }
+
+  /// Same flow as _NewRetailerFormState._parseMapsLink — matches web's
+  /// "Paste Google Maps link — pins location from a shared URL".
+  Future<void> _parseMapsLink() async {
+    final url = _mapsLinkCtrl.text.trim();
+    if (url.isEmpty) return;
+    setState(() => _parsingLink = true);
+    try {
+      ({double lat, double lng})? coords;
+      if (url.contains('goo.gl') || url.contains('maps.app')) {
+        coords = await PlacesService.resolveShortUrl(url);
+      } else {
+        coords = PlacesService.parseMapsUrl(url);
+      }
+      if (coords == null) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+                content: Text('Could not parse location from that link')),
+          );
+        }
+        return;
+      }
+      final details = await PlacesService.reverseGeocode(
+          coords.lat, coords.lng, AppConfig.googleMapsApiKey);
+      if (mounted) {
+        setState(() {
+          _geo = GeoPoint(coords!.lat, coords.lng);
+          if (details != null) {
+            if (details.city?.isNotEmpty == true) _cityCtrl.text = details.city!;
+            if (details.state?.isNotEmpty == true) _stateCtrl.text = details.state!;
+            if (details.pincode?.isNotEmpty == true) _pincodeCtrl.text = details.pincode!;
+            if (details.formattedAddress?.isNotEmpty == true) {
+              _line1Ctrl.text = details.formattedAddress!;
+            }
+          }
+          _mapsLinkCtrl.clear();
+          _showMapsLinkField = false;
+        });
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text('Error: $e')));
+      }
+    } finally {
+      if (mounted) setState(() => _parsingLink = false);
+    }
   }
 
   @override
@@ -1161,6 +1267,95 @@ class _EditRetailerSheetState extends State<_EditRetailerSheet> {
               ),
             ],
           ),
+          const SizedBox(height: 16),
+
+          // ── Location helpers — same flow as the Add Retailer form, kept
+          // out of it before: an existing retailer could never be re-pinned
+          // or moved on a map after creation. ──
+          Row(
+            children: [
+              Expanded(
+                child: OutlinedButton.icon(
+                  onPressed: _locating ? null : _useCurrentLocation,
+                  icon: _locating
+                      ? const SizedBox(
+                          width: 14,
+                          height: 14,
+                          child: CircularProgressIndicator(strokeWidth: 2))
+                      : const Icon(Icons.my_location, size: 16),
+                  label: const Text('Use current location',
+                      style: TextStyle(fontSize: 12)),
+                  style: OutlinedButton.styleFrom(
+                    padding: const EdgeInsets.symmetric(vertical: 10),
+                    side: const BorderSide(color: AppColors.primary),
+                    foregroundColor: AppColors.primary,
+                  ),
+                ),
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: OutlinedButton.icon(
+                  onPressed: () =>
+                      setState(() => _showMapsLinkField = !_showMapsLinkField),
+                  icon: const Icon(Icons.link, size: 16),
+                  label: const Text('Paste Maps link',
+                      style: TextStyle(fontSize: 12)),
+                  style: OutlinedButton.styleFrom(
+                    padding: const EdgeInsets.symmetric(vertical: 10),
+                    side: BorderSide(
+                        color: _showMapsLinkField
+                            ? AppColors.primary
+                            : AppColors.divider),
+                    foregroundColor: _showMapsLinkField
+                        ? AppColors.primary
+                        : AppColors.onSurfaceVariant,
+                  ),
+                ),
+              ),
+            ],
+          ),
+          if (_showMapsLinkField) ...[
+            const SizedBox(height: 8),
+            Row(
+              children: [
+                Expanded(
+                  child: TextField(
+                    controller: _mapsLinkCtrl,
+                    keyboardType: TextInputType.url,
+                    decoration: InputDecoration(
+                      hintText:
+                          'https://maps.google.com/maps?q=18.52,73.85 or share link…',
+                      border:
+                          OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+                      isDense: true,
+                      contentPadding: const EdgeInsets.symmetric(
+                          horizontal: 10, vertical: 10),
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                FilledButton(
+                  onPressed: _parsingLink ? null : _parseMapsLink,
+                  style: FilledButton.styleFrom(
+                    backgroundColor: AppColors.primary,
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+                  ),
+                  child: _parsingLink
+                      ? const SizedBox(
+                          width: 16,
+                          height: 16,
+                          child: CircularProgressIndicator(
+                              strokeWidth: 2, color: Colors.white))
+                      : const Text('Go'),
+                ),
+              ],
+            ),
+          ],
+          if (_geo != null) ...[
+            const SizedBox(height: 12),
+            _LocationPreviewMap(geo: _geo!),
+          ],
           const SizedBox(height: 20),
           SizedBox(
             width: double.infinity,
@@ -1221,6 +1416,7 @@ class _EditRetailerSheetState extends State<_EditRetailerSheet> {
         city: _cityCtrl.text,
         state: _stateCtrl.text,
         pincode: _pincodeCtrl.text,
+        geo: _geo,
       );
       widget.onUpdated();
       if (mounted) Navigator.pop(context);
@@ -1415,6 +1611,11 @@ class _NewRetailerFormState extends State<_NewRetailerForm> {
   bool _showMapsLinkField = false;
   List<PlaceSuggestion> _suggestions = [];
   Timer? _debounce;
+  // Pinned via search selection, "Use current location", or a pasted Maps
+  // link — this is the actual GeoPoint saved on the retailer, matching
+  // web's edit-retailer-modal (geo state). The address text fields are just
+  // a display/edit convenience layered on top.
+  GeoPoint? _geo;
 
   @override
   void dispose() {
@@ -1464,6 +1665,9 @@ class _NewRetailerFormState extends State<_NewRetailerForm> {
         if (details.city?.isNotEmpty == true) _cityCtrl.text = details.city!;
         if (details.state?.isNotEmpty == true) _stateCtrl.text = details.state!;
         if (details.pincode?.isNotEmpty == true) _pincodeCtrl.text = details.pincode!;
+        if (details.lat != null && details.lng != null) {
+          _geo = GeoPoint(details.lat!, details.lng!);
+        }
       });
     }
     setState(() => _loadingSuggestions = false);
@@ -1493,12 +1697,15 @@ class _NewRetailerFormState extends State<_NewRetailerForm> {
       );
       final details = await PlacesService.reverseGeocode(
           pos.latitude, pos.longitude, AppConfig.googleMapsApiKey);
-      if (mounted && details != null) {
+      if (mounted) {
         setState(() {
-          if (details.city?.isNotEmpty == true) _cityCtrl.text = details.city!;
-          if (details.state?.isNotEmpty == true) _stateCtrl.text = details.state!;
-          if (details.pincode?.isNotEmpty == true) _pincodeCtrl.text = details.pincode!;
-          _mapsSearchCtrl.text = details.formattedAddress ?? '';
+          _geo = GeoPoint(pos.latitude, pos.longitude);
+          if (details != null) {
+            if (details.city?.isNotEmpty == true) _cityCtrl.text = details.city!;
+            if (details.state?.isNotEmpty == true) _stateCtrl.text = details.state!;
+            if (details.pincode?.isNotEmpty == true) _pincodeCtrl.text = details.pincode!;
+            _mapsSearchCtrl.text = details.formattedAddress ?? '';
+          }
           _suggestions = [];
         });
       }
@@ -1534,15 +1741,18 @@ class _NewRetailerFormState extends State<_NewRetailerForm> {
       }
       final details = await PlacesService.reverseGeocode(
           coords.lat, coords.lng, AppConfig.googleMapsApiKey);
-      if (mounted && details != null) {
+      if (mounted) {
         setState(() {
-          if (details.city?.isNotEmpty == true) _cityCtrl.text = details.city!;
-          if (details.state?.isNotEmpty == true) _stateCtrl.text = details.state!;
-          if (details.pincode?.isNotEmpty == true) _pincodeCtrl.text = details.pincode!;
-          if (_shopNameCtrl.text.isEmpty && details.name.isNotEmpty) {
-            _shopNameCtrl.text = details.name;
+          _geo = GeoPoint(coords!.lat, coords.lng);
+          if (details != null) {
+            if (details.city?.isNotEmpty == true) _cityCtrl.text = details.city!;
+            if (details.state?.isNotEmpty == true) _stateCtrl.text = details.state!;
+            if (details.pincode?.isNotEmpty == true) _pincodeCtrl.text = details.pincode!;
+            if (_shopNameCtrl.text.isEmpty && details.name.isNotEmpty) {
+              _shopNameCtrl.text = details.name;
+            }
+            _mapsSearchCtrl.text = details.formattedAddress ?? '';
           }
-          _mapsSearchCtrl.text = details.formattedAddress ?? '';
           _mapsLinkCtrl.clear();
           _showMapsLinkField = false;
         });
@@ -1593,6 +1803,7 @@ class _NewRetailerFormState extends State<_NewRetailerForm> {
         city: _cityCtrl.text.trim().isNotEmpty ? _cityCtrl.text.trim() : null,
         state: _stateCtrl.text.trim().isNotEmpty ? _stateCtrl.text.trim() : null,
         pincode: _pincodeCtrl.text.trim().isNotEmpty ? _pincodeCtrl.text.trim() : null,
+        geo: _geo,
       );
       widget.onAdded(code);
     } catch (e) {
@@ -1880,6 +2091,10 @@ class _NewRetailerFormState extends State<_NewRetailerForm> {
               ),
             ],
           ),
+          if (_geo != null) ...[
+            const SizedBox(height: 16),
+            _LocationPreviewMap(geo: _geo!),
+          ],
           const SizedBox(height: 20),
 
           // ── Action buttons ──────────────────────────────────────────────
@@ -1918,6 +2133,71 @@ class _NewRetailerFormState extends State<_NewRetailerForm> {
           ),
         ],
       ),
+    );
+  }
+}
+
+/// Small non-interactive map preview showing exactly where a pinned
+/// location will save — shared by the Add and Edit retailer forms. Mirrors
+/// web's edit-retailer-modal "Location pinned · lat, lng" badge + embedded
+/// map preview.
+class _LocationPreviewMap extends StatelessWidget {
+  final GeoPoint geo;
+  const _LocationPreviewMap({required this.geo});
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Container(
+          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+          decoration: BoxDecoration(
+            color: AppColors.primary.withValues(alpha: 0.1),
+            borderRadius: BorderRadius.circular(20),
+          ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Icon(Icons.location_on, size: 14, color: AppColors.primary),
+              const SizedBox(width: 4),
+              Text(
+                'Location pinned · ${geo.latitude.toStringAsFixed(5)}, '
+                '${geo.longitude.toStringAsFixed(5)}',
+                style: AppTextStyles.caption
+                    .copyWith(color: AppColors.primary, fontWeight: FontWeight.w600),
+              ),
+            ],
+          ),
+        ),
+        const SizedBox(height: 8),
+        ClipRRect(
+          borderRadius: BorderRadius.circular(12),
+          child: SizedBox(
+            height: 160,
+            child: IgnorePointer(
+              child: GoogleMap(
+                initialCameraPosition: CameraPosition(
+                  target: LatLng(geo.latitude, geo.longitude),
+                  zoom: 15,
+                ),
+                markers: {
+                  Marker(
+                    markerId: const MarkerId('pinned'),
+                    position: LatLng(geo.latitude, geo.longitude),
+                  ),
+                },
+                zoomControlsEnabled: false,
+                myLocationButtonEnabled: false,
+                mapToolbarEnabled: false,
+                scrollGesturesEnabled: false,
+                rotateGesturesEnabled: false,
+                tiltGesturesEnabled: false,
+              ),
+            ),
+          ),
+        ),
+      ],
     );
   }
 }

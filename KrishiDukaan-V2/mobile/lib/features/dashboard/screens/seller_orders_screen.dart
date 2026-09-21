@@ -1,10 +1,15 @@
+import 'dart:convert';
+
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:http/http.dart' as http;
 import 'package:intl/intl.dart';
 import 'package:url_launcher/url_launcher.dart';
 import '../../../core/constants/app_colors.dart';
+import '../../../core/constants/app_config.dart';
 import '../../../core/constants/app_text_styles.dart';
 import '../../../core/models/order_model.dart';
 import '../../../core/providers/user_provider.dart';
@@ -943,11 +948,94 @@ class _ActionButtonsState extends State<_ActionButtons> {
       };
 
   Future<void> _updateStatus(String newStatus) async {
+    // Reject goes through the server (POST /api/orders/reject), not a bare
+    // Firestore status write: a paid order needs its Razorpay refund issued
+    // (and the seller's Route transfer reversed, if one already went out) as
+    // part of the SAME action, mirroring app/dashboard/orders/page.tsx —
+    // there is no way to reject a paid order here and forget the refund.
+    if (newStatus == 'rejected') {
+      await _rejectWithReason();
+      return;
+    }
+
     setState(() => _loading = true);
     try {
       await DashboardRepository()
           .updateOrderStatus(widget.order.id, newStatus);
       widget.onStatusChanged();
+    } finally {
+      if (mounted) setState(() => _loading = false);
+    }
+  }
+
+  Future<void> _rejectWithReason() async {
+    final reason = await showDialog<String>(
+      context: context,
+      builder: (ctx) {
+        final ctrl = TextEditingController();
+        return AlertDialog(
+          title: const Text('Reject this order?'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text(
+                  'The customer will be refunded automatically if they paid online.'),
+              const SizedBox(height: 12),
+              TextField(
+                controller: ctrl,
+                autofocus: true,
+                decoration: const InputDecoration(
+                  labelText: 'Reason (shown to the customer)',
+                  border: OutlineInputBorder(),
+                ),
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(
+                onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
+            FilledButton(
+              onPressed: () => Navigator.pop(ctx, ctrl.text.trim()),
+              style: FilledButton.styleFrom(backgroundColor: AppColors.error),
+              child: const Text('Reject'),
+            ),
+          ],
+        );
+      },
+    );
+    if (reason == null) return; // dialog dismissed
+    if (reason.isEmpty) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('A reason is required to reject an order.')),
+        );
+      }
+      return;
+    }
+
+    setState(() => _loading = true);
+    try {
+      final token = await FirebaseAuth.instance.currentUser?.getIdToken();
+      final res = await http.post(
+        Uri.parse('${AppConfig.apiBaseUrl}/api/orders/reject'),
+        headers: {
+          'Content-Type': 'application/json',
+          if (token != null) 'Authorization': 'Bearer $token',
+        },
+        body: jsonEncode({'orderId': widget.order.id, 'reason': reason}),
+      );
+      final body = jsonDecode(res.body) as Map<String, dynamic>;
+      if (res.statusCode != 200) {
+        throw Exception(body['error'] ?? 'Could not reject the order.');
+      }
+      widget.onStatusChanged();
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('$e')),
+        );
+      }
     } finally {
       if (mounted) setState(() => _loading = false);
     }

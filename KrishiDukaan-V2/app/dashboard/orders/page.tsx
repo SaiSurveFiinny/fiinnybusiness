@@ -37,6 +37,7 @@ const STATUS_CONFIG: Record<OrderStatus, { label: string; color: string; bg: str
   out_for_delivery: { label: "Out for Delivery", color: "text-purple-700", bg: "bg-purple-50 border-purple-200", icon: Truck },
   delivered:        { label: "Delivered",         color: "text-green-700",  bg: "bg-green-50 border-green-200",   icon: Package },
   rejected:         { label: "Rejected",         color: "text-red-700",    bg: "bg-red-50 border-red-200",       icon: XCircle },
+  cancelled:        { label: "Cancelled",        color: "text-red-700",    bg: "bg-red-50 border-red-200",       icon: XCircle },
 };
 
 // One step forward at a time, so the customer's tracking timeline reflects what
@@ -60,9 +61,10 @@ const NEXT_ACTIONS: Record<OrderStatus, { next: OrderStatus; label: string; colo
   ],
   delivered: [],
   rejected:  [],
+  cancelled: [],
 };
 
-type FilterTab = "all" | "placed" | "accepted" | "dispatched" | "out_for_delivery" | "delivered" | "rejected";
+type FilterTab = "all" | "placed" | "accepted" | "dispatched" | "out_for_delivery" | "delivered" | "rejected" | "cancelled";
 type ViewTab = "orders" | "payments";
 
 function formatDate(createdAt: unknown): string {
@@ -359,6 +361,7 @@ export default function OrdersPage() {
   const [sellerType, setSellerType] = useState<"retailer" | "manufacturer" | null>(null);
   const [onlineDelivery, setOnlineDelivery] = useState<boolean | null>(null);
   const [updatingId, setUpdatingId] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
   const [activeFilter, setActiveFilter] = useState<FilterTab>("all");
   const [activeViewTab, setActiveViewTab] = useState<ViewTab>("orders");
   const [sellerInfo, setSellerInfo] = useState<{ name: string; phone: string; gstin: string } | null>(null);
@@ -413,6 +416,38 @@ export default function OrdersPage() {
   }, [effectiveUid, effectiveProfile]);
 
   const onAdvance = async (orderId: string, status: OrderStatus) => {
+    // Reject goes through a server route, not a bare status write: a paid
+    // order needs its Razorpay refund issued (and the seller's Route
+    // transfer reversed, if one already went out) as part of the SAME
+    // action, so there's no way to reject a paid order and forget the
+    // refund. See app/api/orders/reject and app/lib/order-refund.ts.
+    if (status === "rejected") {
+      const reason = window.prompt("Why are you rejecting this order? (shown to the customer)");
+      if (reason === null) return; // cancelled the prompt
+      if (!reason.trim()) {
+        setActionError("A reason is required to reject an order.");
+        return;
+      }
+      setUpdatingId(orderId);
+      setActionError(null);
+      try {
+        const token = await auth.currentUser?.getIdToken();
+        const res = await fetch("/api/orders/reject", {
+          method: "POST",
+          headers: { "Content-Type": "application/json", Authorization: `Bearer ${token ?? ""}` },
+          body: JSON.stringify({ orderId, reason }),
+        });
+        const json = await res.json();
+        if (!res.ok) throw new Error(json.error ?? "Could not reject the order.");
+        if (uid && sellerType) await load(uid, sellerType, sellerProfile);
+      } catch (e) {
+        setActionError(e instanceof Error ? e.message : "Could not reject the order.");
+      } finally {
+        setUpdatingId(null);
+      }
+      return;
+    }
+
     setUpdatingId(orderId);
     try {
       await updateOrderStatus(orderId, status);
@@ -444,6 +479,7 @@ export default function OrdersPage() {
     { key: "out_for_delivery", label: `Out for Delivery (${statusCounts["out_for_delivery"] || 0})`,        color: "bg-purple-100 text-purple-800" },
     { key: "delivered",        label: `Delivered (${statusCounts["delivered"] || 0})`,                      color: "bg-green-100 text-green-800" },
     { key: "rejected",         label: `Rejected (${statusCounts["rejected"] || 0})`,                        color: "bg-red-100 text-red-800" },
+    { key: "cancelled",        label: `Cancelled (${statusCounts["cancelled"] || 0})`,                      color: "bg-red-100 text-red-800" },
   ];
 
   return (
@@ -453,6 +489,12 @@ export default function OrdersPage() {
         description={t('ordersDesc')}
         helperKey="dashOrders"
       />
+
+      {actionError && (
+        <div className="mb-4 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+          {actionError}
+        </div>
+      )}
 
       {!uid || !sellerType ? (
         <p className="rounded-xl border border-outline-variant/30 bg-surface-container-low px-4 py-3 text-sm text-on-surface-variant">

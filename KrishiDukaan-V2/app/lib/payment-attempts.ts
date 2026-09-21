@@ -63,6 +63,23 @@ export type RecordAttemptInput = {
   items?: AttemptItem[];
   subtotal?: number;
   deliveryCharge?: number;
+  /**
+   * Checkout details captured BEFORE payment. Until these were recorded, the
+   * delivery address only ever existed on the customer's device and reached
+   * the server in the final client-side order write — the one step that can
+   * fail after money has already moved (killed app, dropped network, a UPI
+   * confirmation arriving after the customer left the screen). Storing them
+   * here is what lets the payment.captured webhook rebuild a complete order
+   * server-side when that client step never runs.
+   */
+  customerName?: string;
+  customerPhone?: string;
+  /** String (web) or {name, phone, address, city, pincode} (mobile) — both
+   *  shapes are live on orders, see types/order.ts CustomerAddress. */
+  customerAddress?: unknown;
+  /** Per-seller delivery split, keyed the way orders key sellers (phone).
+   *  Lets a recovered multi-seller order allocate delivery correctly. */
+  deliveryBySeller?: Record<string, number>;
   /** Subscription attempts only. */
   seatCount?: number;
   durationMonths?: number;
@@ -131,6 +148,13 @@ export async function recordAttempt(input: RecordAttemptInput): Promise<void> {
 
           items: input.items ?? [],
           itemCount: input.items?.length ?? 0,
+
+          // Client-supplied checkout details take precedence over the profile
+          // lookup above — they are what the customer typed for THIS order.
+          ...(input.customerName ? { customerName: input.customerName } : {}),
+          ...(input.customerPhone ? { customerPhone: input.customerPhone } : {}),
+          ...(input.customerAddress ? { customerAddress: input.customerAddress } : {}),
+          ...(input.deliveryBySeller ? { deliveryBySeller: input.deliveryBySeller } : {}),
 
           seatCount: input.seatCount ?? null,
           durationMonths: input.durationMonths ?? null,

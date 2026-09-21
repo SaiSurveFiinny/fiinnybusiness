@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { Box, LayoutDashboard, Layers, Users, X, Mail, MessageSquare, Building2, BarChart3, CreditCard, BookOpen, Tag, Package, MessageCircle, Video, UserCog, ShoppingCart, IndianRupee, Banknote, ReceiptText, Zap, ShieldAlert, Contact } from "lucide-react";
+import { Box, LayoutDashboard, Layers, Users, X, Mail, MessageSquare, Building2, BarChart3, CreditCard, BookOpen, Tag, Package, MessageCircle, Video, UserCog, ShoppingCart, IndianRupee, Banknote, ReceiptText, Zap, ShieldAlert, Contact, GalleryHorizontal } from "lucide-react";
 import { cn } from "../../dashboard/_lib/cn";
 import { useAdminAuth, hasSection, type AdminSection } from "../_context/admin-auth-context";
 
@@ -27,6 +27,7 @@ const navItems = [
   { href: "/admin/discounts", label: "Discounts", icon: Tag, section: "discounts" as AdminSection },
   { href: "/admin/companies", label: "Company Pages", icon: Building2, section: "companies" as AdminSection },
   { href: "/admin/hubs", label: "Hubs", icon: Layers, section: "hubs" as AdminSection },
+  { href: "/admin/banners", label: "Banners", icon: GalleryHorizontal, section: "banners" as AdminSection },
   { href: "/admin/reports", label: "Reports", icon: Mail, section: "reports" as AdminSection },
   { href: "/admin/inventory", label: "Inventory", icon: Package, section: "inventory" as AdminSection },
   { href: "/admin/blog", label: "Blog", icon: BookOpen, section: "blog" as AdminSection },

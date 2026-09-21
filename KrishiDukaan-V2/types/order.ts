@@ -3,7 +3,12 @@ export type SellerType = "retailer" | "manufacturer";
 /**
  * Canonical order lifecycle, in progression order:
  *   placed → accepted → dispatched → out_for_delivery → delivered
- * with `rejected` as the terminal decline from any pre-dispatch state.
+ * with two terminal off-ramps from any pre-dispatch state: `rejected` (the
+ * seller or admin declines — see /api/orders/reject) and `cancelled` (the
+ * customer backs out themselves — see /api/orders/cancel). Kept as separate
+ * values on purpose: a seller reading "rejected" should mean their own
+ * decision, not "the customer changed their mind" showing up as if it were
+ * one. Both auto-refund online payments via app/lib/order-refund.ts.
  *
  * `dispatched` means the seller has handed the parcel off / packed it out of
  * their stock; `out_for_delivery` means it is physically on its way to the
@@ -17,7 +22,8 @@ export type OrderStatus =
   | "dispatched"
   | "out_for_delivery"
   | "delivered"
-  | "rejected";
+  | "rejected"
+  | "cancelled";
 
 /** Progression order, shared by every timeline and "can advance to" check. */
 export const ORDER_STATUS_FLOW: OrderStatus[] = [

@@ -36,13 +36,15 @@ final dashboardRepoProvider = Provider((_) => _repo);
 
 final _storeAnalyticsRepo = StoreAnalyticsRepository();
 
-/// Reach/engagement stats behind the Analytics screen, scoped to a period.
-/// Keyed by "<phone>|<periodKey>" so switching period refetches rather than
-/// reusing the previous window's numbers.
-final storeAnalyticsProvider =
-    FutureProvider.family<StoreAnalytics, ({String phone, AnalyticsPeriod period})>(
+/// Reach/engagement stats behind the Analytics screen, scoped to a period —
+/// or to [customRange] when the Custom Date Range filter is active, which
+/// overrides [period]. The record type itself is the cache key, so picking a
+/// new range (or period) always refetches rather than reusing stale numbers.
+final storeAnalyticsProvider = FutureProvider.family<StoreAnalytics,
+    ({String phone, AnalyticsPeriod period, AnalyticsRange? customRange})>(
         (ref, arg) {
-  return _storeAnalyticsRepo.fetch(arg.phone, arg.period);
+  return _storeAnalyticsRepo.fetch(arg.phone, arg.period,
+      customRange: arg.customRange);
 });
 
 /// Real seat stats from subscriptions + retailerSeatListings.
