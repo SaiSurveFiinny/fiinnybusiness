@@ -24,7 +24,8 @@ import RetailerJoinView from './views/RetailerJoinView';
 import HelpView from './views/HelpView';
 import { fetchManufacturerProfile } from './dashboard/_lib/brand-page-firestore';
 import { motion, AnimatePresence } from 'framer-motion';
-import { auth, db, fetchMarketplaceProducts, fetchStores, getUserProfile, fetchHubs, createOrdersFromCart, updateOrderPayment, trackPageView, trackUserActivity, requestRoleUpgrade } from './firebase';
+import { auth, db, fetchMarketplaceProducts, fetchStores, getUserProfile, fetchHubs, fetchBanners, createOrdersFromCart, updateOrderPayment, trackPageView, trackUserActivity, requestRoleUpgrade } from './firebase';
+import type { Banner } from './firebase';
 import { acceptManufacturerInvite } from './lib/invite/invite-acceptance-service';
 import { fetchInviteDetailsForSignup } from './lib/invite/fetch-invite-for-signup';
 import { onAuthStateChanged, signOut } from 'firebase/auth';
@@ -125,6 +126,7 @@ export default function App() {
   const [allProducts, setAllProducts] = useState<MarketplaceProduct[]>([]);
   const [allStores, setAllStores] = useState<any[]>([]);
   const [hubs, setHubs] = useState<any[]>([]);
+  const [banners, setBanners] = useState<Banner[]>([]);
   const [selectedHubId, setSelectedHubId] = useState<string | null>(null);
   const [cartItems, setCartItems] = useState<CartItem[]>([]);
   const [cartLoaded, setCartLoaded] = useState(false);
@@ -530,6 +532,13 @@ export default function App() {
       setAllStores(stores);
       setHubs(fetchedHubs);
 
+      // Banners are a non-critical homepage enhancement — HomeView falls back
+      // to its built-in default slides if this fails or returns empty, so a
+      // failure here must never block the rest of the page from loading.
+      fetchBanners().then(setBanners).catch((err) => {
+        console.warn('Failed to fetch banners, homepage will use default slides:', err);
+      });
+
       if (products.length === 0) {
         setErrorMsg('No products found in database even after sync. Please check your Firestore rules.');
       }
@@ -931,6 +940,49 @@ export default function App() {
 
   const navigateToProduct = (id: string) => {
     navigate('product', { productId: id });
+  };
+
+  // Resolves a Banner Management "internal route" CTA (e.g. "/market",
+  // "/hub/tomato", "/become-retailer") to the app's view-based navigation.
+  // Unrecognized routes fall back to a full navigation via window.location
+  // so an admin typo never dead-ends the click.
+  const navigateToRoute = (route: string) => {
+    const [path, query] = route.split('?');
+    const segments = path.split('/').filter(Boolean);
+    const params = new URLSearchParams(query);
+
+    switch (segments[0]) {
+      case '':
+      case undefined:
+        navigate('home');
+        return;
+      case 'market':
+        if (params.get('category')) setSelectedCategory(params.get('category')!);
+        navigate('market');
+        return;
+      case 'hub':
+        navigate('hub', { hubId: segments[1] });
+        return;
+      case 'product':
+        if (segments[1]) navigateToProduct(segments[1]);
+        return;
+      case 'brand':
+        navigate('brand', { manufacturerId: segments[1] });
+        return;
+      case 'become-retailer':
+      case 'login':
+        navigate('login');
+        return;
+      case 'stores':
+      case 'map':
+        navigate('map');
+        return;
+      case 'blog':
+        window.location.href = route;
+        return;
+      default:
+        window.location.href = route;
+    }
   };
 
   const addToCart = (product: MarketplaceProduct, variant?: { unit: string; price: number; stock?: number }) => {
@@ -1431,6 +1483,7 @@ export default function App() {
           <HomeView
             products={homeProducts}
             hubs={hubs}
+            banners={banners}
             onProductClick={navigateToProduct}
             onHubClick={(hubId) => {
               setProductSearch('');
@@ -1447,6 +1500,7 @@ export default function App() {
             }}
             onAddToCart={addToCart}
             onRegisterClick={() => navigate('login')}
+            onNavigateRoute={navigateToRoute}
           />
         );
       case 'market':
@@ -1843,6 +1897,7 @@ export default function App() {
           <HomeView
             products={homeProducts}
             hubs={hubs}
+            banners={banners}
             onProductClick={navigateToProduct}
             onHubClick={(hubId) => {
               setProductSearch('');
@@ -1854,6 +1909,7 @@ export default function App() {
             }}
             onAddToCart={addToCart}
             onRegisterClick={() => navigate('login')}
+            onNavigateRoute={navigateToRoute}
           />
         );
     }
