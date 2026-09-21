@@ -49,6 +49,7 @@ export default async function ReelsPage() {
     slug: buildReelSlug(r.title, r.id),
     videoUrl: r.videoUrl,
     thumbnailUrl: r.thumbnailUrl,
+    linkedProductImageUrl: r.linkedProductImageUrl,
     title: r.title,
     caption: r.caption,
     shopName: r.shopName,
