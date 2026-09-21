@@ -124,12 +124,43 @@ export function resolveTemplateComponents(
       ];
     }
 
-    case "add_product_reminder":
+    case "new_product_reminder":
+      // Manual admin Marketing campaign (Marathi) — never triggered automatically.
+      // Sent to active-subscribed retailers who still have vacant/unused product seats.
+      // {{1}} = ownerName → businessName → shopName → "User" (retailer/owner name)
+      // {{2}} = vacantSeats (number of unused product seats)
+      // Both CTAs are static URL buttons (video + inventory) — no button components sent.
+      return [body(name(), p("vacantSeats"))];
+
+    case "kyc_pending": {
       // Manual admin campaign — never triggered automatically.
-      // Sent to active-subscribed retailers who have zero products.
-      // {{1}} = businessName → shopName → name → "Business"
-      // No buttons.
-      return [body(p("businessName") || p("shopName") || p("name") || "Business")];
+      // Sent to subscribed retailers/manufacturers whose payout KYC is not yet
+      // verified (payoutAccounts.status !== "verified", or no account at all).
+      // Body has exactly ONE variable: {{1}} = businessName → shopName → ownerName → "User".
+      // Only this single body parameter is sent — no header or button components.
+      const displayName = p("businessName") || p("shopName") || p("ownerName") || "User";
+      return [body(displayName)];
+    }
+
+    case "kyc_success": {
+      // Manual admin campaign — never triggered automatically.
+      // Sent to direct retailers whose payout KYC is verified
+      // (payoutAccounts.status === "verified").
+      // Body has exactly ONE variable: {{1}} = businessName → shopName → ownerName → "User".
+      // CTA is a static URL button (https://krishidukan.com/dashboard/payouts) —
+      // no button component is sent.
+      const displayName = p("businessName") || p("shopName") || p("ownerName") || "User";
+      return [body(displayName)];
+    }
+
+    case "app_update": {
+      // Manual admin Marketing campaign — never triggered automatically.
+      // Sent to retailers / manufacturers / customers to prompt an app update.
+      // Body has exactly ONE variable: {{1}} = businessName → shopName → ownerName → "User".
+      // CTA is a static URL button (Play Store listing) — no button component is sent.
+      const displayName = p("businessName") || p("shopName") || p("ownerName") || "User";
+      return [body(displayName)];
+    }
 
     case "generic":
     default:

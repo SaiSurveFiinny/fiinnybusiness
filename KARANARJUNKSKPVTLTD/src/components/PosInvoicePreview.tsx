@@ -79,6 +79,12 @@ export function toMonthYear(val: string): string {
     return m ? `${m[2]}/${m[1].slice(2)}` : (val || '');
 }
 
+// Minimum total product rows shown on the printed/previewed invoice — matches
+// POSPage's FRESH_BILL_ROW_COUNT so a fresh bill's on-screen row count and its
+// printed row count agree. Blank rows pad up to this floor; a cart with more
+// items than this simply shows all of them, no padding.
+const INVOICE_PRINT_ROW_COUNT = 10;
+
 // ── Types ────────────────────────────────────────────────────────────────────
 
 export interface PosInvoiceItem {
@@ -177,6 +183,7 @@ export function PosInvoicePreview({
     const uppercaseEnabled = branding?.invoiceTextCase === 'uppercase';
     const up = (v?: string | null) => (uppercaseEnabled && v ? v.toUpperCase() : v);
 
+    const totalQty = cart.reduce((s, i) => s + (i.cartQuantity || 0), 0);
     const taxable = cart.reduce((s, i) => s + (i.cartTotal || 0) / (1 + lineGst(i) / 100), 0);
     const cgst = cart.reduce((s, i) => { const g = lineGst(i); return s + ((i.cartTotal || 0) / (1 + g / 100)) * (g / 2) / 100; }, 0);
     const sgst = cgst;
@@ -329,13 +336,15 @@ export function PosInvoicePreview({
                                     <td style={{ border: '1px solid #e0e0e0', padding: '1.5px 3px', textAlign: 'right' as const, fontWeight: 700 }}>{fmt(item.cartTotal)}</td>
                                 </tr>
                             ))}
-                            {Array.from({ length: Math.max(0, 5 - cart.length) }).map((_, i) => (
+                            {Array.from({ length: Math.max(0, INVOICE_PRINT_ROW_COUNT - cart.length) }).map((_, i) => (
                                 <tr key={`e-${i}`} style={{ height: '13px' }}>
                                     {Array.from({ length: 10 }).map((_, j) => <td key={j} style={{ border: '1px solid #e0e0e0' }}></td>)}
                                 </tr>
                             ))}
                             <tr style={{ background: '#f5f5f5', borderTop: '1.5px solid #333' }}>
-                                <td colSpan={9} style={{ border: '1px solid #ccc', padding: '2px 6px', textAlign: 'right' as const, fontWeight: 800, fontSize: '0.62rem', textTransform: 'uppercase' as const }}>Total</td>
+                                <td colSpan={6} style={{ border: '1px solid #ccc', padding: '2px 6px', textAlign: 'right' as const, fontWeight: 800, fontSize: '0.62rem', textTransform: 'uppercase' as const }}>Total</td>
+                                <td style={{ border: '1px solid #ccc', padding: '2px 1px', textAlign: 'center' as const, fontWeight: 900, fontSize: '0.62rem' }}>{totalQty}</td>
+                                <td colSpan={2} style={{ border: '1px solid #ccc' }}></td>
                                 <td style={{ border: '1px solid #ccc', padding: '2px 3px', textAlign: 'right' as const, fontWeight: 900, fontSize: '0.62rem' }}>{fmt(taxable + tax)}</td>
                             </tr>
                         </tbody>
@@ -498,13 +507,15 @@ export function PosInvoicePreview({
                                     <td style={{ textAlign: 'center' as const }}>{fmt(item.cartTotal)}</td>
                                 </tr>
                             ))}
-                            {Array.from({ length: Math.max(0, 6 - cart.length) }).map((_, i) => (
+                            {Array.from({ length: Math.max(0, INVOICE_PRINT_ROW_COUNT - cart.length) }).map((_, i) => (
                                 <tr key={`e-${i}`} style={{ height: '20px' }}>
                                     <td></td><td></td><td></td><td></td><td></td><td></td><td></td><td></td><td></td><td></td>
                                 </tr>
                             ))}
                             <tr style={{ fontWeight: 700, background: '#f9f9f9' }}>
-                                <td colSpan={9} style={{ textAlign: 'right', paddingRight: '8px' }}>{L('total')}</td>
+                                <td colSpan={7} style={{ textAlign: 'right', paddingRight: '8px' }}>{L('total')}</td>
+                                <td style={{ textAlign: 'center' as const }}>{totalQty}</td>
+                                <td></td>
                                 <td style={{ textAlign: 'center' as const }}>{fmt(taxable + tax)}</td>
                             </tr>
                         </tbody>

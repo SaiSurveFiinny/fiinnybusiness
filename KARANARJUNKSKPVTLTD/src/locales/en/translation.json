@@ -342,7 +342,16 @@
     "processing": "Processing...",
     "you": "You",
     "edit_user": "Edit User",
-    "delete_user": "Delete User"
+    "delete_user": "Delete User",
+    "reset_password": "Reset Password",
+    "reset_password_hint": "Set a new password for this user. They will use it the next time they sign in.",
+    "new_password": "New Password",
+    "confirm_password": "Confirm Password",
+    "reset_password_button": "Reset Password",
+    "password_min_length": "Password must be at least 6 characters.",
+    "password_mismatch": "Passwords do not match.",
+    "reset_password_success": "Password reset successfully!",
+    "reset_password_error": "Failed to reset password."
   },
   "pos": {
     "title": "POS Billing",

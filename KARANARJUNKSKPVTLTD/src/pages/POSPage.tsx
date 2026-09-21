@@ -188,6 +188,54 @@ function fromMonthYear(val: string): string {
     return s;
 }
 
+// Renders the product-search suggestion list in a body-level portal, positioned
+// with `fixed` coordinates read from the search input's own bounding rect.
+//
+// The invoice item table sits inside an `overflow-x: auto` wrapper (needed so the
+// wide table can scroll horizontally on narrow screens). Per the CSS spec, once
+// either overflow axis on an element is non-`visible`, the *other* axis is also
+// computed as `auto` (never `visible`) — so that wrapper clips an absolutely
+// positioned dropdown vertically too, once the dropdown from a lower row extends
+// past the wrapper's bottom edge. A portal sidesteps this without touching the
+// wrapper's overflow (which would reopen the "wide table can't scroll" problem
+// the wrapper exists for).
+//
+// `getBoundingClientRect()` only reflects the input's position at the moment it
+// runs — React doesn't re-render on scroll, so a one-time read left the portal
+// stuck at its original screen coordinates while the invoice (or the page)
+// scrolled underneath it, detaching it from the input. Re-measuring on every
+// `scroll` (captured on window so it fires for scroll on ANY ancestor, not just
+// window-level scroll) and `resize` event keeps it pinned to the live input
+// position without a second/independent positioning system.
+function ProductSearchDropdown({ anchorRef, children }: { anchorRef: React.RefObject<HTMLInputElement | null>; children: React.ReactNode }) {
+    const [rect, setRect] = useState<DOMRect | null>(null);
+
+    useEffect(() => {
+        const measure = () => setRect(anchorRef.current?.getBoundingClientRect() ?? null);
+        measure();
+        window.addEventListener('scroll', measure, true);
+        window.addEventListener('resize', measure);
+        return () => {
+            window.removeEventListener('scroll', measure, true);
+            window.removeEventListener('resize', measure);
+        };
+    }, [anchorRef]);
+
+    if (!rect) return null;
+    return createPortal(
+        <div className="pinv-dropdown" style={{ position: 'fixed', top: rect.bottom, left: rect.left, width: rect.width }}>
+            {children}
+        </div>,
+        document.body,
+    );
+}
+
+// Total visible product rows (filled + search row + blank padding) on a fresh
+// bill. Editing an existing bill keeps the prior 6-row total unchanged — only
+// a newly created bill grows to this count.
+const FRESH_BILL_ROW_COUNT = 10;
+const EDIT_BILL_ROW_COUNT = 6;
+
 type PosModuleTab = 'billing' | 'khata' | 'customers' | 'order-history';
 const POS_MODULE_TABS: { id: PosModuleTab; label: string }[] = [
     { id: 'billing',       label: 'POS Billing' },
@@ -206,8 +254,8 @@ const TAB_PERM: Record<PosModuleTab, string> = {
 };
 
 export default function POSPage() {
-    const [posModuleTab, setPosModuleTab] = useHashTab<PosModuleTab>(VALID_POS_TABS, 'billing', 'fiinny-tab-pos');
     const can = useFeaturePermissions();
+    const [posModuleTab, setPosModuleTab] = useHashTab<PosModuleTab>(VALID_POS_TABS, 'billing', 'fiinny-tab-pos', tab => can(TAB_PERM[tab]));
 
     // Only show sub-tabs the current role is permitted to view.
     const visiblePosTabs = POS_MODULE_TABS.filter(tab => can(TAB_PERM[tab.id]));
@@ -662,6 +710,7 @@ export default function POSPage() {
     const removeCartItem = (id: string) => setCart(prev => prev.filter(item => item.id !== id));
 
     const cartSubtotal = cart.reduce((sum, item) => sum + item.cartTotal, 0);
+    const cartTotalQty = cart.reduce((sum, item) => sum + (item.cartQuantity || 0), 0);
     const loyaltyIsActive = isLoyaltyActive(hasModule('loyalty'), loyaltyConfig);
     // If loyalty was switched off after points were already staged for redemption,
     // the discount must not apply — no partial/stale redemption should reach checkout.
@@ -1503,8 +1552,13 @@ export default function POSPage() {
                         );
                     })()}
 
+                    {/* Invoice card + Live Stock Review side-by-side. The card keeps its own
+                        maxWidth/auto-margins so it centers exactly as before when there's no
+                        room for the review; the review only occupies space that was previously
+                        empty and never resizes the card itself. */}
+                    <div className="no-print" style={{ display: 'flex', gap: '1rem', alignItems: 'flex-start' }}>
                     {/* Invoice card (editable on screen; printed copy is rendered separately) */}
-                    <div style={{ maxWidth: billFormat === 'A5' ? '970px' : '1040px', margin: '0 auto', background: '#fff', color: '#000', fontFamily: billFormat === 'A5' ? 'Arial, Helvetica, sans-serif' : "'Times New Roman', serif", boxShadow: '0 4px 24px rgba(0,0,0,0.10)', borderRadius: billFormat === 'A5' ? '3px' : '10px', border: 'none', padding: billFormat === 'A5' ? '0' : '16px 18px' }}>
+                    <div style={{ flex: 1, maxWidth: billFormat === 'A5' ? '970px' : '1040px', margin: '0 auto', background: '#fff', color: '#000', fontFamily: billFormat === 'A5' ? 'Arial, Helvetica, sans-serif' : "'Times New Roman', serif", boxShadow: '0 4px 24px rgba(0,0,0,0.10)', borderRadius: billFormat === 'A5' ? '3px' : '10px', border: 'none', padding: billFormat === 'A5' ? '0' : '16px 18px' }}>
 
                         {billFormat === 'A5' ? (
                             // ── A5 LANDSCAPE — Reference Invoice Redesign ────────────────────
@@ -1739,7 +1793,7 @@ export default function POSPage() {
                                                                     }
                                                                 }} />
                                                             {activeRowIndex === cart.length && (
-                                                                <div className="pinv-dropdown">
+                                                                <ProductSearchDropdown anchorRef={rowSearchRef}>
                                                                     {a5Filtered.map((p, pi) => (
                                                                         <div key={p.id} className="pinv-dropdown-item" style={{ background: pi === highlightedProductIdx ? '#e8f5e9' : undefined }}
                                                                             onMouseDown={() => { addToCart(p); setRowSearch(s => ({ ...s, [cart.length]: '' })); setActiveRowIndex(null); setHighlightedProductIdx(-1); setTimeout(() => qtyRefs.current[p.id]?.focus(), 50); }}>
@@ -1751,7 +1805,7 @@ export default function POSPage() {
                                                                             + Add "{rowSearch[cart.length]}" to inventory
                                                                         </div>
                                                                     )}
-                                                                </div>
+                                                                </ProductSearchDropdown>
                                                             )}
                                                         </>);
                                                     })()}
@@ -1759,7 +1813,7 @@ export default function POSPage() {
                                                 <td colSpan={7} style={{ border: '1px solid #e8e8e8' }}></td>
                                             </tr>
                                             {/* Empty padding rows */}
-                                            {Array.from({ length: Math.max(0, 5 - cart.length) }).map((_, i) => (
+                                            {Array.from({ length: Math.max(0, (editingOrder ? EDIT_BILL_ROW_COUNT : FRESH_BILL_ROW_COUNT) - 1 - cart.length) }).map((_, i) => (
                                                 <tr key={`pad-${i}`} style={{ height: '26px' }}>
                                                     <td style={{ border: '1px solid #e8e8e8', color: '#ccc', textAlign: 'center', fontSize: '0.74rem', padding: '2px' }}>{cart.length + 2 + i}</td>
                                                     {Array.from({ length: 10 }).map((_, j) => <td key={j} style={{ border: '1px solid #e8e8e8' }}></td>)}
@@ -1767,7 +1821,9 @@ export default function POSPage() {
                                             ))}
                                             {/* Total row */}
                                             <tr style={{ background: '#f5f5f5', borderTop: '1.5px solid #333' }}>
-                                                <td colSpan={9} style={{ border: '1px solid #ccc', padding: '4px 8px', textAlign: 'right', fontWeight: 800, textTransform: 'uppercase', letterSpacing: '0.04em', fontSize: '0.78rem' }}>Total</td>
+                                                <td colSpan={6} style={{ border: '1px solid #ccc', padding: '4px 8px', textAlign: 'right', fontWeight: 800, textTransform: 'uppercase', letterSpacing: '0.04em', fontSize: '0.78rem' }}>Total</td>
+                                                <td style={{ border: '1px solid #ccc', padding: '4px 1px', textAlign: 'center', fontWeight: 900, fontSize: '0.78rem' }}>{cartTotalQty}</td>
+                                                <td colSpan={2} style={{ border: '1px solid #ccc' }}></td>
                                                 <td style={{ border: '1px solid #ccc', padding: '4px 4px', textAlign: 'right', fontWeight: 900, fontSize: '0.88rem' }}>{invFmt(cartSubtotal)}</td>
                                                 <td style={{ border: '1px solid #ccc' }}></td>
                                             </tr>
@@ -2063,7 +2119,7 @@ export default function POSPage() {
                                                                 }}
                                                             />
                                                             {activeRowIndex === cart.length && (
-                                                                <div className="pinv-dropdown">
+                                                                <ProductSearchDropdown anchorRef={rowSearchRef}>
                                                                     {a4Filtered.map((p, pi) => (
                                                                         <div key={p.id} className="pinv-dropdown-item" style={{ background: pi === highlightedProductIdx ? '#e8f5e9' : undefined }}
                                                                             onMouseDown={() => { addToCart(p); setRowSearch(s => ({ ...s, [cart.length]: '' })); setActiveRowIndex(null); setHighlightedProductIdx(-1); setTimeout(() => qtyRefs.current[p.id]?.focus(), 50); }}>
@@ -2075,7 +2131,7 @@ export default function POSPage() {
                                                                             + Add "{rowSearch[cart.length]}" to inventory
                                                                         </div>
                                                                     )}
-                                                                </div>
+                                                                </ProductSearchDropdown>
                                                             )}
                                                         </>);
                                                     })()}
@@ -2083,7 +2139,7 @@ export default function POSPage() {
                                                 <td colSpan={7}></td>
                                             </tr>
                                             {/* Padding rows so the grid reads like a printed invoice */}
-                                            {Array.from({ length: Math.max(0, 5 - cart.length) }).map((_, i) => (
+                                            {Array.from({ length: Math.max(0, (editingOrder ? EDIT_BILL_ROW_COUNT : FRESH_BILL_ROW_COUNT) - 1 - cart.length) }).map((_, i) => (
                                                 <tr key={`pad-${i}`}>
                                                     <td style={{ textAlign: 'center', color: '#bbb' }}>{cart.length + 2 + i}</td>
                                                     <td></td><td></td><td></td><td></td><td></td><td></td><td></td><td></td><td></td><td></td>
@@ -2091,7 +2147,9 @@ export default function POSPage() {
                                             ))}
                                             {/* TOTAL row */}
                                             <tr style={{ fontWeight: 700, background: '#f9f9f9' }}>
-                                                <td colSpan={9} style={{ textAlign: 'right', paddingRight: '8px' }}>{L('total')}</td>
+                                                <td colSpan={7} style={{ textAlign: 'right', paddingRight: '8px' }}>{L('total')}</td>
+                                                <td style={{ textAlign: 'center' }}>{cartTotalQty}</td>
+                                                <td></td>
                                                 <td style={{ textAlign: 'center' }}>{invFmt(cartSubtotal)}</td>
                                                 <td></td>
                                             </tr>
@@ -2192,6 +2250,50 @@ export default function POSPage() {
                                 </div>
                             </>
                         )}
+                    </div>
+
+                    {/* Live Stock Review — informational only, sits in the space beside the
+                        invoice card. Reads the same `cart` (cartQuantity) and live `products`
+                        (loosePieces/quantity/boxCapacity) state the invoice and checkout
+                        already use; introduces no new stock source, validation, or deduction. */}
+                    {cart.length > 0 && (
+                        <div style={{ width: '240px', flexShrink: 0, position: 'sticky', top: '1.25rem', background: 'var(--surface-base)', border: '1px solid var(--surface-border)', borderRadius: '10px', padding: '0.85rem' }}>
+                            <div style={{ fontSize: '0.78rem', fontWeight: 800, letterSpacing: '0.04em', color: 'var(--text-secondary)', textTransform: 'uppercase', marginBottom: '0.75rem' }}>
+                                Live Stock Review
+                            </div>
+                            <div style={{ display: 'flex', flexDirection: 'column', gap: '0.65rem' }}>
+                                {cart.map(item => {
+                                    // Same totalStock formula RateSheetPage (Product Master) falls back
+                                    // to, and the same one prepareStockDeduction uses when a product has
+                                    // no inventoryBatches — read from the live `products` snapshot so this
+                                    // reflects the current on-hand stock, not the cart item's own snapshot.
+                                    const liveProduct = products.find(p => p.id === item.id);
+                                    const available = liveProduct
+                                        ? (liveProduct.loosePieces || 0) + (liveProduct.quantity || 0) * (liveProduct.boxCapacity || 1)
+                                        : (item.loosePieces || 0) + (item.quantity || 0) * (item.boxCapacity || 1);
+                                    const selected = item.cartQuantity || 0;
+                                    const remaining = available - selected;
+                                    const unit = item.unit || item.baseUnit || '';
+                                    return (
+                                        <div key={item.id} style={{ borderBottom: '1px solid var(--surface-border)', paddingBottom: '0.6rem' }}>
+                                            <div style={{ fontSize: '0.82rem', fontWeight: 700, color: 'var(--text-primary)', marginBottom: '0.3rem', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                                                {item.name}
+                                            </div>
+                                            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.76rem', color: 'var(--text-tertiary)' }}>
+                                                <span>Available</span><span>{available}</span>
+                                            </div>
+                                            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.76rem', color: 'var(--text-tertiary)' }}>
+                                                <span>Selected Qty</span><span>{selected}</span>
+                                            </div>
+                                            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.76rem', fontWeight: 700, color: remaining < 0 ? 'var(--danger)' : 'var(--primary-light)' }}>
+                                                <span>Remaining</span><span>{remaining}</span>
+                                            </div>
+                                        </div>
+                                    );
+                                })}
+                            </div>
+                        </div>
+                    )}
                     </div>
 
                     {/* ── Loyalty redeem + action buttons (no-print) ─────────────────── */}

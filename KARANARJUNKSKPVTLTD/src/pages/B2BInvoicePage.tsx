@@ -3,7 +3,7 @@ import { Save, Loader2, Printer, Plus, Trash2, UserPlus, ArrowLeft, Truck, Lock,
 import { Link, useSearchParams, useNavigate } from 'react-router-dom';
 import UpiQrCode from '../components/UpiQrCode';
 import {
-    addDoc, collection, getDoc, getDocs, runTransaction, serverTimestamp, updateDoc, writeBatch, doc,
+    addDoc, collection, deleteDoc, getDoc, getDocs, runTransaction, serverTimestamp, updateDoc, writeBatch, doc,
     query, where, limit, onSnapshot
 } from 'firebase/firestore';
 import { prepareStockDeduction, recordStockMovements, formatLowStockAlert } from '../utils/stockDeduction';
@@ -604,6 +604,10 @@ ${styles}
                     return 'confirmed';
                 })(),
                 paymentStatus: header.modeOfPayment === 'Cash' ? 'Paid' : 'Pending',
+                // amountPaid mirrors paymentStatus here so the same field every other
+                // screen reads (WorklistDetailsPage's order cards, Add Payment, etc.)
+                // agrees with the "Paid" badge instead of showing full outstanding.
+                amountPaid: header.modeOfPayment === 'Cash' ? netAmount : 0,
             };
 
             let savedOrderId = prefilledOrderId || '';
@@ -685,6 +689,13 @@ ${styles}
                             totalPaid: Math.max(0, Number(rData.totalPaid || 0) - (wasPaid ? prevNetAmount : 0)),
                         });
                     }
+                    // Also remove the stale Cash auto-payment recorded under the old retailer.
+                    const stalePayments = await getDocs(query(
+                        getTenantCollection(db, tenantId, 'retailers', prevRetailerId, 'payments'),
+                        where('orderId', '==', savedOrderId),
+                        where('source', '==', 'b2b_invoice_cash'),
+                    ));
+                    for (const d of stalePayments.docs) await deleteDoc(d.ref);
                 }
 
                 // Apply this invoice's contribution to the (current) retailer's financials.
@@ -718,6 +729,43 @@ ${styles}
                             totalPaid: Math.max(0, newTotalPaid),
                             lastOrderedAt: serverTimestamp()
                         });
+                    }
+
+                    // Keep the retailer's payments subcollection in sync with this
+                    // invoice's Cash auto-payment, since Total Sales/Amount Paid on
+                    // the Worklist and Partner Worklist pages are computed by summing
+                    // that subcollection, not by reading paymentStatus off the order.
+                    const cashPaymentsQuery = query(
+                        getTenantCollection(db, tenantId, 'retailers', header.retailerId, 'payments'),
+                        where('orderId', '==', savedOrderId),
+                        where('source', '==', 'b2b_invoice_cash'),
+                    );
+                    const existingCashPayments = await getDocs(cashPaymentsQuery);
+                    const isPaidNow = header.modeOfPayment === 'Cash';
+
+                    if (isPaidNow) {
+                        if (existingCashPayments.empty) {
+                            await addDoc(getTenantCollection(db, tenantId, 'retailers', header.retailerId, 'payments'), {
+                                amount: netAmount,
+                                paymentDate: header.invoiceDate,
+                                paymentMethod: 'Cash',
+                                notes: `B2B GST Invoice ${invNo}`,
+                                orderId: savedOrderId,
+                                orderNumber: invNo,
+                                linkedOrderIds: [savedOrderId],
+                                unallocatedAmount: 0,
+                                source: 'b2b_invoice_cash',
+                                createdAt: serverTimestamp(),
+                            });
+                        } else {
+                            await updateDoc(existingCashPayments.docs[0].ref, {
+                                amount: netAmount,
+                                paymentDate: header.invoiceDate,
+                                orderNumber: invNo,
+                            });
+                        }
+                    } else if (!existingCashPayments.empty) {
+                        await deleteDoc(existingCashPayments.docs[0].ref);
                     }
                 }
             } catch (bookkeepingErr) {

@@ -23,7 +23,7 @@ interface PosCustomer {
 }
 
 function customerType(channel?: string): { label: string; color: string; bg: string } {
-    if (channel === 'pos') return { label: 'Walk-in', color: '#0ea5e9', bg: 'rgba(14,165,233,0.1)' };
+    if (channel === 'pos') return { label: 'B2C', color: '#0ea5e9', bg: 'rgba(14,165,233,0.1)' };
     return { label: 'B2B Retailer', color: '#8b5cf6', bg: 'rgba(139,92,246,0.1)' };
 }
 
@@ -129,7 +129,7 @@ export default function CustomersPage({ fullWidth = false }: { fullWidth?: boole
             }
         });
         return res;
-    }, [customers, search, districtFilter, sortKey, sortDir]);
+    }, [customers, search, districtFilter, typeFilter, sortKey, sortDir]);
 
     const totals = useMemo(() => ({
         sales:        customers.reduce((s, c) => s + (c.totalSales ?? 0), 0),
@@ -184,14 +184,15 @@ export default function CustomersPage({ fullWidth = false }: { fullWidth?: boole
                         style={{ paddingLeft: '2rem', margin: 0, height: '36px', fontSize: '0.85rem' }}
                         value={search} onChange={e => setSearch(e.target.value)} />
                 </div>
-                {/* Type filter pills */}
-                <div style={{ display: 'flex', gap: '0.3rem' }}>
-                    {([['all', 'All'], ['pos', 'Walk-in'], ['b2b', 'B2B']] as const).map(([v, l]) => (
-                        <button key={v} onClick={() => setTypeFilter(v)}
-                            style={{ padding: '0.3rem 0.75rem', borderRadius: '20px', border: `1px solid ${typeFilter === v ? 'var(--primary-light)' : 'var(--surface-border)'}`, background: typeFilter === v ? 'var(--primary-light)' : 'transparent', color: typeFilter === v ? '#fff' : 'var(--text-secondary)', fontWeight: 600, fontSize: '0.78rem', cursor: 'pointer', fontFamily: 'inherit', transition: 'all 0.15s' }}>
-                            {l}
-                        </button>
-                    ))}
+                {/* Type filter dropdown */}
+                <div style={{ display: 'flex', alignItems: 'center', gap: '0.35rem', background: 'var(--surface-base)', padding: '0 0.65rem', borderRadius: '8px', border: `1px solid ${typeFilter !== 'all' ? 'var(--primary-light)' : 'var(--surface-border)'}`, height: '36px' }}>
+                    <Users size={13} color={typeFilter !== 'all' ? 'var(--primary-light)' : 'var(--text-tertiary)'} />
+                    <select value={typeFilter} onChange={e => setTypeFilter(e.target.value as 'all' | 'pos' | 'b2b')}
+                        style={{ background: 'transparent', border: 'none', outline: 'none', fontSize: '0.83rem', color: typeFilter !== 'all' ? 'var(--primary-light)' : 'var(--text-secondary)', fontWeight: typeFilter !== 'all' ? 700 : 400, cursor: 'pointer' }}>
+                        <option value="all">All</option>
+                        <option value="b2b">B2B</option>
+                        <option value="pos">B2C</option>
+                    </select>
                 </div>
                 <div style={{ display: 'flex', alignItems: 'center', gap: '0.35rem', background: 'var(--surface-base)', padding: '0 0.65rem', borderRadius: '8px', border: `1px solid ${districtFilter ? 'var(--primary-light)' : 'var(--surface-border)'}`, height: '36px' }}>
                     <MapPin size={13} color={districtFilter ? 'var(--primary-light)' : 'var(--text-tertiary)'} />

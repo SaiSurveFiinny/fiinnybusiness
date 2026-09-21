@@ -18,7 +18,7 @@ import {
 } from "lucide-react";
 import { auth, fetchOrdersForCustomer } from "../../firebase";
 import { PageHeader } from "../_components/page-header";
-import { ORDER_STATUS_FLOW, type OrderDoc, type OrderStatus } from "../../../types/order";
+import { ORDER_STATUS_FLOW, orderGrandTotal, type OrderDoc, type OrderStatus } from "../../../types/order";
 import { openInvoice } from "../../utils/invoice-generator";
 
 // Visible progress steps — shared with the seller view and the public customer
@@ -367,7 +367,7 @@ export default function MyOrdersPage() {
                         </div>
                         <div className="text-right shrink-0">
                           <p className="font-black text-secondary text-xl">
-                            ₹{Number(order.grandTotal ?? order.subtotal ?? 0).toFixed(0)}
+                            ₹{orderGrandTotal(order).toFixed(0)}
                           </p>
                           {(order.deliveryCharge ?? 0) > 0 && (
                             <p className="text-[10px] text-on-surface-variant">

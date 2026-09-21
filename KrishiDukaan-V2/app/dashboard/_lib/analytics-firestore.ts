@@ -6,6 +6,7 @@ import {
   where,
 } from "firebase/firestore";
 import { db } from "../../firebase";
+import { orderGrandTotal } from "../../../types/order";
 
 export type SearchAppearanceStats = {
   impressions: string;
@@ -350,7 +351,9 @@ export async function fetchRetailerAnalytics(
       totalOrders += 1;
 
       const cancelled = status === "cancelled" || status === "rejected";
-      const total = Number(data.total ?? 0);
+      // Canonical final total: web orders carry `grandTotal`, mobile orders `total`.
+      // Reading only `total` silently counted every web order as ₹0 here.
+      const total = orderGrandTotal(data as Parameters<typeof orderGrandTotal>[0]);
       if (!cancelled) totalRevenue += total;
 
       const createdAt = data.createdAt as Timestamp | undefined;

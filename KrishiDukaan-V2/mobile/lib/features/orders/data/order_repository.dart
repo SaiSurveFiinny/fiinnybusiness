@@ -142,6 +142,10 @@ class OrderRepository {
         'subtotal': subtotal,
         'totalGst': sellerGst,
         'deliveryCharge': deliveryCharge,
+        // `grandTotal` is the canonical final-total field (web writes it too);
+        // `total` is kept as a mirror for backward compatibility with older
+        // readers and the OrderModel fallback. Both hold the same value.
+        'grandTotal': grandTotal,
         'total': grandTotal,
         // Rules require status == 'placed' on order create
         'status': 'placed',

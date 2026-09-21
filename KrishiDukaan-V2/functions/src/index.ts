@@ -34,6 +34,7 @@ export {
   createErpHandoffCode,
   redeemErpHandoffCode,
 } from "./erp-bridge";
+export { onActiveUserPresence } from "./analytics/activity";
 
 admin.initializeApp();
 const db = admin.firestore();
@@ -785,7 +786,10 @@ export const notifySellerOnOrder = onDocumentCreated(
     });
 
     const customer = String(d.customerName ?? "A customer");
-    const total = typeof d.total === "number" ? d.total : null;
+    // Canonical final total is `grandTotal` (web) / `total` (mobile) — read both
+    // so the notification shows an amount regardless of which flow placed the order.
+    const totalRaw = d.grandTotal ?? d.total;
+    const total = typeof totalRaw === "number" ? totalRaw : null;
     const items = Array.isArray(d.items)
       ? (d.items as Record<string, unknown>[])
       : [];

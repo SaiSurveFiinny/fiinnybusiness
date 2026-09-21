@@ -22,8 +22,11 @@ export type WaTemplate =
   | "manufacturer_network_summary"
   | "payment_failed_app_update"
   | "retailer_seat_promotion"
-  | "add_product_reminder"
   | "enquiry_notification"
+  | "new_product_reminder"
+  | "kyc_pending"
+  | "kyc_success"
+  | "app_update"
   | "generic";
 
 /** Dynamic values substituted into the template at render time (for audit/debug). */

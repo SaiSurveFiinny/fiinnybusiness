@@ -830,6 +830,43 @@ service cloud.firestore {
       allow write: if isAdmin();
     }
 
+    // ─── activeUsers (DAU + activity signal) ───────────────────────────────────
+    // Daily rollup summary is written ONLY by the aggregation Cloud Function
+    // (admin SDK bypasses rules) and read by admins. Each logged-in user may
+    // create/merge their OWN presence doc once a day; the doc ID is their phone
+    // (or uid for legacy email accounts), so they can only write their own.
+    match /activeUsers/{date} {
+      allow read: if isAdmin();
+      allow write: if false; // summary is CF-only
+      match /presence/{userId} {
+        allow read: if isAdmin();
+        allow create, update: if isAuthed()
+          && (userId == myPhone() || userId == request.auth.uid);
+      }
+    }
+
+    // ─── mau (monthly active users) ────────────────────────────────────────────
+    // Entirely CF-maintained; admins read the summary. No client writes.
+    match /mau/{month} {
+      allow read: if isAdmin();
+      allow write: if false;
+      match /presence/{userId} {
+        allow read: if isAdmin();
+        allow write: if false;
+      }
+    }
+
+    // ─── retention cohorts ─────────────────────────────────────────────────────
+    // Entirely CF-maintained; admins read the summary. No client writes.
+    match /retention/{cohort} {
+      allow read: if isAdmin();
+      allow write: if false;
+      match /{window}/{userId} {
+        allow read: if isAdmin();
+        allow write: if false;
+      }
+    }
+
     // ─── productReviews & storeReviews ───────────────────────────────────────
     // Public read, authenticated users can write.
     match /productReviews/{reviewId} {
@@ -1013,7 +1050,12 @@ service cloud.firestore {
     // The exec owns their own sessions; the Cloud Function (admin SDK) writes
     // totalDistanceKm + calculatedAt back — admin SDK bypasses client rules.
     match /daySessions/{sessionId} {
-      allow read:   if isAuthed() && resource.data.salesExecutiveId == request.auth.uid;
+      // Owner-scoped for the exec's own /sales portal; admins may also read so
+      // the Admin Panel "Sales Team" section can show an exec's daily sessions
+      // (mirrors the isAdmin() read already granted on dealerVisits & dealers).
+      // Read-only: create/update stay exec-owned, so this grants no admin writes.
+      allow read:   if isAdmin()
+                       || (isAuthed() && resource.data.salesExecutiveId == request.auth.uid);
       allow create: if isSalesExec()
                        && request.resource.data.salesExecutiveId == request.auth.uid
                        && request.resource.data.status == 'ACTIVE';

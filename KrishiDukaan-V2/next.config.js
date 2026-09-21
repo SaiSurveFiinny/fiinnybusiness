@@ -10,6 +10,27 @@ const nextConfig = {
   typescript: {
     ignoreBuildErrors: true,
   },
+  // www → apex, permanently.
+  //
+  // Both https://www.krishidukan.com/ and http://www.krishidukan.com/ appear in
+  // Search Console's "Not found (404)" report: the hostname resolves but nothing
+  // serves it, so every inbound link or citation using www is lost and the
+  // domain's authority is split across two hostnames. The canonical origin is
+  // the apex (app/layout.tsx metadataBase, app/sitemap.ts, app/robots.ts all
+  // agree on it), so this makes the server agree too.
+  //
+  // permanent:true → 308, which preserves the method and is the correct
+  // permanent signal for consolidating a hostname.
+  async redirects() {
+    return [
+      {
+        source: "/:path*",
+        has: [{ type: "host", value: "www.krishidukan.com" }],
+        destination: "https://krishidukan.com/:path*",
+        permanent: true,
+      },
+    ];
+  },
   async headers() {
     return [
       {

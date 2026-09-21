@@ -23,8 +23,8 @@ const TAB_PERM: Record<ReportTab, string> = {
 };
 
 export default function ReportsPage() {
-    const [active, setActive] = useHashTab<ReportTab>(VALID_TABS, 'stock', 'fiinny-tab-reports');
     const can = useFeaturePermissions();
+    const [active, setActive] = useHashTab<ReportTab>(VALID_TABS, 'stock', 'fiinny-tab-reports', tab => can(TAB_PERM[tab]));
 
     // Sub-tab visibility is driven SOLELY by the Feature Matrix (single source of
     // truth). Analyst's Financial/GST denial now lives in DEFAULT_FEATURE_PERMISSIONS.
