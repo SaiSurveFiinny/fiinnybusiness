@@ -689,7 +689,11 @@
     "transport_charges": "वाहतूक शुल्क",
     "labor_charges": "मजुरी शुल्क",
     "amount_paid": "भरलेली रक्कम",
-    "credit_amount": "उधारी रक्कम"
+    "credit_amount": "उधारी रक्कम",
+    "live_stock": "लाइव्ह स्टॉक",
+    "other_options": "इतर पर्याय",
+    "notes": "टिपण्णी",
+    "notes_ph": "टिपण्णी (उदा. बिल-बुक / पान क्र.)"
   },
   "schemaBuilder": {
     "groups": {

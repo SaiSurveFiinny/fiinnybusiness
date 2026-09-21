@@ -380,6 +380,11 @@ export default function POSPage() {
     // Keyboard-highlighted row in the Buyer suggestion dropdown — separate from
     // highlightedProductIdx (product-search combobox) so the two never collide.
     const [highlightedFarmerIdx, setHighlightedFarmerIdx] = useState(-1);
+    // Phone-based buyer lookup — mirrors the name dropdown so a farmer can be found
+    // by their (primary) phone identifier. Its own show/highlight state so the two
+    // Buyer dropdowns (name + phone) never collide.
+    const [showPhoneDropdown, setShowPhoneDropdown] = useState(false);
+    const [highlightedPhoneIdx, setHighlightedPhoneIdx] = useState(-1);
     // Which item row's product-search dropdown is open.
     const [activeRowIndex, setActiveRowIndex] = useState<number | null>(null);
     // Text typed into the "add product" search rows, keyed by visual row index.
@@ -409,6 +414,13 @@ export default function POSPage() {
     const [manualDiscount, setManualDiscount] = useState(0);
     const [creditPaidNow, setCreditPaidNow] = useState(0);
     const [khataNote, setKhataNote] = useState('');
+    // Generic bill-level note, persisted with the invoice. Intentionally free-form
+    // (the counter can record a physical bill-book / page number here) rather than
+    // a dedicated field. Distinct from khataNote, which annotates the Khata ledger.
+    const [billNote, setBillNote] = useState('');
+    // "Other Options" disclosure — keeps Transport / Labor / Discount / Notes
+    // collapsed so the main billing screen stays compact.
+    const [showOtherOptions, setShowOtherOptions] = useState(false);
 
     // ── Loyalty display ──────────────────────────────────────────────────────
     const [customerLoyalty, setCustomerLoyalty] = useState<any>(null);
@@ -559,6 +571,8 @@ export default function POSPage() {
                     },
                 });
                 setModeOfPayment(order.paymentMethod === 'Khata' ? 'Credit' : 'Cash');
+                // Restore the generic bill note (absent on older bills → blank).
+                if (typeof order.notes === 'string') { setBillNote(order.notes); setShowOtherOptions(true); }
                 setEditingOrder(order);
                 // Edit mode displays and saves under the ORIGINAL invoice number —
                 // no new number is generated/consumed until this edit is saved or
@@ -638,6 +652,7 @@ export default function POSPage() {
             if (typeof draft.manualDiscount === 'number') setManualDiscount(draft.manualDiscount);
             if (typeof draft.creditPaidNow === 'number') setCreditPaidNow(draft.creditPaidNow);
             if (typeof draft.khataNote === 'string') setKhataNote(draft.khataNote);
+            if (typeof draft.billNote === 'string') setBillNote(draft.billNote);
             if (typeof draft.redeemPoints === 'number') setRedeemPoints(draft.redeemPoints);
             if (draft.rowMeta && typeof draft.rowMeta === 'object') setRowMeta(draft.rowMeta);
             if (Array.isArray(draft.invoiceCategories)) setInvoiceCategories(draft.invoiceCategories);
@@ -651,14 +666,14 @@ export default function POSPage() {
             try {
                 localStorage.setItem(`pos_draft_${tenantId}`, JSON.stringify({
                     billTabs, activeTabId, modeOfPayment, billFormat, billLang,
-                    transportCharges, laborCharges, manualDiscount, creditPaidNow, khataNote, redeemPoints, rowMeta,
+                    transportCharges, laborCharges, manualDiscount, creditPaidNow, khataNote, billNote, redeemPoints, rowMeta,
                     invoiceCategories,
                 }));
             } catch { /* storage quota exceeded — ignore */ }
         }, 500);
         return () => clearTimeout(timer);
     }, [tenantId, billTabs, activeTabId, modeOfPayment, billFormat, billLang,
-        transportCharges, laborCharges, manualDiscount, creditPaidNow, khataNote, redeemPoints, rowMeta,
+        transportCharges, laborCharges, manualDiscount, creditPaidNow, khataNote, billNote, redeemPoints, rowMeta,
         invoiceCategories]);
 
     // Reset dropdown highlight when the active search row changes.
@@ -711,6 +726,19 @@ export default function POSPage() {
 
     const cartSubtotal = cart.reduce((sum, item) => sum + item.cartTotal, 0);
     const cartTotalQty = cart.reduce((sum, item) => sum + (item.cartQuantity || 0), 0);
+
+    // Live Stock for a line = on-hand minus the qty currently selected. The single
+    // source behind the LIVE STOCK panel, so what's displayed can't diverge from
+    // actual on-hand. Reads the live `products` snapshot, not the cart item's own
+    // snapshot. Does NOT affect how stock is deducted at checkout (prepareStockDeduction
+    // owns that).
+    const remainingStockFor = (item: CartItem): number => {
+        const liveProduct = products.find(p => p.id === item.id);
+        const available = liveProduct
+            ? (liveProduct.loosePieces || 0) + (liveProduct.quantity || 0) * (liveProduct.boxCapacity || 1)
+            : (item.loosePieces || 0) + (item.quantity || 0) * (item.boxCapacity || 1);
+        return available - (item.cartQuantity || 0);
+    };
     const loyaltyIsActive = isLoyaltyActive(hasModule('loyalty'), loyaltyConfig);
     // If loyalty was switched off after points were already staged for redemption,
     // the discount must not apply — no partial/stale redemption should reach checkout.
@@ -755,11 +783,16 @@ export default function POSPage() {
         if (key.length < 6) return;
         // Match against the farmers already streamed in for the name dropdown —
         // instant, and tolerant of how the number was stored.
-        const match = farmers.find(f => {
+        const matches = farmers.filter(f => {
             const stored = phoneKey(f.number ?? f.phone);
             if (!stored) return false;
             return stored === key || stored.slice(-10) === key.slice(-10);
         });
+        // Phone is the primary identifier, but a number can be shared by more than
+        // one record — never arbitrarily auto-fill one. Only a single unambiguous
+        // match auto-populates; multiple matches are left for the phone dropdown so
+        // the cashier picks the right customer.
+        const match = matches.length === 1 ? matches[0] : null;
         if (match) {
             lastMatchedPhoneRef.current = customer.phone;
             setCustomer({
@@ -799,6 +832,24 @@ export default function POSPage() {
         if (tenantId) fetchLiveOutstanding(db, tenantId, r.name || '', r.number || '').then(amt => setOutstandingForTab(lookupTabId, amt));
         setShowFarmerDropdown(false);
         setHighlightedFarmerIdx(-1);
+        setShowPhoneDropdown(false);
+        setHighlightedPhoneIdx(-1);
+    };
+
+    // Farmers whose stored phone matches the digits typed so far — powers the
+    // Buyer phone-lookup dropdown. Partial match on the last-10 digits so the
+    // list narrows as the cashier types; reuses the same `farmers` stream and
+    // `phoneKey` normalization as the name dropdown and handlePhoneLookup.
+    const phoneMatchesFor = (typed: string): any[] => {
+        const key = phoneKey(typed);
+        if (key.length < 3) return [];
+        return farmers
+            .filter(f => {
+                const stored = phoneKey(f.number ?? f.phone);
+                return stored.length > 0 && (stored.includes(key) || stored.slice(-10).includes(key));
+            })
+            .sort((a, b) => (a.channel === 'pos' ? -1 : 1) - (b.channel === 'pos' ? -1 : 1))
+            .slice(0, 10);
     };
 
     // Real-time auto-lookup: mirrors handlePhoneLookup's onBlur trigger but fires
@@ -917,6 +968,10 @@ export default function POSPage() {
                 amountPaid: paymentMethod === 'Khata' ? effectiveCreditPaidNow : grandTotal,
                 creditAmount: paymentMethod === 'Khata' ? effectiveCreditAmount : 0,
                 note: (paymentMethod === 'Khata' && khataNote.trim()) ? khataNote.trim() : null,
+                // Generic bill-level note (optional). Stored only when non-empty so
+                // existing bills without it are unaffected; older bills simply lack
+                // the field and continue to load fine.
+                notes: billNote.trim() || null,
                 // Balance the customer carried into this bill, and the running total
                 // including it — mirrors the B2B invoice's previousBalance/netBalance.
                 previousBalance: customerOutstanding,
@@ -1193,6 +1248,8 @@ export default function POSPage() {
                 setManualDiscount(0);
                 setCreditPaidNow(0);
                 setKhataNote('');
+                setBillNote('');
+                setShowOtherOptions(false);
                 const wasEditing = !!editingOrder;
                 // Edit complete — drop edit mode so the next bill is a fresh one.
                 setEditingOrder(null);
@@ -1295,6 +1352,8 @@ export default function POSPage() {
         setManualDiscount(0);
         setCreditPaidNow(0);
         setKhataNote('');
+        setBillNote('');
+        setShowOtherOptions(false);
         setEditingOrder(null);
         // Not consumed while editing — restore the real next-in-sequence number.
         getDoc(getTenantDoc(db, tenantId, 'counters', 'posBillCounter')).then(snap => {
@@ -1552,11 +1611,11 @@ export default function POSPage() {
                         );
                     })()}
 
-                    {/* Invoice card + Live Stock Review side-by-side. The card keeps its own
-                        maxWidth/auto-margins so it centers exactly as before when there's no
-                        room for the review; the review only occupies space that was previously
-                        empty and never resizes the card itself. */}
-                    <div className="no-print" style={{ display: 'flex', gap: '1rem', alignItems: 'flex-start' }}>
+                    {/* Invoice card + compact Live Stock panel side-by-side. The card keeps
+                        its own maxWidth/auto-margins so it centers as before when the panel
+                        isn't shown; flexWrap lets the panel drop below the bill on narrow
+                        (mobile) screens instead of squeezing the invoice. */}
+                    <div className="no-print" style={{ display: 'flex', gap: '1rem', alignItems: 'flex-start', flexWrap: 'wrap' }}>
                     {/* Invoice card (editable on screen; printed copy is rendered separately) */}
                     <div style={{ flex: 1, maxWidth: billFormat === 'A5' ? '970px' : '1040px', margin: '0 auto', background: '#fff', color: '#000', fontFamily: billFormat === 'A5' ? 'Arial, Helvetica, sans-serif' : "'Times New Roman', serif", boxShadow: '0 4px 24px rgba(0,0,0,0.10)', borderRadius: billFormat === 'A5' ? '3px' : '10px', border: 'none', padding: billFormat === 'A5' ? '0' : '16px 18px' }}>
 
@@ -1658,12 +1717,40 @@ export default function POSPage() {
                                         })()}
                                     </div>
                                     {/* Phone */}
-                                    <div style={{ borderRight: '1px solid #ccc', padding: '4px 8px', display: 'flex', gap: '5px', alignItems: 'center' }}>
+                                    <div style={{ borderRight: '1px solid #ccc', padding: '4px 8px', display: 'flex', gap: '5px', alignItems: 'center', position: 'relative' }}>
                                         <span style={{ fontWeight: 700, color: '#555', whiteSpace: 'nowrap', flexShrink: 0, fontSize: '0.72rem' }}>Ph:</span>
-                                        <input ref={customerPhoneRef} className="pinv-input" style={{ flex: 1, fontSize: '0.8rem', minWidth: 0 }} placeholder="Phone" value={customer.phone}
-                                            inputMode="numeric" maxLength={10}
-                                            onChange={e => setCustomer({ ...customer, phone: e.target.value.replace(/\D/g, '').slice(0, 10) })} onBlur={handlePhoneLookup}
-                                            onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); customerAddressRef.current?.focus(); } }} />
+                                        {(() => {
+                                            const phoneMatches = phoneMatchesFor(customer.phone);
+                                            return (<>
+                                                <input ref={customerPhoneRef} className="pinv-input" style={{ flex: 1, fontSize: '0.8rem', minWidth: 0 }} placeholder="Phone" value={customer.phone}
+                                                    inputMode="numeric" maxLength={10}
+                                                    role="combobox" aria-expanded={showPhoneDropdown} aria-controls="pos-phone-listbox-a5" aria-autocomplete="list"
+                                                    onChange={e => { const v = e.target.value.replace(/\D/g, '').slice(0, 10); setCustomer({ ...customer, phone: v }); setShowPhoneDropdown(v.length > 0); setHighlightedPhoneIdx(-1); }}
+                                                    onFocus={() => customer.phone.length > 0 && setShowPhoneDropdown(true)}
+                                                    onBlur={() => { setTimeout(() => { setShowPhoneDropdown(false); setHighlightedPhoneIdx(-1); }, 200); handlePhoneLookup(); }}
+                                                    onKeyDown={e => {
+                                                        if (showPhoneDropdown && phoneMatches.length > 0) {
+                                                            if (e.key === 'ArrowDown') { e.preventDefault(); setHighlightedPhoneIdx(i => Math.min(i + 1, phoneMatches.length - 1)); return; }
+                                                            if (e.key === 'ArrowUp') { e.preventDefault(); setHighlightedPhoneIdx(i => Math.max(i - 1, -1)); return; }
+                                                            if (e.key === 'Enter' && highlightedPhoneIdx >= 0) { e.preventDefault(); selectFarmer(phoneMatches[highlightedPhoneIdx]); return; }
+                                                            if (e.key === 'Escape') { e.preventDefault(); setShowPhoneDropdown(false); setHighlightedPhoneIdx(-1); return; }
+                                                        }
+                                                        if (e.key === 'Enter' && !showPhoneDropdown) { e.preventDefault(); customerAddressRef.current?.focus(); }
+                                                    }} />
+                                                {showPhoneDropdown && phoneMatches.length > 0 && (
+                                                    <div id="pos-phone-listbox-a5" role="listbox" className="pinv-dropdown" style={{ width: '100%' }}>
+                                                        {phoneMatches.map((r, ri) => (
+                                                            <div key={r.id} role="option" aria-selected={ri === highlightedPhoneIdx} className="pinv-dropdown-item"
+                                                                style={{ background: ri === highlightedPhoneIdx ? '#e8f5e9' : undefined }}
+                                                                onMouseDown={() => selectFarmer(r)}>
+                                                                <div style={{ fontWeight: 600 }}>{r.number || <span style={{ fontStyle: 'italic' }}>No phone number</span>}</div>
+                                                                <div style={{ fontSize: '0.75rem', color: '#666' }}>{r.name || 'Unnamed'}{r.atPost ? ` • ${r.atPost}` : ''}</div>
+                                                            </div>
+                                                        ))}
+                                                    </div>
+                                                )}
+                                            </>);
+                                        })()}
                                     </div>
                                     {/* Village */}
                                     <div style={{ borderRight: '1px solid #ccc', padding: '4px 8px', display: 'flex', gap: '5px', alignItems: 'center' }}>
@@ -2007,12 +2094,40 @@ export default function POSPage() {
                                                 </>);
                                             })()}
                                         </div>
-                                        <div style={{ display: 'flex', gap: '8px', marginTop: '4px' }}>
+                                        <div style={{ display: 'flex', gap: '8px', marginTop: '4px', position: 'relative' }}>
                                             <span className="pinv-label">{L('contact')} :</span>
-                                            <input ref={customerPhoneRef} className="pinv-input" style={{ flexGrow: 1 }} placeholder="Phone No" value={customer.phone}
-                                                inputMode="numeric" maxLength={10}
-                                                onChange={e => setCustomer({ ...customer, phone: e.target.value.replace(/\D/g, '').slice(0, 10) })} onBlur={handlePhoneLookup}
-                                                onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); customerAddressRef.current?.focus(); } }} />
+                                            {(() => {
+                                                const phoneMatches = phoneMatchesFor(customer.phone);
+                                                return (<>
+                                                    <input ref={customerPhoneRef} className="pinv-input" style={{ flexGrow: 1 }} placeholder="Phone No" value={customer.phone}
+                                                        inputMode="numeric" maxLength={10}
+                                                        role="combobox" aria-expanded={showPhoneDropdown} aria-controls="pos-phone-listbox-a4" aria-autocomplete="list"
+                                                        onChange={e => { const v = e.target.value.replace(/\D/g, '').slice(0, 10); setCustomer({ ...customer, phone: v }); setShowPhoneDropdown(v.length > 0); setHighlightedPhoneIdx(-1); }}
+                                                        onFocus={() => customer.phone.length > 0 && setShowPhoneDropdown(true)}
+                                                        onBlur={() => { setTimeout(() => { setShowPhoneDropdown(false); setHighlightedPhoneIdx(-1); }, 200); handlePhoneLookup(); }}
+                                                        onKeyDown={e => {
+                                                            if (showPhoneDropdown && phoneMatches.length > 0) {
+                                                                if (e.key === 'ArrowDown') { e.preventDefault(); setHighlightedPhoneIdx(i => Math.min(i + 1, phoneMatches.length - 1)); return; }
+                                                                if (e.key === 'ArrowUp') { e.preventDefault(); setHighlightedPhoneIdx(i => Math.max(i - 1, -1)); return; }
+                                                                if (e.key === 'Enter' && highlightedPhoneIdx >= 0) { e.preventDefault(); selectFarmer(phoneMatches[highlightedPhoneIdx]); return; }
+                                                                if (e.key === 'Escape') { e.preventDefault(); setShowPhoneDropdown(false); setHighlightedPhoneIdx(-1); return; }
+                                                            }
+                                                            if (e.key === 'Enter' && !showPhoneDropdown) { e.preventDefault(); customerAddressRef.current?.focus(); }
+                                                        }} />
+                                                    {showPhoneDropdown && phoneMatches.length > 0 && (
+                                                        <div id="pos-phone-listbox-a4" role="listbox" className="pinv-dropdown" style={{ width: '100%' }}>
+                                                            {phoneMatches.map((r, ri) => (
+                                                                <div key={r.id} role="option" aria-selected={ri === highlightedPhoneIdx} className="pinv-dropdown-item"
+                                                                    style={{ background: ri === highlightedPhoneIdx ? '#e8f5e9' : undefined }}
+                                                                    onMouseDown={() => selectFarmer(r)}>
+                                                                    <div style={{ fontWeight: 600 }}>{r.number || <span style={{ fontStyle: 'italic' }}>No phone number</span>}</div>
+                                                                    <div style={{ fontSize: '0.75rem', color: '#666' }}>{r.name || 'Unnamed'}{r.atPost ? ` • ${r.atPost}` : ''}</div>
+                                                                </div>
+                                                            ))}
+                                                        </div>
+                                                    )}
+                                                </>);
+                                            })()}
                                         </div>
                                         <div style={{ display: 'flex', gap: '8px', marginTop: '4px' }}>
                                             <span className="pinv-label">{L('address')} :</span>
@@ -2055,10 +2170,10 @@ export default function POSPage() {
                                                 <th style={{ width: '110px' }}>{L('company')}</th>
                                                 <th style={{ width: '78px' }}>{L('batch_no')}</th>
                                                 <th style={{ width: '62px' }}>{L('exp_date')}</th>
-                                                <th style={{ width: '46px' }}>{L('gst_pct')}</th>
                                                 <th style={{ width: '48px' }}>{L('per')}</th>
                                                 <th style={{ width: '58px' }}>{L('qty')}</th>
                                                 <th style={{ width: '68px' }}>{L('rate')}</th>
+                                                <th style={{ width: '46px' }}>{L('gst_pct')}</th>
                                                 <th style={{ width: '86px' }}>{L('gross_amount')}</th>
                                                 <th style={{ width: '30px' }}></th>
                                             </tr>
@@ -2073,9 +2188,6 @@ export default function POSPage() {
                                                         onChange={e => setRowMeta(m => ({ ...m, [item.id]: { ...m[item.id], batchNo: e.target.value } }))} /></td>
                                                     <td><input type="text" className="pinv-input" style={{ textAlign: 'center', fontSize: '0.72rem', width: '100%' }} placeholder="MM/YY" value={toMonthYear(rowMeta[item.id]?.expDate ?? (item.expiryDate || ''))}
                                                         onChange={e => setRowMeta(m => ({ ...m, [item.id]: { ...m[item.id], expDate: fromMonthYear(e.target.value) } }))} /></td>
-                                                    <td style={{ textAlign: 'center' }}><input type="number" className="pinv-input" style={{ textAlign: 'center' }} value={item.gstPct ?? 5}
-                                                        onChange={e => setCart(prev => prev.map(c => c.id === item.id ? { ...c, gstPct: Number(e.target.value) } : c))}
-                                                        onWheel={e => e.currentTarget.blur()} /></td>
                                                     <td style={{ textAlign: 'center' }}>{item.unit || item.baseUnit}</td>
                                                     <td style={{ textAlign: 'center', fontWeight: 600 }}><input type="number" min="0" className="pinv-input" style={{ textAlign: 'center', fontWeight: 600 }} value={item.cartQuantity}
                                                         ref={el => { qtyRefs.current[item.id] = el; }}
@@ -2084,6 +2196,9 @@ export default function POSPage() {
                                                         onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); rowSearchRef.current?.focus(); } }} /></td>
                                                     <td style={{ textAlign: 'center' }}><input type="number" min="0" className="pinv-input" style={{ textAlign: 'center' }} value={posSellingRate(item)}
                                                         onChange={e => setRate(item.id, Number(e.target.value))}
+                                                        onWheel={e => e.currentTarget.blur()} /></td>
+                                                    <td style={{ textAlign: 'center' }}><input type="number" className="pinv-input" style={{ textAlign: 'center' }} value={item.gstPct ?? 5}
+                                                        onChange={e => setCart(prev => prev.map(c => c.id === item.id ? { ...c, gstPct: Number(e.target.value) } : c))}
                                                         onWheel={e => e.currentTarget.blur()} /></td>
                                                     <td style={{ textAlign: 'center', fontWeight: 600 }}>{item.cartTotal ? invFmt(item.cartTotal) : ''}</td>
                                                     <td style={{ textAlign: 'center', padding: '2px' }}>
@@ -2147,8 +2262,9 @@ export default function POSPage() {
                                             ))}
                                             {/* TOTAL row */}
                                             <tr style={{ fontWeight: 700, background: '#f9f9f9' }}>
-                                                <td colSpan={7} style={{ textAlign: 'right', paddingRight: '8px' }}>{L('total')}</td>
+                                                <td colSpan={6} style={{ textAlign: 'right', paddingRight: '8px' }}>{L('total')}</td>
                                                 <td style={{ textAlign: 'center' }}>{cartTotalQty}</td>
+                                                <td></td>
                                                 <td></td>
                                                 <td style={{ textAlign: 'center' }}>{invFmt(cartSubtotal)}</td>
                                                 <td></td>
@@ -2252,41 +2368,27 @@ export default function POSPage() {
                         )}
                     </div>
 
-                    {/* Live Stock Review — informational only, sits in the space beside the
-                        invoice card. Reads the same `cart` (cartQuantity) and live `products`
-                        (loosePieces/quantity/boxCapacity) state the invoice and checkout
-                        already use; introduces no new stock source, validation, or deduction. */}
+                    {/* ── LIVE STOCK panel ─────────────────────────────────────────────
+                        Compact, informational, sits beside the bill (drops below on narrow
+                        screens via the wrapper's flexWrap). For each product in the bill it
+                        shows the name and its Live Stock = on-hand minus the qty currently
+                        selected, using the shared remainingStockFor() — no second stock
+                        calculation, and inventory deduction at checkout is untouched. */}
                     {cart.length > 0 && (
-                        <div style={{ width: '240px', flexShrink: 0, position: 'sticky', top: '1.25rem', background: 'var(--surface-base)', border: '1px solid var(--surface-border)', borderRadius: '10px', padding: '0.85rem' }}>
+                        <div style={{ flex: '1 1 200px', maxWidth: '280px', minWidth: '180px', position: 'sticky', top: '1.25rem', background: 'var(--surface-base)', border: '1px solid var(--surface-border)', borderRadius: '10px', padding: '0.85rem' }}>
                             <div style={{ fontSize: '0.78rem', fontWeight: 800, letterSpacing: '0.04em', color: 'var(--text-secondary)', textTransform: 'uppercase', marginBottom: '0.75rem' }}>
-                                Live Stock Review
+                                {L('live_stock')}
                             </div>
-                            <div style={{ display: 'flex', flexDirection: 'column', gap: '0.65rem' }}>
+                            <div style={{ display: 'flex', flexDirection: 'column', gap: '0.6rem' }}>
                                 {cart.map(item => {
-                                    // Same totalStock formula RateSheetPage (Product Master) falls back
-                                    // to, and the same one prepareStockDeduction uses when a product has
-                                    // no inventoryBatches — read from the live `products` snapshot so this
-                                    // reflects the current on-hand stock, not the cart item's own snapshot.
-                                    const liveProduct = products.find(p => p.id === item.id);
-                                    const available = liveProduct
-                                        ? (liveProduct.loosePieces || 0) + (liveProduct.quantity || 0) * (liveProduct.boxCapacity || 1)
-                                        : (item.loosePieces || 0) + (item.quantity || 0) * (item.boxCapacity || 1);
-                                    const selected = item.cartQuantity || 0;
-                                    const remaining = available - selected;
-                                    const unit = item.unit || item.baseUnit || '';
+                                    const liveStock = remainingStockFor(item);
                                     return (
-                                        <div key={item.id} style={{ borderBottom: '1px solid var(--surface-border)', paddingBottom: '0.6rem' }}>
-                                            <div style={{ fontSize: '0.82rem', fontWeight: 700, color: 'var(--text-primary)', marginBottom: '0.3rem', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                                        <div key={item.id} style={{ borderBottom: '1px solid var(--surface-border)', paddingBottom: '0.5rem' }}>
+                                            <div style={{ fontSize: '0.82rem', fontWeight: 600, color: 'var(--text-primary)', lineHeight: 1.25, overflow: 'hidden', textOverflow: 'ellipsis' }}>
                                                 {item.name}
                                             </div>
-                                            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.76rem', color: 'var(--text-tertiary)' }}>
-                                                <span>Available</span><span>{available}</span>
-                                            </div>
-                                            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.76rem', color: 'var(--text-tertiary)' }}>
-                                                <span>Selected Qty</span><span>{selected}</span>
-                                            </div>
-                                            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.76rem', fontWeight: 700, color: remaining < 0 ? 'var(--danger)' : 'var(--primary-light)' }}>
-                                                <span>Remaining</span><span>{remaining}</span>
+                                            <div style={{ fontSize: '1.05rem', fontWeight: 800, marginTop: '0.15rem', color: liveStock < 0 ? 'var(--danger)' : 'var(--primary-light)' }}>
+                                                {liveStock}
                                             </div>
                                         </div>
                                     );
@@ -2294,6 +2396,7 @@ export default function POSPage() {
                             </div>
                         </div>
                     )}
+
                     </div>
 
                     {/* ── Loyalty redeem + action buttons (no-print) ─────────────────── */}
@@ -2319,45 +2422,76 @@ export default function POSPage() {
                             </div>
                         )}
                         <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
-                            {/* Transport Charges + Labor Charges */}
-                            <div style={{ display: 'flex', alignItems: 'center', gap: '1.25rem', flexWrap: 'wrap' }}>
-                                <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                                    <label style={{ fontSize: '0.88rem', fontWeight: 600, color: 'var(--text-secondary)', whiteSpace: 'nowrap' }}>{L('transport_charges')} (₹)</label>
-                                    <input
-                                        type="number"
-                                        min={0}
-                                        value={transportCharges || ''}
-                                        onChange={e => setTransportCharges(Math.max(0, Number(e.target.value) || 0))}
-                                        onWheel={e => e.currentTarget.blur()}
-                                        placeholder="0"
-                                        style={{ width: '110px', border: '1px solid var(--surface-border)', borderRadius: '8px', padding: '0.4rem 0.6rem', fontSize: '0.9rem', background: 'var(--surface-raised)', color: 'var(--text-primary)' }}
-                                    />
-                                </div>
-                                <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                                    <label style={{ fontSize: '0.88rem', fontWeight: 600, color: 'var(--text-secondary)', whiteSpace: 'nowrap' }}>{L('labor_charges')} (₹)</label>
-                                    <input
-                                        type="number"
-                                        min={0}
-                                        value={laborCharges || ''}
-                                        onChange={e => setLaborCharges(Math.max(0, Number(e.target.value) || 0))}
-                                        onWheel={e => e.currentTarget.blur()}
-                                        placeholder="0"
-                                        style={{ width: '110px', border: '1px solid var(--surface-border)', borderRadius: '8px', padding: '0.4rem 0.6rem', fontSize: '0.9rem', background: 'var(--surface-raised)', color: 'var(--text-primary)' }}
-                                    />
-                                </div>
-                                <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                                    <label style={{ fontSize: '0.88rem', fontWeight: 600, color: 'var(--text-secondary)', whiteSpace: 'nowrap' }}>{L('discount')} (₹)</label>
-                                    <input
-                                        type="number"
-                                        min={0}
-                                        value={manualDiscount || ''}
-                                        onChange={e => setManualDiscount(Math.max(0, Number(e.target.value) || 0))}
-                                        onWheel={e => e.currentTarget.blur()}
-                                        placeholder="0"
-                                        style={{ width: '110px', border: '1px solid var(--surface-border)', borderRadius: '8px', padding: '0.4rem 0.6rem', fontSize: '0.9rem', background: 'var(--surface-raised)', color: 'var(--text-primary)' }}
-                                    />
-                                </div>
+                            {/* Other Options — Transport / Labor / Discount / Notes kept behind a
+                                disclosure so the main billing screen stays compact. A dot marks
+                                that at least one optional field is in use while collapsed. */}
+                            <div>
+                                <button
+                                    type="button"
+                                    onClick={() => setShowOtherOptions(v => !v)}
+                                    aria-expanded={showOtherOptions}
+                                    style={{ display: 'inline-flex', alignItems: 'center', gap: '0.4rem', background: 'var(--surface-raised)', border: '1px solid var(--surface-border)', borderRadius: '8px', padding: '0.45rem 0.85rem', fontSize: '0.85rem', fontWeight: 600, color: 'var(--text-secondary)', cursor: 'pointer' }}>
+                                    <ChevronRight size={16} style={{ transform: showOtherOptions ? 'rotate(90deg)' : 'none', transition: 'transform var(--transition-fast)' }} />
+                                    {L('other_options')}
+                                    {!showOtherOptions && (transportCharges > 0 || laborCharges > 0 || manualDiscount > 0 || billNote.trim()) && (
+                                        <span style={{ width: '7px', height: '7px', borderRadius: '50%', background: 'var(--primary)', display: 'inline-block' }} />
+                                    )}
+                                </button>
                             </div>
+                            {showOtherOptions && (
+                                <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem', background: 'var(--surface-base)', border: '1px solid var(--surface-border)', borderRadius: '10px', padding: '0.85rem 1rem' }}>
+                                    {/* Transport Charges + Labor Charges + Discount */}
+                                    <div style={{ display: 'flex', alignItems: 'center', gap: '1.25rem', flexWrap: 'wrap' }}>
+                                        <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                                            <label style={{ fontSize: '0.88rem', fontWeight: 600, color: 'var(--text-secondary)', whiteSpace: 'nowrap' }}>{L('transport_charges')} (₹)</label>
+                                            <input
+                                                type="number"
+                                                min={0}
+                                                value={transportCharges || ''}
+                                                onChange={e => setTransportCharges(Math.max(0, Number(e.target.value) || 0))}
+                                                onWheel={e => e.currentTarget.blur()}
+                                                placeholder="0"
+                                                style={{ width: '110px', border: '1px solid var(--surface-border)', borderRadius: '8px', padding: '0.4rem 0.6rem', fontSize: '0.9rem', background: 'var(--surface-raised)', color: 'var(--text-primary)' }}
+                                            />
+                                        </div>
+                                        <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                                            <label style={{ fontSize: '0.88rem', fontWeight: 600, color: 'var(--text-secondary)', whiteSpace: 'nowrap' }}>{L('labor_charges')} (₹)</label>
+                                            <input
+                                                type="number"
+                                                min={0}
+                                                value={laborCharges || ''}
+                                                onChange={e => setLaborCharges(Math.max(0, Number(e.target.value) || 0))}
+                                                onWheel={e => e.currentTarget.blur()}
+                                                placeholder="0"
+                                                style={{ width: '110px', border: '1px solid var(--surface-border)', borderRadius: '8px', padding: '0.4rem 0.6rem', fontSize: '0.9rem', background: 'var(--surface-raised)', color: 'var(--text-primary)' }}
+                                            />
+                                        </div>
+                                        <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                                            <label style={{ fontSize: '0.88rem', fontWeight: 600, color: 'var(--text-secondary)', whiteSpace: 'nowrap' }}>{L('discount')} (₹)</label>
+                                            <input
+                                                type="number"
+                                                min={0}
+                                                value={manualDiscount || ''}
+                                                onChange={e => setManualDiscount(Math.max(0, Number(e.target.value) || 0))}
+                                                onWheel={e => e.currentTarget.blur()}
+                                                placeholder="0"
+                                                style={{ width: '110px', border: '1px solid var(--surface-border)', borderRadius: '8px', padding: '0.4rem 0.6rem', fontSize: '0.9rem', background: 'var(--surface-raised)', color: 'var(--text-primary)' }}
+                                            />
+                                        </div>
+                                    </div>
+                                    {/* Bill-level Notes — free-form, persisted with the invoice. */}
+                                    <div style={{ display: 'flex', flexDirection: 'column', gap: '0.35rem' }}>
+                                        <label style={{ fontSize: '0.88rem', fontWeight: 600, color: 'var(--text-secondary)' }}>{L('notes')}</label>
+                                        <textarea
+                                            value={billNote}
+                                            onChange={e => setBillNote(e.target.value)}
+                                            placeholder={L('notes_ph')}
+                                            rows={2}
+                                            style={{ width: '100%', border: '1px solid var(--surface-border)', borderRadius: '8px', padding: '0.5rem 0.7rem', fontSize: '0.9rem', background: 'var(--surface-raised)', color: 'var(--text-primary)', resize: 'vertical', fontFamily: 'inherit' }}
+                                        />
+                                    </div>
+                                </div>
+                            )}
                             {/* Partial Credit: Amount Paid Now (only shown for Credit bills) */}
                             {isCreditBill && (
                                 <div style={{ background: 'hsla(220,70%,55%,0.07)', border: '1px solid hsla(220,70%,55%,0.2)', borderRadius: '10px', padding: '0.75rem 1rem' }}>

@@ -689,7 +689,11 @@
     "transport_charges": "परिवहन शुल्क",
     "labor_charges": "श्रम शुल्क",
     "amount_paid": "भुगतान राशि",
-    "credit_amount": "उधार राशि"
+    "credit_amount": "उधार राशि",
+    "live_stock": "लाइव स्टॉक",
+    "other_options": "अन्य विकल्प",
+    "notes": "टिप्पणी",
+    "notes_ph": "टिप्पणी (जैसे बिल-बुक / पृष्ठ सं.)"
   },
   "schemaBuilder": {
     "groups": {

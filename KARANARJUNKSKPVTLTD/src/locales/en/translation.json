@@ -690,7 +690,11 @@
     "transport_charges": "Transport Charges",
     "labor_charges": "Labor Charges",
     "amount_paid": "Amount Paid",
-    "credit_amount": "Credit Amount"
+    "credit_amount": "Credit Amount",
+    "live_stock": "Live Stock",
+    "other_options": "Other Options",
+    "notes": "Notes",
+    "notes_ph": "Notes (e.g. bill-book / page no.)"
   },
   "schemaBuilder": {
     "groups": {
