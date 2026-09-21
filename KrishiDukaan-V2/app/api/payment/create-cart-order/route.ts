@@ -112,7 +112,14 @@ export async function POST(request: Request) {
 
     for (const item of items) {
       const qty = Math.max(1, Math.floor(Number(item.qty) || 1));
-      const sellerKey = String(item.sellerPhone ?? '').trim() || String(item.sellerId ?? '').trim();
+      // `let`: resolved from the product doc below when the cart item carries
+      // no seller at all. That happens when a customer buys a manufacturer's
+      // own canonical listing (no retailer copy, empty availability[]) — the
+      // app sends sellerPhone: ''. Left unresolved, the order was unroutable
+      // (no Route transfer, so the seller was never paid automatically) AND
+      // the post-payment order write had nothing to key the order to, so no
+      // order was created at all — a real ₹200 payment on 20 Sep 2026.
+      let sellerKey = String(item.sellerPhone ?? '').trim() || String(item.sellerId ?? '').trim();
 
       // Try multiple query strategies to find the inventory doc:
       //   1. ownerId == sellerId (UID-keyed, most common for new accounts)
@@ -155,6 +162,20 @@ export async function POST(request: Request) {
       ]);
       const invDoc = snaps.find((s) => !s.empty)?.docs[0] ?? null;
       const prodData = prodSnap.exists ? prodSnap.data()! : null;
+
+      if (!sellerKey && prodData) {
+        // Canonical product bought directly: its owner IS the seller.
+        sellerKey =
+          String(prodData.ownerPhone ?? prodData.manufacturerPhone ?? prodData.retailerPhone ?? '').trim();
+        if (!sellerKey && prodData.ownerId) {
+          // Legacy UID-keyed owner — map through uidIndex, same as everywhere else.
+          const idx = await db.collection('uidIndex').doc(String(prodData.ownerId)).get();
+          sellerKey = idx.exists ? String(idx.data()?.phone ?? '').trim() : '';
+        }
+        if (sellerKey) {
+          console.log('[create-cart-order] resolved seller for', item.productId, 'from product doc →', sellerKey);
+        }
+      }
 
       let finalPrice: number;
       let priceSource: AttemptItem['priceSource'] = 'none';
@@ -242,8 +263,10 @@ export async function POST(request: Request) {
         qty,
         unitPrice:   finalPrice,
         lineTotal,
-        sellerId:    item.sellerId,
-        sellerPhone: item.sellerPhone ?? null,
+        // Whatever was resolved above — so the attempt record (and any order
+        // rebuilt from it by the webhook) always names the seller.
+        sellerId:    String(item.sellerId ?? '').trim() || sellerKey,
+        sellerPhone: String(item.sellerPhone ?? '').trim() || sellerKey || null,
         sellerName:  null,
         priceSource,
       });

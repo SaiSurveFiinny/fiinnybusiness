@@ -59,7 +59,12 @@ class OrderRepository {
 
   /// First non-empty ownership field on a product doc, phone-first, or ''.
   static String _ownerOf(Map<String, dynamic> d) {
-    for (final field in ['retailerPhone', 'ownerPhone', 'retailerId', 'ownerId']) {
+    // manufacturerPhone/createdByPhone: a manufacturer's own canonical listing
+    // may carry only these (see manufacturer_repository.addCatalogProduct).
+    for (final field in [
+      'retailerPhone', 'ownerPhone', 'manufacturerPhone', 'createdByPhone',
+      'retailerId', 'ownerId',
+    ]) {
       final v = (d[field] as String?)?.trim();
       if (v != null && v.isNotEmpty) return v;
     }

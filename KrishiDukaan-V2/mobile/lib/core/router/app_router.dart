@@ -562,8 +562,16 @@ final routerProvider = Provider<GoRouter>((ref) {
               child: AssignProductScreen(initialRetailerPhone: phone));
         },
       ),
+      // Company Page: preview first (the page as customers see it, with an
+      // Edit action), editor one level deeper. Previously the drawer link
+      // went straight into the editor.
       GoRoute(
         path: '/dashboard/manufacturer/brand',
+        parentNavigatorKey: _rootKey,
+        builder: (_, _) => const _RootBackFallback(child: _MyBrandPreview()),
+      ),
+      GoRoute(
+        path: BrandScreen.editRoute,
         parentNavigatorKey: _rootKey,
         builder: (_, _) => const _RootBackFallback(child: BrandEditorScreen()),
       ),
@@ -770,3 +778,20 @@ class ReelsNavigatorObserver extends NavigatorObserver {
   }
 }
 
+
+
+/// The signed-in manufacturer's own company page, in owner mode. Resolves the
+/// phone from the current user so the drawer link needs no parameter.
+class _MyBrandPreview extends ConsumerWidget {
+  const _MyBrandPreview();
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final user = ref.watch(currentUserProvider).value;
+    final phone = user?.phone ?? '';
+    if (phone.isEmpty) {
+      return const Scaffold(body: Center(child: CircularProgressIndicator()));
+    }
+    return BrandScreen(manufacturerPhone: phone, isOwner: true);
+  }
+}
