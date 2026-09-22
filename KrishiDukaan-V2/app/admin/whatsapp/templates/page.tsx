@@ -42,7 +42,8 @@ type TemplateId =
   | "new_product_reminder"
   | "kyc_pending"
   | "kyc_success"
-  | "app_update";
+  | "app_update"
+  | "reel_promo_hindi";
 
 /**
  * Cost of a single delivered WhatsApp Marketing message, in INR. Defined once
@@ -95,6 +96,11 @@ const TEMPLATES: { id: TemplateId; label: string; description: string }[] = [
     id: "app_update",
     label: "App Update (Marketing)",
     description: "Ask retailers, manufacturers or customers to update the app. Marketing template — billed per message.",
+  },
+  {
+    id: "reel_promo_hindi",
+    label: "Reel Promotion Hindi (Marketing)",
+    description: "Promote a farming reel to all users in Hindi. Image header, zero variables, static URL button. Marketing template — billed per message.",
   },
 ];
 
@@ -3490,6 +3496,505 @@ function AppUpdateFlow() {
   );
 }
 
+// ─── Reel Promotion Hindi (Marketing) flow ───────────────────────────────────
+
+type ReelPromoAudience = "manufacturer" | "retailer" | "customer";
+
+type ReelPromoRow = {
+  userId: string;
+  phone: string;        // normalized E.164 (no '+')
+  ownerName: string;
+  businessName: string;
+  shopName: string;
+  audience: ReelPromoAudience;
+};
+
+type ReelPromoResult = {
+  userId: string;
+  phone: string;
+  businessName: string;
+  ok: boolean;
+  error?: string;
+};
+
+const REEL_PROMO_AUDIENCE_LABEL: Record<ReelPromoAudience, string> = {
+  manufacturer: "Manufacturer",
+  retailer: "Retailer",
+  customer: "Customer",
+};
+
+function classifyReelPromoAudience(role: string): ReelPromoAudience | null {
+  if (role === "manufacturer") return "manufacturer";
+  if (role === "retailer") return "retailer";
+  if (!role || role === "customer" || role === "consumer") return "customer";
+  return null;
+}
+
+function ReelPromoHindiFlow() {
+  const [rows, setRows] = useState<ReelPromoRow[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [search, setSearch] = useState("");
+  const [audienceFilters, setAudienceFilters] = useState<Record<ReelPromoAudience, boolean>>({
+    manufacturer: true,
+    retailer: true,
+    customer: true,
+  });
+  const [step, setStep] = useState<"list" | "confirm" | "sending" | "done">("list");
+  const [sendResults, setSendResults] = useState<ReelPromoResult[]>([]);
+  const sendingRef = useRef(false);
+  const masterCheckboxRef = useRef<HTMLInputElement>(null);
+
+  const loadData = useCallback(async () => {
+    setLoading(true);
+    try {
+      const users = await getUsers();
+      const built: ReelPromoRow[] = [];
+      for (const u of users as any[]) {
+        const audience = classifyReelPromoAudience(String(u.role ?? ""));
+        if (!audience) continue;
+
+        const candidates = [u.phone, u.id].filter(Boolean).map(String);
+        const phone = candidates.find(isValidIndianPhone) ?? "";
+        if (!phone) continue;
+
+        built.push({
+          userId: u.id,
+          phone: toE164(phone),
+          ownerName: u.ownerName || u.name || "",
+          businessName: u.businessName || "",
+          shopName: u.shopName || "",
+          audience,
+        });
+      }
+
+      built.sort((a, b) =>
+        (a.businessName || a.shopName || a.ownerName || a.phone).localeCompare(
+          b.businessName || b.shopName || b.ownerName || b.phone,
+        ),
+      );
+      setRows(built);
+      setSelectedIds(new Set());
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => { void loadData(); }, [loadData]);
+
+  const filteredRows = (() => {
+    const q = search.trim().toLowerCase();
+    return rows.filter((r) => {
+      if (!audienceFilters[r.audience]) return false;
+      if (!q) return true;
+      return (
+        r.businessName.toLowerCase().includes(q) ||
+        r.shopName.toLowerCase().includes(q) ||
+        r.ownerName.toLowerCase().includes(q)
+      );
+    });
+  })();
+
+  useEffect(() => {
+    const el = masterCheckboxRef.current;
+    if (!el) return;
+    const visibleIds = filteredRows.map((r) => r.userId);
+    const selectedVisible = visibleIds.filter((id) => selectedIds.has(id)).length;
+    const all = visibleIds.length > 0 && selectedVisible >= visibleIds.length;
+    const none = selectedVisible === 0;
+    el.checked = all;
+    el.indeterminate = !all && !none;
+  }, [selectedIds, filteredRows]);
+
+  const toggleRow = (id: string) =>
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+
+  const toggleAudience = (a: ReelPromoAudience) =>
+    setAudienceFilters((prev) => ({ ...prev, [a]: !prev[a] }));
+
+  const selectedRows = rows.filter((r) => selectedIds.has(r.userId));
+  const estimatedCost = selectedIds.size * MARKETING_MSG_COST_INR;
+
+  const displayName = (r: ReelPromoRow) => r.businessName || r.shopName || r.ownerName || "—";
+
+  const displayPhone = (raw: string) => {
+    const digits = raw.replace(/\D/g, "");
+    return digits.length === 12 && digits.startsWith("91") ? digits.slice(2) : digits;
+  };
+
+  const handleSend = async () => {
+    if (sendingRef.current || selectedRows.length === 0) return;
+    sendingRef.current = true;
+    setStep("sending");
+
+    const results: ReelPromoResult[] = [];
+    const now = serverTimestamp();
+    const waRef = collection(db, "waNotifications");
+    const CHUNK = 400;
+
+    for (let i = 0; i < selectedRows.length; i += CHUNK) {
+      const chunk = selectedRows.slice(i, i + CHUNK);
+      const batch = writeBatch(db);
+      for (const row of chunk) {
+        batch.set(doc(waRef), {
+          phone: row.phone,
+          message: "रील प्रमोशन हिंदी",
+          template: "reel_promo_hindi",
+          // Zero body variables — payload intentionally empty to match the approved template.
+          payload: {},
+          source: {
+            event: "admin_manual_reel_promo_hindi",
+            entityType: "users",
+            entityId: row.userId,
+          },
+          status: "pending",
+          type: "marketing",
+          metaMessageId: null,
+          createdAt: now,
+          sentAt: null,
+          deliveredAt: null,
+          readAt: null,
+          failedAt: null,
+          retryCount: 0,
+          maxRetries: 3,
+          lastError: null,
+        });
+      }
+      try {
+        await batch.commit();
+        for (const row of chunk) {
+          results.push({ userId: row.userId, phone: row.phone, businessName: displayName(row), ok: true });
+        }
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : "Batch write failed";
+        for (const row of chunk) {
+          results.push({ userId: row.userId, phone: row.phone, businessName: displayName(row), ok: false, error: msg });
+        }
+      }
+    }
+
+    setSendResults(results);
+    setStep("done");
+    sendingRef.current = false;
+  };
+
+  const handleReset = () => {
+    setStep("list");
+    setSendResults([]);
+    void loadData();
+  };
+
+  if (step === "sending") {
+    return (
+      <div className="flex flex-col items-center justify-center gap-3 py-16 text-on-surface-variant">
+        <Loader2 className="w-8 h-8 animate-spin text-primary" />
+        <p className="text-sm font-medium">Queuing {selectedRows.length} notification{selectedRows.length !== 1 ? "s" : ""}…</p>
+      </div>
+    );
+  }
+
+  if (step === "done") {
+    const successCount = sendResults.filter((r) => r.ok).length;
+    const failCount = sendResults.filter((r) => !r.ok).length;
+    return (
+      <div className="space-y-4">
+        <div className="flex gap-3">
+          {successCount > 0 && (
+            <div className="flex-1 bg-green-50 border border-green-200 rounded-xl p-3 text-center">
+              <p className="text-2xl font-bold text-green-700">{successCount}</p>
+              <p className="text-xs text-green-600 font-medium">Queued</p>
+            </div>
+          )}
+          {failCount > 0 && (
+            <div className="flex-1 bg-red-50 border border-red-200 rounded-xl p-3 text-center">
+              <p className="text-2xl font-bold text-red-700">{failCount}</p>
+              <p className="text-xs text-red-600 font-medium">Failed</p>
+            </div>
+          )}
+        </div>
+        <div className="border border-gray-200 rounded-xl overflow-hidden">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="bg-gray-50 border-b border-gray-200">
+                <th className="text-left px-3 py-2.5 text-xs font-semibold text-gray-500 uppercase tracking-wide">Recipient</th>
+                <th className="text-left px-3 py-2.5 text-xs font-semibold text-gray-500 uppercase tracking-wide">Phone</th>
+                <th className="text-left px-3 py-2.5 text-xs font-semibold text-gray-500 uppercase tracking-wide">Result</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-gray-100">
+              {sendResults.map((r) => (
+                <tr key={r.userId} className={cn(r.ok ? "bg-green-50/30" : "bg-red-50/30")}>
+                  <td className="px-3 py-2.5 text-xs text-gray-800">{r.businessName || "—"}</td>
+                  <td className="px-3 py-2.5 font-mono text-xs text-gray-600">{displayPhone(r.phone)}</td>
+                  <td className="px-3 py-2.5">
+                    {r.ok ? (
+                      <span className="inline-flex items-center gap-1 text-green-700 text-xs font-medium">
+                        <CheckCircle className="w-3.5 h-3.5" /> Queued
+                      </span>
+                    ) : (
+                      <span className="inline-flex items-center gap-1 text-red-700 text-xs font-medium" title={r.error}>
+                        <XCircle className="w-3.5 h-3.5" /> Failed
+                      </span>
+                    )}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+        <button
+          onClick={handleReset}
+          className="px-4 py-2.5 border border-gray-300 text-gray-700 rounded-xl text-sm font-medium hover:bg-gray-50 transition-colors"
+        >
+          Back to List
+        </button>
+      </div>
+    );
+  }
+
+  if (step === "confirm") {
+    return (
+      <div className="space-y-4">
+        <div className="rounded-xl border border-amber-300 bg-amber-50 px-4 py-4 space-y-2">
+          <p className="text-sm font-bold text-amber-800">⚠️ Confirm Marketing send</p>
+          <ul className="text-sm text-amber-700 space-y-1 list-disc list-inside">
+            <li>Template: <span className="font-mono text-xs">reel_promo_hindi</span> (Marketing · Hindi)</li>
+            <li>Variables: <span className="font-semibold">None</span> — fully static template</li>
+            <li>Header: Image (media ID from <span className="font-mono text-xs">WA_REEL_PROMO_HEADER_ID</span>)</li>
+            <li>Button: <span className="font-mono text-xs">वीडियो देखिए</span> — static URL</li>
+            <li>Recipients: <span className="font-semibold">{fmtCount(selectedRows.length)}</span></li>
+            <li>
+              Estimated cost:{" "}
+              <span className="font-semibold">
+                ₹{fmtCount(selectedRows.length)} × {MARKETING_MSG_COST_INR} = ₹{fmtMoney(estimatedCost)}
+              </span>
+            </li>
+          </ul>
+          <p className="text-xs text-amber-600 mt-1">
+            Queues {fmtCount(selectedRows.length)} doc{selectedRows.length !== 1 ? "s" : ""} to{" "}
+            <code className="font-mono">waNotifications</code>. No user records will be modified.
+          </p>
+        </div>
+
+        <div className="border border-gray-200 rounded-xl overflow-hidden max-h-96 overflow-y-auto">
+          <table className="w-full text-sm">
+            <thead className="sticky top-0 bg-gray-50 border-b border-gray-200">
+              <tr>
+                <th className="text-left px-3 py-2.5 text-xs font-semibold text-gray-500 uppercase tracking-wide">Recipient</th>
+                <th className="text-left px-3 py-2.5 text-xs font-semibold text-gray-500 uppercase tracking-wide">Phone</th>
+                <th className="text-left px-3 py-2.5 text-xs font-semibold text-gray-500 uppercase tracking-wide">Audience</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-gray-100">
+              {selectedRows.map((r) => (
+                <tr key={r.userId}>
+                  <td className="px-3 py-2.5 text-xs text-gray-800">{displayName(r)}</td>
+                  <td className="px-3 py-2.5 font-mono text-xs text-gray-600">{displayPhone(r.phone)}</td>
+                  <td className="px-3 py-2.5 text-xs text-gray-600">{REEL_PROMO_AUDIENCE_LABEL[r.audience]}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+
+        <div className="flex gap-3">
+          <button
+            onClick={() => setStep("list")}
+            className="px-4 py-2.5 border border-gray-300 text-gray-700 rounded-xl text-sm font-medium hover:bg-gray-50 transition-colors"
+          >
+            Back
+          </button>
+          <button
+            onClick={handleSend}
+            className="flex items-center gap-2 px-5 py-2.5 bg-amber-600 text-white rounded-xl text-sm font-semibold hover:bg-amber-700 transition-colors"
+          >
+            <Send className="w-4 h-4" />
+            Send {fmtCount(selectedRows.length)} · ₹{fmtMoney(estimatedCost)}
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  // ── "list" step ───────────────────────────────────────────────────────────────
+  return (
+    <div className="space-y-5">
+      {/* Marketing cost warning */}
+      <div className="rounded-xl border border-amber-300 bg-amber-50 px-4 py-3 space-y-1.5">
+        <p className="text-sm font-bold text-amber-800">
+          ⚠️ This is a Marketing WhatsApp message.
+        </p>
+        <p className="text-xs text-amber-700">
+          Template: <span className="font-mono">reel_promo_hindi</span> · Hindi · Image header · Static URL button · Zero variables.
+        </p>
+        <div className="flex flex-wrap items-center gap-x-4 gap-y-1 pt-1 text-sm text-amber-800">
+          <span>Selected: <span className="font-bold">{fmtCount(selectedIds.size)}</span></span>
+          <span>
+            Estimated cost:{" "}
+            <span className="font-bold">
+              ₹{fmtCount(selectedIds.size)} × {MARKETING_MSG_COST_INR} = ₹{fmtMoney(estimatedCost)}
+            </span>
+          </span>
+        </div>
+      </div>
+
+      {/* Controls row */}
+      <div className="flex items-center gap-3">
+        <p className="flex-1 text-sm font-medium text-gray-700">
+          {loading ? "Loading…" : (
+            <>
+              {search.trim() || !(audienceFilters.manufacturer && audienceFilters.retailer && audienceFilters.customer)
+                ? `${fmtCount(filteredRows.length)} of ${fmtCount(rows.length)} user${rows.length !== 1 ? "s" : ""}`
+                : `${fmtCount(rows.length)} user${rows.length !== 1 ? "s" : ""}`}
+              {selectedIds.size > 0 && (
+                <span className="ml-1.5 text-on-surface-variant font-normal">
+                  · {fmtCount(selectedIds.size)} selected
+                </span>
+              )}
+            </>
+          )}
+        </p>
+        <button
+          onClick={() => void loadData()}
+          disabled={loading}
+          className="flex items-center gap-1.5 rounded-xl border border-gray-300 px-3 py-2 text-xs font-medium text-gray-600 hover:bg-gray-50 disabled:opacity-50"
+        >
+          <RefreshCw className={cn("w-3.5 h-3.5", loading && "animate-spin")} />
+          Refresh
+        </button>
+      </div>
+
+      {/* Audience filters + search */}
+      <div className="flex flex-wrap items-center gap-3">
+        <div className="flex items-center gap-1.5">
+          {(Object.keys(REEL_PROMO_AUDIENCE_LABEL) as ReelPromoAudience[]).map((a) => {
+            const active = audienceFilters[a];
+            return (
+              <button
+                key={a}
+                onClick={() => toggleAudience(a)}
+                className={cn(
+                  "px-3 py-1.5 rounded-full text-xs font-medium border transition-colors",
+                  active
+                    ? "bg-primary/10 border-primary/30 text-primary"
+                    : "bg-white border-gray-300 text-gray-500 hover:bg-gray-50",
+                )}
+              >
+                {REEL_PROMO_AUDIENCE_LABEL[a]}
+              </button>
+            );
+          })}
+        </div>
+        <div className="relative max-w-sm flex-1 min-w-[200px]">
+          <Search className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
+          <input
+            type="text"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder="Search by business or owner name…"
+            className="w-full border border-gray-300 rounded-xl pl-9 pr-3 py-2 text-sm text-gray-800 bg-white focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent placeholder:text-gray-400"
+          />
+        </div>
+      </div>
+
+      {loading ? (
+        <div className="flex h-28 items-center justify-center gap-2 text-sm text-gray-400">
+          <Loader2 className="w-4 h-4 animate-spin" /> Loading users…
+        </div>
+      ) : rows.length === 0 ? (
+        <div className="rounded-2xl border border-dashed border-gray-300 px-6 py-10 text-center text-sm text-gray-400">
+          No users with a valid phone number found.
+        </div>
+      ) : filteredRows.length === 0 ? (
+        <div className="rounded-2xl border border-dashed border-gray-300 px-6 py-10 text-center text-sm text-gray-400">
+          No users match the current filters.
+        </div>
+      ) : (
+        <>
+          <div className="border border-gray-200 rounded-xl overflow-hidden">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="bg-gray-50 border-b border-gray-200">
+                  <th className="px-3 py-2.5 w-8 text-center">
+                    <input
+                      ref={masterCheckboxRef}
+                      type="checkbox"
+                      onChange={(e) =>
+                        setSelectedIds((prev) => {
+                          const next = new Set(prev);
+                          if (e.target.checked) filteredRows.forEach((r) => next.add(r.userId));
+                          else filteredRows.forEach((r) => next.delete(r.userId));
+                          return next;
+                        })
+                      }
+                      className="h-4 w-4 rounded border-gray-300 text-primary focus:ring-primary/30 cursor-pointer"
+                    />
+                  </th>
+                  <th className="text-left px-3 py-2.5 text-xs font-semibold text-gray-500 uppercase tracking-wide">Business / Owner</th>
+                  <th className="text-left px-3 py-2.5 text-xs font-semibold text-gray-500 uppercase tracking-wide">Phone</th>
+                  <th className="text-left px-3 py-2.5 text-xs font-semibold text-gray-500 uppercase tracking-wide">Audience</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-gray-100">
+                {filteredRows.map((r) => {
+                  const checked = selectedIds.has(r.userId);
+                  return (
+                    <tr
+                      key={r.userId}
+                      className={cn(
+                        "cursor-pointer transition-colors",
+                        checked ? "bg-primary/5" : "hover:bg-gray-50",
+                      )}
+                      onClick={() => toggleRow(r.userId)}
+                    >
+                      <td className="px-3 py-2.5 text-center">
+                        <input
+                          type="checkbox"
+                          checked={checked}
+                          onChange={() => toggleRow(r.userId)}
+                          onClick={(e) => e.stopPropagation()}
+                          className="h-4 w-4 rounded border-gray-300 text-primary focus:ring-primary/30"
+                        />
+                      </td>
+                      <td className="px-3 py-2.5">
+                        <p className="text-xs font-semibold text-gray-800 truncate max-w-xs">
+                          {displayName(r)}
+                        </p>
+                        {r.ownerName && r.ownerName !== displayName(r) && (
+                          <p className="text-[10px] text-gray-400 truncate max-w-xs">{r.ownerName}</p>
+                        )}
+                      </td>
+                      <td className="px-3 py-2.5 font-mono text-xs text-gray-600">{displayPhone(r.phone)}</td>
+                      <td className="px-3 py-2.5">
+                        <span className="text-xs px-1.5 py-0.5 rounded-full bg-gray-100 text-gray-600">
+                          {REEL_PROMO_AUDIENCE_LABEL[r.audience]}
+                        </span>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+
+          <button
+            onClick={() => setStep("confirm")}
+            disabled={selectedIds.size === 0}
+            className="flex items-center gap-2 px-5 py-2.5 bg-primary text-white rounded-xl text-sm font-semibold hover:bg-primary/90 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+          >
+            <Send className="w-4 h-4" />
+            Review &amp; Send ({fmtCount(selectedIds.size)} · ₹{fmtMoney(estimatedCost)})
+          </button>
+        </>
+      )}
+    </div>
+  );
+}
+
 // ─── Page ─────────────────────────────────────────────────────────────────────
 
 export default function SendMessagesPage() {
@@ -3544,6 +4049,7 @@ export default function SendMessagesPage() {
         {templateId === "kyc_pending" && <KycPendingFlow />}
         {templateId === "kyc_success" && <KycSuccessFlow />}
         {templateId === "app_update" && <AppUpdateFlow />}
+        {templateId === "reel_promo_hindi" && <ReelPromoHindiFlow />}
       </div>
     </div>
   );

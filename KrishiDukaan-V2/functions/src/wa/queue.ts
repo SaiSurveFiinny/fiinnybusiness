@@ -1,12 +1,10 @@
 import * as admin from "firebase-admin";
 import { getDb } from "./firebase";
 import { getProvider } from "./provider";
-import { resolveTemplateComponents } from "./templateResolver";
+import { resolveTemplateComponents, resolveTemplateLanguage } from "./templateResolver";
 import type { WaNotification } from "./types";
 
 const COLLECTION = "waNotifications";
-
-const TEMPLATE_LANGUAGE = "mr";
 
 /**
  * Atomically claims a pending doc by setting status to "sending".
@@ -51,10 +49,11 @@ async function dispatchNotification(n: WaNotification): Promise<string> {
         ? n.templateComponents
         : resolveTemplateComponents(n.template, n.payload);
 
+    const langCode = resolveTemplateLanguage(n.template);
     const result = await provider.sendTemplateMessage(
       n.phone,
       n.template,
-      TEMPLATE_LANGUAGE,
+      langCode,
       components
     );
     return result.metaMessageId;

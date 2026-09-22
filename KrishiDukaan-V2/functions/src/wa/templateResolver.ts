@@ -1,5 +1,20 @@
 import type { WaTemplate, WaPayload, WaTemplateComponent, WaTextParam } from "./types";
 
+/**
+ * Returns the BCP-47 language code for a given template as registered in Meta
+ * Business Manager. Must match exactly — mismatches produce error 132001.
+ * Defaults to "mr" (Marathi) for all existing templates; override per-template
+ * only when a template is approved under a different language.
+ */
+export function resolveTemplateLanguage(template: WaTemplate): string {
+  switch (template) {
+    case "reel_promo_hindi":
+      return "hi";
+    default:
+      return "mr";
+  }
+}
+
 function t(text: string): WaTextParam {
   return { type: "text", text };
 }
@@ -160,6 +175,26 @@ export function resolveTemplateComponents(
       // CTA is a static URL button (Play Store listing) — no button component is sent.
       const displayName = p("businessName") || p("shopName") || p("ownerName") || "User";
       return [body(displayName)];
+    }
+
+    case "reel_promo_hindi": {
+      // Manual admin Marketing campaign (Hindi) — never triggered automatically.
+      // Header: static IMAGE — Meta requires the header component even for static images.
+      // Body: ZERO variables — do NOT send a body component or Meta returns error 132000.
+      // Button: static URL (https://krishidukan.com/reels/karan-veer-power-plus-xObUVDXHFtyluo3xCqQt)
+      //   — static, so no button component is sent.
+      // Image media ID injected via WA_REEL_PROMO_HEADER_ID secret (Secret Manager).
+      // Must be declared in wa-dispatch.ts secrets[] — if undefined here the function
+      // was not deployed with the secret, not a resolver bug.
+      const headerImageId = process.env.WA_REEL_PROMO_HEADER_ID;
+      if (!headerImageId) {
+        throw new Error(
+          "WA_REEL_PROMO_HEADER_ID is not set — add it to the function secrets[] in wa-dispatch.ts and redeploy"
+        );
+      }
+      return [
+        { type: "header", parameters: [{ type: "image", image: { id: headerImageId } }] },
+      ];
     }
 
     case "generic":

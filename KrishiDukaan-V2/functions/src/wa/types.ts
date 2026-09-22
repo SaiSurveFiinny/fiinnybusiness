@@ -27,6 +27,7 @@ export type WaTemplate =
   | "kyc_pending"
   | "kyc_success"
   | "app_update"
+  | "reel_promo_hindi"
   | "generic";
 
 /** Dynamic values substituted into the template at render time (for audit/debug). */
