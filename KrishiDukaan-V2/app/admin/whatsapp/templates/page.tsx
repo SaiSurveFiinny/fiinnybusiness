@@ -3499,6 +3499,7 @@ function AppUpdateFlow() {
 // ─── Reel Promotion Hindi (Marketing) flow ───────────────────────────────────
 
 type ReelPromoAudience = "manufacturer" | "retailer" | "customer";
+type DeliveryStatus = "read" | "delivered" | "sent" | "failed" | "retrying" | "pending" | "none";
 
 type ReelPromoRow = {
   userId: string;
@@ -3507,6 +3508,7 @@ type ReelPromoRow = {
   businessName: string;
   shopName: string;
   audience: ReelPromoAudience;
+  deliveryStatus: DeliveryStatus;
 };
 
 type ReelPromoResult = {
@@ -3523,11 +3525,30 @@ const REEL_PROMO_AUDIENCE_LABEL: Record<ReelPromoAudience, string> = {
   customer: "Customer",
 };
 
+const DELIVERY_STATUS_CONFIG: Record<DeliveryStatus, { label: string; cls: string }> = {
+  read:      { label: "Read",      cls: "bg-blue-100 text-blue-700 border-blue-200" },
+  delivered: { label: "Delivered", cls: "bg-green-100 text-green-700 border-green-200" },
+  sent:      { label: "Sent",      cls: "bg-gray-100 text-gray-600 border-gray-200" },
+  failed:    { label: "Failed",    cls: "bg-red-100 text-red-700 border-red-200" },
+  retrying:  { label: "Retrying",  cls: "bg-amber-100 text-amber-700 border-amber-200" },
+  pending:   { label: "Pending",   cls: "bg-gray-100 text-gray-500 border-gray-200" },
+  none:      { label: "—",         cls: "text-gray-300" },
+};
+
 function classifyReelPromoAudience(role: string): ReelPromoAudience | null {
   if (role === "manufacturer") return "manufacturer";
   if (role === "retailer") return "retailer";
   if (!role || role === "customer" || role === "consumer") return "customer";
   return null;
+}
+
+function getReelNotifStatus(data: Record<string, unknown>): DeliveryStatus {
+  if (data.readAt) return "read";
+  if (data.deliveredAt) return "delivered";
+  if (data.failedAt) return "failed";
+  if (data.sentAt) return "sent";
+  if (data.retryCount && Number(data.retryCount) > 0) return "retrying";
+  return "pending";
 }
 
 function ReelPromoHindiFlow() {
@@ -3540,6 +3561,7 @@ function ReelPromoHindiFlow() {
     retailer: true,
     customer: true,
   });
+  const [statusFilter, setStatusFilter] = useState<"all" | "delivered" | "not_delivered" | "failed" | "pending_retrying">("all");
   const [step, setStep] = useState<"list" | "confirm" | "sending" | "done">("list");
   const [sendResults, setSendResults] = useState<ReelPromoResult[]>([]);
   const sendingRef = useRef(false);
@@ -3548,7 +3570,24 @@ function ReelPromoHindiFlow() {
   const loadData = useCallback(async () => {
     setLoading(true);
     try {
-      const users = await getUsers();
+      const [users, notifSnap] = await Promise.all([
+        getUsers(),
+        getDocs(query(collection(db, "waNotifications"), where("template", "==", "reel_promo_hindi"))),
+      ]);
+
+      // Build phone → most-recent notification status
+      const latestByPhone = new Map<string, { createdMs: number; status: DeliveryStatus }>();
+      notifSnap.docs.forEach((d) => {
+        const data = d.data() as Record<string, unknown>;
+        if (!data.phone) return;
+        const norm = toE164(String(data.phone));
+        const ms = fieldToMs(data.createdAt);
+        const prev = latestByPhone.get(norm);
+        if (!prev || ms > prev.createdMs) {
+          latestByPhone.set(norm, { createdMs: ms, status: getReelNotifStatus(data) });
+        }
+      });
+
       const built: ReelPromoRow[] = [];
       for (const u of users as any[]) {
         const audience = classifyReelPromoAudience(String(u.role ?? ""));
@@ -3558,13 +3597,17 @@ function ReelPromoHindiFlow() {
         const phone = candidates.find(isValidIndianPhone) ?? "";
         if (!phone) continue;
 
+        const norm = toE164(phone);
+        const deliveryStatus: DeliveryStatus = latestByPhone.get(norm)?.status ?? "none";
+
         built.push({
           userId: u.id,
-          phone: toE164(phone),
+          phone: norm,
           ownerName: u.ownerName || u.name || "",
           businessName: u.businessName || "",
           shopName: u.shopName || "",
           audience,
+          deliveryStatus,
         });
       }
 
@@ -3586,6 +3629,11 @@ function ReelPromoHindiFlow() {
     const q = search.trim().toLowerCase();
     return rows.filter((r) => {
       if (!audienceFilters[r.audience]) return false;
+      const isDelivered = r.deliveryStatus === "delivered" || r.deliveryStatus === "read";
+      if (statusFilter === "delivered" && !isDelivered) return false;
+      if (statusFilter === "not_delivered" && isDelivered) return false;
+      if (statusFilter === "failed" && r.deliveryStatus !== "failed") return false;
+      if (statusFilter === "pending_retrying" && r.deliveryStatus !== "pending" && r.deliveryStatus !== "retrying") return false;
       if (!q) return true;
       return (
         r.businessName.toLowerCase().includes(q) ||
@@ -3615,6 +3663,15 @@ function ReelPromoHindiFlow() {
 
   const toggleAudience = (a: ReelPromoAudience) =>
     setAudienceFilters((prev) => ({ ...prev, [a]: !prev[a] }));
+
+  const handleSelectUndelivered = () => {
+    const undelivered = new Set(
+      filteredRows
+        .filter((r) => r.deliveryStatus !== "delivered" && r.deliveryStatus !== "read")
+        .map((r) => r.userId),
+    );
+    setSelectedIds(undelivered);
+  };
 
   const selectedRows = rows.filter((r) => selectedIds.has(r.userId));
   const estimatedCost = selectedIds.size * MARKETING_MSG_COST_INR;
@@ -3843,11 +3900,11 @@ function ReelPromoHindiFlow() {
       </div>
 
       {/* Controls row */}
-      <div className="flex items-center gap-3">
+      <div className="flex flex-wrap items-center gap-3">
         <p className="flex-1 text-sm font-medium text-gray-700">
           {loading ? "Loading…" : (
             <>
-              {search.trim() || !(audienceFilters.manufacturer && audienceFilters.retailer && audienceFilters.customer)
+              {search.trim() || !(audienceFilters.manufacturer && audienceFilters.retailer && audienceFilters.customer) || statusFilter !== "all"
                 ? `${fmtCount(filteredRows.length)} of ${fmtCount(rows.length)} user${rows.length !== 1 ? "s" : ""}`
                 : `${fmtCount(rows.length)} user${rows.length !== 1 ? "s" : ""}`}
               {selectedIds.size > 0 && (
@@ -3859,6 +3916,13 @@ function ReelPromoHindiFlow() {
           )}
         </p>
         <button
+          onClick={handleSelectUndelivered}
+          disabled={loading}
+          className="flex items-center gap-1.5 rounded-xl border border-orange-300 bg-orange-50 px-3 py-2 text-xs font-medium text-orange-700 hover:bg-orange-100 disabled:opacity-50 transition-colors"
+        >
+          Select Undelivered
+        </button>
+        <button
           onClick={() => void loadData()}
           disabled={loading}
           className="flex items-center gap-1.5 rounded-xl border border-gray-300 px-3 py-2 text-xs font-medium text-gray-600 hover:bg-gray-50 disabled:opacity-50"
@@ -3868,7 +3932,7 @@ function ReelPromoHindiFlow() {
         </button>
       </div>
 
-      {/* Audience filters + search */}
+      {/* Audience filters + status filter + search */}
       <div className="flex flex-wrap items-center gap-3">
         <div className="flex items-center gap-1.5">
           {(Object.keys(REEL_PROMO_AUDIENCE_LABEL) as ReelPromoAudience[]).map((a) => {
@@ -3888,6 +3952,20 @@ function ReelPromoHindiFlow() {
               </button>
             );
           })}
+        </div>
+        <div className="relative">
+          <select
+            value={statusFilter}
+            onChange={(e) => setStatusFilter(e.target.value as typeof statusFilter)}
+            className="appearance-none border border-gray-300 rounded-xl pl-3 pr-8 py-2 text-xs text-gray-700 bg-white focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent"
+          >
+            <option value="all">All Statuses</option>
+            <option value="delivered">Delivered</option>
+            <option value="not_delivered">Not Delivered</option>
+            <option value="failed">Failed</option>
+            <option value="pending_retrying">Pending / Retrying</option>
+          </select>
+          <ChevronDown className="pointer-events-none absolute right-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-gray-400" />
         </div>
         <div className="relative max-w-sm flex-1 min-w-[200px]">
           <Search className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
@@ -3936,12 +4014,14 @@ function ReelPromoHindiFlow() {
                   </th>
                   <th className="text-left px-3 py-2.5 text-xs font-semibold text-gray-500 uppercase tracking-wide">Business / Owner</th>
                   <th className="text-left px-3 py-2.5 text-xs font-semibold text-gray-500 uppercase tracking-wide">Phone</th>
-                  <th className="text-left px-3 py-2.5 text-xs font-semibold text-gray-500 uppercase tracking-wide">Audience</th>
+                  <th className="text-left px-3 py-2.5 text-xs font-semibold text-gray-500 uppercase tracking-wide hidden sm:table-cell">Audience</th>
+                  <th className="text-left px-3 py-2.5 text-xs font-semibold text-gray-500 uppercase tracking-wide">Status</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-100">
                 {filteredRows.map((r) => {
                   const checked = selectedIds.has(r.userId);
+                  const statusCfg = DELIVERY_STATUS_CONFIG[r.deliveryStatus];
                   return (
                     <tr
                       key={r.userId}
@@ -3969,10 +4049,19 @@ function ReelPromoHindiFlow() {
                         )}
                       </td>
                       <td className="px-3 py-2.5 font-mono text-xs text-gray-600">{displayPhone(r.phone)}</td>
-                      <td className="px-3 py-2.5">
+                      <td className="px-3 py-2.5 hidden sm:table-cell">
                         <span className="text-xs px-1.5 py-0.5 rounded-full bg-gray-100 text-gray-600">
                           {REEL_PROMO_AUDIENCE_LABEL[r.audience]}
                         </span>
+                      </td>
+                      <td className="px-3 py-2.5">
+                        {r.deliveryStatus === "none" ? (
+                          <span className="text-xs text-gray-300">—</span>
+                        ) : (
+                          <span className={cn("text-xs px-1.5 py-0.5 rounded-full border font-medium", statusCfg.cls)}>
+                            {statusCfg.label}
+                          </span>
+                        )}
                       </td>
                     </tr>
                   );
