@@ -237,6 +237,19 @@ export interface PromoCode {
   /** Percentage off the order subtotal, 1–100. */
   discountPercent: number;
   active: boolean;
+  /**
+   * Billing-period months this code applies to (e.g. [12] = yearly only).
+   * Absent or empty means the code is valid for every plan.
+   */
+  applicablePlans?: number[];
+  /** Minimum normalised seat count required. Absent = no minimum. */
+  minSeats?: number;
+  /** Maximum normalised seat count allowed. Absent = no maximum. */
+  maxSeats?: number;
+  /** ISO date YYYY-MM-DD; code is not valid before this date. Absent = immediate. */
+  startDate?: string;
+  /** ISO date YYYY-MM-DD; code expires after this date. Absent = never expires. */
+  endDate?: string;
 }
 
 /**
@@ -245,6 +258,9 @@ export interface PromoCode {
  * The field is `discountPercent` — matching what SubscriptionView already reads.
  * Anything outside 1–100 is rejected rather than clamped: a 0% or 150% code is a
  * data error, and silently "fixing" it would charge an amount nobody intended.
+ * New optional fields (applicablePlans, minSeats, maxSeats, startDate, endDate) are
+ * parsed when present; absent fields leave the code unrestricted on that dimension
+ * so existing documents without these fields continue to work unchanged.
  */
 export function parsePromo(raw: unknown): PromoCode | null {
   const d = raw as Record<string, unknown> | null | undefined;
@@ -255,7 +271,40 @@ export function parsePromo(raw: unknown): PromoCode | null {
   if (!Number.isFinite(discountPercent) || discountPercent <= 0 || discountPercent > 100) {
     return null;
   }
-  return { code, discountPercent, active: d.active !== false };
+
+  let applicablePlans: number[] | undefined;
+  if (Array.isArray(d.applicablePlans) && d.applicablePlans.length > 0) {
+    const plans = (d.applicablePlans as unknown[])
+      .map(Number)
+      .filter((n) => Number.isInteger(n) && n > 0);
+    if (plans.length > 0) applicablePlans = plans;
+  }
+
+  let minSeats: number | undefined;
+  if (d.minSeats != null) {
+    const n = Number(d.minSeats);
+    if (Number.isInteger(n) && n > 0) minSeats = n;
+  }
+
+  let maxSeats: number | undefined;
+  if (d.maxSeats != null) {
+    const n = Number(d.maxSeats);
+    if (Number.isInteger(n) && n > 0) maxSeats = n;
+  }
+
+  const isoDate = (v: unknown): string | undefined =>
+    typeof v === "string" && /^\d{4}-\d{2}-\d{2}$/.test(v) ? v : undefined;
+
+  return {
+    code,
+    discountPercent,
+    active: d.active !== false,
+    ...(applicablePlans ? { applicablePlans } : {}),
+    ...(minSeats !== undefined ? { minSeats } : {}),
+    ...(maxSeats !== undefined ? { maxSeats } : {}),
+    ...(isoDate(d.startDate) ? { startDate: isoDate(d.startDate) } : {}),
+    ...(isoDate(d.endDate) ? { endDate: isoDate(d.endDate) } : {}),
+  };
 }
 
 /**

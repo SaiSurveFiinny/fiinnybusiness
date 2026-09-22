@@ -146,6 +146,9 @@ export default function SubscriptionView({ user, role, onSuccess, onLogout }: Su
     setSeatInput(val);
     const n = parseInt(val, 10);
     if (!isNaN(n) && n <= 10000) setSeatCount(normalizeSeatCount(n));
+    // Clear any applied promo — seat conditions may no longer hold.
+    setPromoApplied(null);
+    setPromoError(null);
   };
 
   // Snap the visible text to the real seat count once the seller leaves the
@@ -156,11 +159,15 @@ export default function SubscriptionView({ user, role, onSuccess, onLogout }: Su
     const next = normalizeSeatCount(seatCount + delta * SEAT_STEP);
     setSeatCount(next);
     setSeatInput(String(next));
+    setPromoApplied(null);
+    setPromoError(null);
   };
 
   const selectSeatPreset = (n: number) => {
     setSeatCount(n);
     setSeatInput(String(n));
+    setPromoApplied(null);
+    setPromoError(null);
   };
 
   const applyPromo = async () => {
@@ -169,22 +176,68 @@ export default function SubscriptionView({ user, role, onSuccess, onLogout }: Su
     setPromoLoading(true);
     setPromoError(null);
     try {
-      const q = query(collection(db, 'promoCodes'), where('code', '==', code), where('active', '==', true));
+      const q = query(collection(db, 'promoCodes'), where('code', '==', code));
       const snap = await getDocs(q);
       if (snap.empty) {
         setPromoError('Invalid or expired promo code.');
         setPromoApplied(null);
-      } else {
-        const data = snap.docs[0]!.data() as any;
-        const discountPct: number = typeof data.discountPercent === 'number' ? data.discountPercent : 0;
-        if (!discountPct) {
-          setPromoError('This promo code has no active discount.');
+        return;
+      }
+
+      const data = snap.docs[0]!.data() as Record<string, unknown>;
+
+      if (!data.active) {
+        setPromoError('This promo code has been deactivated.');
+        setPromoApplied(null);
+        return;
+      }
+
+      const discountPct: number = typeof data.discountPercent === 'number' ? data.discountPercent : 0;
+      if (!discountPct) {
+        setPromoError('This promo code has no active discount.');
+        setPromoApplied(null);
+        return;
+      }
+
+      // Date range check
+      const today = new Date().toISOString().slice(0, 10);
+      if (typeof data.startDate === 'string' && today < data.startDate) {
+        setPromoError('This promo code is not yet active.');
+        setPromoApplied(null);
+        return;
+      }
+      if (typeof data.endDate === 'string' && today > data.endDate) {
+        setPromoError('This promo code has expired.');
+        setPromoApplied(null);
+        return;
+      }
+
+      // Plan restriction check
+      if (Array.isArray(data.applicablePlans) && data.applicablePlans.length > 0) {
+        if (!data.applicablePlans.includes(duration.months)) {
+          const names = (data.applicablePlans as number[])
+            .map((m) => (m === 12 ? 'Yearly' : m === 1 ? 'Monthly' : `${m} Month`))
+            .join(', ');
+          setPromoError(`This promo code is only valid for: ${names}.`);
           setPromoApplied(null);
-        } else {
-          setPromoApplied({ code, discountPct });
-          setPromoError(null);
+          return;
         }
       }
+
+      // Seat condition check
+      if (typeof data.minSeats === 'number' && seatCount < data.minSeats) {
+        setPromoError(`This promo code requires a minimum of ${data.minSeats} seats.`);
+        setPromoApplied(null);
+        return;
+      }
+      if (typeof data.maxSeats === 'number' && seatCount > data.maxSeats) {
+        setPromoError(`This promo code is only valid for up to ${data.maxSeats} seats.`);
+        setPromoApplied(null);
+        return;
+      }
+
+      setPromoApplied({ code, discountPct });
+      setPromoError(null);
     } catch {
       setPromoError('Could not validate promo code. Try again.');
     } finally {
@@ -216,9 +269,14 @@ export default function SubscriptionView({ user, role, onSuccess, onLogout }: Su
           userId: user.uid,
         }),
       });
-      if (!response.ok) throw new Error('Unable to start payment right now. Please try again.');
-      const order = await response.json();
-      if (order.error) throw new Error(order.error);
+      const order = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(
+          typeof order.error === 'string'
+            ? order.error
+            : 'Unable to start payment right now. Please try again.',
+        );
+      }
 
       const options = {
         key: process.env.NEXT_PUBLIC_RAZORPAY_KEY_ID,
@@ -478,7 +536,7 @@ export default function SubscriptionView({ user, role, onSuccess, onLogout }: Su
                       <button
                         key={opt.months}
                         type="button"
-                        onClick={() => setDuration(opt)}
+                        onClick={() => { setDuration(opt); setPromoApplied(null); setPromoError(null); }}
                         className={[
                           'relative flex flex-col items-start p-3 rounded-xl border text-left transition-all',
                           duration.months === opt.months
