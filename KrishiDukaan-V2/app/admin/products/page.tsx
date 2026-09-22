@@ -15,6 +15,8 @@ const ADMIN_SEAT_STATS = { totalPurchased: 99, activeUsed: 0, available: 99, exp
 export default function AdminProductsPage() {
   const [products, setProducts] = useState<MarketplaceProduct[]>([]);
   const [rawProducts, setRawProducts] = useState<any[]>([]);
+  // Raw docs preserved for promoted-copy detection (retailer-only listings with no canonical match).
+  const [allRawDocs, setAllRawDocs] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
   const [catFilter, setCatFilter] = useState("all");
@@ -99,6 +101,7 @@ export default function AdminProductsPage() {
     return Promise.all([getProducts({ force }), fetchAdminAssignedCopies().catch(() => [])])
       .then(([docs, raw]) => {
         setProducts(mapAdminProductDocs(docs));
+        setAllRawDocs(docs);
         setRawProducts(raw);
         const age = cacheAge(CACHE_KEYS.products);
         setDataAge(age === null ? Date.now() : Date.now() - age);
@@ -235,7 +238,11 @@ export default function AdminProductsPage() {
     }
 
     const result: MarketplaceProduct[] = [];
+    const canonicalNames = new Set<string>();
+
     for (const [key, list] of Array.from(groups.entries())) {
+      canonicalNames.add(key);
+
       // Find canonical one in group: prefer manufacturer_inventory, then admin, then retailer_inventory
       const canonical = list.find(p => p.source === 'manufacturer_inventory')
         || list.find(p => p.source === 'admin')
@@ -277,8 +284,27 @@ export default function AdminProductsPage() {
         allDocIds,
       } as any);
     }
+
+    // Promoted copies: retailer-only listings (a copy whose name has no canonical match)
+    // that the marketplace promotes to standalone cards. Include them here so the
+    // admin count matches the market and admins can see all buyable products.
+    const promotedByName = new Map<string, any>();
+    for (const raw of allRawDocs) {
+      if (!COPY_SOURCES.has(String(raw.source ?? ''))) continue;
+      if (raw.isActive === false) continue;
+      if (!raw.name || !raw.price) continue;
+      if (!(raw.ownerId || raw.retailerId || raw.retailerPhone)) continue;
+      const key = String(raw.name).toLowerCase().trim();
+      if (canonicalNames.has(key)) continue;
+      if (!promotedByName.has(key)) promotedByName.set(key, raw);
+    }
+    for (const raw of Array.from(promotedByName.values())) {
+      const mapped = mapAdminProductDocs([raw])[0];
+      if (mapped) result.push(mapped);
+    }
+
     return result;
-  }, [products]);
+  }, [products, allRawDocs]);
 
   const min = minPrice.trim() ? Number(minPrice) : null;
   const max = maxPrice.trim() ? Number(maxPrice) : null;

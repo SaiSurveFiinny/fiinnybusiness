@@ -435,7 +435,7 @@ service cloud.firestore {
       allow read: if true;
       allow write: if isAdmin();
     }
-
+ 
     // ─── adminLogs ───────────────────────────────────────────────────────────
     match /adminLogs/{docId} {
       allow read: if isAdmin();
@@ -830,6 +830,43 @@ service cloud.firestore {
     match /siteVisits/{date} {
       allow read: if isAdmin();
       allow create, update: if true;
+    }
+
+    // ─── activeUsers / mau / retention ───────────────────────────────────────
+    // Analytics aggregation written by the onActiveUserPresence Cloud Function
+    // (Admin SDK, bypasses rules). The client only writes presence subcollection
+    // docs (trackUserActivity). Summary docs are admin-read-only.
+
+    // Summary doc: pre-aggregated DAU count + role/device buckets.
+    match /activeUsers/{date} {
+      allow read: if isAdmin();
+      // CF writes via Admin SDK — no client write on the summary doc.
+    }
+    // Presence subcollection: authenticated users write their own daily signal.
+    // Doc ID is the caller's stable phone number or uid (see trackUserActivity).
+    match /activeUsers/{date}/presence/{userId} {
+      allow create, update: if isAuthed() && (
+        request.auth.uid == userId || myPhone() == userId
+      );
+      allow read: if isAdmin();
+    }
+
+    // Monthly unique-user summary written by the CF.
+    match /mau/{month} {
+      allow read: if isAdmin();
+    }
+    // MAU first-seen marker written by the CF — no client access needed.
+    match /mau/{month}/presence/{userId} {
+      allow read: if isAdmin();
+    }
+
+    // Retention cohort summaries written by the CF.
+    match /retention/{cohortDay} {
+      allow read: if isAdmin();
+    }
+    // Retention per-window markers written by the CF — no client access needed.
+    match /retention/{cohortDay}/{window}/{userId} {
+      allow read: if isAdmin();
     }
 
     match /appVersion/{vId} {

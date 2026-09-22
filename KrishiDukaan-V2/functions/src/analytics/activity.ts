@@ -25,6 +25,7 @@ const db = (): admin.firestore.Firestore => admin.firestore();
  */
 
 type RoleBucket = "retailer" | "manufacturer" | "customer";
+type DeviceBucket = "web" | "mobile" | "tablet";
 
 function roleBucket(role: unknown): RoleBucket {
   if (role === "retailer") return "retailer";
@@ -32,6 +33,13 @@ function roleBucket(role: unknown): RoleBucket {
   // consumer / customer / missing all fold into "customer", matching the
   // admin analytics role classification (ROLE_BUCKET in analytics-queries.ts).
   return "customer";
+}
+
+function deviceBucket(platform: unknown): DeviceBucket {
+  if (platform === "mobile") return "mobile";
+  if (platform === "tablet") return "tablet";
+  // 'web', missing, or any other value → desktop/web
+  return "web";
 }
 
 /** Whole-day difference between two YYYY-MM-DD keys (later - earlier). */
@@ -51,6 +59,7 @@ export const onActiveUserPresence = onDocumentCreated(
     const { date, userId } = event.params as { date: string; userId: string };
     const data = snap.data() as Record<string, unknown>;
     const bucket = roleBucket(data.role);
+    const device = deviceBucket(data.platform);
     const registeredDayKey = String(data.registeredDayKey ?? "");
 
     const inc = admin.firestore.FieldValue.increment(1);
@@ -70,6 +79,7 @@ export const onActiveUserPresence = onDocumentCreated(
             date,
             count: inc,
             [bucket]: inc,
+            [device]: inc,
             newActive: isNewActive ? inc : admin.firestore.FieldValue.increment(0),
             returning: !isNewActive ? inc : admin.firestore.FieldValue.increment(0),
             updatedAt: now,

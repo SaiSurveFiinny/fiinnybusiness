@@ -30,6 +30,7 @@ import {
 import { db } from "../../firebase";
 import { orderGrandTotal } from "../../../types/order";
 import { getProducts } from "./admin-data";
+import { countMarketplaceProducts } from "./marketplace-count";
 
 export type DateRange = { from: Date; to: Date };
 
@@ -159,41 +160,17 @@ export async function getNewUsersSeries(range: DateRange): Promise<NewUsersSerie
 // ─── Platform totals ───────────────────────────────────────────────────────────
 
 /**
- * Product docs that are per-seller COPIES of a catalogue product, not distinct
- * products. ~95% of the `products` collection is `manufacturer_assigned`
- * inventory copies (see app/admin/products/page.tsx). Same set the admin home
- * page uses to derive its unique-product count.
- */
-const PRODUCT_COPY_SOURCES = ["admin_assigned", "retailer_inventory_copy", "manufacturer_assigned"];
-
-/**
- * Unique catalogue product count.
+ * Unique product count matching what buyers see in the marketplace.
  *
- * This is a TOTAL (all-time) figure — the size of the catalogue does not depend
- * on the selected date range, so this takes no range argument and returns the
- * same number for every filter (fixing the earlier bug where the value drifted
- * per range).
- *
- * It reuses the admin home page's exact identity logic — drop the per-seller
- * copies, then de-dupe what remains by normalized product name — over the shared,
- * cached `products` snapshot (`getProducts()`), the same scan the admin dashboard
- * and Products tab already pay for. That is why it is not two aggregation
- * `count()`s: `total − copies` counts copy-free DOCUMENTS, not distinct products
- * (the same catalogue item is created as many separate originals), so it over- or
- * under-counts and, on this large collection, the count() aggregation itself was
- * returning unstable values between calls.
+ * Uses countMarketplaceProducts() — the single source of truth that mirrors
+ * fetchMarketplaceProducts exactly: canonical products (name + image + price,
+ * not a per-seller copy) deduplicated by name, plus retailer-only "promoted
+ * copies" whose name has no canonical match. This is why the number agrees
+ * with the market rather than being lower (canonical-only) or higher (raw docs).
  */
 export async function getUniqueProductCount(): Promise<number> {
   const products = await getProducts();
-  const copySources = new Set(PRODUCT_COPY_SOURCES);
-  const names = new Set<string>();
-  for (const p of products) {
-    const rec = p as Record<string, unknown>;
-    if (copySources.has(String(rec.source ?? ""))) continue;
-    const name = String(rec.name ?? "").toLowerCase().trim();
-    if (name) names.add(name);
-  }
-  return names.size;
+  return countMarketplaceProducts(products as Parameters<typeof countMarketplaceProducts>[0]).total;
 }
 
 export type PlatformCounts = {
@@ -219,24 +196,25 @@ export async function getPlatformCounts(): Promise<PlatformCounts> {
 /**
  * GMV (total monetary value of orders placed) for a window.
  *
- * A `sum()` aggregation *with a `createdAt` range filter* would require a
- * composite index (createdAt + grandTotal). To avoid that we split by shape,
- * using only the automatic single-field indexes:
+ * Both paths use orderGrandTotal() (grandTotal ?? total ?? subtotal+delivery+gst)
+ * so All Time and the bounded ranges use the same field-fallback logic and agree.
+ * The earlier All Time path used sum("grandTotal") aggregation, which silently
+ * dropped pre-canonical-fix orders that only carry "total" — those orders were
+ * included in bounded windows (which read docs) but excluded from All Time,
+ * making All Time lower than the sum of all bounded periods.
  *
- *  - All Time (from ≤ epoch): one unfiltered `sum('grandTotal')` aggregation —
- *    cheap, no range filter, no composite index. Pre-canonical-fix orders that
- *    lack `grandTotal` are the only omission (the Orders tab reconciles those
- *    within a bounded window).
- *  - Bounded range: a bounded `createdAt` doc read summed with the canonical
- *    `orderGrandTotal` fallback — accurate and still only the window's docs.
+ *  - All Time (from ≤ epoch): full orders collection scan, no range filter.
+ *  - Bounded range: bounded createdAt doc read, only docs in the window.
+ *
+ * A sum() aggregation with a createdAt range filter requires a composite index
+ * (createdAt + grandTotal) which we don't have; that is why we read docs rather
+ * than aggregate for bounded ranges, and why All Time does the same.
  */
 export async function getGmvSum(range: DateRange): Promise<number> {
-  if (range.from.getTime() <= 0) {
-    const snap = await getAggregateFromServer(collection(db, "orders"), { gmv: sum("grandTotal") });
-    return Number(snap.data().gmv ?? 0);
-  }
   const snap = await getDocs(
-    query(collection(db, "orders"), ...createdAtRange("createdAt", range), orderBy("createdAt", "asc")),
+    range.from.getTime() <= 0
+      ? collection(db, "orders")
+      : query(collection(db, "orders"), ...createdAtRange("createdAt", range), orderBy("createdAt", "asc")),
   );
   let gmv = 0;
   for (const d of snap.docs) {
@@ -936,4 +914,152 @@ export async function getRetentionCohorts(): Promise<RetentionData> {
     overall7: { registered: sum7Reg, returned: sum7Ret, rate: sum7Reg > 0 ? sum7Ret / sum7Reg : null },
     overall30: { registered: sum30Reg, returned: sum30Ret, rate: sum30Reg > 0 ? sum30Ret / sum30Reg : null },
   };
+}
+
+// ─── Traffic ─────────────────────────────────────────────────────────────────
+//
+// Two distinct signals are shown side-by-side on the Traffic tab:
+//
+//  1. Anonymous page visits (`siteVisits/{date}`) — a simple daily increment
+//     that counts every page load, regardless of login status. These are NOT
+//     unique users and are clearly labelled as such.
+//
+//  2. Unique logged-in user sessions (`activeUsers/{date}` summaries written by
+//     the `onActiveUserPresence` Cloud Function). Each user is counted at most
+//     once per calendar day. Device breakdown (web / mobile / tablet) is
+//     available from the date the CF was updated to read the `platform` field;
+//     earlier days show everything under `web` because the client hardcoded
+//     `platform: 'web'`. Do NOT present these as anonymous visitor counts.
+
+export type TrafficDayPoint = {
+  date: string;
+  visits: number;
+  uniqueUsers: number;
+  web: number;
+  mobile: number;
+  tablet: number;
+};
+
+export type TrafficMetrics = {
+  /** Earliest day siteVisits data exists (null = never written). */
+  visitsFrom: string | null;
+  /** Earliest day activeUsers data exists — also the floor for device data. */
+  usersFrom: string | null;
+  /** Earliest day device breakdown is meaningful (platform field added to presence docs). */
+  deviceFrom: string | null;
+  totalVisits: number;
+  totalUniqueUsers: number;
+  web: number;
+  mobile: number;
+  tablet: number;
+  perDay: TrafficDayPoint[];
+};
+
+/**
+ * Site traffic + unique logged-in user activity for a date range.
+ *
+ * Reads two collections in parallel:
+ *  - `siteVisits/{YYYY-MM-DD}`: anonymous page visit counters (one read/day in range).
+ *  - `activeUsers/{YYYY-MM-DD}`: pre-aggregated DAU summaries written by the CF
+ *    (also one read/day). Device fields (web/mobile/tablet) are present only
+ *    from the date the CF started reading the `platform` field from presence docs.
+ *
+ * For "All Time" (range.from ≤ epoch) the siteVisits scan is unconstrained but
+ * bounded by the number of calendar days with data, which is small.
+ */
+export async function getTrafficMetrics(range: DateRange): Promise<TrafficMetrics> {
+  const isAllTime = range.from.getTime() <= 0;
+  const fromKey = isAllTime ? "2000-01-01" : dayKey(range.from);
+  const toKey = dayKey(range.to);
+
+  const [visitsSnap, dauSnap, firstVisit, firstDau] = await Promise.all([
+    getDocs(
+      query(
+        collection(db, "siteVisits"),
+        where("date", ">=", fromKey),
+        where("date", "<=", toKey),
+        orderBy("date", "asc"),
+      ),
+    ),
+    getDocs(
+      query(
+        collection(db, "activeUsers"),
+        where("date", ">=", fromKey),
+        where("date", "<=", toKey),
+        orderBy("date", "asc"),
+      ),
+    ),
+    // Earliest siteVisits doc
+    getDocs(query(collection(db, "siteVisits"), orderBy("date", "asc"), limit(1))),
+    // Earliest activeUsers summary doc
+    getDocs(query(collection(db, "activeUsers"), orderBy("date", "asc"), limit(1))),
+  ]);
+
+  const visitsFrom = firstVisit.empty ? null : String(firstVisit.docs[0].data().date ?? firstVisit.docs[0].id);
+  const usersFrom = firstDau.empty ? null : String(firstDau.docs[0].data().date ?? firstDau.docs[0].id);
+
+  // Device data is only reliable from when the CF started writing device buckets.
+  // We surface this so the UI can display an honest "since <date>" note.
+  // Store the CF deploy date here; until then all presence docs wrote platform:'web'
+  // which means historical web counts are inflated and mobile/tablet are zero.
+  // We derive this as the first activeUsers day that has a non-zero mobile or tablet
+  // count — if none exists, device data has not started accumulating yet.
+  let deviceFrom: string | null = null;
+  for (const d of dauSnap.docs) {
+    const data = d.data() as Record<string, unknown>;
+    if (Number(data.mobile ?? 0) > 0 || Number(data.tablet ?? 0) > 0) {
+      deviceFrom = String(data.date ?? d.id);
+      break;
+    }
+  }
+
+  // Build per-day map from visits
+  const visitMap = new Map<string, number>();
+  for (const d of visitsSnap.docs) {
+    const data = d.data() as Record<string, unknown>;
+    visitMap.set(String(data.date ?? d.id), Number(data.total ?? 0) || 0);
+  }
+
+  // Build per-day map from DAU summaries
+  type DauEntry = { uniqueUsers: number; web: number; mobile: number; tablet: number };
+  const dauMap = new Map<string, DauEntry>();
+  for (const d of dauSnap.docs) {
+    const data = d.data() as Record<string, unknown>;
+    dauMap.set(String(data.date ?? d.id), {
+      uniqueUsers: Number(data.count ?? 0) || 0,
+      web: Number(data.web ?? 0) || 0,
+      mobile: Number(data.mobile ?? 0) || 0,
+      tablet: Number(data.tablet ?? 0) || 0,
+    });
+  }
+
+  // Union of all days that appear in either collection within the range
+  const allDays = new Set<string>([...Array.from(visitMap.keys()), ...Array.from(dauMap.keys())]);
+  const sortedDays = Array.from(allDays).sort();
+
+  let totalVisits = 0;
+  let totalUniqueUsers = 0;
+  let web = 0;
+  let mobile = 0;
+  let tablet = 0;
+
+  const perDay: TrafficDayPoint[] = sortedDays.map((date) => {
+    const v = visitMap.get(date) ?? 0;
+    const u = dauMap.get(date);
+    totalVisits += v;
+    totalUniqueUsers += u?.uniqueUsers ?? 0;
+    web += u?.web ?? 0;
+    mobile += u?.mobile ?? 0;
+    tablet += u?.tablet ?? 0;
+    return {
+      date,
+      visits: v,
+      uniqueUsers: u?.uniqueUsers ?? 0,
+      web: u?.web ?? 0,
+      mobile: u?.mobile ?? 0,
+      tablet: u?.tablet ?? 0,
+    };
+  });
+
+  return { visitsFrom, usersFrom, deviceFrom, totalVisits, totalUniqueUsers, web, mobile, tablet, perDay };
 }

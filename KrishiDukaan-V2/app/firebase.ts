@@ -2043,6 +2043,18 @@ export type { Hub };
 // admin credentials, never something a visitor's session should be able to do.
 
 
+/** Detects the device category from the browser UA string. Returns 'web' (desktop),
+ *  'mobile' (phone), or 'tablet'. Used to bucket DAU by platform. */
+function detectPlatform(): 'web' | 'mobile' | 'tablet' {
+  if (typeof navigator === 'undefined') return 'web';
+  const ua = navigator.userAgent;
+  if (/iPad/i.test(ua)) return 'tablet';
+  // Android tablets omit the "Mobile" token; Android phones include it.
+  if (/Android/i.test(ua) && !/Mobile/i.test(ua)) return 'tablet';
+  if (/Mobi|Android|iPhone|iPod|BlackBerry|IEMobile|Opera Mini/i.test(ua)) return 'mobile';
+  return 'web';
+}
+
 function getLocalDayKey(date: Date = new Date()): string {
   const year = date.getFullYear();
   const month = String(date.getMonth() + 1).padStart(2, '0');
@@ -2111,7 +2123,7 @@ export async function trackUserActivity(opts: {
       {
         role: opts.role ?? null,
         registeredDayKey,
-        platform: 'web',
+        platform: detectPlatform(),
         at: serverTimestamp(),
       },
       { merge: true },
