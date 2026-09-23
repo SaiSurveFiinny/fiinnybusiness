@@ -76,11 +76,21 @@ export function BannerSlideVisual({
 
   return (
     <>
+      {/*
+        The hero banner is above the fold, so its background is fetched eagerly
+        and at high priority — this is what stops the "text renders, then the
+        image pops in a beat later" flash. `decoding="async"` keeps the decode
+        off the main thread. Only the active slide is mounted (see HomeView's
+        AnimatePresence), so this never over-fetches the other banners.
+      */}
       {slide.bgImg && (
         <img
           src={slide.bgImg}
           alt=""
           referrerPolicy="no-referrer"
+          loading="eager"
+          fetchPriority="high"
+          decoding="async"
           className={`absolute inset-0 w-full h-full object-cover ${bgImgClass}`}
         />
       )}
@@ -89,6 +99,9 @@ export function BannerSlideVisual({
           src={slide.bgImgMobile}
           alt=""
           referrerPolicy="no-referrer"
+          loading="eager"
+          fetchPriority="high"
+          decoding="async"
           className={`absolute inset-0 w-full h-full object-cover ${bgImgMobileClass}`}
         />
       )}

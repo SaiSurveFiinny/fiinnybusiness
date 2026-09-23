@@ -96,7 +96,16 @@ function bannerToForm(b: Banner): BannerForm {
 function uploadToStorage(file: File, path: string, onProgress: (p: number) => void): Promise<string> {
   return new Promise((resolve, reject) => {
     const storageRef = ref(storage, path);
-    const task = uploadBytesResumable(storageRef, file);
+    // Each upload lands at a unique path (`banner-images/${Date.now()}-...`) and
+    // gets a fresh download token, so an image's URL only ever changes when an
+    // admin actually replaces it. That makes the bytes at any given URL truly
+    // immutable, so we let the browser cache them for a year without
+    // revalidating. Result: repeat homepage visits reuse the cached banner
+    // instantly (no per-load 304 round-trip), while replacing a banner in Admin
+    // produces a new URL that browsers fetch automatically — no stale images.
+    const task = uploadBytesResumable(storageRef, file, {
+      cacheControl: "public, max-age=31536000, immutable",
+    });
     task.on("state_changed",
       snap => onProgress(Math.round((snap.bytesTransferred / snap.totalBytes) * 100)),
       reject,
