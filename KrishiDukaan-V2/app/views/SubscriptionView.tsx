@@ -14,6 +14,7 @@ import {
   SEAT_STEP,
   billableSeats,
   computeAmount,
+  evaluatePromo,
   isPlanAllowed,
   normalizeSeatCount,
   planKey,
@@ -22,6 +23,7 @@ import {
 } from '../lib/pricing';
 import { LEGAL_ROUTES, TERMS_VERSION } from '../lib/legal-constants';
 import { authedJsonHeaders } from "../lib/authed-fetch";
+import { ProductListingCard } from "../../components/shared/ProductListingCard";
 
 interface SubscriptionViewProps {
   user: any;
@@ -83,9 +85,14 @@ export default function SubscriptionView({ user, role, onSuccess, onLogout }: Su
   const [options,      setOptions]      = useState<DurationOption[]>(DURATION_OPTIONS);
   const [duration,     setDuration]     = useState<DurationOption>(DURATION_OPTIONS[0]!);
   const [promoCode,    setPromoCode]    = useState('');
-  const [promoApplied, setPromoApplied] = useState<{ code: string; discountPct: number } | null>(null);
+  // The raw promoCodes/ document once a code has been looked up. Eligibility and
+  // the discount are NOT stored — they are derived from this doc against the
+  // current plan/seat selection below, so changing the plan, billing cycle or
+  // seat count re-evaluates the same code without another lookup.
+  const [promoDoc,     setPromoDoc]     = useState<Record<string, unknown> | null>(null);
   const [promoLoading, setPromoLoading] = useState(false);
-  const [promoError,   setPromoError]   = useState<string | null>(null);
+  // Set only for problems that aren't about eligibility (code not found, network).
+  const [promoLookupError, setPromoLookupError] = useState<string | null>(null);
   const [error,        setError]        = useState<string | null>(null);
 
   const premiumRole: PremiumRole = role === 'manufacturer' ? 'manufacturer' : 'retailer';
@@ -134,7 +141,20 @@ export default function SubscriptionView({ user, role, onSuccess, onLogout }: Su
   // shown and what Razorpay bills cannot drift.
   const grantedSeats = billableSeats(duration, seatCount);
   const baseTotal   = computeAmount(duration, seatCount);
-  const discountAmt = promoApplied ? Math.floor(baseTotal * promoApplied.discountPct / 100) : 0;
+
+  // Re-evaluate the entered code against the CURRENT selection every render —
+  // the same shared rule set the server enforces in create-order — so switching
+  // plan/cycle or changing seats instantly updates the discount and the reason.
+  const promoEval = promoDoc
+    ? evaluatePromo(promoDoc, { months: duration.months, seatCount })
+    : null;
+  const promoOk = !!promoEval && !promoEval.error;
+  const appliedDiscountPct = promoOk ? promoEval!.discountPercent : 0;
+  // A lookup failure (not found / network) wins; otherwise show why the found
+  // code doesn't apply to this selection.
+  const promoError = promoLookupError ?? (promoEval?.error ?? null);
+
+  const discountAmt = Math.floor(baseTotal * appliedDiscountPct / 100);
   const finalTotal  = baseTotal - discountAmt;
 
   // Seats sell in blocks of SEAT_STEP with a SEAT_STEP minimum. While typing,
@@ -146,9 +166,8 @@ export default function SubscriptionView({ user, role, onSuccess, onLogout }: Su
     setSeatInput(val);
     const n = parseInt(val, 10);
     if (!isNaN(n) && n <= 10000) setSeatCount(normalizeSeatCount(n));
-    // Clear any applied promo — seat conditions may no longer hold.
-    setPromoApplied(null);
-    setPromoError(null);
+    // Any applied code is re-evaluated against the new seat count on render — no
+    // need to clear it; its eligibility/discount updates automatically.
   };
 
   // Snap the visible text to the real seat count once the seller leaves the
@@ -159,90 +178,43 @@ export default function SubscriptionView({ user, role, onSuccess, onLogout }: Su
     const next = normalizeSeatCount(seatCount + delta * SEAT_STEP);
     setSeatCount(next);
     setSeatInput(String(next));
-    setPromoApplied(null);
-    setPromoError(null);
   };
 
   const selectSeatPreset = (n: number) => {
     setSeatCount(n);
     setSeatInput(String(n));
-    setPromoApplied(null);
-    setPromoError(null);
   };
 
+  // Look the code up once and stash the document. Whether it applies (and the
+  // resulting discount) is decided by evaluatePromo on every render — the same
+  // rules the server re-checks in create-order — so this only has to fetch, not
+  // re-implement the conditions. A read failure lets checkout proceed at full
+  // price rather than blocking it; the server is still the final authority.
   const applyPromo = async () => {
     const code = promoCode.trim().toUpperCase();
     if (!code) return;
     setPromoLoading(true);
-    setPromoError(null);
+    setPromoLookupError(null);
+    setPromoDoc(null);
     try {
       const q = query(collection(db, 'promoCodes'), where('code', '==', code));
       const snap = await getDocs(q);
       if (snap.empty) {
-        setPromoError('Invalid or expired promo code.');
-        setPromoApplied(null);
+        setPromoLookupError('Invalid or expired promo code.');
         return;
       }
-
-      const data = snap.docs[0]!.data() as Record<string, unknown>;
-
-      if (!data.active) {
-        setPromoError('This promo code has been deactivated.');
-        setPromoApplied(null);
-        return;
-      }
-
-      const discountPct: number = typeof data.discountPercent === 'number' ? data.discountPercent : 0;
-      if (!discountPct) {
-        setPromoError('This promo code has no active discount.');
-        setPromoApplied(null);
-        return;
-      }
-
-      // Date range check
-      const today = new Date().toISOString().slice(0, 10);
-      if (typeof data.startDate === 'string' && today < data.startDate) {
-        setPromoError('This promo code is not yet active.');
-        setPromoApplied(null);
-        return;
-      }
-      if (typeof data.endDate === 'string' && today > data.endDate) {
-        setPromoError('This promo code has expired.');
-        setPromoApplied(null);
-        return;
-      }
-
-      // Plan restriction check
-      if (Array.isArray(data.applicablePlans) && data.applicablePlans.length > 0) {
-        if (!data.applicablePlans.includes(duration.months)) {
-          const names = (data.applicablePlans as number[])
-            .map((m) => (m === 12 ? 'Yearly' : m === 1 ? 'Monthly' : `${m} Month`))
-            .join(', ');
-          setPromoError(`This promo code is only valid for: ${names}.`);
-          setPromoApplied(null);
-          return;
-        }
-      }
-
-      // Seat condition check
-      if (typeof data.minSeats === 'number' && seatCount < data.minSeats) {
-        setPromoError(`This promo code requires a minimum of ${data.minSeats} seats.`);
-        setPromoApplied(null);
-        return;
-      }
-      if (typeof data.maxSeats === 'number' && seatCount > data.maxSeats) {
-        setPromoError(`This promo code is only valid for up to ${data.maxSeats} seats.`);
-        setPromoApplied(null);
-        return;
-      }
-
-      setPromoApplied({ code, discountPct });
-      setPromoError(null);
+      setPromoDoc(snap.docs[0]!.data() as Record<string, unknown>);
     } catch {
-      setPromoError('Could not validate promo code. Try again.');
+      setPromoLookupError('Could not validate promo code. Try again.');
     } finally {
       setPromoLoading(false);
     }
+  };
+
+  const removePromo = () => {
+    setPromoCode('');
+    setPromoDoc(null);
+    setPromoLookupError(null);
   };
 
   const handlePayment = async () => {
@@ -265,7 +237,10 @@ export default function SubscriptionView({ user, role, onSuccess, onLogout }: Su
           seatCount,
           durationMonths: duration.months,
           planId: duration.id,
-          promoCode: promoApplied?.code ?? null,
+          // Only send a code that currently qualifies for this exact selection;
+          // create-order re-validates it and would 422 an ineligible one,
+          // needlessly blocking a seller who left a stale code in the box.
+          promoCode: promoOk ? promoEval!.code : null,
           userId: user.uid,
         }),
       });
@@ -406,42 +381,53 @@ export default function SubscriptionView({ user, role, onSuccess, onLogout }: Su
         >
           {/* ── Hero headline ─────────────────────────────────────────────── */}
           <div className="text-center mb-6 md:mb-8 px-2">
-            <div className="inline-flex items-center gap-2 bg-primary/10 border border-primary/20 px-3 py-1 rounded-full mb-3">
-              <ICONS.Trust className="w-3.5 h-3.5 text-primary" />
-              <span className="text-[10px] font-black uppercase tracking-widest text-primary">{content.badge}</span>
-            </div>
+            {/* Badge is retailer-only — the manufacturer hero is kept clean with
+                just the headline and subtitle. */}
+            {isRetailer && (
+              <div className="inline-flex items-center gap-2 bg-primary/10 border border-primary/20 px-3 py-1 rounded-full mb-3">
+                <ICONS.Trust className="w-3.5 h-3.5 text-primary" />
+                <span className="text-[10px] font-black uppercase tracking-widest text-primary">{content.badge}</span>
+              </div>
+            )}
             <h1 className="text-2xl md:text-3xl lg:text-4xl font-black text-on-surface leading-tight mb-2">
               {isRetailer ? (
                 <>आपले कृषी दुकान<br className="md:hidden" /> <span className="text-primary">आता ऑनलाइन</span> 🌾</>
               ) : (
-                <>आपले उत्पादने थेट<br className="md:hidden" /> <span className="text-primary">विक्रेत्यांपर्यंत</span> 🏭</>
+                <>आपले प्रॉडक्ट्स थेट<br className="md:hidden" /> <span className="text-primary">विक्रेत्यांपर्यंत</span></>
               )}
             </h1>
             <p className="text-sm md:text-base text-on-surface-variant font-medium max-w-md mx-auto">
               {content.subtitle}
             </p>
-            {/* Trust bar */}
-            <div className="flex flex-wrap items-center justify-center gap-3 md:gap-5 mt-4">
-              {[
-                { icon: '✅', text: '20+ retailers joined' },
-                { icon: '🧑‍🌾', text: 'Farmers searching daily' },
-                { icon: '🔒', text: 'Secure · Razorpay' },
-              ].map(({ icon, text }) => (
-                <span key={text} className="flex items-center gap-1.5 text-xs font-semibold text-on-surface-variant bg-white border border-outline-variant/30 px-3 py-1.5 rounded-full shadow-sm">
-                  <span>{icon}</span>{text}
-                </span>
-              ))}
-            </div>
+            {/* Trust bar — retailer-only; the manufacturer hero stays minimal. */}
+            {isRetailer && (
+              <div className="flex flex-wrap items-center justify-center gap-3 md:gap-5 mt-4">
+                {[
+                  { icon: '✅', text: '20+ retailers joined' },
+                  { icon: '🧑‍🌾', text: 'Farmers searching daily' },
+                  { icon: '🔒', text: 'Secure · Razorpay' },
+                ].map(({ icon, text }) => (
+                  <span key={text} className="flex items-center gap-1.5 text-xs font-semibold text-on-surface-variant bg-white border border-outline-variant/30 px-3 py-1.5 rounded-full shadow-sm">
+                    <span>{icon}</span>{text}
+                  </span>
+                ))}
+              </div>
+            )}
           </div>
 
           {/* ── Main card ─────────────────────────────────────────────────── */}
-          <div className="bg-white rounded-[1.5rem] shadow-ambient border border-surface-container overflow-hidden">
+          {/* `relative` scopes the accent bar below to this card. Without it the
+              absolute bar escaped to the dashboard scroll container and, sitting
+              in the vertical-scrollbar gutter, forced a horizontal scrollbar. */}
+          <div className="relative bg-white rounded-[1.5rem] shadow-ambient border border-surface-container overflow-hidden">
             <div className="absolute inset-x-0 top-0 h-1 bg-gradient-to-r from-primary via-green-400 to-primary opacity-60 pointer-events-none" />
 
             <div className="grid grid-cols-1 lg:grid-cols-2">
 
               {/* ── Left: Benefits + previews ───────────────────────────── */}
-              <div className="p-6 md:p-8 border-b lg:border-b-0 lg:border-r border-outline-variant/20 flex flex-col gap-6">
+              {/* min-w-0 lets the column shrink inside the grid track so long
+                  content truncates instead of widening the page. */}
+              <div className="min-w-0 p-6 md:p-8 border-b lg:border-b-0 lg:border-r border-outline-variant/20 flex flex-col gap-6">
 
                 {/* Benefits */}
                 <div>
@@ -449,7 +435,13 @@ export default function SubscriptionView({ user, role, onSuccess, onLogout }: Su
                   <ul className="space-y-3">
                     {content.benefits.map((benefit, i) => (
                       <li key={i} className="flex items-start gap-3">
-                        <span className="text-lg leading-none mt-0.5 shrink-0">{benefitIcons[i]}</span>
+                        {/* Retailer keeps its emoji icons; the manufacturer list
+                            uses a simple bullet dot instead. */}
+                        {isRetailer ? (
+                          <span className="text-lg leading-none mt-0.5 shrink-0">{benefitIcons[i]}</span>
+                        ) : (
+                          <span className="mt-[7px] h-1.5 w-1.5 shrink-0 rounded-full bg-primary" />
+                        )}
                         <span className="text-sm font-medium text-on-surface leading-snug">{benefit}</span>
                       </li>
                     ))}
@@ -489,44 +481,27 @@ export default function SubscriptionView({ user, role, onSuccess, onLogout }: Su
                   </div>
                 )}
 
-                {/* Product listing preview */}
+                {/* Product listing preview — reuses the same ProductListingCard
+                    shown in the marketplace / Product Detail page, so sellers see
+                    exactly how their listing will appear. Sample data only. */}
                 <div>
                   <p className="text-[10px] font-black uppercase tracking-widest text-on-surface-variant mb-2">
                     Your listing will look like this
                   </p>
-                  <div className="border border-outline-variant/40 rounded-2xl p-4 bg-surface-container-lowest shadow-sm">
-                    <div className="flex gap-3 items-center">
-                      <div className="w-16 h-16 rounded-xl bg-green-50 border border-green-100 flex items-center justify-center shrink-0 text-3xl">
-                        🌱
-                      </div>
-                      <div className="flex-1 min-w-0">
-                        <div className="flex items-start justify-between gap-2">
-                          <div>
-                            <p className="text-sm font-bold text-on-surface truncate">
-                              {isRetailer ? 'NPK Fertilizer 50kg' : 'Krishi Plus NPK 50kg'}
-                            </p>
-                            <p className="text-[11px] text-on-surface-variant mt-0.5">
-                              {isRetailer ? 'Available at your store' : 'Distributed to 20+ retailers'}
-                            </p>
-                            <p className="text-base font-black text-primary mt-1">₹850</p>
-                          </div>
-                        </div>
-                      </div>
-                      <button className="shrink-0 bg-green-600 hover:bg-green-700 text-white text-[10px] font-bold px-3 py-2 rounded-xl flex flex-col items-center gap-0.5 shadow-sm transition-colors">
-                        <span className="text-base leading-none">💬</span>
-                        <span>Inquiry</span>
-                      </button>
-                    </div>
-                    <div className="flex items-center gap-1.5 mt-3 pt-3 border-t border-outline-variant/20">
-                      <span className="text-[10px] bg-green-100 text-green-700 font-bold px-2 py-0.5 rounded-full">✓ Verified Retailer</span>
-                      <span className="text-[10px] text-on-surface-variant">Karjat, Maharashtra</span>
-                    </div>
-                  </div>
+                  <ProductListingCard
+                    className="w-44"
+                    image="/product-images/Product_Images/NPK.jpeg"
+                    name={isRetailer ? 'NPK Fertilizer 50kg' : 'Krishi Plus NPK 50kg'}
+                    category="Fertilizer"
+                    price={850}
+                    averageRating={4.6}
+                    totalReviews={128}
+                  />
                 </div>
               </div>
 
               {/* ── Right: Payment config ────────────────────────────────── */}
-              <div className="p-6 md:p-8 flex flex-col gap-5">
+              <div className="min-w-0 p-6 md:p-8 flex flex-col gap-5">
 
                 {/* Duration selector */}
                 <div>
@@ -536,7 +511,7 @@ export default function SubscriptionView({ user, role, onSuccess, onLogout }: Su
                       <button
                         key={opt.months}
                         type="button"
-                        onClick={() => { setDuration(opt); setPromoApplied(null); setPromoError(null); }}
+                        onClick={() => setDuration(opt)}
                         className={[
                           'relative flex flex-col items-start p-3 rounded-xl border text-left transition-all',
                           duration.months === opt.months
@@ -616,20 +591,32 @@ export default function SubscriptionView({ user, role, onSuccess, onLogout }: Su
                       type="text"
                       placeholder="Enter promo code"
                       value={promoCode}
-                      onChange={(e) => { setPromoCode(e.target.value.toUpperCase()); setPromoApplied(null); setPromoError(null); }}
-                      className="flex-1 rounded-xl border border-outline-variant/40 bg-surface-container-lowest px-3 py-2.5 text-xs font-medium text-on-surface outline-none focus:border-primary focus:ring-2 focus:ring-primary/20 uppercase placeholder:normal-case"
+                      onChange={(e) => { setPromoCode(e.target.value.toUpperCase()); setPromoDoc(null); setPromoLookupError(null); }}
+                      onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); applyPromo(); } }}
+                      disabled={promoDoc !== null}
+                      className="flex-1 rounded-xl border border-outline-variant/40 bg-surface-container-lowest px-3 py-2.5 text-xs font-medium text-on-surface outline-none focus:border-primary focus:ring-2 focus:ring-primary/20 uppercase placeholder:normal-case disabled:opacity-60"
                     />
-                    <button
-                      type="button"
-                      onClick={applyPromo}
-                      disabled={promoLoading || !promoCode.trim()}
-                      className="rounded-xl bg-primary/10 px-4 py-2.5 text-xs font-bold text-primary hover:bg-primary/20 disabled:opacity-50 transition-colors"
-                    >
-                      {promoLoading ? '…' : 'Apply'}
-                    </button>
+                    {promoDoc !== null ? (
+                      <button
+                        type="button"
+                        onClick={removePromo}
+                        className="rounded-xl bg-red-50 px-4 py-2.5 text-xs font-bold text-red-600 hover:bg-red-100 transition-colors"
+                      >
+                        Remove
+                      </button>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={applyPromo}
+                        disabled={promoLoading || !promoCode.trim()}
+                        className="rounded-xl bg-primary/10 px-4 py-2.5 text-xs font-bold text-primary hover:bg-primary/20 disabled:opacity-50 transition-colors"
+                      >
+                        {promoLoading ? '…' : 'Apply'}
+                      </button>
+                    )}
                   </div>
-                  {promoApplied && (
-                    <p className="mt-1.5 text-xs font-semibold text-primary">✓ {promoApplied.discountPct}% discount applied</p>
+                  {promoOk && (
+                    <p className="mt-1.5 text-xs font-semibold text-primary">✓ {appliedDiscountPct}% discount applied</p>
                   )}
                   {promoError && <p className="mt-1.5 text-xs text-red-600">{promoError}</p>}
                 </div>
@@ -638,7 +625,7 @@ export default function SubscriptionView({ user, role, onSuccess, onLogout }: Su
                 <div className="bg-gradient-to-br from-primary/5 to-green-50 rounded-xl border border-primary/10 p-4">
                   <div className="flex justify-between items-center mb-1">
                     <span className="text-xs font-bold text-on-surface-variant uppercase tracking-widest">{t('totalPrice')}</span>
-                    {promoApplied && (
+                    {promoOk && (
                       <span className="text-xs text-on-surface-variant line-through">₹{baseTotal}.00</span>
                     )}
                   </div>

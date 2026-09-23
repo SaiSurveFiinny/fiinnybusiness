@@ -21,6 +21,7 @@ import {
   type RetailerProductSummary,
 } from '../dashboard/_lib/retailer-profile-firestore';
 import { ReviewSection } from '../../components/shared/ReviewSection';
+import { ProductListingCard } from '../../components/shared/ProductListingCard';
 
 type StoreListItem = {
   id: string;
@@ -618,27 +619,17 @@ function SimilarProductsSection({
       {similar.length > 0 ? (
         <div className="flex gap-4 overflow-x-auto pb-2 hide-scrollbar">
           {similar.map((p) => (
-            <button
+            <ProductListingCard
               key={p.id}
+              className="shrink-0 w-44"
+              image={p.image}
+              name={p.name}
+              category={p.category}
+              price={p.price}
+              averageRating={p.averageRating}
+              totalReviews={p.totalReviews}
               onClick={() => onProductClick?.(p.id)}
-              className="shrink-0 w-44 text-left cursor-pointer rounded-2xl border border-surface-container bg-white shadow-sm hover:shadow-md hover:border-primary/30 transition-all hover:scale-[1.02] overflow-hidden"
-            >
-              <div className="aspect-square overflow-hidden bg-surface-container-low">
-                <img src={p.image} alt={p.name} className="w-full h-full object-cover" />
-              </div>
-              <div className="p-3 flex flex-col gap-0.5">
-                <span className="text-[10px] font-black uppercase tracking-widest text-primary">{p.category}</span>
-                <p className="font-bold text-on-surface text-sm truncate leading-tight">{p.name}</p>
-                {(p.averageRating ?? 0) > 0 && (
-                  <span className="inline-flex items-center gap-1 text-[10px] font-bold text-on-surface-variant">
-                    <span className="text-amber-500">★</span>
-                    {p.averageRating!.toFixed(1)}
-                    {p.totalReviews ? <span className="text-outline">({p.totalReviews})</span> : null}
-                  </span>
-                )}
-                <span className="text-secondary font-extrabold text-sm">₹{p.price.toLocaleString('en-IN')}</span>
-              </div>
-            </button>
+            />
           ))}
         </div>
       ) : (

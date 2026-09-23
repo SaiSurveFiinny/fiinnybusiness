@@ -55,18 +55,37 @@ export async function requireAdmin(request: Request): Promise<AdminCaller | Next
     return NextResponse.json({ error: "Invalid or expired authorization token." }, { status: 401 });
   }
 
-  const adminDb = getAdminDb();
-  const [callerDoc, idxDoc] = await Promise.all([
-    adminDb.collection("users").doc(uid).get(),
-    adminDb.collection("uidIndex").doc(uid).get(),
-  ]);
+  // Firestore reads are wrapped so an infrastructure failure (e.g. the local
+  // Firebase Admin credentials can't reach the configured project) surfaces as a
+  // clear 500 JSON instead of an unhandled throw. Without this, callers that
+  // await requireAdmin outside their own try/catch return a bodyless 500, which
+  // is indistinguishable from a real "not admin" and impossible to diagnose.
+  let isAdmin: boolean;
+  let phone: string | null;
+  try {
+    const adminDb = getAdminDb();
+    const [callerDoc, idxDoc] = await Promise.all([
+      adminDb.collection("users").doc(uid).get(),
+      adminDb.collection("uidIndex").doc(uid).get(),
+    ]);
 
-  let isAdmin = callerDoc.exists && callerDoc.data()?.role === "admin";
-  let phone: string | null = idxDoc.exists ? String(idxDoc.data()?.phone ?? "") || null : null;
+    isAdmin = callerDoc.exists && callerDoc.data()?.role === "admin";
+    phone = idxDoc.exists ? String(idxDoc.data()?.phone ?? "") || null : null;
 
-  if (!isAdmin && phone) {
-    const phoneDoc = await adminDb.collection("users").doc(phone).get();
-    isAdmin = phoneDoc.exists && phoneDoc.data()?.role === "admin";
+    if (!isAdmin && phone) {
+      const phoneDoc = await adminDb.collection("users").doc(phone).get();
+      isAdmin = phoneDoc.exists && phoneDoc.data()?.role === "admin";
+    }
+  } catch (e) {
+    console.error("[requireAdmin] admin-role lookup failed:", e);
+    return NextResponse.json(
+      {
+        error:
+          "Server could not verify admin access (backend datastore unreachable). " +
+          "Check Firebase Admin credentials / project configuration.",
+      },
+      { status: 500 },
+    );
   }
 
   if (!isAdmin) {

@@ -8,10 +8,10 @@ import {
   applyDiscount,
   billableSeats,
   computeAmount,
+  evaluatePromo,
   isPlanAllowed,
   normalizeSeatCount,
   parseDurations,
-  parsePromo,
   planFor,
   planKey,
   type DurationPrice,
@@ -115,51 +115,15 @@ async function resolveDiscount(
       .get();
 
     if (!snap.empty) {
-      const data = snap.docs[0]!.data();
-
-      if (!data.active) {
-        return { discountPercent: 0, error: 'This promo code has been deactivated.' };
-      }
-
-      const promo = parsePromo(data);
-      if (!promo) {
-        return { discountPercent: 0, error: 'Invalid promo code.' };
-      }
-
-      const today = new Date().toISOString().slice(0, 10);
-      if (promo.startDate && today < promo.startDate) {
-        return { discountPercent: 0, error: 'This promo code is not yet active.' };
-      }
-      if (promo.endDate && today > promo.endDate) {
-        return { discountPercent: 0, error: 'This promo code has expired.' };
-      }
-
-      if (promo.applicablePlans?.length) {
-        if (!promo.applicablePlans.includes(months)) {
-          const planNames = promo.applicablePlans
-            .map((m) => (m === 12 ? 'Yearly' : m === 1 ? 'Monthly' : `${m} Month`))
-            .join(', ');
-          return {
-            discountPercent: 0,
-            error: `This promo code is only valid for: ${planNames}.`,
-          };
-        }
-      }
-
-      if (promo.minSeats !== undefined && seatCount < promo.minSeats) {
-        return {
-          discountPercent: 0,
-          error: `This promo code requires a minimum of ${promo.minSeats} seats.`,
-        };
-      }
-      if (promo.maxSeats !== undefined && seatCount > promo.maxSeats) {
-        return {
-          discountPercent: 0,
-          error: `This promo code is only valid for up to ${promo.maxSeats} seats.`,
-        };
-      }
-
-      return { discountPercent: promo.discountPercent };
+      // Same rule set (and same messages) the checkout UI validated against, so
+      // a discount the seller was shown cannot be refused here — or vice versa.
+      // evaluatePromo already returns { discountPercent, error? } — the exact
+      // shape this function contracts — so the result passes straight through.
+      const { discountPercent, error } = evaluatePromo(snap.docs[0]!.data(), {
+        months,
+        seatCount,
+      });
+      return { discountPercent, ...(error ? { error } : {}) };
     }
   } catch (e) {
     console.error('[create-order] promo read failed:', e);
