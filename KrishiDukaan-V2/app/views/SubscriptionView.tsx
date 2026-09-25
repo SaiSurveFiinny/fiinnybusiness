@@ -289,7 +289,11 @@ export default function SubscriptionView({ user, role, onSuccess, onLogout }: Su
                 documents: [LEGAL_ROUTES.terms, LEGAL_ROUTES.sellerTerms],
                 acceptedAt: new Date().toISOString(),
                 surface: 'web:subscription-checkout',
-              });
+              },
+              // Gateway-verified promo code (from order notes), relayed straight
+              // from verify/ — not the checkout input — so attribution matches
+              // what was actually charged.
+              verifyData.promoCode ?? null);
 
             if (!updateResult.paymentLogged) {
               setVerifying(false);

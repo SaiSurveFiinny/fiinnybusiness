@@ -1115,8 +1115,18 @@ export async function updateSubscriptionStatus(
    * that was not.
    */
   termsAcceptance?: TermsAcceptance,
+  /**
+   * The promo code this subscription was purchased with, as returned by
+   * /api/payment/verify (which reads it from the Razorpay order notes, stamped
+   * server-side at create-order time). Persisted on the subscription doc so
+   * "which users bought with promo X" is answerable by querying subscriptions.
+   * Omitted / empty when no promo was used. Never sourced from the checkout
+   * input field — only the gateway-verified value flows through here.
+   */
+  promoCode?: string | null,
 ): Promise<{ profileUpdated: true; paymentLogged: boolean; paymentLogError?: string }> {
   const timestamp = serverTimestamp();
+  const normalizedPromo = String(promoCode ?? '').trim().toUpperCase();
 
   // Resolve uid → phone. Try uidIndex first; then scan users/{uid} directly (works for
   // admin-created / email-based accounts that have no uidIndex entry).
@@ -1199,6 +1209,9 @@ export async function updateSubscriptionStatus(
         razorpayOrderId: paymentDetails?.orderId ?? null,
         razorpayPaymentId: paymentDetails?.paymentId ?? null,
         subscriptionStatus: 'active',
+        // Promo attribution — written only when a gateway-verified code was
+        // used. Absent field = no promo, so usage queries filter on presence.
+        ...(normalizedPromo ? { promoCode: normalizedPromo } : {}),
         startDate: Timestamp.fromDate(now),
         expiryDate: Timestamp.fromDate(expiry),
         createdAt: timestamp,

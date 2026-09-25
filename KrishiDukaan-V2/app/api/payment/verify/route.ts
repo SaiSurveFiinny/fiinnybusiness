@@ -36,6 +36,15 @@ export async function POST(request: Request) {
         : undefined;
       const amountPaid = Math.round(Number(order.amount) / 100);
 
+      // The promo code the order was actually created with, read from the
+      // gateway's own notes (stamped server-side in create-order). This is the
+      // trusted value the client relays onto the subscription doc — it is NOT
+      // the code typed into the checkout field, so it cannot be swapped after
+      // the price was locked in. Empty string when no promo was used.
+      const verifiedPromoCode = String(order.notes?.promoCode ?? '')
+        .trim()
+        .toUpperCase();
+
       // Closes out the attempt record. A valid signature is proof Razorpay
       // completed this payment, so this is the primary success path for both
       // web and mobile.
@@ -46,6 +55,7 @@ export async function POST(request: Request) {
         seatCount: verifiedSeatCount,
         durationMonths: verifiedMonths,
         amountPaid,
+        promoCode: verifiedPromoCode || null,
       });
     } else {
       return NextResponse.json({ status: 'failed' }, { status: 400 });
