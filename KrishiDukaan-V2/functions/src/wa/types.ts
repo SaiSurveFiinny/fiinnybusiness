@@ -16,6 +16,7 @@ export type WaTemplate =
   | "subscription_expiry"
   | "order_notification"
   | "order_confirmation_customer"
+  | "order_accept_pending"
   | "retailer_onboarding"
   | "product_assignment_onboarded"
   | "product_assignment_pending_signup"

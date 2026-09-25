@@ -92,6 +92,24 @@ export function resolveTemplateComponents(
         { type: "button", sub_type: "url", index: 0, parameters: [t(p("orderId"))] },
       ];
 
+    case "order_accept_pending":
+      // Sent to the SELLER (retailer) when an online delivery order has been
+      // waiting for accept/reject for ≥24h. Marathi (mr — the resolver default).
+      // Body:
+      //   {{1}} = retailerName — retailer's business name, falling back to their
+      //           real (owner) name; never the customer's name.
+      //   {{2}} = productName   (first ordered item, "+N more" when several)
+      //   {{3}} = pendingDays   (whole days the order has been pending)
+      // CTA is a static URL button (https://krishidukan.com/dashboard/orders) —
+      // static, so no button component is sent from here.
+      return [
+        body(
+          p("retailerName") || "व्यापारी",
+          p("productName"),
+          p("pendingDays"),
+        ),
+      ];
+
     case "product_assignment_onboarded":
       // Body: {{1}} = retailerName  {{2}} = manufacturerName  {{3}} = productName
       // Button 0 (Dynamic URL): {{1}} = productId
