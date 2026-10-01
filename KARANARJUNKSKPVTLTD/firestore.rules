@@ -874,12 +874,18 @@ service cloud.firestore {
     // (../krishidukan-analytics). Platform-level data, isolated from all
     // tenant-scoped ERP collections. Holds normalized monthly Firebase Analytics
     // reports, e.g. analytics/{category}/months/{YYYY-MM}/rows/{rowId}.
-    // Restricted to the platform super admin, matching how other platform-wide
-    // collections (plans, platformAuditLogs, tenantSubscriptions) are gated and
-    // the analytics app's own client-side authorization check. Real writes arrive
-    // in a later phase (CSV import).
+    // Restricted to the platform super admin OR an explicit analytics allowlist
+    // (analytics viewers who are not ERP super admins). Keep the allowlist in sync
+    // with ANALYTICS_ALLOWLIST in ../krishidukan-analytics/src/auth/AuthProvider.tsx.
     match /analytics/{document=**} {
-      allow read, write: if request.auth != null && isSuperAdmin();
+      allow read, write: if request.auth != null
+        && (
+          isSuperAdmin()
+          || (request.auth.token.email != null
+              && request.auth.token.email.lower() in [
+                'arjun.tanpure@fiinny.com'
+              ])
+        );
     }
 
   } // end /databases/{database}/documents
