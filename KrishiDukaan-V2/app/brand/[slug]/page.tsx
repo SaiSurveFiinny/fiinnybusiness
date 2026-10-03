@@ -20,6 +20,12 @@ import type {
   BrandPageCustomization,
 } from "../../dashboard/_lib/brand-page-types";
 import { assembleBrandData } from "../../dashboard/_lib/brand-page-types";
+import {
+  buildRatingAgg,
+  mapMarketplaceDoc,
+  mergeMarketplaceProducts,
+} from "../../lib/marketplace-merge";
+import type { MarketplaceProduct } from "../../../types/product";
 
 export const dynamic = "force-dynamic";
 
@@ -41,9 +47,40 @@ async function resolveSlugToPhone(slug: string): Promise<string | null> {
   return snap.docs[0].id;
 }
 
+// Firestore `in` supports up to 30 values per query — chunk review lookups to it.
+const REVIEW_IN_CHUNK = 30;
+
+/**
+ * Ratings for exactly the given product doc ids, via bounded chunked `in`
+ * queries. Mirrors /api/marketplace/products — never a full productReviews read.
+ */
+async function fetchRatingAggForCatalogIds(
+  db: ReturnType<typeof getClientDb>,
+  ids: string[],
+) {
+  const rows: { catalogId: string; rating: number }[] = [];
+  for (let i = 0; i < ids.length; i += REVIEW_IN_CHUNK) {
+    const chunk = ids.slice(i, i + REVIEW_IN_CHUNK);
+    if (chunk.length === 0) continue;
+    const snap = await getDocs(
+      query(collection(db, "productReviews"), where("catalogId", "in", chunk)),
+    ).catch(() => null);
+    if (!snap) continue;
+    for (const d of snap.docs) {
+      const r = d.data() as Record<string, unknown>;
+      rows.push({
+        catalogId: String(r.catalogId ?? ""),
+        rating: Number(r.rating ?? 0),
+      });
+    }
+  }
+  return buildRatingAgg(rows);
+}
+
 async function fetchPageData(manufacturerPhone: string): Promise<{
   brand: ManufacturerBrandData;
   products: BrandProductSummary[];
+  marketProducts: MarketplaceProduct[];
   retailers: BrandRetailerSummary[];
 } | null> {
   const db = getClientDb();
@@ -78,6 +115,13 @@ async function fetchPageData(manufacturerPhone: string): Promise<{
   //   - legacy schema: ownerId == uid + ownerType == "manufacturer" (older products)
   // Deduplicate by document ID, then exclude retailer-assigned copies.
   let products: BrandProductSummary[] = [];
+  // Cross-seller pricing (discount / sellMode / lowest price) for this brand's
+  // products. Previously BrandView fetched the ENTIRE products + productReviews
+  // collections on the client (fetchMarketplaceProducts) just to recover this.
+  // We now run the SAME merge pipeline the Market feed uses, but bounded to this
+  // manufacturer's own docs — which already include the seller copies, because
+  // every assigned copy stamps manufacturerId with the manufacturer's uid.
+  let marketProducts: MarketplaceProduct[] = [];
   if (uid) {
     const [byManufacturerId, byOwnerId] = await Promise.all([
       getDocs(
@@ -96,28 +140,40 @@ async function fetchPageData(manufacturerPhone: string): Promise<{
       ),
     ]);
 
-    const seen = new Set<string>();
-    products = [...byManufacturerId.docs, ...byOwnerId.docs]
-      .filter((d) => {
-        if (seen.has(d.id)) return false;
-        seen.add(d.id);
-        // isListable() is the same predicate /products/[slug] and the sitemap
-        // use, so every card below links to a page that actually renders. The
-        // hand-rolled rule this replaces excluded only `manufacturer_assigned`
-        // and skipped the image check, so admin_assigned copies and image-less
-        // docs became product links that 404'd.
-        return isListable(d.data() as Record<string, unknown>);
-      })
-      .map((d) => {
-        const r = d.data() as Record<string, unknown>;
-        return {
-          id: d.id,
-          name: String(r.name ?? ""),
-          category: String(r.category ?? ""),
-          price: Number(r.price ?? 0),
-          image: String(r.image ?? ""),
-        };
-      });
+    // Dedup every fetched doc by id — canonical manufacturer products AND their
+    // seller copies (manufacturer_assigned etc. carry manufacturerId == uid, so
+    // they come back from the first query). Both the card list and the merge are
+    // derived from this one bounded read; no N+1, no second trip per product.
+    const docsById = new Map<string, Record<string, unknown>>();
+    for (const d of [...byManufacturerId.docs, ...byOwnerId.docs]) {
+      if (!docsById.has(d.id)) docsById.set(d.id, d.data() as Record<string, unknown>);
+    }
+
+    products = Array.from(docsById.entries())
+      // isListable() is the same predicate /products/[slug] and the sitemap use,
+      // so every card below links to a page that actually renders. It also
+      // excludes per-seller copies, keeping the grid to canonical products.
+      .filter(([, r]) => isListable(r))
+      .map(([id, r]) => ({
+        id,
+        name: String(r.name ?? ""),
+        category: String(r.category ?? ""),
+        price: Number(r.price ?? 0),
+        image: String(r.image ?? ""),
+      }));
+
+    // Merge canonical products + seller copies into marketplace cards (same
+    // dedup-by-name logic the Market grid renders from). Ratings come from a
+    // bounded `in` query over exactly these doc ids, never a full collection read.
+    const activeEntries = Array.from(docsById.entries()).filter(
+      ([, r]) => r.isActive !== false,
+    );
+    const ratingAgg = await fetchRatingAggForCatalogIds(
+      db,
+      activeEntries.map(([id]) => id),
+    );
+    const mapped = activeEntries.map(([id, r]) => mapMarketplaceDoc(id, r));
+    marketProducts = mergeMarketplaceProducts(mapped, ratingAgg);
   }
 
   // ── Retailers: build summaries, enriching from retailers/{docId} when mirror lacks geo ──
@@ -242,7 +298,7 @@ async function fetchPageData(manufacturerPhone: string): Promise<{
     }),
   );
 
-  return { brand, products, retailers };
+  return { brand, products, marketProducts, retailers };
 }
 
 // ─── Metadata ─────────────────────────────────────────────────────────────────
@@ -320,6 +376,7 @@ export default async function BrandPage({ params }: PageProps) {
       <BrandView
         brand={data.brand}
         products={data.products}
+        marketProducts={data.marketProducts}
         retailers={data.retailers}
       />
     </main>

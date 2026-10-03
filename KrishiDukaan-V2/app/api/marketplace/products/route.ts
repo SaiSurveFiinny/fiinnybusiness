@@ -52,6 +52,140 @@ const SEARCH_MAX_CHUNKS = 40;
 // Firestore `in` supports up to 30 values per query.
 const IN_CHUNK = 30;
 
+// A page of this feed is identical for every visitor — distance ordering happens
+// in the browser — so one computation can serve everyone for a short window.
+// That matters here because emitting ~13 merged cards costs up to
+// CHUNK * MAX_CHUNKS (480) raw doc reads across that many SEQUENTIAL Firestore
+// round-trips; measured at 13s warm and 33s cold against production. The route
+// previously sent `no-store`, so every visitor paid that in full.
+const CACHE_TTL_MS = 60_000;
+// Bounded so distinct search terms cannot grow this without limit.
+const CACHE_MAX_ENTRIES = 200;
+
+type CachedEntry = { body: unknown; at: number };
+const responseCache = new Map<string, CachedEntry>();
+
+function cacheGet(key: string): unknown | null {
+  const hit = responseCache.get(key);
+  if (!hit) return null;
+  if (Date.now() - hit.at > CACHE_TTL_MS) {
+    responseCache.delete(key);
+    return null;
+  }
+  // Re-insert so the Map's insertion order doubles as LRU order.
+  responseCache.delete(key);
+  responseCache.set(key, hit);
+  return hit.body;
+}
+
+function cacheSet(key: string, body: unknown): void {
+  if (responseCache.size >= CACHE_MAX_ENTRIES) {
+    const oldest = responseCache.keys().next().value;
+    if (oldest !== undefined) responseCache.delete(oldest);
+  }
+  responseCache.set(key, { body, at: Date.now() });
+}
+
+// Lets Firebase Hosting's CDN serve repeat requests without waking the SSR
+// function at all; stale-while-revalidate keeps the feed instant for a further
+// 5 minutes while a fresh copy is computed in the background.
+const CACHE_HEADERS = {
+  "Cache-Control": "public, s-maxage=60, stale-while-revalidate=300",
+} as const;
+
+// ── Full-catalogue cache, used by SEARCH only ─────────────────────────────
+//
+// Firestore cannot do substring matching, so search previously walked the
+// name-ordered collection in chunks and filtered in JS. That is wrong as well
+// as slow: the scan is bounded, so it gives up after CHUNK * SEARCH_MAX_CHUNKS
+// docs and returns an EMPTY page for any term that sorts late in the alphabet.
+// Searching "urea" against production returned 0 products in 29s while the
+// products plainly exist.
+//
+// The merged marketplace is only a few hundred cards (see
+// app/admin/_lib/marketplace-count.ts), so the whole raw collection fits in
+// memory comfortably. Load it once per TTL and let search filter the lot: every
+// match is found wherever it sorts, and the scan costs nothing per request.
+const CATALOGUE_TTL_MS = 5 * 60_000;
+// Firestore page size while loading the catalogue.
+const CATALOGUE_PAGE = 500;
+// Hard ceiling so unexpected growth cannot turn this into an unbounded read.
+const CATALOGUE_MAX = 20_000;
+
+type RawDoc = { id: string; name: string; data: Record<string, any> };
+
+let catalogue: { docs: RawDoc[]; at: number } | null = null;
+// Single-flight: concurrent searches during a rebuild share one scan rather
+// than each starting their own.
+let cataloguePromise: Promise<RawDoc[]> | null = null;
+
+async function loadCatalogue(
+  db: FirebaseFirestore.Firestore,
+  category: string,
+): Promise<RawDoc[]> {
+  const fresh = catalogue && Date.now() - catalogue.at < CATALOGUE_TTL_MS;
+  if (!fresh && !cataloguePromise) {
+    cataloguePromise = (async () => {
+      const out: RawDoc[] = [];
+      let after: GroupCursor | null = null;
+      for (;;) {
+        let q = db
+          .collection("products")
+          .orderBy("name")
+          .orderBy(FieldPath.documentId())
+          .limit(CATALOGUE_PAGE);
+        if (after) q = q.startAfter(after.name, after.id);
+        const snap = await q.get();
+        if (snap.empty) break;
+        for (const d of snap.docs) {
+          const data = d.data();
+          out.push({ id: d.id, name: String(data.name || ""), data });
+        }
+        const lastDoc = snap.docs[snap.docs.length - 1];
+        after = { name: String(lastDoc.data().name || ""), id: lastDoc.id };
+        if (snap.size < CATALOGUE_PAGE || out.length >= CATALOGUE_MAX) break;
+      }
+      catalogue = { docs: out, at: Date.now() };
+      return out;
+    })();
+    try {
+      await cataloguePromise;
+    } finally {
+      cataloguePromise = null;
+    }
+  } else if (!fresh && cataloguePromise) {
+    await cataloguePromise;
+  }
+
+  const all = catalogue?.docs ?? [];
+  // The category filter is applied to the cached copy rather than re-queried,
+  // so one cached scan serves every category and the unfiltered feed alike.
+  return category ? all.filter((d) => d.data.category === category) : all;
+}
+
+/** Serves collectMatchingNameGroups from the in-memory catalogue, keeping the
+ *  exact (name, __name__) ordering and cursor semantics of the Firestore path. */
+function memoryChunkReader(pool: RawDoc[]) {
+  return async (after: GroupCursor | null, limit: number): Promise<RawDoc[]> => {
+    let from = 0;
+    if (after) {
+      // Match the cursor document by id so this never depends on JS string
+      // comparison agreeing with Firestore's collation.
+      const idx = pool.findIndex((d) => d.id === after.id);
+      from =
+        idx >= 0
+          ? idx + 1
+          : Math.max(
+              0,
+              pool.findIndex(
+                (d) => d.name > after.name || (d.name === after.name && d.id > after.id),
+              ),
+            );
+    }
+    return pool.slice(from, from + limit);
+  };
+}
+
 function encodeCursor(c: GroupCursor): string {
   return Buffer.from(JSON.stringify(c), "utf8").toString("base64url");
 }
@@ -83,6 +217,20 @@ export async function GET(request: Request) {
   // merge/dedup, but skip the productReviews read since suggestions don't show
   // ratings. Keeps a keystroke suggestion cheap (one small products scan only).
   const suggest = searchParams.get("suggest") === "1";
+
+  // Keyed on every input that changes the result, including the raw cursor.
+  const cacheKey = [
+    pageSize,
+    category,
+    search,
+    searchParams.get("cursor") ?? "",
+    suggest ? "1" : "0",
+  ].join("|");
+
+  const cached = cacheGet(cacheKey);
+  if (cached) {
+    return NextResponse.json(cached, { headers: CACHE_HEADERS });
+  }
 
   try {
     const db = getAdminDb();
@@ -122,12 +270,17 @@ export async function GET(request: Request) {
       lastConsumedCursor,
       groupsSeen,
     } = search
-      ? await collectMatchingNameGroups(fetchChunk, matchesQuery, {
-          pageSize,
-          chunk: CHUNK,
-          maxChunks: SEARCH_MAX_CHUNKS,
-          startCursor: cursor,
-        })
+      ? await (async () => {
+          // Search reads the cached catalogue, not Firestore, so the budget can
+          // cover every product instead of stopping partway down the alphabet.
+          const pool = await loadCatalogue(db, category);
+          return collectMatchingNameGroups(memoryChunkReader(pool), matchesQuery, {
+            pageSize,
+            chunk: CHUNK,
+            maxChunks: Math.ceil(pool.length / CHUNK) + 1,
+            startCursor: cursor,
+          });
+        })()
       : await collectNameGroups(fetchChunk, {
           pageSize,
           chunk: CHUNK,
@@ -165,10 +318,9 @@ export async function GET(request: Request) {
 
     const products = mergeMarketplaceProducts(mapped, ratingAgg);
 
-    // TEMP diagnostics — remove after pagination is verified. `rawDocsRead` vs
-    // `mergedCardsReturned` distinguishes "true end of the name-ordered universe"
-    // (dedup collapsing many raw docs into few cards) from an actual early stop.
-    const debug = {
+    // Kept as a server-side log only. These counters were previously returned
+    // in the response body, which shipped internal read volumes to every client.
+    console.debug("[api/marketplace/products]", {
       cursorIn: cursor,
       rawDocsRead,
       groupsSeen,
@@ -178,18 +330,18 @@ export async function GET(request: Request) {
       hasMore,
       category: category || "all",
       search: search || null,
-    };
-    console.debug("[api/marketplace/products]", debug);
+    });
 
-    return NextResponse.json(
-      {
-        products,
-        nextCursor: nextGroupCursor ? encodeCursor(nextGroupCursor) : null,
-        hasMore,
-        debug,
-      },
-      { headers: { "Cache-Control": "no-store" } },
-    );
+    const body = {
+      products,
+      nextCursor: nextGroupCursor ? encodeCursor(nextGroupCursor) : null,
+      hasMore,
+    };
+    // Only successful payloads are cached; the error path below stays uncached
+    // so a transient Firestore failure cannot be pinned for the whole TTL.
+    cacheSet(cacheKey, body);
+
+    return NextResponse.json(body, { headers: CACHE_HEADERS });
   } catch (err) {
     console.error("[api/marketplace/products] failed:", err);
     return NextResponse.json(

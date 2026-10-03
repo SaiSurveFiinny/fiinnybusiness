@@ -10,7 +10,6 @@ import {
 import { ReviewSection } from '../../components/shared/ReviewSection';
 import type { ManufacturerBrandData, BrandProductSummary, BrandRetailerSummary } from '../dashboard/_lib/brand-page-types';
 import { haversineDistance, formatDistance } from '../utils/haversine';
-import { fetchMarketplaceProducts } from '../firebase';
 import { useSharedCart } from '../lib/useSharedCart';
 import type { MarketplaceProduct } from '../../types/product';
 
@@ -19,6 +18,15 @@ import type { MarketplaceProduct } from '../../types/product';
 export interface BrandViewProps {
   brand: ManufacturerBrandData;
   products: BrandProductSummary[];
+  /**
+   * Merged marketplace cards for THIS brand's products, assembled server-side
+   * from the manufacturer's own docs (and their seller copies) — the bounded
+   * replacement for the old client-side full-catalogue fetchMarketplaceProducts()
+   * read. Carries the cross-seller pricing (discount / sellMode / lowest price)
+   * the server-rendered summaries lack. Keyed by name below, matching the
+   * marketplace dedup.
+   */
+  marketProducts?: MarketplaceProduct[];
   retailers?: BrandRetailerSummary[];
   onProductClick?: (id: string) => void;
   onFindNearYou?: () => void;
@@ -324,6 +332,7 @@ function ManufacturerCard({ brand, isExpanded, onToggle }: {
 export default function BrandView({
   brand,
   products,
+  marketProducts = [],
   retailers = [],
   onProductClick,
   onFindNearYou,
@@ -335,19 +344,13 @@ export default function BrandView({
 
   // Seller pricing lives on retailer product copies, not on the manufacturer's
   // catalog doc — so the server-rendered summaries carry no discount or sellMode.
-  // Pull the marketplace's merged view (same source the Market grid renders from)
-  // and key it by name, which is how that pipeline dedupes across sellers.
-  const [marketByName, setMarketByName] = useState<Map<string, MarketplaceProduct>>(new Map());
-  useEffect(() => {
-    let cancelled = false;
-    fetchMarketplaceProducts()
-      .then((all) => {
-        if (cancelled) return;
-        setMarketByName(new Map(all.map((p) => [p.name.toLowerCase().trim(), p])));
-      })
-      .catch(() => { /* pricing stays at the catalog price; cards still render */ });
-    return () => { cancelled = true; };
-  }, []);
+  // The server now assembles the merged marketplace cards for exactly this
+  // brand's products (bounded to the manufacturer, no full-catalogue read) and
+  // passes them in. Key them by name — how that pipeline dedupes across sellers.
+  const marketByName = useMemo(
+    () => new Map(marketProducts.map((p) => [p.name.toLowerCase().trim(), p])),
+    [marketProducts],
+  );
 
   useEffect(() => {
     if (!toast) return;
