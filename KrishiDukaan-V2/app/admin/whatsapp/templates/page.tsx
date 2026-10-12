@@ -4209,19 +4209,27 @@ const NAVRATRI_OFFERS: Record<
     template: "navratri_offer_free",
     label: "Free",
     offerQuantity: 10,
-    audienceLabel: "retailers without an active paid subscription",
+    audienceLabel: "retailers / manufacturers without an active paid subscription",
   },
   paid: {
     template: "navratri_offer_paid",
     label: "Paid",
     offerQuantity: 40,
-    audienceLabel: "retailers with an active paid subscription",
+    audienceLabel: "retailers / manufacturers with an active paid subscription",
   },
+};
+
+type NavratriRole = "retailer" | "manufacturer";
+
+const NAVRATRI_ROLE_LABEL: Record<NavratriRole, string> = {
+  retailer: "Retailers",
+  manufacturer: "Manufacturers",
 };
 
 type NavratriRow = {
   userId: string;
   phone: string;         // normalized E.164 (no '+')
+  role: NavratriRole;
   ownerName: string;
   businessName: string;  // {{1}} primary
   shopName: string;      // {{1}} fallback
@@ -4243,6 +4251,11 @@ function NavratriPromotionFlow({ variant }: { variant: NavratriVariant }) {
   const [loading, setLoading] = useState(true);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [search, setSearch] = useState("");
+  // Which roles to include in the recipient list (both on by default).
+  const [roleFilters, setRoleFilters] = useState<Record<NavratriRole, boolean>>({
+    retailer: true,
+    manufacturer: true,
+  });
   const [step, setStep] = useState<"list" | "confirm" | "sending" | "done">("list");
   const [sendResults, setSendResults] = useState<NavratriResult[]>([]);
   const sendingRef = useRef(false);
@@ -4275,7 +4288,10 @@ function NavratriPromotionFlow({ variant }: { variant: NavratriVariant }) {
 
       const built: NavratriRow[] = [];
       for (const u of users as any[]) {
-        if (u.role !== "retailer") continue; // campaign targets retailers only
+        // Campaign targets retailers and manufacturers; the role checkboxes in
+        // the UI narrow the visible list further.
+        if (u.role !== "retailer" && u.role !== "manufacturer") continue;
+        const role: NavratriRole = u.role;
 
         const paid = u.subscriptionStatus === "active" || u.isPaid === true;
         if (variant === "free" && paid) continue;   // free offer → unpaid only
@@ -4289,6 +4305,7 @@ function NavratriPromotionFlow({ variant }: { variant: NavratriVariant }) {
         built.push({
           userId: u.id,
           phone: normPhone,
+          role,
           ownerName: u.ownerName || u.name || "",
           businessName: u.businessName || "",
           shopName: u.shopName || "",
@@ -4311,20 +4328,26 @@ function NavratriPromotionFlow({ variant }: { variant: NavratriVariant }) {
 
   useEffect(() => { void loadData(); }, [loadData]);
 
+  const toggleRole = (role: NavratriRole) =>
+    setRoleFilters((prev) => ({ ...prev, [role]: !prev[role] }));
+
   const filteredRows = (() => {
     const q = search.trim().toLowerCase();
-    if (!q) return rows;
-    return rows.filter(
-      (r) =>
+    return rows.filter((r) => {
+      if (!roleFilters[r.role]) return false;
+      if (!q) return true;
+      return (
         r.businessName.toLowerCase().includes(q) ||
         r.shopName.toLowerCase().includes(q) ||
-        r.ownerName.toLowerCase().includes(q),
-    );
+        r.ownerName.toLowerCase().includes(q)
+      );
+    });
   })();
 
-  // Only retailers who have NOT already received this template are selectable.
+  // Only recipients who have NOT already received this template are selectable.
   const selectableFiltered = filteredRows.filter((r) => !r.alreadySent);
-  const eligibleCount = rows.filter((r) => !r.alreadySent).length;
+  // Eligible count respects the role filter so it matches the visible list.
+  const eligibleCount = rows.filter((r) => roleFilters[r.role] && !r.alreadySent).length;
 
   useEffect(() => {
     const el = masterCheckboxRef.current;
@@ -4584,8 +4607,8 @@ function NavratriPromotionFlow({ variant }: { variant: NavratriVariant }) {
           {loading ? "Loading…" : (
             <>
               {search.trim()
-                ? `${fmtCount(selectableFiltered.length)} of ${fmtCount(eligibleCount)} eligible retailer${eligibleCount !== 1 ? "s" : ""}`
-                : `${fmtCount(eligibleCount)} eligible retailer${eligibleCount !== 1 ? "s" : ""}`}
+                ? `${fmtCount(selectableFiltered.length)} of ${fmtCount(eligibleCount)} eligible recipient${eligibleCount !== 1 ? "s" : ""}`
+                : `${fmtCount(eligibleCount)} eligible recipient${eligibleCount !== 1 ? "s" : ""}`}
               {selectedRows.length > 0 && (
                 <span className="ml-1.5 text-on-surface-variant font-normal">
                   · {fmtCount(selectedRows.length)} selected
@@ -4604,29 +4627,54 @@ function NavratriPromotionFlow({ variant }: { variant: NavratriVariant }) {
         </button>
       </div>
 
-      {/* Search */}
-      <div className="relative max-w-sm">
-        <Search className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
-        <input
-          type="text"
-          value={search}
-          onChange={(e) => setSearch(e.target.value)}
-          placeholder="Search by business or owner name…"
-          className="w-full border border-gray-300 rounded-xl pl-9 pr-3 py-2 text-sm text-gray-800 bg-white focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent placeholder:text-gray-400"
-        />
+      {/* Role filter + search */}
+      <div className="flex flex-wrap items-center gap-3">
+        <div className="flex items-center gap-1.5">
+          {(Object.keys(NAVRATRI_ROLE_LABEL) as NavratriRole[]).map((role) => {
+            const active = roleFilters[role];
+            return (
+              <button
+                key={role}
+                onClick={() => toggleRole(role)}
+                className={cn(
+                  "px-3 py-1.5 rounded-full text-xs font-medium border transition-colors",
+                  active
+                    ? "bg-primary/10 border-primary/30 text-primary"
+                    : "bg-white border-gray-300 text-gray-500 hover:bg-gray-50",
+                )}
+              >
+                {NAVRATRI_ROLE_LABEL[role]}
+              </button>
+            );
+          })}
+        </div>
+        <div className="relative max-w-sm flex-1 min-w-[200px]">
+          <Search className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
+          <input
+            type="text"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder="Search by business or owner name…"
+            className="w-full border border-gray-300 rounded-xl pl-9 pr-3 py-2 text-sm text-gray-800 bg-white focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent placeholder:text-gray-400"
+          />
+        </div>
       </div>
 
       {loading ? (
         <div className="flex h-28 items-center justify-center gap-2 text-sm text-gray-400">
-          <Loader2 className="w-4 h-4 animate-spin" /> Loading retailers…
+          <Loader2 className="w-4 h-4 animate-spin" /> Loading recipients…
         </div>
       ) : rows.length === 0 ? (
         <div className="rounded-2xl border border-dashed border-gray-300 px-6 py-10 text-center text-sm text-gray-400">
           No {offer.audienceLabel} found.
         </div>
+      ) : !roleFilters.retailer && !roleFilters.manufacturer ? (
+        <div className="rounded-2xl border border-dashed border-gray-300 px-6 py-10 text-center text-sm text-gray-400">
+          Select at least one role (Retailers / Manufacturers) above.
+        </div>
       ) : filteredRows.length === 0 ? (
         <div className="rounded-2xl border border-dashed border-gray-300 px-6 py-10 text-center text-sm text-gray-400">
-          No retailers match &quot;{search.trim()}&quot;.
+          {search.trim() ? `No recipients match "${search.trim()}".` : "No recipients for the selected roles."}
         </div>
       ) : (
         <>
@@ -4649,7 +4697,8 @@ function NavratriPromotionFlow({ variant }: { variant: NavratriVariant }) {
                       className="h-4 w-4 rounded border-gray-300 text-primary focus:ring-primary/30 cursor-pointer"
                     />
                   </th>
-                  <th className="text-left px-3 py-2.5 text-xs font-semibold text-gray-500 uppercase tracking-wide">Retailer / Business</th>
+                  <th className="text-left px-3 py-2.5 text-xs font-semibold text-gray-500 uppercase tracking-wide">Business</th>
+                  <th className="text-left px-3 py-2.5 text-xs font-semibold text-gray-500 uppercase tracking-wide hidden sm:table-cell">Role</th>
                   <th className="text-left px-3 py-2.5 text-xs font-semibold text-gray-500 uppercase tracking-wide">Phone</th>
                   <th className="text-left px-3 py-2.5 text-xs font-semibold text-gray-500 uppercase tracking-wide hidden sm:table-cell">Status</th>
                 </tr>
@@ -4684,6 +4733,11 @@ function NavratriPromotionFlow({ variant }: { variant: NavratriVariant }) {
                         <p className="text-xs font-semibold text-gray-800 truncate max-w-xs">
                           {displayName(r)}
                         </p>
+                      </td>
+                      <td className="px-3 py-2.5 hidden sm:table-cell">
+                        <span className="text-xs px-1.5 py-0.5 rounded-full bg-gray-100 text-gray-600 capitalize">
+                          {r.role}
+                        </span>
                       </td>
                       <td className="px-3 py-2.5 font-mono text-xs text-gray-600">{displayPhone(r.phone)}</td>
                       <td className="px-3 py-2.5 hidden sm:table-cell">
