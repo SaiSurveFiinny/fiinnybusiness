@@ -3,8 +3,8 @@ import 'package:flutter/material.dart';
 import '../constants/app_colors.dart';
 import '../constants/app_text_styles.dart';
 import '../models/catalog_model.dart';
-import '../utils/currency_utils.dart';
 import '../utils/geo_utils.dart';
+import 'price_tag.dart';
 
 class ProductCard extends StatefulWidget {
   final CatalogModel product;
@@ -25,14 +25,10 @@ class _ProductCardState extends State<ProductCard> {
 
   @override
   Widget build(BuildContext context) {
-    // Highest discount any seller offers for this product — drives the offer
-    // ribbon + discounted price (web parity with MarketView/HomeView cards).
-    final maxPct = product.maxDiscountPct;
-    final hasOffer = maxPct > 0;
-    final discountedPrice = hasOffer
-        ? product.price * (1 - maxPct / 100)
-        : product.price;
-    final savings = (product.price - discountedPrice).round();
+    // The cheapest offer, struck against that same seller's own price —
+    // never "lowest price × best discount", a price nobody actually sells at.
+    final dp = product.displayPrice;
+    final hasOffer = dp.hasOffer;
 
     return GestureDetector(
       onTap: widget.onTap,
@@ -130,7 +126,7 @@ class _ProductCardState extends State<ProductCard> {
                                   ),
                                   const SizedBox(width: 3),
                                   Text(
-                                    '${maxPct.toStringAsFixed(0)}% OFF',
+                                    '${dp.pct}% OFF',
                                     style: TextStyle(
                                       color: Colors.white,
                                       fontSize: compact ? 9 : 10,
@@ -184,46 +180,8 @@ class _ProductCardState extends State<ProductCard> {
                           overflow: TextOverflow.ellipsis,
                         ),
                         SizedBox(height: compact ? 4 : 6),
-                        // Price — discounted block when an offer exists
-                        if (hasOffer) ...[
-                          Row(
-                            crossAxisAlignment: CrossAxisAlignment.end,
-                            children: [
-                              Flexible(
-                                child: Text(
-                                  CurrencyUtils.format(discountedPrice),
-                                  style: AppTextStyles.price.copyWith(
-                                    color: const Color(0xFF15803D),
-                                    fontSize: compact ? 13 : 16,
-                                  ),
-                                  overflow: TextOverflow.ellipsis,
-                                ),
-                              ),
-                              SizedBox(width: compact ? 4 : 6),
-                              if (!compact)
-                                Text(
-                                  CurrencyUtils.format(product.price),
-                                  style: AppTextStyles.caption.copyWith(
-                                    decoration: TextDecoration.lineThrough,
-                                  ),
-                                ),
-                            ],
-                          ),
-                          if (savings > 0 && !compact)
-                            Text(
-                              'Save ${CurrencyUtils.format(savings.toDouble())}',
-                              style: AppTextStyles.caption.copyWith(
-                                color: const Color(0xFF16A34A),
-                                fontWeight: FontWeight.w700,
-                              ),
-                            ),
-                        ] else
-                          Text(
-                            CurrencyUtils.format(product.price),
-                            style: AppTextStyles.price.copyWith(
-                              fontSize: compact ? 13 : 16,
-                            ),
-                          ),
+                        // Price — "₹final ₹mrp X% off", same as web cards
+                        PriceTag(value: dp, fontSize: compact ? 13 : 16),
                         SizedBox(height: compact ? 2 : 4),
                         // Nearest store distance
                         Row(

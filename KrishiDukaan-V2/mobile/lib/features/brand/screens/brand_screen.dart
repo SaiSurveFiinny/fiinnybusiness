@@ -1,3 +1,4 @@
+import '../../../core/widgets/price_tag.dart';
 import '../../../core/utils/link_share.dart';
 import '../../../core/utils/web_links.dart';
 import 'dart:math' as math;
@@ -11,7 +12,6 @@ import '../../../core/constants/app_colors.dart';
 import '../../../core/constants/app_text_styles.dart';
 import '../../../core/models/brand_model.dart';
 import '../../../core/models/catalog_model.dart';
-import '../../../core/utils/currency_utils.dart';
 import '../../../core/utils/store_focus_route.dart';
 import '../../../core/widgets/error_view.dart';
 import '../../marketplace/providers/marketplace_provider.dart';
@@ -1405,11 +1405,7 @@ class _BrandProductCard extends StatelessWidget {
                     overflow: TextOverflow.ellipsis,
                   ),
                   const SizedBox(height: 6),
-                  Text(
-                    CurrencyUtils.format(product.price),
-                    style:
-                        AppTextStyles.price.copyWith(color: AppColors.primary),
-                  ),
+                  PriceTag(value: product.displayPrice, fontSize: 15),
                 ],
               ),
             ),

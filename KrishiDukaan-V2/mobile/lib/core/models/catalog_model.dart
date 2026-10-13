@@ -1,5 +1,6 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import '../utils/image_utils.dart';
+import '../utils/price_display.dart';
 import 'listing_model.dart';
 
 class AvailabilityEntry {
@@ -8,6 +9,10 @@ class AvailabilityEntry {
   final String? storeName;
   final String? stockLevel;
   final double sellingPrice;
+
+  /// This seller's live discount on [sellingPrice] (0 when none), kept in
+  /// step with the seller's own product doc by the marketplace merge.
+  final double discountPct;
   final bool? isOnline;
   final List<VariantModel>? variants;
 
@@ -17,6 +22,7 @@ class AvailabilityEntry {
     this.storeName,
     this.stockLevel,
     required this.sellingPrice,
+    this.discountPct = 0,
     this.isOnline,
     this.variants,
   });
@@ -28,6 +34,7 @@ class AvailabilityEntry {
       storeName: m['storeName']?.toString(),
       stockLevel: m['stockLevel']?.toString(),
       sellingPrice: (m['sellingPrice'] as num?)?.toDouble() ?? 0.0,
+      discountPct: (m['discountPct'] as num?)?.toDouble() ?? 0.0,
       isOnline: m['isOnline'] as bool?,
       variants: (m['variants'] as List?)
           ?.map((v) => VariantModel.fromMap(v as Map<String, dynamic>))
@@ -41,6 +48,7 @@ class AvailabilityEntry {
     'storeName': storeName,
     'stockLevel': stockLevel,
     'sellingPrice': sellingPrice,
+    if (discountPct > 0) 'discountPct': discountPct,
     'isOnline': isOnline,
     'variants': variants?.map((v) => v.toMap()).toList(),
   };
@@ -144,6 +152,9 @@ class CatalogModel {
   final bool gstIncluded;
   final List<AvailabilityEntry>? availability;
   final double? lowestPrice;
+
+  /// Cheapest price after each seller's own discount (marketplace cards).
+  final double? lowestFinalPrice;
   final double? nearestStoreDistanceKm;
 
   /// Every canonical/copy PRODUCT DOC id merged into this card by name
@@ -199,6 +210,7 @@ class CatalogModel {
     this.gstIncluded = true,
     this.availability,
     this.lowestPrice,
+    this.lowestFinalPrice,
     this.nearestStoreDistanceKm,
     this.mergedProductIds,
     this.collectionPath = 'catalog',
@@ -257,6 +269,7 @@ class CatalogModel {
     bool? gstIncluded,
     List<AvailabilityEntry>? availability,
     double? lowestPrice,
+    double? lowestFinalPrice,
     double? nearestStoreDistanceKm,
     List<String>? mergedProductIds,
     String? collectionPath,
@@ -304,6 +317,7 @@ class CatalogModel {
       gstIncluded: gstIncluded ?? this.gstIncluded,
       availability: availability ?? this.availability,
       lowestPrice: lowestPrice ?? this.lowestPrice,
+      lowestFinalPrice: lowestFinalPrice ?? this.lowestFinalPrice,
       nearestStoreDistanceKm:
           nearestStoreDistanceKm ?? this.nearestStoreDistanceKm,
       mergedProductIds: mergedProductIds ?? this.mergedProductIds,
@@ -547,8 +561,46 @@ class CatalogModel {
       gstRate: gstRate,
       gstIncluded: d['gstIncluded'] != false,
       availability: availability,
+      lowestFinalPrice: (d['lowestFinalPrice'] as num?)?.toDouble(),
       nearestStoreDistanceKm: (d['nearestStoreDistanceKm'] as num?)?.toDouble(),
     );
+  }
+
+  /// What a product card shows: the cheapest offer and, only when its seller
+  /// runs a discount, that SAME seller's pre-discount price struck out.
+  /// Mirrors web's displayPrice (app/lib/price-display.ts).
+  DisplayPrice get displayPrice {
+    final entries = availability ?? const <AvailabilityEntry>[];
+    double? bestFinal;
+    double bestBase = 0;
+    for (final a in entries) {
+      final base = a.sellingPrice;
+      if (base <= 0) continue;
+      var pct = a.discountPct;
+      if (pct <= 0) {
+        pct = sellerDiscounts[a.storeId] ??
+            sellerDiscounts[a.storePhone ?? ''] ??
+            0;
+      }
+      final finalPrice = DisplayPrice.applyPct(base, pct);
+      if (bestFinal == null ||
+          finalPrice < bestFinal ||
+          (finalPrice == bestFinal && base > bestBase)) {
+        bestFinal = finalPrice;
+        bestBase = base;
+      }
+    }
+    if (bestFinal != null) return DisplayPrice.of(bestFinal, bestBase);
+
+    final base = lowestPrice ?? price;
+    final lf = lowestFinalPrice;
+    if (lf != null && lf < base) return DisplayPrice.of(lf, base);
+    // A single-seller doc (no availability) — its own discount applies to
+    // its own price, so the pair is honest.
+    if (maxDiscountPct > 0) {
+      return DisplayPrice.of(DisplayPrice.applyPct(base, maxDiscountPct), base);
+    }
+    return DisplayPrice.of(base, null);
   }
 
   static double? _parseNum(dynamic v) {

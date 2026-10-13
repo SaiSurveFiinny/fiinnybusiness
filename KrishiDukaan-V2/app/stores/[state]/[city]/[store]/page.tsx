@@ -280,7 +280,7 @@ export default async function StorePage({ params }: PageProps) {
                 ))}
               </ul>
             </nav>
-            <StoreProductGrid products={products} storeName={store.name} />
+            <StoreProductGrid products={products} storeName={store.name} storePhone={store.phone} storeIds={[store.id]} />
           </section>
         ) : (
           <section className="mt-10 rounded-2xl border border-surface-container bg-surface-container-low p-6">
