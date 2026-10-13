@@ -10,6 +10,7 @@ import {
 import Link from "next/link";
 import { cn } from "../../../dashboard/_lib/cn";
 import { PendingSignupPanel, type PendingPanelManufacturer } from "../../_components/pending-signup-panel";
+import { WaTestTemplatePanel } from "./_test-template-panel";
 import { getUsers } from "../../_lib/admin-data";
 import { fetchActiveSubscriptions, fetchSellers, fetchUsersByRoles } from "../../_lib/admin-queries";
 import { getDocsByIds, getDocsWhereIn } from "../../../lib/firestore-by-ids";
@@ -4888,6 +4889,9 @@ export default function SendMessagesPage() {
         </p>
       </div>
       <WaSubNav />
+
+      {/* Dev / UAT only — renders nothing on the production deployment. */}
+      <WaTestTemplatePanel />
 
       <div className="w-full space-y-6 py-2">
         {/* Template selector — single dropdown */}

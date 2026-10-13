@@ -557,7 +557,7 @@ service cloud.firestore {
         && request.resource.data.status in ['placed','accepted','dispatched','out_for_delivery','delivered']
         && !request.resource.data.diff(resource.data).affectedKeys().hasAny([
           'reassignment', 'routeTransfer', 'routeRelease', 'payment', 'payout',
-          'sellerPhone', 'sellerId', 'customerId', 'customerPhone'
+          'sellerPhone', 'sellerId', 'customerId', 'customerPhone','tracking'
         ]))
         // Allow customer to update payment field on their own order
         || (isAuthed() && (

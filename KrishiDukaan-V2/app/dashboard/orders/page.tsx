@@ -26,15 +26,19 @@ import {
   Eye,
   ArrowUp,
   ArrowDown,
+  Link2,
+  Undo2,
 } from "lucide-react";
 import { auth, fetchIncomingOrdersForSeller, updateOrderStatus } from "../../firebase";
 import { PageHeader } from "../_components/page-header";
 import { formatCustomerAddress, normalizeOrderItems, orderGrandTotal } from "../../../types/order";
-import { ORDER_STATUS_FLOW, type OrderDoc, type OrderStatus } from "../../../types/order";
+import { ORDER_STATUS_FLOW, REVERTABLE_STATUSES, validRevertTargets, type OrderDoc, type OrderStatus } from "../../../types/order";
 import { useI18n } from "../../i18n/I18nContext";
 import { openInvoice } from "../../utils/invoice-generator";
 import { OrderRequestsPanel } from "../_components/order-requests-panel";
 import { fetchOpenOffers } from "../_lib/order-offers";
+import { DispatchDialog, TrackingDialog } from "./_tracking-dialogs";
+import { trackingSendsRemaining, MAX_TRACKING_SENDS } from "./_tracking";
 
 // Progression shown to the seller. Imported rather than redeclared so the
 // seller view, the customer view and the "can advance to" checks cannot drift.
@@ -379,6 +383,8 @@ function OrderDetailModal({
   actions,
   updating,
   onAdvance,
+  onOpenTracking,
+  onOpenRevert,
   onClose,
 }: {
   order: OrderDoc;
@@ -386,6 +392,8 @@ function OrderDetailModal({
   actions: { next: OrderStatus; label: string; color: string }[];
   updating: boolean;
   onAdvance: (orderId: string, status: OrderStatus) => void;
+  onOpenTracking: (orderId: string) => void;
+  onOpenRevert: (orderId: string) => void;
   onClose: () => void;
 }) {
   const config = statusConfig(order.status);
@@ -542,18 +550,59 @@ function OrderDetailModal({
                   .map((entry, idx) => {
                     const c = statusConfig(entry.status);
                     return (
-                      <li key={`${entry.status}-${entry.at}-${idx}`} className="flex items-center gap-3 text-sm">
-                        <span className={`inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full ${c.badge}`}>
-                          <c.icon className="h-3 w-3" />
+                      <li key={`${entry.status}-${entry.at}-${idx}`} className="flex items-start gap-3 text-sm">
+                        <span className={`mt-0.5 inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full ${entry.revert ? "bg-amber-100 text-amber-700" : c.badge}`}>
+                          {entry.revert ? <Undo2 className="h-3 w-3" /> : <c.icon className="h-3 w-3" />}
                         </span>
-                        <span className="font-semibold text-on-surface">{c.label}</span>
-                        <span className="ml-auto text-xs text-on-surface-variant">{formatDateStr(entry.at)}</span>
+                        <div className="min-w-0">
+                          <span className="font-semibold text-on-surface">
+                            {entry.revert && entry.from
+                              ? `Reverted ${statusConfig(entry.from).label} → ${c.label}`
+                              : c.label}
+                          </span>
+                          {entry.revert && entry.reason && (
+                            <p className="text-xs text-on-surface-variant">
+                              {entry.reason}{entry.byRole ? ` · by ${entry.byRole}` : ""}
+                            </p>
+                          )}
+                        </div>
+                        <span className="ml-auto shrink-0 text-xs text-on-surface-variant">{formatDateStr(entry.at)}</span>
                       </li>
                     );
                   })}
               </ol>
             </div>
           )}
+
+          {/* Shipment tracking — only once the parcel has left the seller */}
+          {["dispatched", "out_for_delivery", "delivered"].includes(order.status) && (() => {
+            const remaining = trackingSendsRemaining(order);
+            const used = MAX_TRACKING_SENDS - remaining;
+            const link = order.tracking?.url;
+            return (
+              <div className="rounded-xl border border-surface-container p-4 space-y-2.5">
+                <div className="flex items-center justify-between">
+                  <p className="text-[10px] font-black uppercase tracking-widest text-on-surface-variant">Shipment tracking</p>
+                  <span className="text-[10px] font-bold text-on-surface-variant">{used}/{MAX_TRACKING_SENDS} sent · {remaining} left</span>
+                </div>
+                {link ? (
+                  <a href={link} target="_blank" rel="noopener noreferrer" className="flex items-start gap-1.5 break-all text-xs font-semibold text-primary hover:underline">
+                    <Link2 className="mt-0.5 h-3 w-3 shrink-0" /> {link}
+                  </a>
+                ) : (
+                  <p className="text-xs text-on-surface-variant">No tracking link added yet.</p>
+                )}
+                <button
+                  type="button"
+                  onClick={() => onOpenTracking(order.id)}
+                  className="inline-flex items-center gap-1.5 rounded-lg border border-primary/40 bg-primary/5 px-3 py-1.5 text-[11px] font-black uppercase tracking-wider text-primary transition-all hover:bg-primary/10"
+                >
+                  <Link2 className="h-3 w-3" />
+                  {link ? (used > 0 ? "Resend / Update Link" : "Send Tracking Link") : "Add Tracking Link"}
+                </button>
+              </div>
+            );
+          })()}
 
           {/* Actions */}
           <div className="flex flex-wrap gap-2 border-t border-surface-container pt-4">
@@ -580,6 +629,129 @@ function OrderDetailModal({
               className="inline-flex items-center gap-1.5 px-4 py-2.5 rounded-xl text-xs font-bold border border-outline-variant/50 bg-white text-on-surface hover:border-primary hover:text-primary hover:bg-primary/5 transition-all"
             >
               <Download className="w-3.5 h-3.5" /> Download Invoice
+            </button>
+            {REVERTABLE_STATUSES.includes(order.status) && (
+              <button
+                type="button"
+                disabled={updating}
+                onClick={() => onOpenRevert(order.id)}
+                className="inline-flex items-center gap-1.5 px-4 py-2.5 rounded-xl text-xs font-bold border border-amber-300 bg-amber-50 text-amber-700 hover:bg-amber-100 transition-all disabled:opacity-50"
+              >
+                <Undo2 className="w-3.5 h-3.5" /> Revert Status
+              </button>
+            )}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Confirm-and-revert dialog for an order that was advanced too far. Lets the
+ * seller/admin pick an EARLIER valid status, supply a mandatory reason, and
+ * confirm. The actual write (with its payout-safety and audit handling) happens
+ * server-side in /api/orders/revert-status — this only collects the inputs.
+ */
+function RevertStatusDialog({
+  order,
+  onCancel,
+  onDone,
+}: {
+  order: OrderDoc;
+  onCancel: () => void;
+  onDone: (message: string) => void;
+}) {
+  const targets = validRevertTargets(order.status);
+  const [toStatus, setToStatus] = useState<OrderStatus | "">(targets[targets.length - 1] ?? "");
+  const [reason, setReason] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") onCancel(); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onCancel]);
+
+  const submit = async () => {
+    if (!toStatus) { setError("Choose a status to revert to."); return; }
+    if (!reason.trim()) { setError("A reason is required."); return; }
+    setBusy(true);
+    setError(null);
+    try {
+      const token = await auth.currentUser?.getIdToken();
+      const res = await fetch("/api/orders/revert-status", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token ?? ""}` },
+        body: JSON.stringify({ orderId: order.id, toStatus, reason: reason.trim() }),
+      });
+      const json = await res.json();
+      if (!res.ok) throw new Error(json.error ?? "Could not revert the order status.");
+      onDone(`Order reverted to ${statusConfig(toStatus as OrderStatus).label}.`);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Could not revert the order status.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/40 p-4" onClick={onCancel}>
+      <div className="w-full max-w-md rounded-2xl bg-white shadow-2xl" onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-center justify-between border-b border-surface-container px-5 py-3.5">
+          <div className="flex items-center gap-2">
+            <Undo2 className="h-4 w-4 text-on-surface-variant" />
+            <p className="font-black text-on-surface">Revert order status</p>
+          </div>
+          <button type="button" onClick={onCancel} aria-label="Close" className="rounded-lg p-1.5 text-on-surface-variant hover:bg-surface-container hover:text-on-surface">
+            <X className="h-4 w-4" />
+          </button>
+        </div>
+        <div className="space-y-4 p-5">
+          <p className="text-sm text-on-surface-variant">
+            This order is currently <span className="font-bold text-on-surface">{statusConfig(order.status).label}</span>.
+            Choose the status to move it back to. The customer is <span className="font-semibold">not</span> re-notified, and no
+            payout or refund is changed.
+          </p>
+
+          <div>
+            <p className="mb-1.5 text-[10px] font-black uppercase tracking-widest text-on-surface-variant">Revert to</p>
+            <div className="flex flex-col gap-1.5">
+              {targets.map((s) => {
+                const c = statusConfig(s);
+                return (
+                  <label key={s} className={`flex cursor-pointer items-center gap-2 rounded-xl border px-3 py-2 text-sm transition-all ${toStatus === s ? "border-primary bg-primary/5" : "border-surface-container hover:bg-surface-container-low"}`}>
+                    <input type="radio" name="revert-target" value={s} checked={toStatus === s} onChange={() => setToStatus(s)} className="accent-primary" />
+                    <c.icon className={`h-3.5 w-3.5 ${c.color}`} />
+                    <span className="font-semibold text-on-surface">{c.label}</span>
+                  </label>
+                );
+              })}
+            </div>
+          </div>
+
+          <div>
+            <p className="mb-1.5 text-[10px] font-black uppercase tracking-widest text-on-surface-variant">Reason <span className="text-red-600">*</span></p>
+            <textarea
+              value={reason}
+              onChange={(e) => setReason(e.target.value)}
+              rows={3}
+              placeholder="Why is this status being reverted? (recorded in the order history)"
+              className="w-full rounded-xl border border-outline-variant/40 bg-surface-container-low px-3 py-2 text-sm text-on-surface placeholder:text-on-surface-variant/70 focus:border-primary focus:outline-none"
+            />
+          </div>
+
+          {error && (
+            <div className="rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">{error}</div>
+          )}
+
+          <div className="flex justify-end gap-2 pt-1">
+            <button type="button" onClick={onCancel} disabled={busy} className="rounded-xl border border-outline-variant/50 bg-white px-4 py-2 text-xs font-bold text-on-surface hover:bg-surface-container-low disabled:opacity-50">
+              Cancel
+            </button>
+            <button type="button" onClick={() => void submit()} disabled={busy} className="inline-flex items-center gap-1.5 rounded-xl bg-amber-600 px-4 py-2 text-xs font-black uppercase tracking-wider text-white hover:bg-amber-700 disabled:opacity-50">
+              {busy ? <><div className="h-3 w-3 animate-spin rounded-full border-2 border-current border-t-transparent" /> Reverting…</> : <><Undo2 className="h-3.5 w-3.5" /> Revert Status</>}
             </button>
           </div>
         </div>
@@ -609,6 +781,9 @@ export default function OrdersPage() {
   const [sellerInfo, setSellerInfo] = useState<{ name: string; phone: string; gstin: string } | null>(null);
   const [sellerProfile, setSellerProfile] = useState<any>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [dispatchForId, setDispatchForId] = useState<string | null>(null);
+  const [trackingForId, setTrackingForId] = useState<string | null>(null);
+  const [revertForId, setRevertForId] = useState<string | null>(null);
 
   // One identity-expanded read of every order filed under any of this seller's
   // keys (sellerId/sellerPhone, across uid/phone forms and uidIndex). The SAME
@@ -679,6 +854,14 @@ export default function OrdersPage() {
   }, [effectiveUid, effectiveProfile]);
 
   const onAdvance = async (orderId: string, status: OrderStatus) => {
+    // Dispatch opens a dialog (optional tracking link + WhatsApp send) rather
+    // than writing the status directly — the dialog performs the status change
+    // itself and then saves/sends the link through /api/orders/tracking.
+    if (status === "dispatched") {
+      setDispatchForId(orderId);
+      return;
+    }
+
     // Reject goes through a server route, not a bare status write: a paid
     // order needs its Razorpay refund issued (and the seller's Route
     // transfer reversed, if one already went out) as part of the SAME
@@ -1165,6 +1348,17 @@ export default function OrdersPage() {
                                     ))}
                                   </div>
                                 )}
+                                {REVERTABLE_STATUSES.includes(order.status) && (
+                                  <button
+                                    type="button"
+                                    disabled={isUpdating}
+                                    onClick={() => setRevertForId(order.id)}
+                                    title="Revert Status"
+                                    className="inline-flex shrink-0 items-center gap-1 whitespace-nowrap rounded-lg border border-amber-300 bg-amber-50 px-2.5 py-1.5 text-[10px] font-bold text-amber-700 hover:bg-amber-100 transition-all disabled:opacity-50"
+                                  >
+                                    <Undo2 className="w-3 h-3" /> Revert
+                                  </button>
+                                )}
                                 <button
                                   type="button"
                                   onClick={() => openInvoice(order, sellerInfo ? { name: sellerInfo.name, phone: sellerInfo.phone, gstin: sellerInfo.gstin || undefined } : undefined)}
@@ -1194,9 +1388,60 @@ export default function OrdersPage() {
           actions={NEXT_ACTIONS[selectedOrder.status] || []}
           updating={updatingId === selectedOrder.id}
           onAdvance={onAdvance}
+          onOpenTracking={(id) => setTrackingForId(id)}
+          onOpenRevert={(id) => setRevertForId(id)}
           onClose={() => setSelectedId(null)}
         />
       )}
+
+      {dispatchForId && (() => {
+        const o = orders.find((x) => x.id === dispatchForId);
+        if (!o) return null;
+        return (
+          <DispatchDialog
+            order={o}
+            onCancel={() => setDispatchForId(null)}
+            onDone={async (message) => {
+              setDispatchForId(null);
+              setActionInfo(message);
+              if (uid && sellerType) await load(uid, sellerType, sellerProfile);
+            }}
+          />
+        );
+      })()}
+
+      {trackingForId && (() => {
+        const o = orders.find((x) => x.id === trackingForId);
+        if (!o) return null;
+        return (
+          <TrackingDialog
+            order={o}
+            onCancel={() => setTrackingForId(null)}
+            onDone={async (message) => {
+              setTrackingForId(null);
+              setActionInfo(message);
+              if (uid && sellerType) await load(uid, sellerType, sellerProfile);
+            }}
+          />
+        );
+      })()}
+
+      {revertForId && (() => {
+        const o = orders.find((x) => x.id === revertForId);
+        if (!o || !REVERTABLE_STATUSES.includes(o.status)) return null;
+        return (
+          <RevertStatusDialog
+            order={o}
+            onCancel={() => setRevertForId(null)}
+            onDone={async (message) => {
+              setRevertForId(null);
+              setActionError(null);
+              setActionInfo(message);
+              if (uid && sellerType) await load(uid, sellerType, sellerProfile);
+            }}
+          />
+        );
+      })()}
     </>
   );
 }

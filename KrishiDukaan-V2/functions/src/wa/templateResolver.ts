@@ -12,6 +12,7 @@ export function resolveTemplateLanguage(template: WaTemplate): string {
     case "free_seats_assigned":
     case "navratri_offer_free":
     case "navratri_offer_paid":
+    case "order_tracking_link":
       return "hi";
     default:
       return "mr";
@@ -100,6 +101,16 @@ export function resolveTemplateComponents(
         body(p("customerName")),
         { type: "button", sub_type: "url", index: 0, parameters: [t(p("orderId"))] },
       ];
+
+    case "order_tracking_link":
+      // Sent to the CUSTOMER when their shipment is dispatched. Hindi (hi).
+      // VERIFIED against the live Meta template definition
+      // (GET /{WABA_ID}/message_templates?name=order_tracking_link) on 2026-10-13:
+      //   BODY: exactly TWO variables, no header, no buttons.
+      //     {{1}} = customerName
+      //     {{2}} = trackingUrl  (the FULL tracking link, inline in the body text —
+      //             it is NOT a dynamic URL button, so no button component is sent)
+      return [body(p("customerName"), p("trackingUrl"))];
 
     case "order_accept_pending":
       // Sent to the SELLER (retailer) when an online delivery order has been
