@@ -25,6 +25,7 @@ import '../../../core/utils/currency_utils.dart';
 import '../../../core/utils/geo_utils.dart';
 import '../../../core/utils/price_display.dart';
 import '../../../core/widgets/price_tag.dart';
+import '../../../core/widgets/bought_by.dart';
 import '../../../core/utils/store_focus_route.dart';
 import '../../../core/utils/web_links.dart';
 import '../../../core/widgets/error_view.dart';
@@ -767,6 +768,7 @@ class _ProductDetailScreenState extends ConsumerState<ProductDetailScreen> {
           ),
           const SizedBox(height: 8),
           Text(catalog.name, style: AppTextStyles.heading1),
+          BoughtBy(productId: catalog.id),
           const SizedBox(height: 8),
 
           // Rating + reviews

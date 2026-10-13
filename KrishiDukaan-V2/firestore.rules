@@ -808,6 +808,14 @@ service cloud.firestore {
         && (!('whatsapp' in d) || (d.whatsapp is string && d.whatsapp.size() <= 16))
         && (!('socialLinks' in d) || d.socialLinks is map);
     }
+    // "N people bought this in the last …" per product. Public, written only
+    // by the rebuildProductBuyStats function (holds counts and initials, no
+    // names, phones or photos).
+    match /productBuyStats/{productId} {
+      allow read: if true;
+      allow write: if false;
+    }
+
     match /retailerBrandPages/{phone} {
       allow get: if resource.data.enabled == true
         || (isAuthed() && myPhone() == phone) || isAdmin();

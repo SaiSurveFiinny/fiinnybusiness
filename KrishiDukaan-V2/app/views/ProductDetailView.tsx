@@ -22,6 +22,7 @@ import {
 } from '../dashboard/_lib/retailer-profile-firestore';
 import { ReviewSection } from '../../components/shared/ReviewSection';
 import { ProductListingCard } from '../../components/shared/ProductListingCard';
+import { BoughtBy } from '../../components/shared/bought-by';
 import { displayPrice, pctOff } from '../lib/price-display';
 
 type StoreListItem = {
@@ -1796,6 +1797,7 @@ export default function ProductDetailView({
             </HelperTooltip>
           </div>
           <h1 className="text-3xl md:text-4xl font-bold text-on-surface tracking-tight leading-tight">{product.fullName || product.name}</h1>
+          <BoughtBy productId={product.id} className="mt-1" />
         </div>
 
         {/* Price + quantity + CTA */}
