@@ -790,6 +790,34 @@ service cloud.firestore {
       allow delete: if isAdmin();
     }
 
+    // Retailer brand page (the shop's public page at /shop/{phone}). Doc ID =
+    // the retailer's E164 phone. Public only while `enabled` — switching it
+    // off hides the page from everyone but the owner and admins; a public get
+    // of a hidden or missing page is denied, which readers treat as "off".
+    function validRetailerBrandPage(d) {
+      return d.keys().hasOnly(['enabled', 'tagline', 'about', 'establishedYear',
+               'photos', 'openingHours', 'highlights', 'whatsapp', 'socialLinks',
+               'createdAt', 'updatedAt'])
+        && d.enabled is bool
+        && (!('tagline' in d) || (d.tagline is string && d.tagline.size() <= 120))
+        && (!('about' in d) || (d.about is string && d.about.size() <= 2000))
+        && (!('establishedYear' in d) || (d.establishedYear is string && d.establishedYear.size() <= 4))
+        && (!('photos' in d) || (d.photos is list && d.photos.size() <= 8))
+        && (!('openingHours' in d) || (d.openingHours is string && d.openingHours.size() <= 120))
+        && (!('highlights' in d) || (d.highlights is list && d.highlights.size() <= 8))
+        && (!('whatsapp' in d) || (d.whatsapp is string && d.whatsapp.size() <= 16))
+        && (!('socialLinks' in d) || d.socialLinks is map);
+    }
+    match /retailerBrandPages/{phone} {
+      allow get: if resource.data.enabled == true
+        || (isAuthed() && myPhone() == phone) || isAdmin();
+      // Listing (sitemap) only ever returns visible pages.
+      allow list: if resource.data.enabled == true || isAdmin();
+      allow create, update: if isAuthed() && (myPhone() == phone || isAdmin())
+        && validRetailerBrandPage(request.resource.data);
+      allow delete: if isAuthed() && (myPhone() == phone || isAdmin());
+    }
+
     // ─── Discount field validation helper ───────────────────────────────────
     // Returns true when the incoming write does not set invalid discount values.
     // discountPct must be 0–99; dates must be absent or timestamps.

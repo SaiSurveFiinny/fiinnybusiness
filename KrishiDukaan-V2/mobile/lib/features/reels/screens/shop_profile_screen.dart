@@ -1,3 +1,6 @@
+import '../../brand/data/retailer_brand_repository.dart';
+import '../../brand/screens/retailer_brand_editor_screen.dart';
+import '../../brand/widgets/retailer_brand_section.dart';
 import '../../../core/utils/link_share.dart';
 import '../../../core/utils/web_links.dart';
 import '../../../core/utils/currency_utils.dart';
@@ -92,6 +95,9 @@ class _ShopProfileScreenState extends ConsumerState<ShopProfileScreen> {
     final reelsAsync = ref.watch(sellerReelsProvider(shopPhone));
     final followersAsync = ref.watch(followerCountProvider(shopPhone));
     final productsAsync = ref.watch(shopListingsProvider(shopPhone));
+    // Brand page content — one doc read; null unless the shop switched it on.
+    final brandPhone = WebLinks.sharePhone(shopPhone) ?? shopPhone;
+    final brand = ref.watch(publicRetailerBrandProvider(brandPhone)).value;
     final currentUser = ref.watch(currentUserProvider).value;
     final isOwnShop = currentUser?.phone == shopPhone;
     final bestOfferPct = (productsAsync.value ?? const <ListingModel>[])
@@ -410,6 +416,34 @@ class _ShopProfileScreenState extends ConsumerState<ShopProfileScreen> {
               ),
             ),
           ),
+
+          // ── Brand page (retailers who switched theirs on) ───────────────
+          if (brand != null)
+            SliverToBoxAdapter(
+              child: ColoredBox(
+                color: Colors.white,
+                child: RetailerBrandSection(
+                  brand: brand,
+                  shopPhone: brandPhone,
+                  shopName: shopAsync.value?.businessName ??
+                      shopAsync.value?.name ??
+                      'this shop',
+                ),
+              ),
+            ),
+          if (isOwnShop && shopAsync.value?.isManufacturer != true)
+            SliverToBoxAdapter(
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(16, 10, 16, 0),
+                child: OutlinedButton.icon(
+                  onPressed: () => context.push(RetailerBrandEditorScreen.route),
+                  icon: const Icon(Icons.storefront_outlined, size: 18),
+                  label: Text(brand != null
+                      ? 'Edit my brand page'
+                      : 'Create my brand page'),
+                ),
+              ),
+            ),
 
           const SliverToBoxAdapter(child: SizedBox(height: 8)),
 
