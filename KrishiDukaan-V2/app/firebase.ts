@@ -2284,13 +2284,26 @@ export async function fetchProductsForUserKeys(keys: string[]): Promise<RawProdu
 }
 
 /** Fetches only the subscription docs for the given owner phones — scoped equivalent of fetchAllSubscriptions. */
-export async function fetchSubscriptionsForPhones(phones: string[]): Promise<any[]> {
-  const uniquePhones = Array.from(new Set(phones.filter(Boolean).map(String)));
-  if (uniquePhones.length === 0) return [];
+/**
+ * Subscriptions for a set of owners. Matched by ownerPhone (as given and as
+ * "+91" + 10 digits) and, when [uids] are passed, by ownerId too — plans
+ * bought before the owner's phone was indexed carry only ownerId.
+ */
+export async function fetchSubscriptionsForPhones(phones: string[], uids: string[] = []): Promise<any[]> {
+  const phoneValues = new Set<string>();
+  for (const p of phones.filter(Boolean).map(String)) {
+    phoneValues.add(p);
+    const digits = p.replace(/\D/g, '');
+    if (digits.length >= 10) phoneValues.add(`+91${digits.slice(-10)}`);
+  }
+  const uniquePhones = Array.from(phoneValues);
+  const uniqueUids = Array.from(new Set(uids.filter(Boolean).map(String)));
+  if (uniquePhones.length === 0 && uniqueUids.length === 0) return [];
   const subsCol = collection(db, 'subscriptions');
-  const snaps = await Promise.all(
-    chunk(uniquePhones, 30).map(batch => getDocs(query(subsCol, where('ownerPhone', 'in', batch)))),
-  );
+  const snaps = await Promise.all([
+    ...chunk(uniquePhones, 30).map(batch => getDocs(query(subsCol, where('ownerPhone', 'in', batch)))),
+    ...chunk(uniqueUids, 30).map(batch => getDocs(query(subsCol, where('ownerId', 'in', batch)))),
+  ]);
   const byId = new Map<string, any>();
   for (const snap of snaps) {
     for (const d of snap.docs) byId.set(d.id, { id: d.id, ...d.data() });
