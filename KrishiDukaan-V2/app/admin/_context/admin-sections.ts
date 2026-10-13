@@ -11,6 +11,7 @@ export const ADMIN_SECTIONS = [
   "overview", "analytics", "orders", "payments", "users", "subscriptions", "pricing", "products",
   "reels", "discounts", "inventory", "companies", "hubs", "banners", "reports", "messages",
   "whatsapp", "blog", "team", "salesTeam", "referrals", "payouts", "routePayouts", "moderation",
+  "appVersion",
 ] as const;
 
 export type AdminSection = (typeof ADMIN_SECTIONS)[number];
@@ -38,6 +39,7 @@ export function sectionsForPath(pathname: string): AdminSection[] {
   if (seg === "sales-team") return ["salesTeam"];
   if (seg === "route-payouts") return ["routePayouts"];
   if (seg === "payouts") return ["payouts", "routePayouts"];
+  if (seg === "app-version") return ["appVersion"];
   return (ADMIN_SECTIONS as readonly string[]).includes(seg) ? [seg as AdminSection] : ["overview"];
 }
 
@@ -46,5 +48,6 @@ export function pathForSection(section: AdminSection): string {
   if (section === "overview") return "/admin";
   if (section === "salesTeam") return "/admin/sales-team";
   if (section === "routePayouts") return "/admin/payouts?tab=overview";
+  if (section === "appVersion") return "/admin/app-version";
   return `/admin/${section}`;
 }
