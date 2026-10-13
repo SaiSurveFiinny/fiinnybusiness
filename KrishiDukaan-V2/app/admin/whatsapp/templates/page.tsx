@@ -4256,6 +4256,11 @@ function NavratriPromotionFlow({ variant }: { variant: NavratriVariant }) {
     retailer: true,
     manufacturer: true,
   });
+  // Resend mode is an explicit admin opt-in: when ON, recipients who already
+  // received this template become selectable again so the promotion can be
+  // intentionally re-sent. When OFF (default) the already-sent guard stands, so
+  // accidental clicks / page retries can never re-contact the same number.
+  const [resendMode, setResendMode] = useState(false);
   const [step, setStep] = useState<"list" | "confirm" | "sending" | "done">("list");
   const [sendResults, setSendResults] = useState<NavratriResult[]>([]);
   const sendingRef = useRef(false);
@@ -4331,6 +4336,24 @@ function NavratriPromotionFlow({ variant }: { variant: NavratriVariant }) {
   const toggleRole = (role: NavratriRole) =>
     setRoleFilters((prev) => ({ ...prev, [role]: !prev[role] }));
 
+  // Turning resend mode OFF drops any already-sent rows from the current
+  // selection so a later send can't accidentally re-contact them.
+  const toggleResendMode = () =>
+    setResendMode((on) => {
+      const next = !on;
+      if (!next) {
+        setSelectedIds((prev) => {
+          const keep = new Set<string>();
+          prev.forEach((id) => {
+            const row = rows.find((r) => r.userId === id);
+            if (row && !row.alreadySent) keep.add(id);
+          });
+          return keep;
+        });
+      }
+      return next;
+    });
+
   const filteredRows = (() => {
     const q = search.trim().toLowerCase();
     return rows.filter((r) => {
@@ -4344,10 +4367,12 @@ function NavratriPromotionFlow({ variant }: { variant: NavratriVariant }) {
     });
   })();
 
-  // Only recipients who have NOT already received this template are selectable.
-  const selectableFiltered = filteredRows.filter((r) => !r.alreadySent);
+  // Recipients who have NOT already received this template are always
+  // selectable; those who have are selectable only in resend mode.
+  const isSelectable = (r: NavratriRow) => resendMode || !r.alreadySent;
+  const selectableFiltered = filteredRows.filter(isSelectable);
   // Eligible count respects the role filter so it matches the visible list.
-  const eligibleCount = rows.filter((r) => roleFilters[r.role] && !r.alreadySent).length;
+  const eligibleCount = rows.filter((r) => roleFilters[r.role] && isSelectable(r)).length;
 
   useEffect(() => {
     const el = masterCheckboxRef.current;
@@ -4361,7 +4386,7 @@ function NavratriPromotionFlow({ variant }: { variant: NavratriVariant }) {
   }, [selectedIds, selectableFiltered]);
 
   const toggleRow = (row: NavratriRow) => {
-    if (row.alreadySent) return;
+    if (!isSelectable(row)) return;
     setSelectedIds((prev) => {
       const next = new Set(prev);
       if (next.has(row.userId)) next.delete(row.userId); else next.add(row.userId);
@@ -4369,7 +4394,9 @@ function NavratriPromotionFlow({ variant }: { variant: NavratriVariant }) {
     });
   };
 
-  const selectedRows = rows.filter((r) => selectedIds.has(r.userId) && !r.alreadySent);
+  const selectedRows = rows.filter((r) => selectedIds.has(r.userId) && isSelectable(r));
+  const resendCount = selectedRows.filter((r) => r.alreadySent).length;
+  const newCount = selectedRows.length - resendCount;
   const estimatedCost = selectedRows.length * MARKETING_MSG_COST_INR;
 
   const displayName = (r: NavratriRow) => r.businessName || r.shopName || r.ownerName || "—";
@@ -4406,10 +4433,15 @@ function NavratriPromotionFlow({ variant }: { variant: NavratriVariant }) {
             name: row.ownerName,
           },
           source: {
-            event: `admin_manual_navratri_${variant}`,
+            // A resend carries a distinct event + flag so the waNotifications
+            // doc is a self-contained audit record of each send attempt.
+            event: `admin_manual_navratri_${variant}${row.alreadySent ? "_resend" : ""}`,
             entityType: "users",
             entityId: row.userId,
+            resend: row.alreadySent,
+            previousSentAt: row.alreadySent && row.sentAt ? row.sentAt : null,
           },
+          resend: row.alreadySent,
           status: "pending",
           type: "marketing",
           metaMessageId: null,
@@ -4526,7 +4558,14 @@ function NavratriPromotionFlow({ variant }: { variant: NavratriVariant }) {
             <li>
               Variable: <span className="font-mono text-xs">{"{{1}}"}</span> = Business name (the {offer.offerQuantity}-product offer is fixed in the template copy)
             </li>
-            <li>Recipients: <span className="font-semibold">{fmtCount(selectedRows.length)} retailer{selectedRows.length !== 1 ? "s" : ""}</span></li>
+            <li>
+              Recipients: <span className="font-semibold">{fmtCount(selectedRows.length)} retailer{selectedRows.length !== 1 ? "s" : ""}</span>
+              {resendCount > 0 && (
+                <span className="text-amber-600">
+                  {" "}({fmtCount(newCount)} new · <span className="font-semibold text-orange-700">{fmtCount(resendCount)} resend</span>)
+                </span>
+              )}
+            </li>
             <li>
               Estimated cost:{" "}
               <span className="font-semibold">
@@ -4534,6 +4573,12 @@ function NavratriPromotionFlow({ variant }: { variant: NavratriVariant }) {
               </span>
             </li>
           </ul>
+          {resendCount > 0 && (
+            <p className="text-xs font-semibold text-orange-700">
+              ⚠️ {fmtCount(resendCount)} recipient{resendCount !== 1 ? "s have" : " has"} already received this
+              promotion and will be messaged again.
+            </p>
+          )}
           <p className="text-xs text-amber-600 mt-1">
             Queues {fmtCount(selectedRows.length)} doc{selectedRows.length !== 1 ? "s" : ""} to{" "}
             <code className="font-mono">waNotifications</code>. No user or subscription records will be modified — this does not grant seats.
@@ -4546,6 +4591,9 @@ function NavratriPromotionFlow({ variant }: { variant: NavratriVariant }) {
               <tr>
                 <th className="text-left px-3 py-2.5 text-xs font-semibold text-gray-500 uppercase tracking-wide">Business</th>
                 <th className="text-left px-3 py-2.5 text-xs font-semibold text-gray-500 uppercase tracking-wide">Phone</th>
+                {resendCount > 0 && (
+                  <th className="text-left px-3 py-2.5 text-xs font-semibold text-gray-500 uppercase tracking-wide">Type</th>
+                )}
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-100">
@@ -4553,6 +4601,17 @@ function NavratriPromotionFlow({ variant }: { variant: NavratriVariant }) {
                 <tr key={r.userId}>
                   <td className="px-3 py-2.5 text-xs text-gray-800">{displayName(r)}</td>
                   <td className="px-3 py-2.5 font-mono text-xs text-gray-600">{displayPhone(r.phone)}</td>
+                  {resendCount > 0 && (
+                    <td className="px-3 py-2.5">
+                      {r.alreadySent ? (
+                        <span className="inline-flex items-center gap-1 text-xs px-1.5 py-0.5 rounded-full bg-orange-50 text-orange-700">
+                          <RefreshCw className="w-3 h-3" /> Resend
+                        </span>
+                      ) : (
+                        <span className="text-xs px-1.5 py-0.5 rounded-full bg-green-50 text-green-700">New</span>
+                      )}
+                    </td>
+                  )}
                 </tr>
               ))}
             </tbody>
@@ -4658,7 +4717,37 @@ function NavratriPromotionFlow({ variant }: { variant: NavratriVariant }) {
             className="w-full border border-gray-300 rounded-xl pl-9 pr-3 py-2 text-sm text-gray-800 bg-white focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent placeholder:text-gray-400"
           />
         </div>
+
+        {/* Resend opt-in — unlocks already-contacted recipients */}
+        <label
+          className={cn(
+            "flex items-center gap-2 px-3 py-2 rounded-xl text-xs font-medium border cursor-pointer select-none transition-colors",
+            resendMode
+              ? "bg-amber-100 border-amber-300 text-amber-800"
+              : "bg-white border-gray-300 text-gray-600 hover:bg-gray-50",
+          )}
+        >
+          <input
+            type="checkbox"
+            checked={resendMode}
+            onChange={toggleResendMode}
+            className="h-4 w-4 rounded border-gray-300 text-amber-600 focus:ring-amber-400/40"
+          />
+          <RefreshCw className="w-3.5 h-3.5" />
+          Resend to already-contacted
+        </label>
       </div>
+
+      {resendMode && (
+        <div className="flex gap-2 rounded-xl border border-amber-300 bg-amber-50 px-4 py-2.5">
+          <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
+          <p className="text-xs text-amber-700">
+            Resend mode is on. Recipients who already received this promotion are now selectable and
+            will be <strong>messaged again</strong> (billed per message). Eligibility is unchanged — no
+            seats are granted and no subscription records are modified.
+          </p>
+        </div>
+      )}
 
       {loading ? (
         <div className="flex h-28 items-center justify-center gap-2 text-sm text-gray-400">
@@ -4705,13 +4794,15 @@ function NavratriPromotionFlow({ variant }: { variant: NavratriVariant }) {
               </thead>
               <tbody className="divide-y divide-gray-100">
                 {filteredRows.map((r) => {
-                  const checked = selectedIds.has(r.userId) && !r.alreadySent;
+                  const selectable = isSelectable(r);
+                  const checked = selectedIds.has(r.userId) && selectable;
+                  const lockedSent = r.alreadySent && !resendMode;
                   return (
                     <tr
                       key={r.userId}
                       className={cn(
                         "transition-colors",
-                        r.alreadySent
+                        lockedSent
                           ? "bg-gray-50 opacity-60 cursor-not-allowed"
                           : checked
                           ? "bg-primary/5 cursor-pointer"
@@ -4723,7 +4814,7 @@ function NavratriPromotionFlow({ variant }: { variant: NavratriVariant }) {
                         <input
                           type="checkbox"
                           checked={checked}
-                          disabled={r.alreadySent}
+                          disabled={!selectable}
                           onChange={() => toggleRow(r)}
                           onClick={(e) => e.stopPropagation()}
                           className="h-4 w-4 rounded border-gray-300 text-primary focus:ring-primary/30 disabled:cursor-not-allowed"
@@ -4742,10 +4833,17 @@ function NavratriPromotionFlow({ variant }: { variant: NavratriVariant }) {
                       <td className="px-3 py-2.5 font-mono text-xs text-gray-600">{displayPhone(r.phone)}</td>
                       <td className="px-3 py-2.5 hidden sm:table-cell">
                         {r.alreadySent ? (
-                          <span className="inline-flex items-center gap-1 text-xs px-1.5 py-0.5 rounded-full bg-gray-100 text-gray-500">
-                            <CheckCircle className="w-3 h-3" />
-                            Already sent{r.sentAt ? ` · ${formatTimeAgo(r.sentAt)}` : ""}
-                          </span>
+                          resendMode ? (
+                            <span className="inline-flex items-center gap-1 text-xs px-1.5 py-0.5 rounded-full bg-orange-50 text-orange-700">
+                              <RefreshCw className="w-3 h-3" />
+                              Resend{r.sentAt ? ` · last sent ${formatTimeAgo(r.sentAt)}` : ""}
+                            </span>
+                          ) : (
+                            <span className="inline-flex items-center gap-1 text-xs px-1.5 py-0.5 rounded-full bg-gray-100 text-gray-500">
+                              <CheckCircle className="w-3 h-3" />
+                              Already sent{r.sentAt ? ` · ${formatTimeAgo(r.sentAt)}` : ""}
+                            </span>
+                          )
                         ) : (
                           <span className="text-xs px-1.5 py-0.5 rounded-full bg-amber-50 text-amber-700">Eligible</span>
                         )}

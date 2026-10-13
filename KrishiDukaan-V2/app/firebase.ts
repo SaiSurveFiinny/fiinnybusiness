@@ -571,6 +571,12 @@ export type ProductSellerKey = {
   sellingPrice?: number;
   variants?: { unit: string; price: number; stock?: number }[];
   isOnline?: boolean;
+  // Which profile collection owns this seller. A single phone can be registered
+  // BOTH as a manufacturer and as a retailer (e.g. a manufacturer that also runs
+  // a retail outlet under the same number), so the profile lookup must prefer the
+  // collection that matches the seller's role — otherwise a manufacturer's own
+  // listing resolves to the colliding retailer doc and shows the wrong name.
+  ownerType?: 'manufacturer' | 'retailer' | string;
 };
 
 function sellerFromCopyDoc(d: Record<string, any>): ProductSellerKey {
@@ -581,6 +587,7 @@ function sellerFromCopyDoc(d: Record<string, any>): ProductSellerKey {
     sellingPrice: typeof d.price === 'number' ? d.price : undefined,
     variants: Array.isArray(d.variants) ? d.variants : undefined,
     isOnline: d.isOnline === true || d.sellMode === 'online_delivery',
+    ownerType: d.ownerType || undefined,
   };
 }
 
@@ -646,8 +653,16 @@ export async function fetchStoresForSellers(sellers: ProductSellerKey[]): Promis
       );
       let data: Record<string, any> | null = null;
       let docId = keys[0] ?? '';
+      // Prefer the collection matching this seller's role. A phone can live in
+      // BOTH retailers/ and manufacturers/ (same number used by a manufacturer
+      // and a retailer), so a manufacturer owner must read its manufacturers/
+      // doc first — otherwise the retailers/ doc wins and its name/location are
+      // shown for the manufacturer's own listing.
+      const cols = seller.ownerType === 'manufacturer'
+        ? (['manufacturers', 'retailers', 'profiles'] as const)
+        : (['retailers', 'manufacturers', 'profiles'] as const);
       outer: for (const key of keys) {
-        for (const col of ['retailers', 'manufacturers', 'profiles'] as const) {
+        for (const col of cols) {
           const snap = await getDoc(doc(db, col, key)).catch(() => null);
           if (snap?.exists()) { data = snap.data() as Record<string, any>; docId = snap.id; break outer; }
         }
@@ -2669,6 +2684,63 @@ export async function adminUpdateProduct(productId: string, product: Partial<Mar
 
 export async function adminDeleteProduct(productId: string): Promise<void> {
   await deleteDoc(doc(db, 'products', productId));
+}
+
+/**
+ * Soft-deletes every seller COPY rooted at the given canonical product ids.
+ *
+ * Deleting a catalogue product used to leave its `manufacturer_assigned` /
+ * `admin_assigned` copies active. Because the marketplace card (and the admin
+ * page's groupProducts) dedups by NAME and PROMOTES an orphan copy to canonical
+ * when no non-copy doc survives, those stray copies silently rebuilt the card —
+ * the deleted product "came back". Deactivating the copies alongside the delete
+ * closes that loop. Mirrors adminRemoveAssignment: copy → isActive:false, its
+ * inventory → isAvailable:false, its active seat listing → released.
+ *
+ * Idempotent and copy-only: docs already inactive are skipped, and only
+ * COPY_SOURCES docs are ever touched (never another canonical/own product).
+ * Returns the number of copy product docs deactivated.
+ */
+export async function deactivateSellerCopiesOfProducts(rootProductIds: string[]): Promise<number> {
+  const roots = Array.from(new Set(rootProductIds.filter(Boolean)));
+  if (roots.length === 0) return 0;
+  const COPY_SRC = ['manufacturer_assigned', 'admin_assigned', 'retailer_inventory_copy'];
+
+  // Find copies via both link fields. A Firestore query allows only one `in`,
+  // so chunk the roots and filter source client-side.
+  const chunk = <T,>(a: T[], n: number) =>
+    Array.from({ length: Math.ceil(a.length / n) }, (_, i) => a.slice(i * n, i * n + n));
+  const copies = new Map<string, Record<string, any>>();
+  for (const field of ['manufacturerProductId', 'originalProductId'] as const) {
+    for (const c of chunk(roots, 30)) {
+      const qs = await getDocs(query(collection(db, 'products'), where(field, 'in', c)));
+      qs.forEach((d) => {
+        const data = d.data() as Record<string, any>;
+        if (!COPY_SRC.includes(String(data.source ?? ''))) return;
+        if (data.isActive === false) return;
+        if (!copies.has(d.id)) copies.set(d.id, data);
+      });
+    }
+  }
+  if (copies.size === 0) return 0;
+
+  const copyIds = Array.from(copies.keys());
+  const now = serverTimestamp();
+  const batch = writeBatch(db);
+  copyIds.forEach((id) => batch.update(doc(db, 'products', id), { isActive: false, updatedAt: now }));
+
+  // Deactivate each copy's inventory doc(s) and release its active seat listing.
+  for (const c of chunk(copyIds, 30)) {
+    const [inv, seats] = await Promise.all([
+      getDocs(query(collection(db, 'inventory'), where('productId', 'in', c))),
+      getDocs(query(collection(db, 'retailerSeatListings'), where('productId', 'in', c))),
+    ]);
+    inv.forEach((d) => { if (d.data().isAvailable !== false) batch.update(d.ref, { isAvailable: false, updatedAt: now }); });
+    seats.forEach((d) => { if (d.data().status === 'active') batch.update(d.ref, { status: 'released', releasedAt: now }); });
+  }
+
+  await batch.commit();
+  return copyIds.length;
 }
 
 // ─── Admin → Seller product assignment ──────────────────────────────────────

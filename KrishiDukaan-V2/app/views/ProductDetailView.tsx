@@ -781,6 +781,12 @@ export default function ProductDetailView({
     sellingPrice: typeof product.price === 'number' ? product.price : undefined,
     variants: Array.isArray(product.variants) ? product.variants : undefined,
     isOnline: product.isOnline,
+    // A manufacturer-owned listing (no retailer identity, has manufacturer
+    // identity) must resolve its manufacturers/ profile, not a retailers/ doc
+    // that happens to share the same phone — see fetchStoresForSellers.
+    ownerType: (!product.retailerId && !product.retailerPhone && (product.manufacturerId || product.manufacturerPhone))
+      ? 'manufacturer'
+      : 'retailer',
   }), [product]);
 
   const [perProductStores, setPerProductStores] = useState<StoreWithDistance[]>([]);
