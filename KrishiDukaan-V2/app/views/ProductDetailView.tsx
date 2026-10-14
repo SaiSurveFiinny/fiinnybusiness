@@ -749,7 +749,6 @@ export default function ProductDetailView({
   const [storeOnlineMap, setStoreOnlineMap] = useState<Record<string, boolean>>({});
   const [selectedOrderStoreId, setSelectedOrderStoreId] = useState<string | null>(null);
   const [mobileStoresExpanded, setMobileStoresExpanded] = useState(false);
-  const [descExpanded, setDescExpanded] = useState(false);
   const [compositionOpen, setCompositionOpen] = useState(true);
   const [insightsOpen, setInsightsOpen] = useState(true);
   const [selectedVariantIdx, setSelectedVariantIdx] = useState(0);
@@ -781,6 +780,12 @@ export default function ProductDetailView({
     sellingPrice: typeof product.price === 'number' ? product.price : undefined,
     variants: Array.isArray(product.variants) ? product.variants : undefined,
     isOnline: product.isOnline,
+    // A manufacturer-owned listing (no retailer identity, has manufacturer
+    // identity) must resolve its manufacturers/ profile, not a retailers/ doc
+    // that happens to share the same phone — see fetchStoresForSellers.
+    ownerType: (!product.retailerId && !product.retailerPhone && (product.manufacturerId || product.manufacturerPhone))
+      ? 'manufacturer'
+      : 'retailer',
   }), [product]);
 
   const [perProductStores, setPerProductStores] = useState<StoreWithDistance[]>([]);
@@ -1909,20 +1914,14 @@ export default function ProductDetailView({
           );
         })()}
 
-        {/* Product description — moved below the pricing & action section */}
+        {/* Product description — moved below the pricing & action section.
+            Capped at 300 chars by the add/edit forms, so it's shown in full
+            with no clamp/toggle. */}
         {product.description && (
           <div className="pt-4 border-t border-surface-container">
-            <p className={`text-on-surface-variant leading-relaxed text-sm ${descExpanded ? "" : "line-clamp-3"}`}>
-              {product.description} {t('productDescSuffix')}
+            <p className="text-on-surface-variant leading-relaxed text-sm">
+              {product.description}
             </p>
-            {product.description.length > 120 && (
-              <button
-                onClick={() => setDescExpanded((v) => !v)}
-                className="mt-1 text-xs font-semibold text-primary hover:underline focus:outline-none"
-              >
-                {descExpanded ? t('showLess') : t('readMore')}
-              </button>
-            )}
           </div>
         )}
       </div>

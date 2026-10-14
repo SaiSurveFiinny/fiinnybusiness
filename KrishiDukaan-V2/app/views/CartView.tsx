@@ -11,6 +11,7 @@ import { useI18n } from "../i18n/I18nContext";
 import { HelperIcon } from "../../components/helpers";
 import { ShieldCheck, CreditCard, Lock } from "lucide-react";
 import { calcDiscount } from "../utils/discount";
+import { resolveVariant } from "../lib/cart-pricing";
 import { parseVariantWeightKg } from "../utils/weight";
 import { computeLinePricing } from "../utils/gst";
 import { resolveDeliverySlabs, chargeFromSlabs, type DeliveryType } from "../utils/delivery";
@@ -532,15 +533,20 @@ function StorePickerInline({
                   ? product.sellerDiscounts[store.id]
                   : 0;
 
-          // Resolve price: variant-specific entry → availability entry → product price
-          const variantEntry = variantUnit
-            ? availability?.variants?.find((v) => v.unit === variantUnit)
-            : undefined;
-          const rawPrice = (variantEntry?.price && variantEntry.price > 0)
-            ? variantEntry.price
-            : (availability?.sellingPrice && availability.sellingPrice > 0)
-              ? availability.sellingPrice
-              : product.price;
+          // Resolve the selected pack size through the SAME resolver the checkout
+          // backend uses, so the price shown, the price charged and the order all
+          // agree — and a store that does not stock the chosen size is dropped
+          // here rather than silently offered at the base price.
+          const resolved = resolveVariant({
+            variantUnit: variantUnit ?? "",
+            sellerVariants: availability?.variants,
+            sellerBasePrice: availability?.sellingPrice ?? 0,
+            hasSellerSource: !!availability,
+            canonicalVariants: product.variants,
+            canonicalBasePrice: product.price,
+          });
+          if (!resolved.ok) return null;
+          const rawPrice = resolved.price;
           const { finalPrice: discountedPrice } = calcDiscount(rawPrice, storeDiscountPct);
           const displayPrice = storeDiscountPct > 0 ? discountedPrice : rawPrice;
           const hasDiscount = storeDiscountPct > 0;

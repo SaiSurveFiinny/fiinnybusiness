@@ -885,6 +885,15 @@ export const notifyCustomerOnOrderStatus = onDocumentWritten(
         (before.data() as Record<string, unknown>).status ?? ""
       );
       if (prevStatus === status) return; // not a status change (e.g. payment field update)
+
+      // A REVERT (seller/admin stepping a mistakenly-advanced order back — see
+      // app/api/orders/revert-status) must not re-send a stage update the
+      // customer already received. Suppress any BACKWARD move along the forward
+      // flow; the customer is only ever messaged on genuine forward progress.
+      const FORWARD_FLOW = ["placed", "accepted", "dispatched", "out_for_delivery", "delivered"];
+      const prevIdx = FORWARD_FLOW.indexOf(prevStatus);
+      const nextIdx = FORWARD_FLOW.indexOf(status);
+      if (prevIdx >= 0 && nextIdx >= 0 && nextIdx < prevIdx) return;
     }
 
     const customerPhone = firstPhone(d.customerPhone, d.customerId);

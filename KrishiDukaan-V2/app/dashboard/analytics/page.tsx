@@ -119,6 +119,16 @@ export default function AnalyticsPage() {
 
   const emptySeries = [] as { label: string; value: number }[];
 
+  // The window the charts cover, shown as a subtitle so the title no longer
+  // claims "last 7 days" when Month/Year/Custom is selected.
+  const periodLabel = customRange
+    ? `${formatShort(customRange.start)} – ${formatShort(customRange.end)}`
+    : period === "week"
+      ? "Last 7 days"
+      : period === "month"
+        ? "Last 30 days"
+        : "Last 12 months";
+
   // "Share my stats" image: the selected window's numbers (the order tiles
   // above are all-time; the series are the window).
   const sum = (series?: { value: number }[]) => (series ?? []).reduce((a, p) => a + (Number(p.value) || 0), 0);
@@ -301,13 +311,18 @@ export default function AnalyticsPage() {
       <div className="mt-6 grid gap-6 lg:grid-cols-2">
         <SimpleBarChart
           title={t('anRevenueOverTime')}
+          subtitle={periodLabel}
           data={orders?.revenueOverTime ?? emptySeries}
           accentClass="bg-primary"
+          valueFormatter={formatINR}
+          emptyMessage="No revenue in this period."
         />
         <SimpleBarChart
           title={t('anOrdersOverTime')}
+          subtitle={periodLabel}
           data={orders?.ordersOverTime ?? emptySeries}
           accentClass="bg-secondary"
+          emptyMessage="No orders in this period."
         />
       </div>
 
@@ -360,6 +375,7 @@ export default function AnalyticsPage() {
           data={stats?.viewsOverTime ?? emptySeries}
           accentClass="bg-primary"
           helperKey="dashChartViews"
+          emptyMessage="No product views tracked for this period."
         />
         <SimpleBarChart
           title={t('callsMade')}
@@ -367,6 +383,7 @@ export default function AnalyticsPage() {
           data={stats?.callsOverTime ?? emptySeries}
           accentClass="bg-secondary"
           helperKey="dashChartCalls"
+          emptyMessage="No tap-to-call activity tracked for this period."
         />
       </div>
 
@@ -377,6 +394,7 @@ export default function AnalyticsPage() {
           data={stats?.directionRequests ?? emptySeries}
           accentClass="bg-harvest"
           helperKey="dashChartDirections"
+          emptyMessage="No direction requests tracked for this period."
         />
       </div>
 

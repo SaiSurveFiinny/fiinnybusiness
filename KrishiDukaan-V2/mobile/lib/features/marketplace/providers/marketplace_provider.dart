@@ -713,7 +713,7 @@ final listingsForCatalogProvider = FutureProvider.family<List<ListingModel>, Str
     }
   }
 
-  // 2. Add the owner's store if not already covered by availability
+  // 2. Add the owner's store if not already covered by availability.
   final ownerPhone = product.retailerPhone ?? product.createdByPhone ?? '';
   final ownerId = product.retailerId ?? '';
   if (ownerPhone.isNotEmpty || ownerId.isNotEmpty) {
@@ -738,6 +738,44 @@ final listingsForCatalogProvider = FutureProvider.family<List<ListingModel>, Str
       variants: [],
       store: ownerStore,
     );
+  }
+
+  // 3. Manufacturer-direct fallback. A manufacturer-owned product sold online
+  //    directly (no retailer copies, so `availability` is empty, and no
+  //    retailer identity for step 2 to use) would otherwise resolve to ZERO
+  //    orderable sellers — the package-size selector then has nothing to order
+  //    against, which is exactly why variants work for a retailer-stocked
+  //    product but not for a manufacturer-direct one. Seed the manufacturer as
+  //    the seller with the product's OWN variants, so every size is orderable
+  //    at its listed price (storePriceForVariant needs the store's variants to
+  //    price a non-base size). Mirrors web's `ownerSeed`
+  //    (app/views/ProductDetailView.tsx:777). Scoped to `listings.isEmpty` so a
+  //    product that already has any seller (every product with availability[],
+  //    incl. all retailer-stocked ones) is left exactly as before.
+  if (listings.isEmpty) {
+    final mfrPhone = product.manufacturerPhone ?? '';
+    final mfrId = product.manufacturerId ?? '';
+    if (mfrPhone.isNotEmpty || mfrId.isNotEmpty) {
+      final mfrStore = findStore(
+        mfrId.isNotEmpty ? mfrId : null,
+        mfrPhone.isNotEmpty ? mfrPhone : null,
+      );
+      final isOnline = product.sellMode != 'offline_store_only' &&
+          product.isOnline != false &&
+          !(mfrStore?.onlineSellingDisabled ?? false);
+      final mfrStockQty =
+          (product.stock?.toLowerCase() == 'out of stock') ? 0 : 99;
+      addListing(
+        storeId: mfrId,
+        phone: mfrPhone,
+        name: mfrStore?.name ?? product.store ?? '',
+        price: product.price,
+        stockQty: mfrStockQty,
+        isOnline: isOnline,
+        variants: product.variants ?? const <VariantModel>[],
+        store: mfrStore,
+      );
+    }
   }
 
   // Sort ascending by distance; sellers without location go to end

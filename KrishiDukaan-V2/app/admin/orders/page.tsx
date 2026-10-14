@@ -10,6 +10,7 @@
  */
 
 import { useEffect, useMemo, useState } from "react";
+import Link from "next/link";
 import { getAuth } from "firebase/auth";
 import {
   ShoppingCart,
@@ -29,6 +30,7 @@ import {
   X,
   Undo2,
   Loader2,
+  Plus,
 } from "lucide-react";
 import { fetchOrderTotals, ordersQuery, searchOrdersDirect, type OrderTotals } from "../_lib/admin-queries";
 import { readAllDocs, usePagedQuery } from "../_lib/use-paged-query";
@@ -572,6 +574,12 @@ export default function AdminOrdersPage() {
           </p>
         </div>
         <div className="flex items-center gap-2">
+          <Link
+            href="/admin/orders/create"
+            className="inline-flex items-center gap-1.5 rounded-xl border border-primary/30 bg-primary/5 px-3 py-2 text-xs font-bold text-primary hover:bg-primary/10 transition-colors"
+          >
+            <Plus className="h-3.5 w-3.5" /> Create order manually
+          </Link>
           <button
             type="button"
             onClick={() => loadOrders()}
