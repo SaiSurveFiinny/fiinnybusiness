@@ -267,6 +267,8 @@ interface ChatMsg {
   mimeType?: string | null;
   fileName?: string | null;
   fileSize?: number | null;
+  /** For messageType === "reaction": the emoji, or "" when the reaction was removed. */
+  emoji?: string | null;
 }
 
 interface ConvRow {
@@ -518,6 +520,10 @@ export default function WhatsAppInboxPage() {
         // mediaId may come from the explicit field (new docs) or rawPayload (legacy)
         mediaId: m.mediaId ?? (m.rawPayload?.image as any)?.id ?? null,
         mimeType: m.mimeType ?? (m.rawPayload?.image as any)?.mime_type ?? null,
+        // Reactions carry the emoji in rawPayload.reaction.emoji ("" = removed).
+        emoji: m.messageType === "reaction"
+          ? String((m.rawPayload?.reaction as any)?.emoji ?? "")
+          : null,
       }));
 
     const outMsgs: ChatMsg[] = outgoing.map((m) => ({
@@ -1124,6 +1130,17 @@ export default function WhatsAppInboxPage() {
                                   mediaId={msg.mediaId ?? null}
                                   caption={msg.text}
                                 />
+                              ) : msg.messageType === "reaction" ? (
+                                <p className="flex items-center gap-1.5 text-sm leading-relaxed text-on-surface-variant">
+                                  {msg.emoji ? (
+                                    <>
+                                      <span className="text-base">{msg.emoji}</span>
+                                      <span className="text-xs italic">reacted to a message</span>
+                                    </>
+                                  ) : (
+                                    <span className="text-xs italic">removed their reaction</span>
+                                  )}
+                                </p>
                               ) : (
                                 <>
                                   {!isOut && msg.messageType !== "text" && (
