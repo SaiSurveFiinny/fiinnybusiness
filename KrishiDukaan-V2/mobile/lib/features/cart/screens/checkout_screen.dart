@@ -6,6 +6,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
+import '../data/server_priced_items.dart';
 import '../../../core/payments/app_razorpay.dart';
 import '../../../core/constants/app_colors.dart';
 import '../../../core/constants/app_config.dart';
@@ -50,6 +51,9 @@ class _CheckoutScreenState extends ConsumerState<CheckoutScreen> {
   /// (create-cart-order's `sellerBreakdown`), keyed by seller. The order is
   /// written from these — the figures the customer was actually charged.
   Map<String, SellerPricing>? _serverPricing;
+
+  /// The lines as the server priced them (create-cart-order's `items`).
+  Object? _serverItems;
 
   late final AppRazorpay _razorpay;
   final _paymentService = PaymentService();
@@ -158,6 +162,7 @@ class _CheckoutScreenState extends ConsumerState<CheckoutScreen> {
 
       // The server's own per-seller pricing, when it sent it — what we are
       // about to charge, and what the order will be written from.
+      _serverItems = result['items'];
       final rawBreakdown = result['sellerBreakdown'];
       _serverPricing = rawBreakdown is List
           ? {
@@ -286,7 +291,8 @@ class _CheckoutScreenState extends ConsumerState<CheckoutScreen> {
     final delivery = await ref.read(deliveryChargeProvider.future);
 
     await _orderRepo.createOrdersAfterPayment(
-      items: items,
+      // Each line at the price the server charged, so the order matches it.
+      items: withServerPrices(items, _serverItems),
       customerName: _nameCtrl.text.trim(),
       customerPhone: user.phoneNumber ?? '',
       customerAddress: _addressMap(),

@@ -10,6 +10,7 @@ import {
 } from 'firebase/firestore';
 import { db } from './firebase';
 import type { CartItem } from '../types/order';
+import { normalizeUnit } from './utils/weight';
 
 export type StoredCartItem = {
   productId: string;
@@ -367,7 +368,7 @@ export async function reconstructCartItems(stored: StoredCartItem[]): Promise<Ca
 
     if (!storeId) {
       // Pending item — no store selected yet
-      const variant = variantUnit ? product.variants?.find(v => v.unit === variantUnit) : undefined;
+      const variant = variantUnit ? product.variants?.find(v => normalizeUnit(v.unit) === normalizeUnit(variantUnit)) : undefined;
       const price = variant?.price ?? product.price;
       result.push({
         productId: item.productId,
@@ -412,7 +413,7 @@ export async function reconstructCartItems(stored: StoredCartItem[]): Promise<Ca
 
         const basePrice = (() => {
           if (variantUnit && avail?.variants) {
-            const v = avail.variants.find(v => v.unit === variantUnit);
+            const v = avail.variants.find(v => normalizeUnit(v.unit) === normalizeUnit(variantUnit));
             return v?.price ?? avail.sellingPrice ?? sellerEntry?.price ?? product.price;
           }
           return avail?.sellingPrice ?? sellerEntry?.price ?? product.price;
