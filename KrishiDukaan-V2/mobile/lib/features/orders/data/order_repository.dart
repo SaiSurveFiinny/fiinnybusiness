@@ -116,6 +116,7 @@ class OrderRepository {
       final deliveryCharge = sp.deliveryCharge;
       // Included GST is already inside the prices; only EXCLUDED GST was added.
       final grandTotal = sp.total;
+      final savings = sellerItems.fold<double>(0, (s, i) => s + i.lineSavings);
       final state = (customerDeliveryState ?? '').trim();
 
       final orderRef = _db.collection('orders').doc();
@@ -141,6 +142,10 @@ class OrderRepository {
                   'name': i.catalogName,
                   if (i.catalogImage != null) 'image': i.catalogImage,
                   'price': i.price,
+                  // Pre-discount price and % — same fields web orders carry,
+                  // so order history and invoices can show the saving.
+                  if (i.hasDiscount) 'originalPrice': i.originalPrice,
+                  if (i.hasDiscount) 'discountPct': i.discountPct,
                   'quantity': i.quantity,
                   if (i.variantLabel != null) 'variantLabel': i.variantLabel,
                   'listingId': i.listingId,
@@ -155,6 +160,8 @@ class OrderRepository {
                 })
             .toList(),
         'subtotal': subtotal,
+        if (savings > 0) 'mrpSubtotal': subtotal + savings,
+        if (savings > 0) 'totalSavings': savings,
         // All GST in the order (included + added) — for the invoice.
         'totalGst': sp.gstTotal,
         // The part actually ADDED to the payable total (0 → field omitted).

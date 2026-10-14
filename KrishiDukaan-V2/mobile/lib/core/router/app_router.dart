@@ -5,6 +5,7 @@ import '../providers/auth_provider.dart';
 import '../utils/web_links.dart';
 import '../providers/user_provider.dart';
 import '../widgets/app_shell.dart';
+import '../../features/brand/screens/retailer_brand_editor_screen.dart';
 import '../../features/auth/screens/phone_entry_screen.dart';
 import '../../features/auth/screens/otp_verification_screen.dart';
 import '../../features/auth/screens/onboarding_screen.dart';
@@ -538,6 +539,12 @@ final routerProvider = Provider<GoRouter>((ref) {
         path: '/dashboard/delivery',
         parentNavigatorKey: _rootKey,
         builder: (_, _) => const _RootBackFallback(child: DeliverySettingsScreen()),
+      ),
+      GoRoute(
+        path: RetailerBrandEditorScreen.route,
+        parentNavigatorKey: _rootKey,
+        builder: (_, _) =>
+            const _RootBackFallback(child: RetailerBrandEditorScreen()),
       ),
       GoRoute(
         path: '/dashboard/profile',

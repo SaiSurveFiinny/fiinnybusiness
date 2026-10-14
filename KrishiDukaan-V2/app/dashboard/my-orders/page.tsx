@@ -184,11 +184,10 @@ export default function MyOrdersPage() {
     loadOrders(effectiveUid);
   }, [effectiveUid]);
 
-  // Self-service cancel is only offered before the seller has physically
-  // dispatched the parcel — matches the reject window on the seller side
-  // (app/dashboard/orders/page.tsx) and the check the server route enforces
-  // (app/api/orders/cancel), so a customer never sees a button that would
-  // just 409 when pressed.
+  // Self-service cancel is only offered until a seller ACCEPTS the order
+  // ("placed", or "reassigning" while no other seller has taken it) — the
+  // same window app/api/orders/cancel enforces, so a customer never sees a
+  // button that would just 409 when pressed.
   const cancelOrder = async (orderId: string) => {
     const reason = window.prompt("Tell us why you're cancelling (optional):") ?? "";
     if (!window.confirm("Cancel this order? If you paid online, you'll be refunded automatically.")) {
@@ -438,7 +437,12 @@ export default function MyOrdersPage() {
 
                       {/* Cancel + download invoice */}
                       <div className="flex justify-end gap-2 pt-1">
-                        {(order.status === "placed" || order.status === "accepted" || order.status === "reassigning") && (
+                        {order.status === "accepted" && (
+                          <p className="mr-auto self-center text-[11px] text-on-surface-variant">
+                            The seller has accepted this order. To cancel, contact the seller or support.
+                          </p>
+                        )}
+                        {(order.status === "placed" || order.status === "reassigning") && (
                           <button
                             type="button"
                             disabled={cancellingId === order.id}

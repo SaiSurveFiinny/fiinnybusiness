@@ -11,7 +11,7 @@ import { useI18n } from "../i18n/I18nContext";
 import { HelperIcon } from "../../components/helpers";
 import { ShieldCheck, CreditCard, Lock } from "lucide-react";
 import { calcDiscount } from "../utils/discount";
-import { parseVariantWeightKg } from "../utils/weight";
+import { normalizeUnit, parseVariantWeightKg } from "../utils/weight";
 import { computeLinePricing } from "../utils/gst";
 import { resolveDeliverySlabs, chargeFromSlabs, type DeliveryType } from "../utils/delivery";
 
@@ -534,7 +534,7 @@ function StorePickerInline({
 
           // Resolve price: variant-specific entry → availability entry → product price
           const variantEntry = variantUnit
-            ? availability?.variants?.find((v) => v.unit === variantUnit)
+            ? availability?.variants?.find((v) => normalizeUnit(v.unit) === normalizeUnit(variantUnit))
             : undefined;
           const rawPrice = (variantEntry?.price && variantEntry.price > 0)
             ? variantEntry.price

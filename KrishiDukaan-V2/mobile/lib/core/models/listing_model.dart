@@ -1,3 +1,4 @@
+import '../utils/price_display.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 
 class ListingModel {
@@ -114,6 +115,9 @@ class ListingModel {
     }
     return price;
   }
+
+  /// "₹final ₹mrp X% off" for this seller — works for % and fixed-₹ offers.
+  DisplayPrice get displayPrice => DisplayPrice.of(effectivePrice, price);
 
   /// The best-matching bulk tier for buying [quantity] units, or null if bulk
   /// discounts are off, empty, or no tier's minimum is met. Higher tiers

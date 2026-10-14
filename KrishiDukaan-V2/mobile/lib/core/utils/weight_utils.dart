@@ -9,7 +9,10 @@
 /// Examples: "1kg"→1, "500g"→0.5, "250ml"→0.25, "2L"→2, "1.5kg"→1.5, "800ml"→0.8
 double parseVariantWeightKg(String? variantUnit) {
   if (variantUnit == null || variantUnit.trim().isEmpty) return 0;
-  final s = variantUnit.trim();
+  // Canonical form first, so "5 Ltr", "500 gms" and "1 kgs" weigh what they
+  // say instead of 0 kg — same as the website's parseVariantWeightKg.
+  final canonical = normalizeUnit(variantUnit);
+  final s = canonical.isNotEmpty ? canonical : variantUnit.trim();
 
   // kg
   final kgMatch = RegExp(r'^(\d+(?:\.\d+)?)\s*kg$', caseSensitive: false).firstMatch(s);

@@ -54,6 +54,8 @@ export interface SeoProduct {
   totalReviews?: number;
   lowestPrice?: number;
   lowestFinalPrice?: number;
+  /** Just the per-seller pricing — lets cards strike each offer against its own seller's price. */
+  availability?: { storeId: string; storePhone?: string; stockLevel: string; sellingPrice?: number; discountPct?: number }[];
   variants: { unit: string; price: number; stock?: number }[];
   categoryInfo: Record<string, string | string[]>;
   benefits: string[];
@@ -92,6 +94,15 @@ function mapProduct(id: string, data: Record<string, unknown>): SeoProduct {
       typeof data.lowestFinalPrice === "number"
         ? data.lowestFinalPrice
         : undefined,
+    availability: Array.isArray(data.availability)
+      ? (data.availability as Record<string, unknown>[]).map((a) => ({
+          storeId: str(a.storeId),
+          storePhone: a.storePhone ? str(a.storePhone) : undefined,
+          stockLevel: str(a.stockLevel),
+          sellingPrice: typeof a.sellingPrice === "number" ? a.sellingPrice : undefined,
+          discountPct: typeof a.discountPct === "number" ? a.discountPct : undefined,
+        }))
+      : undefined,
     variants: Array.isArray(data.variants)
       ? (data.variants as { unit: string; price: number; stock?: number }[])
       : [],

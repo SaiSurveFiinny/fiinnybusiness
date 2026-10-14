@@ -314,7 +314,10 @@ export function mergeMarketplaceProducts(
       }
       if (copy.isOnline !== undefined) existing.isOnline = copy.isOnline;
       if (Array.isArray(copy.variants)) existing.variants = copy.variants;
-      if (copyDiscountPct > 0) existing.discountPct = copyDiscountPct;
+      // The copy is the authority on its own seller's discount. Overwrite even
+      // with 0 — keeping the old value let an expired or switched-off offer
+      // live on in lowestFinalPrice and the struck-out card price.
+      existing.discountPct = copyDiscountPct > 0 ? copyDiscountPct : undefined;
       // This seller's own commercial settings always come from its copy doc.
       Object.assign(existing, sellerCommercial(copy));
     } else {
