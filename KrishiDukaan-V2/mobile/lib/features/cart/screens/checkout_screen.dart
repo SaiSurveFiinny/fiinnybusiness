@@ -460,7 +460,7 @@ class _CheckoutScreenState extends ConsumerState<CheckoutScreen> {
                   children: [
                     for (var i = 0; i < items.length; i++) ...[
                       if (i > 0) const Divider(height: 20),
-                      _ItemTile(item: items[i]),
+                      _ItemTile(item: items[i], locked: _isLoading),
                     ],
                   ],
                 ),
@@ -919,7 +919,48 @@ class _SectionCard extends StatelessWidget {
 
 class _ItemTile extends ConsumerWidget {
   final CartItemModel item;
-  const _ItemTile({required this.item});
+
+  /// True while a payment is being started — the cart must not change under it.
+  final bool locked;
+  const _ItemTile({required this.item, this.locked = false});
+
+  /// Asks first. Removing the LAST product would leave an empty checkout, so
+  /// that case says so and returns the buyer to the cart instead.
+  Future<void> _confirmRemove(BuildContext context, WidgetRef ref) async {
+    final isLast = ref.read(cartProvider).length <= 1;
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Remove product?'),
+        content: Text(
+          isLast
+              ? '${item.catalogName} is the only product in your order. '
+                  'Removing it empties your cart.'
+              : 'Remove ${item.catalogName} from this order?',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(false),
+            child: const Text('Keep'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(ctx).pop(true),
+            style: FilledButton.styleFrom(backgroundColor: AppColors.error),
+            child: const Text('Remove'),
+          ),
+        ],
+      ),
+    );
+    if (ok != true || !context.mounted) return;
+    ref.read(cartProvider.notifier).removeItem(item.listingId, item.variantLabel);
+    if (isLast) {
+      context.go('/cart');
+    } else {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('${item.catalogName} removed')),
+      );
+    }
+  }
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -1004,7 +1045,24 @@ class _ItemTile extends ConsumerWidget {
               // total on this screen (subtotal, savings, GST, delivery) is
               // derived from cartProvider, so they all recompute on change —
               // nothing needs recalculating by hand.
-              _CheckoutQtyControl(item: item),
+              // Wraps on narrow phones rather than overflowing the line.
+              Wrap(
+                spacing: 6,
+                crossAxisAlignment: WrapCrossAlignment.center,
+                children: [
+                  _CheckoutQtyControl(item: item),
+                  TextButton.icon(
+                    onPressed: locked ? null : () => _confirmRemove(context, ref),
+                    icon: const Icon(Icons.delete_outline, size: 18),
+                    label: const Text('Remove'),
+                    style: TextButton.styleFrom(
+                      foregroundColor: AppColors.error,
+                      visualDensity: VisualDensity.compact,
+                      padding: const EdgeInsets.symmetric(horizontal: 6),
+                    ),
+                  ),
+                ],
+              ),
             ],
           ),
         ),
@@ -1036,10 +1094,9 @@ class _ItemTile extends ConsumerWidget {
 
 /// Compact +/- stepper for a checkout line.
 ///
-/// Deliberately stops at 1 rather than removing the line the way the cart's
-/// control does: emptying the cart from the checkout screen would bounce the
-/// buyer out to "Your cart is empty" mid-payment. Removing a product stays a
-/// cart action.
+/// Stops at 1 rather than removing the line: removal is the explicit Remove
+/// button beside it (_ItemTile._confirmRemove), which asks first and handles
+/// the last product.
 class _CheckoutQtyControl extends ConsumerWidget {
   final CartItemModel item;
   const _CheckoutQtyControl({required this.item});
@@ -1068,7 +1125,7 @@ class _CheckoutQtyControl extends ConsumerWidget {
             padding: const EdgeInsets.all(4),
             constraints: const BoxConstraints(minWidth: 28, minHeight: 28),
             visualDensity: VisualDensity.compact,
-            tooltip: atMinimum ? 'Remove from the cart screen' : 'Reduce quantity',
+            tooltip: atMinimum ? 'Use Remove to take it out' : 'Reduce quantity',
             onPressed: atMinimum ? null : () => setQty(item.quantity - 1),
           ),
           Padding(
