@@ -260,14 +260,20 @@ class OrderDetailScreen extends ConsumerWidget {
                     ),
                   ),
                 ],
-                // Self-service cancel — only while the seller hasn't
-                // dispatched yet, matching the seller's own reject window
-                // (seller_orders_screen.dart) and the check the server
-                // enforces (POST /api/orders/cancel). Also while the order is
-                // being offered to other sellers: the server closes the offers
-                // and refunds in one step.
+                // Self-service cancel — only until a seller ACCEPTS the order,
+                // the same window POST /api/orders/cancel enforces. Also while
+                // the order is being offered to other sellers: the server
+                // closes the offers and refunds in one step.
+                if (order.status == 'accepted') ...[
+                  const SizedBox(height: 16),
+                  Text(
+                    'The seller has accepted this order. To cancel, contact '
+                    'the seller or support.',
+                    textAlign: TextAlign.center,
+                    style: AppTextStyles.caption,
+                  ),
+                ],
                 if (order.status == 'placed' ||
-                    order.status == 'accepted' ||
                     order.status == 'reassigning') ...[
                   const SizedBox(height: 16),
                   _CancelOrderButton(
@@ -315,7 +321,7 @@ class OrderDetailScreen extends ConsumerWidget {
 }
 
 /// "Cancel Order" — full self-service refund via POST /api/orders/cancel.
-/// Only shown while the order is still "placed" or "accepted"; the server
+/// Only shown until a seller accepts ("placed" / "reassigning"); the server
 /// enforces the same window, so this button never gets a stale 409.
 class _CancelOrderButton extends StatefulWidget {
   final String orderId;

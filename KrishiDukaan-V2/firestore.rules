@@ -528,7 +528,13 @@ service cloud.firestore {
         resource.data.sellerPhone == myPhone() ||
         resource.data.sellerId == request.auth.uid
       ) && resource.data.status != 'reassigning'
+        // A cancelled/rejected order is closed (the customer was refunded) —
+        // a seller can't bring it back to life.
+        && !(resource.data.status in ['cancelled', 'rejected'])
         && request.resource.data.status in ['placed','accepted','dispatched','out_for_delivery','delivered']
+        // No going back to "placed": an accepted order must not become
+        // customer-cancellable again (POST /api/orders/cancel).
+        && (request.resource.data.status != 'placed' || resource.data.status == 'placed')
         && !request.resource.data.diff(resource.data).affectedKeys().hasAny([
           'reassignment', 'routeTransfer', 'routeRelease', 'payment', 'payout',
           'sellerPhone', 'sellerId', 'customerId', 'customerPhone'

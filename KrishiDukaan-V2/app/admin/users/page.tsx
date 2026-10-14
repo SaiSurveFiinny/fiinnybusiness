@@ -5,7 +5,7 @@ import {
   Pencil, Search, ShieldCheck, Users, AlertTriangle, X, Check,
   ChevronUp, ChevronDown, UserPlus, Loader2,
   SlidersHorizontal, Calendar, RotateCcw, MapPin, LayoutDashboard,
-  Bell,
+  Bell, Download,
 } from "lucide-react";
 import {
   promoteToAdmin, ensureSellerStorefront,
@@ -21,6 +21,7 @@ import {
 } from "../_lib/admin-data";
 import { phoneKey, summarizeSubscriptions, type OwnerSubscriptionSummary } from "../../lib/subscription-status";
 import { searchUsers } from "../_lib/admin-queries";
+import type { SeatSummary } from "../_lib/seller-seats-export";
 import {
   addDoc, doc, setDoc, getDoc, serverTimestamp, collection, Timestamp, GeoPoint,
   query, where, getDocs, limit,
@@ -211,6 +212,28 @@ export default function AdminUsersPage() {
     const t = setTimeout(() => setDebouncedSearch(search), 250);
     return () => clearTimeout(t);
   }, [search]);
+
+  // Seats export (Excel): read only on click — nothing extra on page load.
+  const [exporting, setExporting] = useState(false);
+  const [exportResult, setExportResult] = useState<{ ok: boolean; text: string } | null>(null);
+  const handleExportSeats = async () => {
+    if (exporting) return;
+    setExporting(true);
+    setExportResult(null);
+    try {
+      const { exportSellerSeats } = await import("../_lib/seller-seats-export");
+      const s: SeatSummary = await exportSellerSeats();
+      setExportResult({
+        ok: true,
+        text: `Exported ${s.sellers} sellers · ${s.withRunningPlan} with a running plan · ${s.seatsUsed}/${s.seatsPurchased} seats used, ${s.seatsRemaining} empty.`,
+      });
+    } catch (err) {
+      console.error("[seats export]", err);
+      setExportResult({ ok: false, text: "Export failed. Please try again." });
+    } finally {
+      setExporting(false);
+    }
+  };
 
   const handleRefresh = () => {
     if (refreshing) return;
@@ -634,6 +657,16 @@ export default function AdminUsersPage() {
           <RefreshButton savedAt={dataAge} refreshing={refreshing} onRefresh={handleRefresh} />
           <button
             type="button"
+            onClick={() => void handleExportSeats()}
+            disabled={exporting}
+            title="Excel: every seller's running plan, seats bought / used / empty, and who to call"
+            className="flex items-center gap-2 rounded-xl border border-outline-variant/40 bg-white px-4 py-2.5 text-sm font-bold text-on-surface hover:bg-surface-container-low disabled:opacity-60"
+          >
+            {exporting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}
+            {exporting ? "Exporting…" : "Export seats"}
+          </button>
+          <button
+            type="button"
             onClick={() => setShowPendingSignups(v => !v)}
             className={`flex items-center gap-2 rounded-xl px-4 py-2.5 text-sm font-bold transition-all ${
               showPendingSignups
@@ -657,6 +690,11 @@ export default function AdminUsersPage() {
           )}
         </div>
       </div>
+      {exportResult && (
+        <p className={`rounded-xl px-4 py-2.5 text-sm font-semibold ${exportResult.ok ? "bg-green-50 text-green-700" : "bg-red-50 text-red-700"}`}>
+          {exportResult.text}
+        </p>
+      )}
 
       {showPendingSignups && (
         <div className="rounded-2xl border border-amber-200 bg-amber-50/40 p-4">

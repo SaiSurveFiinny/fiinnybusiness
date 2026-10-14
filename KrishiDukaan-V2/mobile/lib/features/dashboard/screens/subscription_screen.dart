@@ -998,20 +998,24 @@ class _SubscriptionScreenState extends ConsumerState<SubscriptionScreen> {
 
           if (_tier == PlanTier.standard) ...[
             // ── Standard plan cards ─────────────────────────────────────────
-            Row(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                for (final p in _tierPlans) ...[
-                  Expanded(
-                    child: _StandardPlanCard(
-                      plan: p,
-                      selected: _duration.key == p.key,
-                      onTap: () => setState(() => _duration = p),
+            // Same height side by side: Yearly carries a badge and a struck
+            // price Monthly doesn't, so top-aligned cards came out uneven.
+            IntrinsicHeight(
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  for (final p in _tierPlans) ...[
+                    Expanded(
+                      child: _StandardPlanCard(
+                        plan: p,
+                        selected: _duration.key == p.key,
+                        onTap: () => setState(() => _duration = p),
+                      ),
                     ),
-                  ),
-                  if (p != _tierPlans.last) const SizedBox(width: 10),
+                    if (p != _tierPlans.last) const SizedBox(width: 10),
+                  ],
                 ],
-              ],
+              ),
             ),
             const SizedBox(height: 16),
           ] else ...[
