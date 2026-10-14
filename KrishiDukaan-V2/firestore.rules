@@ -307,7 +307,7 @@ service cloud.firestore {
               (request.resource.data.ownerPhone is string && request.resource.data.ownerPhone == myPhone()) ||
               request.resource.data.ownerId == request.auth.uid
             )
-            && request.resource.data.isPromotional != true
+            && request.resource.data.get('isPromotional', false) != true
           )
         );
       allow update, delete: if isAdmin();
@@ -563,7 +563,7 @@ service cloud.firestore {
         && (request.resource.data.status != 'placed' || resource.data.status == 'placed')
         && !request.resource.data.diff(resource.data).affectedKeys().hasAny([
           'reassignment', 'routeTransfer', 'routeRelease', 'payment', 'payout',
-          'sellerPhone', 'sellerId', 'customerId', 'customerPhone'
+          'sellerPhone', 'sellerId', 'customerId', 'customerPhone','tracking'
         ]))
         // Allow customer to update payment field on their own order
         || (isAuthed() && (

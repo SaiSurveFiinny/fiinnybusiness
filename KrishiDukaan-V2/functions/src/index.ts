@@ -33,6 +33,7 @@ export {
   reconcileMarketplaceCards,
 } from "./marketplace/cards";
 export { syncMaxDiscountOnProductWrite } from "./marketplace/max-discount";
+export { normalizeProductOwnerOnWrite } from "./marketplace/owner-fields";
 export {
   markStoreDirectoryDirtyOnRetailer,
   markStoreDirectoryDirtyOnManufacturer,
