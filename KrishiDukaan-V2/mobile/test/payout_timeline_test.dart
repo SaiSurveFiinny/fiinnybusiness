@@ -1,8 +1,10 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:krishidukaan_app/features/dashboard/widgets/payout_timeline_view.dart';
 import 'package:krishidukaan_app/core/models/order_model.dart';
 import 'package:krishidukaan_app/features/dashboard/data/payout_timeline.dart';
+import 'package:krishidukaan_app/features/dashboard/providers/dashboard_provider.dart';
 
 /// Mirrors the website's timeline cases (app/lib/payout-timeline.ts).
 final now = DateTime.parse('2026-10-08T06:30:00.000Z');
@@ -128,6 +130,19 @@ void main() {
     expect(t.headline, 'Releasing now');
   });
 
+  test('not on Route and KYC not done: money waits for KYC, safely', () {
+    final o = order(status: 'delivered', deliveredAt: delivered, payout: const OrderPayoutModel(state: 'not_routed'));
+    final t = payoutTimeline(o, now: now, kycPending: true);
+    expect(t.headline, 'Finish KYC to get paid');
+    expect(t.tone, TimelineTone.warn);
+    expect(t.steps[t.steps.length - 2].label, 'Waiting for your KYC');
+    expect(t.steps[t.steps.length - 2].detail, contains('safe'));
+    // Routed money is unaffected by KYC wording.
+    final routed = order(status: 'delivered', deliveredAt: delivered, payout: const OrderPayoutModel(state: 'on_hold', transferId: 'trf_1'));
+    expect(payoutTimeline(routed, now: now, kycPending: true).headline, isNot('Finish KYC to get paid'));
+    expect(payoutTimeline(o, now: now).headline, 'Waiting for payout');
+  });
+
   testWidgets('timeline and chip lay out on a small phone', (tester) async {
     tester.view.physicalSize = const Size(320, 900);
     tester.view.devicePixelRatio = 1;
@@ -138,10 +153,13 @@ void main() {
       order(status: 'rejected', refundedAmount: 1000),
     ];
     for (final o in orders) {
-      await tester.pumpWidget(MaterialApp(
-        home: Scaffold(
-          body: SingleChildScrollView(
-            child: Column(children: [PayoutHeadlineChip(order: o), PayoutTimelineView(order: o)]),
+      await tester.pumpWidget(ProviderScope(
+        overrides: [kycPendingProvider.overrideWithValue(true)],
+        child: MaterialApp(
+          home: Scaffold(
+            body: SingleChildScrollView(
+              child: Column(children: [PayoutHeadlineChip(order: o), PayoutTimelineView(order: o)]),
+            ),
           ),
         ),
       ));

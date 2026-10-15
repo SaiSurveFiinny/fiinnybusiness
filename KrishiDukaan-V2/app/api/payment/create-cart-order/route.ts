@@ -9,8 +9,10 @@ import type { DeliverySettingsLike } from '../../../utils/delivery';
 import {
   commercialOf,
   computeSellerPricing,
+  discountedPrice,
   hasCommercial,
-  variantPriceFor,
+  positive,
+  sizePrice,
   type CartPricingLine,
   type SellerPricing,
 } from '../../../lib/cart-pricing';
@@ -32,18 +34,7 @@ type CartItemInput = {
   variantUnit?: string;
 };
 
-/**
- * Returns the active discount percentage from inventory fields (0–99), or 0.
- * Mirrors the client-side getActiveDiscountPct() logic.
- */
-function serverActiveDiscountPct(data: FirebaseFirestore.DocumentData): number {
-  if (!data.discountEnabled || !data.discountPct || data.discountPct <= 0) return 0;
-  const now   = Date.now();
-  const start = (data.discountStartDate as { toMillis?(): number } | null)?.toMillis?.() ?? 0;
-  const end   = (data.discountEndDate   as { toMillis?(): number } | null)?.toMillis?.() ?? Infinity;
-  if (now < start || now > end) return 0;
-  return Number(data.discountPct);
-}
+const last10 = (v: unknown) => String(v ?? '').replace(/\D/g, '').slice(-10);
 
 /**
  * POST /api/payment/create-cart-order
@@ -235,60 +226,75 @@ export async function POST(request: Request) {
       let finalPrice: number;
       let priceSource: AttemptItem['priceSource'] = 'none';
       let itemName = '';
-      // The price of the pack size the customer chose, from whichever document
-      // prices the item; the document's own base price when it lists no such
-      // size. The server used to charge the BASE price whatever size was sent,
-      // so a 500 ml bottle of a 1 L-priced product was charged as 1 L.
-      const priceOf = (d: FirebaseFirestore.DocumentData, base: number) =>
-        variantPriceFor(d.variants, variantUnit) ?? base;
+      // Does this store own the product itself? Then the product's own size
+      // list is this store's size list.
+      const sellerTen = last10(item.sellerPhone) || last10(sellerKey);
+      const ownsProduct = !!prodData && (
+        (sellerTen.length === 10 && [prodData.ownerPhone, prodData.manufacturerPhone, prodData.retailerPhone]
+          .some((p) => last10(p) === sellerTen)) ||
+        (!!item.sellerId && [prodData.ownerId, prodData.manufacturerId, prodData.retailerId]
+          .some((id) => id && String(id) === String(item.sellerId)))
+      );
+      const ownLadder = ownsProduct ? prodData!.variants : undefined;
+      // Set when this store can't sell the chosen size (or has no price at all).
+      let unavailable = false;
 
       if (invDoc) {
-        const d         = invDoc.data();
-        const basePrice = priceOf(d, Number(d.sellingPrice ?? d.price ?? 0));
-        const discPct   = serverActiveDiscountPct(d);
-        const discAmt   = Math.round((basePrice * discPct) / 100 * 100) / 100;
-        const discFixed = d.discountType === 'fixed_amount' && d.discountEnabled
-          ? Math.max(0, Number(d.discountFixedAmt ?? 0))
-          : 0;
-        finalPrice = Math.round(Math.max(0, basePrice - discAmt - discFixed) * 100) / 100;
+        const d    = invDoc.data();
+        const size = sizePrice(
+          variantUnit,
+          positive(d.sellingPrice, d.price),
+          [d.variants, copyDoc?.data().variants, avEntry?.variants, ownLadder],
+          prodData,
+        );
+        finalPrice  = size === null ? 0 : discountedPrice(d, size);
+        unavailable = size === null;
         priceSource = 'inventory';
         itemName = String(d.productName ?? d.name ?? '');
         console.log('[create-cart-order] inventory doc found for', item.productId,
-          '| size:', variantUnit || '-', '| base:', basePrice, 'disc:', discPct + '%', 'fixed:', discFixed, 'final:', finalPrice);
+          '| size:', variantUnit || '-', '| price:', size, 'final:', finalPrice);
       } else if (copyDoc) {
-        const d = copyDoc.data();
-        const basePrice = priceOf(d, Number(d.price ?? d.sellingPrice ?? 0));
-        const discPct   = serverActiveDiscountPct(d);
-        const discAmt   = Math.round((basePrice * discPct) / 100 * 100) / 100;
-        const discFixed = d.discountType === 'fixed_amount' && d.discountEnabled
-          ? Math.max(0, Number(d.discountFixedAmt ?? 0))
-          : 0;
-        finalPrice = Math.round(Math.max(0, basePrice - discAmt - discFixed) * 100) / 100;
+        const d    = copyDoc.data();
+        const size = sizePrice(
+          variantUnit,
+          positive(d.price, d.sellingPrice),
+          [d.variants, avEntry?.variants, ownLadder],
+          prodData,
+        );
+        finalPrice  = size === null ? 0 : discountedPrice(d, size);
+        unavailable = size === null;
         priceSource = 'seller-copy';
         itemName = String(d.name ?? d.productName ?? '');
         console.log('[create-cart-order] seller copy found for', item.productId,
-          '| size:', variantUnit || '-', '| base:', basePrice, 'disc:', discPct + '%', 'final:', finalPrice);
+          '| size:', variantUnit || '-', '| price:', size, 'final:', finalPrice);
       } else if (!prodData) {
-        console.warn('[create-cart-order] no product doc for', item.productId, '— skipping');
+        console.warn('[create-cart-order] no product doc for', item.productId);
         finalPrice = 0;
-        priceSource = 'none';
-      } else {
-        // Fallback 2: this store's availability[] entry on the canonical product —
-        // its size ladder, then its selling price — else the canonical price.
-        const sizePrice = variantPriceFor(avEntry?.variants, variantUnit);
-        if (sizePrice !== null) {
-          finalPrice = sizePrice;
-          priceSource = 'availability';
-        } else if (avEntry && Number(avEntry.sellingPrice) > 0) {
-          finalPrice = Number(avEntry.sellingPrice);
-          priceSource = 'availability';
-        } else {
-          finalPrice = priceOf(prodData, Number(prodData.price ?? 0));
-          priceSource = 'canonical';
-        }
-        console.log('[create-cart-order]', priceSource, 'price for', item.productId,
+        unavailable = true;
+      } else if (avEntry && !ownsProduct) {
+        // Another store's entry on the canonical product: its own size list
+        // and price only — never the product owner's.
+        const size = sizePrice(variantUnit, positive(avEntry.sellingPrice), [avEntry.variants], prodData);
+        finalPrice  = size ?? 0;
+        unavailable = size === null;
+        priceSource = 'availability';
+        console.log('[create-cart-order] availability price for', item.productId,
           '| size:', variantUnit || '-', '| price:', finalPrice);
+      } else {
+        // The product owner's own listing.
+        const size = sizePrice(
+          variantUnit,
+          positive(prodData.price, avEntry?.sellingPrice),
+          [prodData.variants, avEntry?.variants],
+          prodData,
+        );
+        finalPrice  = size === null ? 0 : discountedPrice(prodData, size);
+        unavailable = size === null;
+        priceSource = 'canonical';
+        console.log('[create-cart-order] canonical price for', item.productId,
+          '| size:', variantUnit || '-', '| price:', size, 'final:', finalPrice);
       }
+      if (!unavailable && !(finalPrice > 0)) unavailable = true;
 
       // This store's GST + delivery settings: its own product copy first (the
       // source of truth the web cart reads), then its inventory row, its
@@ -333,8 +339,26 @@ export async function POST(request: Request) {
             freeDelivery: commercial.freeDelivery,
           }
         : null;
-      return { lineTotal, priced, sellerKey, line };
+      return { lineTotal, priced, sellerKey, line, unavailable, variantUnit };
     }));
+
+    // Refuse the whole payment if any line can't be priced for what the
+    // customer chose — never charge the base pack, ₹0, or the client's own
+    // figure in its place.
+    const blocked = itemResults.find((r) => r.unavailable);
+    if (blocked) {
+      const what = blocked.priced.name + (blocked.variantUnit ? ` (${blocked.variantUnit})` : '');
+      console.warn('[create-cart-order] unavailable line, refusing payment:', blocked.priced.productId, blocked.variantUnit);
+      return NextResponse.json(
+        {
+          error: `${what} is not available from this seller at the moment. Please remove it or choose another size or seller.`,
+          code: 'ITEM_UNAVAILABLE',
+          productId: blocked.priced.productId,
+          variantUnit: blocked.variantUnit || null,
+        },
+        { status: 409 },
+      );
+    }
 
     // Fold in the original cart order.
     for (const r of itemResults) {
@@ -393,10 +417,8 @@ export async function POST(request: Request) {
     // ── Determine the Razorpay amount ─────────────────────────────────────────
     // Prefer the server-computed subtotal (can't be tampered with).
     // Fall back to the client-computed subtotal only if the server lookup returned 0.
-    const safeClientSubtotal  = Math.max(0, Number(clientSubtotal)  || 0);
     const safeClientDelivery  = Math.max(0, Number(clientDelivery)  || 0);
     const safeClientGstAdded  = Math.max(0, Number(clientGstAdded)  || 0);
-    const safeClientGrand     = Math.max(0, Number(clientGrandTotal)|| 0);
 
     // A "new client" splits exclusive GST out (clientGstAdded) and sends the
     // variantUnit + delivery state the server needs to price delivery itself.
@@ -405,7 +427,9 @@ export async function POST(request: Request) {
     // delivery + exclusive GST together) so their checkout is not broken.
     const isNewClient = clientGstAdded !== undefined;
 
-    const subtotalForPayment  = serverSubtotal > 0 ? serverSubtotal : safeClientSubtotal;
+    // Every line was priced above (unpriceable ones are refused), so the
+    // server subtotal is the amount — the client's figure is never charged.
+    const subtotalForPayment  = serverSubtotal;
 
     // DELIVERY and GST: server-computed for new clients — a client can neither
     // skip GST nor inflate it. clientDelivery is honoured only for legacy
@@ -416,15 +440,9 @@ export async function POST(request: Request) {
       console.warn('[create-cart-order] client GST differs from server:',
         { client: safeClientGstAdded, server: serverGstAdded });
     }
-    let   totalForPayment    = Math.round(
+    const totalForPayment    = Math.round(
       (subtotalForPayment + deliveryForPayment + gstForPayment) * 100,
     ) / 100;
-
-    // Last resort: use the client grand total if everything else is still 0
-    if (totalForPayment <= 0 && safeClientGrand > 0) {
-      totalForPayment = safeClientGrand;
-      console.warn('[create-cart-order] falling back to clientGrandTotal:', totalForPayment);
-    }
 
     if (totalForPayment <= 0) {
       console.error('[create-cart-order] total is still 0 after all fallbacks');
@@ -442,13 +460,14 @@ export async function POST(request: Request) {
     // GST + their delivery) — what their order record will say. Legacy clients
     // don't give us per-seller totals, so they keep the subtotal proportions.
     const totalsSum = Array.from(totalBySeller.values()).reduce((a, b) => a + b, 0);
-    const { transfers, splitSummary } = await buildRouteTransfers(
+    const route = await buildRouteTransfers(
       amountPaise,
       isNewClient && totalsSum > 0 ? totalBySeller : subtotalBySeller,
       await routePrefetch,
     );
+    let { splitSummary } = route;
 
-    const order = await razorpay.orders.create({
+    const orderBody = (transfers: typeof route.transfers) => ({
       amount:   amountPaise,
       currency: 'INR',
       receipt:  `cart_${Date.now()}`,
@@ -459,9 +478,21 @@ export async function POST(request: Request) {
         serverSubtotal:  String(serverSubtotal),
         deliveryCharge:  String(deliveryForPayment),
         gstAdded:        String(gstForPayment),
-        routedSellers:   String(splitSummary.length),
+        routedSellers:   String(transfers.length),
       },
       ...(transfers.length > 0 ? { transfers } : {}),
+    });
+
+    const order = await razorpay.orders.create(orderBody(route.transfers)).catch(async (e) => {
+      // A transfer Razorpay refuses (a linked account not active yet, still in
+      // its first-day cooling period, or suspended) must not stop the customer
+      // paying. Retry once without transfers: the payment then stays with
+      // KrishiDukan and the seller is paid later (functions/src/payouts/
+      // pay-after-kyc.ts or the payout run), exactly like a seller not on Route.
+      if (route.transfers.length === 0) throw e;
+      console.error('[create-cart-order] order with transfers refused, retrying without:', e);
+      splitSummary = [];
+      return razorpay.orders.create(orderBody([]));
     });
 
     // Recorded before the customer sees the checkout sheet, so a lost sale is

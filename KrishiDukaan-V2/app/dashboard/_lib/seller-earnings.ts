@@ -64,6 +64,8 @@ export type OrderLike = {
     /** Set once a Route transfer exists for this order. */
     transferId?: string;
     transferredAt?: string;
+    /** What a payout transfer actually sent for this order (rupees). */
+    transferredNet?: number;
     /** Rupees already refunded to the customer for this order. A PARTIAL
      *  refund leaves the order's status unchanged, so without subtracting
      *  this the seller would be paid the full original amount for goods that
@@ -176,6 +178,9 @@ export function feesFor(order: OrderLike): { gatewayFee: number; platformFee: nu
  *  Route payout transfers, and therefore the amount a refund has to reverse —
  *  exported so the payout run and the reversal cannot drift apart. */
 export function netFor(order: OrderLike): number {
+  // Once a payout transfer has paid the order, what it sent is the answer.
+  const sent = order.payment?.transferredNet;
+  if (order.payment?.transferId && typeof sent === "number" && sent > 0) return sent;
   const { gatewayFee, platformFee } = feesFor(order);
   return Math.max(0, payableGrossFor(order) - gatewayFee - platformFee);
 }

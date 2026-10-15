@@ -6,6 +6,7 @@ import {
   increment,
   orderBy,
   query,
+  type QueryDocumentSnapshot,
   serverTimestamp,
   setDoc,
   updateDoc,
@@ -404,11 +405,25 @@ function toSearchResult(id: string, r: Record<string, unknown>): ProductSearchRe
  * Cards merge variants across sellers; call fetchProductForAutofill with the
  * chosen id to autofill from that product's own doc.
  */
+/** All marketplace cards, read at most once per CARD_CACHE_MS per page: the
+ *  substring search below scans every card, and the form searches on each
+ *  keystroke (debounced), so without this each keystroke re-read them all. */
+const CARD_CACHE_MS = 5 * 60 * 1000;
+let cardCache: { at: number; docs: Promise<QueryDocumentSnapshot[]> } | null = null;
+function allCards(): Promise<QueryDocumentSnapshot[]> {
+  if (!cardCache || Date.now() - cardCache.at > CARD_CACHE_MS) {
+    const docs = getDocs(query(collection(db, CARDS_COLLECTION), orderBy("nameKey"))).then((s) => s.docs);
+    // A failed read is not cached, so the next keystroke tries again.
+    docs.catch(() => { cardCache = null; });
+    cardCache = { at: Date.now(), docs };
+  }
+  return cardCache.docs;
+}
+
 export async function searchProductsByName(term: string): Promise<ProductSearchResult[]> {
   const lower = term.trim().toLowerCase();
   if (!lower) return [];
-  const snap = await getDocs(query(collection(db, CARDS_COLLECTION), orderBy("nameKey")));
-  return snap.docs
+  return (await allCards())
     // nameKey is the lowercased product name — substring match, as production did.
     .filter((d) => String(d.get("nameKey") ?? "").includes(lower))
     // The card's `id` field is the canonical product's id; the card doc's

@@ -1,5 +1,9 @@
+import '../../brand/data/retailer_brand_repository.dart';
+import '../../brand/screens/retailer_brand_editor_screen.dart';
+import '../../brand/widgets/retailer_brand_section.dart';
 import '../../../core/utils/link_share.dart';
 import '../../../core/utils/web_links.dart';
+import '../../../core/utils/currency_utils.dart';
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
@@ -91,8 +95,17 @@ class _ShopProfileScreenState extends ConsumerState<ShopProfileScreen> {
     final reelsAsync = ref.watch(sellerReelsProvider(shopPhone));
     final followersAsync = ref.watch(followerCountProvider(shopPhone));
     final productsAsync = ref.watch(shopListingsProvider(shopPhone));
+    // Brand page content — one doc read; null unless the shop switched it on.
+    final brandPhone = WebLinks.sharePhone(shopPhone) ?? shopPhone;
+    final brand = ref.watch(publicRetailerBrandProvider(brandPhone)).value;
     final currentUser = ref.watch(currentUserProvider).value;
     final isOwnShop = currentUser?.phone == shopPhone;
+    final bestOfferPct = (productsAsync.value ?? const <ListingModel>[])
+        .where((l) => l.isActive)
+        .fold<int>(0, (m, l) {
+      final pct = l.displayPrice.pct;
+      return pct > m ? pct : m;
+    });
     // Editing a listed product isn't done here — Inventory (or the
     // manufacturer catalog) already owns all of that logic, so both the
     // Products stat and the "Manage" link below just route there rather
@@ -404,6 +417,34 @@ class _ShopProfileScreenState extends ConsumerState<ShopProfileScreen> {
             ),
           ),
 
+          // ── Brand page (retailers who switched theirs on) ───────────────
+          if (brand != null)
+            SliverToBoxAdapter(
+              child: ColoredBox(
+                color: Colors.white,
+                child: RetailerBrandSection(
+                  brand: brand,
+                  shopPhone: brandPhone,
+                  shopName: shopAsync.value?.businessName ??
+                      shopAsync.value?.name ??
+                      'this shop',
+                ),
+              ),
+            ),
+          if (isOwnShop && shopAsync.value?.isManufacturer != true)
+            SliverToBoxAdapter(
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(16, 10, 16, 0),
+                child: OutlinedButton.icon(
+                  onPressed: () => context.push(RetailerBrandEditorScreen.route),
+                  icon: const Icon(Icons.storefront_outlined, size: 18),
+                  label: Text(brand != null
+                      ? 'Edit my brand page'
+                      : 'Create my brand page'),
+                ),
+              ),
+            ),
+
           const SliverToBoxAdapter(child: SizedBox(height: 8)),
 
           // ── Reels grid ───────────────────────────────────────────────────
@@ -506,6 +547,39 @@ class _ShopProfileScreenState extends ConsumerState<ShopProfileScreen> {
               child: Row(
                 children: [
                   Text('Products', style: AppTextStyles.heading3),
+                  // This shop is running offers — the best one, as a badge.
+                  if (bestOfferPct > 0) ...[
+                    const SizedBox(width: 8),
+                    Container(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 8,
+                        vertical: 3,
+                      ),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFF16A34A),
+                        borderRadius: BorderRadius.circular(20),
+                      ),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          const Icon(
+                            Icons.local_offer,
+                            size: 11,
+                            color: Colors.white,
+                          ),
+                          const SizedBox(width: 4),
+                          Text(
+                            'Offers up to $bestOfferPct% off',
+                            style: const TextStyle(
+                              color: Colors.white,
+                              fontSize: 11,
+                              fontWeight: FontWeight.w800,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
                   const Spacer(),
                   if (isOwnShop)
                     TextButton.icon(
@@ -1320,6 +1394,7 @@ class _ProductTile extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final dp = listing.displayPrice;
     return GestureDetector(
       onTap: () => context.push('/product/${listing.catalogId}'),
       child: Container(
@@ -1332,20 +1407,26 @@ class _ProductTile extends StatelessWidget {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            ClipRRect(
-              borderRadius: const BorderRadius.vertical(
-                top: Radius.circular(11),
-              ),
-              child: listing.imageUrl != null
-                  ? CachedNetworkImage(
-                      imageUrl: listing.imageUrl!,
-                      height: 100,
-                      width: 130,
-                      fit: BoxFit.cover,
-                      memCacheWidth: 400,
-                      errorWidget: (_, _, _) => _placeholder(),
-                    )
-                  : _placeholder(),
+            Stack(
+              children: [
+                ClipRRect(
+                  borderRadius: const BorderRadius.vertical(
+                    top: Radius.circular(11),
+                  ),
+                  child: listing.imageUrl != null
+                      ? CachedNetworkImage(
+                          imageUrl: listing.imageUrl!,
+                          height: 100,
+                          width: 130,
+                          fit: BoxFit.cover,
+                          memCacheWidth: 400,
+                          errorWidget: (_, _, _) => _placeholder(),
+                        )
+                      : _placeholder(),
+                ),
+                if (dp.hasOffer)
+                  Positioned(top: 6, left: 0, child: _ShopOfferRibbon(pct: dp.pct)),
+              ],
             ),
             Padding(
               padding: const EdgeInsets.all(8),
@@ -1361,9 +1442,28 @@ class _ProductTile extends StatelessWidget {
                     overflow: TextOverflow.ellipsis,
                   ),
                   const SizedBox(height: 4),
-                  Text(
-                    '₹${listing.effectivePrice.toStringAsFixed(0)}',
-                    style: AppTextStyles.price.copyWith(fontSize: 13),
+                  // One line: the rail is a fixed 180px tall.
+                  Row(
+                    children: [
+                      Text(
+                        CurrencyUtils.format(dp.price),
+                        style: AppTextStyles.price.copyWith(fontSize: 13),
+                      ),
+                      if (dp.hasOffer) ...[
+                        const SizedBox(width: 4),
+                        Flexible(
+                          child: Text(
+                            CurrencyUtils.format(dp.mrp!),
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: AppTextStyles.caption.copyWith(
+                              fontSize: 10,
+                              decoration: TextDecoration.lineThrough,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ],
                   ),
                 ],
               ),
@@ -2391,4 +2491,30 @@ class _CommentSheetSimpleState extends ConsumerState<_CommentSheetSimple> {
   ),
 );
 }
+}
+
+/// Small "X% OFF" ribbon for the top-left of a product image.
+class _ShopOfferRibbon extends StatelessWidget {
+  final int pct;
+  const _ShopOfferRibbon({required this.pct});
+
+  @override
+  Widget build(BuildContext context) => Container(
+        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 3),
+        decoration: const BoxDecoration(
+          color: Color(0xFF16A34A),
+          borderRadius: BorderRadius.only(
+            topRight: Radius.circular(6),
+            bottomRight: Radius.circular(6),
+          ),
+        ),
+        child: Text(
+          '$pct% OFF',
+          style: const TextStyle(
+            color: Colors.white,
+            fontSize: 9,
+            fontWeight: FontWeight.w800,
+          ),
+        ),
+      );
 }

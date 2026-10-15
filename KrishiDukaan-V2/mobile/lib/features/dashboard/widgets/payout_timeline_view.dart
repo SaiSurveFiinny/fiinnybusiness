@@ -1,9 +1,11 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../core/constants/app_colors.dart';
 import '../../../core/constants/app_text_styles.dart';
 import '../../../core/models/order_model.dart';
 import '../data/payout_timeline.dart';
+import '../providers/dashboard_provider.dart';
 
 /// Colours for a timeline headline.
 ({Color fg, Color bg}) _tone(TimelineTone t) => switch (t) {
@@ -17,13 +19,13 @@ import '../data/payout_timeline.dart';
 
 /// A small chip with where this order's money is now. Tapping it opens the
 /// full step-by-step timeline.
-class PayoutHeadlineChip extends StatelessWidget {
+class PayoutHeadlineChip extends ConsumerWidget {
   final OrderModel order;
   const PayoutHeadlineChip({super.key, required this.order});
 
   @override
-  Widget build(BuildContext context) {
-    final t = payoutTimeline(order);
+  Widget build(BuildContext context, WidgetRef ref) {
+    final t = payoutTimeline(order, kycPending: ref.watch(kycPendingProvider));
     final c = _tone(t.tone);
     return InkWell(
       borderRadius: BorderRadius.circular(20),
@@ -82,14 +84,14 @@ Future<void> showPayoutTimelineSheet(BuildContext context, OrderModel order) {
 
 /// The order's money journey, step by step: placed → paid → held →
 /// delivered → released → in your bank, with dates and what's next.
-class PayoutTimelineView extends StatelessWidget {
+class PayoutTimelineView extends ConsumerWidget {
   final OrderModel order;
   final bool showHeadline;
   const PayoutTimelineView({super.key, required this.order, this.showHeadline = true});
 
   @override
-  Widget build(BuildContext context) {
-    final t = payoutTimeline(order);
+  Widget build(BuildContext context, WidgetRef ref) {
+    final t = payoutTimeline(order, kycPending: ref.watch(kycPendingProvider));
     final c = _tone(t.tone);
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,

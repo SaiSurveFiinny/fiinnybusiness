@@ -1,6 +1,7 @@
 "use client";
 
 import { PayoutTimelineView } from "../../components/shared/payout-timeline-view";
+import { useKycPending } from "../_lib/use-kyc-pending";
 import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
 import { useEffectiveUser } from "../_context/effective-user-context";
@@ -111,6 +112,7 @@ function formatDateStr(iso: string | undefined): string {
  * "—" rather than a guessed number — the same rule now applies to both rows.
  */
 function PayoutBreakdown({ order }: { order: OrderDoc }) {
+  const kycPending = useKycPending();
   // undefined = still resolving, null = genuinely unavailable
   const [gatewayFee, setGatewayFee] = useState<number | null | undefined>(undefined);
   const [platformFee, setPlatformFee] = useState<number | null | undefined>(undefined);
@@ -190,7 +192,7 @@ function PayoutBreakdown({ order }: { order: OrderDoc }) {
         <p className="mb-2 text-xs font-black uppercase tracking-widest text-on-surface-variant">
           Where is my money?
         </p>
-        <PayoutTimelineView order={order as never} />
+        <PayoutTimelineView order={order as never} kycPending={kycPending} />
       </div>
       <p className="mt-2.5 text-[10px] text-on-surface-variant">
         Figures are before GST and other applicable taxes. See the{" "}

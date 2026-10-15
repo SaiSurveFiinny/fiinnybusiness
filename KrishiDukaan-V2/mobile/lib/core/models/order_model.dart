@@ -336,6 +336,9 @@ class OrderPaymentModel {
   final String? transferId;
   final String? transferredAt;
 
+  /// What a payout transfer actually sent for this order (rupees).
+  final double? transferredNet;
+
   /// Amount already refunded to the customer. A PARTIAL refund leaves the
   /// order's status unchanged, so this must be subtracted or the seller would
   /// appear owed the full original amount.
@@ -353,6 +356,7 @@ class OrderPaymentModel {
     this.gatewayTax,
     this.transferId,
     this.transferredAt,
+    this.transferredNet,
     this.refundedAmount,
     this.refundId,
     this.refundedAt,
@@ -369,6 +373,7 @@ class OrderPaymentModel {
         gatewayTax: (m['gatewayTax'] as num?)?.toDouble(),
         transferId: m['transferId'] as String?,
         transferredAt: m['transferredAt'] as String?,
+        transferredNet: (m['transferredNet'] as num?)?.toDouble(),
         refundedAmount: (m['refundedAmount'] as num?)?.toDouble(),
         refundId: m['refundId'] as String?,
         refundedAt: anyDate(m['refundedAt']),

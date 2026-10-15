@@ -804,6 +804,191 @@ function change.
 3. As a team member with only Route Payouts, open Seller payments: you see
    Overview and Transfers, with no Release button.
 
+### S15. Old reels that start slowly
+
+**Problem.** Reels posted before server-side compression (mid-September) still
+play the raw phone video: often 50–150 MB at 1080p. They take seconds to
+start on mobile data and make the whole feed feel slow. A function to fix them
+(`backfillReelTranscodes`) existed but nothing ever called it. Also found:
+- A fast encode could finish before the app saved the reel. The update then
+  failed and that reel kept its raw file for good.
+- Reposts copy the reel's video address. Once the original was compressed
+  (and its raw file deleted), older reposts pointed at nothing.
+- The website `/reels` page read the first 120 reels by id, not the newest.
+
+**Fix: compress them, and keep the feed fast meanwhile.**
+- New function **`compressOldReels`** (every 30 minutes):
+  - Re-runs the normal compressor (`transcodeReel`) on 4 old reels per run,
+    so ~200 reels a day without a burst of large machines.
+  - A reel already compressed but never switched over is switched directly
+    (no second encode).
+  - Skips files uploaded in the last hour (their own encode is running).
+  - Gives up on a file after 3 failed tries and logs it.
+  - Progress per reel is kept in `reelCompression/{reelId}` (server only;
+    the rules deny clients by default).
+  - When nothing is left it lists Storage, finds nothing, and ends.
+- `transcodeReel` now waits up to 3 minutes for the reel to be saved, and moves
+  reposts to the compressed file too.
+- **Until a reel is compressed** the feed ranks it lower (score × 0.3, after a
+  day's grace for new uploads) on the app and the website, and never picks it
+  for the "new reel" slot. It still shows; it just isn't first. As each reel is
+  compressed it ranks normally again, so there is no date cut-off to remove
+  later. Rule in `app/reels/lib/ranking/rank.ts` and
+  `mobile/lib/features/reels/domain/reel_ranker.dart`.
+- Website `/reels` now reads the newest reels first (`orderBy createdAt`).
+
+**Deploy:** functions (step 2: `compressOldReels` new, `transcodeReel`
+changed), website (step 4), app (step 5). No index (single-field order).
+Older app versions keep working: they read the same `videoUrl`, which now
+points at the small file.
+
+**Cost:** each old reel is encoded once (2 GiB, about a minute). Storage drops,
+since each raw file is deleted after its compressed copy is in place.
+
+**Check:**
+1. Logs of `compressOldReels`: `[compress-old-reels] run` with `nudged: 4`,
+   then `transcodeReel` runs for those reels.
+2. A day later, the count of reels without `optimizedAt` is going down.
+3. Open an old reel in the app: it starts quickly and its `videoUrl` ends in
+   `video_optimized.mp4`.
+4. Any reel listed under "could not compress" in the logs: open it; if the
+   file is broken, ask the seller to upload it again.
+
+### S16. Simpler KYC for sellers
+
+**Problem.** Sellers were asked for five documents (PAN card, cheque, address
+proof, owner photo, licence) plus a long bank form. Many stopped halfway.
+
+**Now (website Payouts page and app Payouts screen), three short steps:**
+1. **Bank account:** account holder name, IFSC, bank name and branch name
+   (filled in automatically from the IFSC), account number typed twice (paste
+   blocked), and a small note: "Please fill carefully and check each digit".
+2. **GST number or PAN:** a GST number contains the PAN, so entering it fills
+   the PAN in. Sellers without GST type their PAN. The GST number's check
+   character is verified, so one wrong character is caught on the form.
+3. **Licence:** one photo. The other documents are optional, under "Other
+   documents (optional)". Anything a seller already uploaded is still shown.
+- A checklist at the top ticks each step; a green note says selling never
+  waits for KYC.
+- Rules in `app/lib/kyc.ts` (website) and `mobile/lib/core/utils/kyc_rules.dart`
+  (app); change them together.
+- New website endpoint **`/api/ifsc?code=…`** (bank and branch from Razorpay's
+  free IFSC directory, cached a day). The app uses it too. If it is down, the
+  seller types bank and branch themselves.
+- **Admin, Bank & KYC:** shows GST number, PAN (and whether it came from GST),
+  bank and branch; "missing" now means bank details, PAN/GST or licence.
+- **Create Route account** now sends the PAN and GST number to Razorpay
+  (`legal_info`), and sets the business type from the PAN (P person →
+  proprietorship, C company → private limited, F firm → partnership, H HUF,
+  T trust). It also records when the account was created (24-hour cooling).
+- **Verify** now also links the seller's shop to the same Razorpay account
+  (if the shop has none), so new orders are split at checkout. If the shop is
+  already linked to a different account, verify refuses and says which.
+- Daily KYC reminder: asks only for what's still missing, in kinder words
+  ("Your money is safe with KrishiDukan and is sent to your bank once this is
+  done"). WhatsApp templates `kyc_pending`/`kyc_success` are approved in Meta
+  and unchanged.
+
+**Old app versions:** keep working; they write the old fields, which the new
+screens and admin still read. Old sellers stay verified.
+
+**Rules:** `linkedAccountId` and `linkedAccountCreatedAt` added to the
+admin-only payout fields (sellers can't write them). Tested on the emulator:
+new website and app save shapes, the old app's shape, licence upload, and
+every forbidden write (14 checks).
+
+**Deploy:** rules (step 1), functions (step 2: `remindIncompletePayoutDetails`
+changed), website (step 4), app (step 5).
+
+**Check:** fill the form on UAT with IFSC `SBIN0001234`: bank and branch fill
+in. Enter a GST number: PAN fills in. Upload a licence: checklist shows 3 of 3.
+
+### S17. Sell before KYC; paid automatically once verified
+
+**What was already true.** Checkout never blocked a seller without KYC. Their
+online orders simply had no Route transfer, so the whole payment stayed with
+KrishiDukan, and they were paid only when an admin ran the payout run by hand.
+Only Online Delivery asks for a GST number (unchanged; that's a tax rule).
+
+**Why "keep it on hold in Razorpay" isn't enough on its own.** Razorpay
+settles every payment to KrishiDukan's bank in about 2 days. So for a seller
+who finishes KYC later, older payments are no longer in Razorpay, and a
+transfer tied to such a payment would fail. They have to be paid from
+KrishiDukan's Razorpay balance (a "direct transfer"), which is what the payout
+run already does.
+
+**Now:**
+- **New function `payAfterKyc`** (every hour, `functions/src/payouts/pay-after-kyc.ts`).
+  It pays an order when ALL of these hold:
+  - `settings/payouts.transfersEnabled` and the new `settings/payouts.autoPayout`
+    are on (both off by default; admin switch in Seller payments → Payout run).
+  - The seller is verified with a Razorpay account, and 24 hours have passed
+    since verification and since the account was created (Razorpay's
+    cooling period).
+  - The order was paid online and delivered, and 7 days have passed since
+    delivery (same hold as the payout run).
+  - Nothing has paid it, and Razorpay shows no live Route transfer for this
+    seller on the payment.
+- **Amount = "after our cut":** the order total less refunds, less
+  KrishiDukan's commission and the gateway fee from `settings/route`, exactly
+  what a Route seller nets at checkout (a test checks the maths matches).
+- **Never twice:** each order is claimed in a transaction before money moves.
+  On failure the claim is removed, the error is kept on the order, and it is
+  tried again after 6 hours. If the job stops after paying but before writing
+  it down, the order stays claimed, is never paid again automatically, and the
+  admin timeline says "check Razorpay".
+- **Payout run (manual) now pays the same amounts** and skips claimed orders.
+  It used to deduct only the gateway fee, so sellers off Route paid no
+  commission although the Terms say 1%. Orders it pays now record the
+  commission (`payment.platformFee`) and the split (`payment.payoutSplit`).
+- **Earnings screens** (website, app, stats) show what a payout actually sent
+  (`payment.transferredNet`) once an order is paid.
+- **Payment timeline:** for a seller whose KYC isn't verified, an order not
+  split at checkout says "Waiting for your KYC — your money is safe with
+  KrishiDukan; finish the 3 steps and it is sent automatically" (headline
+  "Finish KYC to get paid"). Admins see "Waiting for seller's KYC", and any
+  automatic-payout failure or unconfirmed payout.
+- **Payouts page (website and app):** a green note "You can keep selling while
+  you do this".
+- **Checkout:** if Razorpay refuses an order because of a transfer (a linked
+  account not active yet, still in its cooling day, suspended), it retries once
+  without transfers, so the customer can still pay. That seller is then paid by
+  this job or the payout run.
+- **One Razorpay account per seller:** verifying a seller fills the shop's
+  `razorpayAccountId` (used by checkout) when empty, so their next orders are
+  split at checkout automatically (see S16).
+
+**Turn on (after deploy):**
+1. Razorpay: direct transfers (from balance) must be enabled on the account,
+   as for the payout run. Keep enough money in the Razorpay balance, or set
+   settlements so some stays there: a transfer fails when the balance is short
+   and is retried 6 hours later.
+2. Admin → Seller payments → Payout run: "Live transfers" Enable, then "Pay
+   verified sellers automatically" Turn on.
+3. Watch the `payAfterKyc` logs for a day (`[pay-after-kyc] run`).
+
+**Deploy:** functions (step 2: `payAfterKyc` new; `sellerStatsOnOrderWrite`
+changed), website (step 4), app (step 5). No rule or index change (the order
+queries are equality-only).
+
+**Tests:** on the emulator with Razorpay faked: off until switched on; cooling
+period; unverified seller; hold after delivery; order already on Route;
+already paid by the payout run; both phone formats; failure keeps the claim
+off and waits 6 hours; one transfer for several orders with the exact
+amounts; never pays twice; a leftover claim blocks payment. Timeline: KYC
+wording for seller and admin, routed money unaffected (website and app).
+
+### S18. Two fixes recovered from a local stash
+
+- `firestore.indexes.json`: the `dealerNotes` (dealerId, createdAt) composite
+  index had been added under `fieldOverrides`, where an index with `fields` is
+  not valid, so deploying indexes could fail. Moved to `indexes`.
+- "Create Route account" no longer fails with "missing email" for a seller
+  whose shop record has no email but whose user record does
+  (`app/lib/route-server.ts` reads every one of the seller's records).
+
+**Deploy:** indexes (step 1), website (step 4).
+
 ## Testing on UAT
 
 Needs your usual `.env.uat` file and access to `karan-arjun-uat`.

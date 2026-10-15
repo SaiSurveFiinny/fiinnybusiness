@@ -13,8 +13,16 @@ const TONE: Record<PayoutTimeline["tone"], string> = {
 };
 
 /** A small pill with where the money is now, for lists. */
-export function PayoutHeadline({ order, audience = "seller" }: { order: TimelineOrder; audience?: "seller" | "admin" }) {
-  const t = payoutTimeline(order, { audience });
+export function PayoutHeadline({
+  order,
+  audience = "seller",
+  kycPending,
+}: {
+  order: TimelineOrder;
+  audience?: "seller" | "admin";
+  kycPending?: boolean;
+}) {
+  const t = payoutTimeline(order, { audience, kycPending });
   return (
     <span className={`inline-block rounded-full border px-2.5 py-0.5 text-xs font-semibold ${TONE[t.tone]}`}>{t.headline}</span>
   );
@@ -29,12 +37,15 @@ export function PayoutTimelineView({
   order,
   audience = "seller",
   compact = false,
+  kycPending,
 }: {
   order: TimelineOrder;
   audience?: "seller" | "admin";
   compact?: boolean;
+  /** See payoutTimeline's opts.kycPending. */
+  kycPending?: boolean;
 }) {
-  const t = payoutTimeline(order, { audience });
+  const t = payoutTimeline(order, { audience, kycPending });
   return (
     <div>
       {!compact && (

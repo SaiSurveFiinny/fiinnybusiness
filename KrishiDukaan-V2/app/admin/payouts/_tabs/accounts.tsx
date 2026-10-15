@@ -7,6 +7,7 @@ import { Banknote, CheckCircle2, Copy, ExternalLink, KeyRound, Loader2, RefreshC
 import { db } from "../../../firebase";
 import { usePagedQuery } from "../../_lib/use-paged-query";
 import { LoadMore } from "../../_components/load-more";
+import { KYC_ITEM_LABEL, kycMissing, panFromGstin } from "../../../lib/kyc";
 
 /**
  * Admin → Seller payments → Bank & KYC tab (and the Payout run tab's panel).
@@ -43,9 +44,12 @@ type PayoutRow = {
   accountNumber?: string;
   ifsc?: string;
   bankName?: string;
+  branchName?: string;
   accountType?: string;
   upiId?: string;
   pan?: string;
+  gstin?: string;
+  panSource?: string;
   status?: PayoutStatus;
   razorpayLinkedAccountId?: string;
   rejectionReason?: string;
@@ -65,15 +69,15 @@ const DOC_LABELS: Record<string, string> = {
   address_proof: "Address proof",
   gst_certificate: "GST certificate",
   owner_photo: "Owner photo",
-  trade_license: "Trade / product license",
+  trade_license: "Licence to sell",
 };
 
-const REQUIRED_DOCS = ["pan_card", "cancelled_cheque", "address_proof", "owner_photo", "trade_license"];
+/** Sellers are asked for one document now (see app/lib/kyc.ts); the others
+ *  are optional and still shown when a seller has sent them. */
+const ALL_DOC_TYPES = ["trade_license", "gst_certificate", "pan_card", "cancelled_cheque", "address_proof", "owner_photo"];
 
-/** All doc types the upload-on-behalf-of-seller control can submit — the
- *  required set plus the optional GST certificate, same list kyc-documents.tsx
- *  offers the seller directly. */
-const ALL_DOC_TYPES = [...REQUIRED_DOCS, "gst_certificate"];
+/** What a seller still has to provide, in words. */
+const missingItems = (row: PayoutRow) => kycMissing(row).map((k) => KYC_ITEM_LABEL[k]);
 
 const MAX_UPLOAD_BYTES = 5 * 1024 * 1024;
 
@@ -214,8 +218,7 @@ function StatusBadge({ status }: { status?: PayoutStatus }) {
 }
 
 function PayoutCard({ row, onOpen }: { row: PayoutRow; onOpen: () => void }) {
-  const submitted = Object.keys(row.documents ?? {});
-  const missing = REQUIRED_DOCS.filter((d) => !submitted.includes(d));
+  const missing = missingItems(row);
 
   return (
     <button
@@ -229,8 +232,7 @@ function PayoutCard({ row, onOpen }: { row: PayoutRow; onOpen: () => void }) {
         <StatusBadge status={row.status} />
         {missing.length > 0 && (
           <span className="inline-flex items-center gap-1 rounded-md bg-surface-container px-2 py-0.5 text-xs font-semibold text-on-surface-variant">
-            <ShieldAlert className="h-3 w-3" /> {missing.length} doc
-            {missing.length === 1 ? "" : "s"} missing
+            <ShieldAlert className="h-3 w-3" /> Missing: {missing.join(", ")}
           </span>
         )}
       </div>
@@ -440,7 +442,9 @@ function ReviewModal({
   // Sourced from the live `docs` fetch (refreshed after every admin upload),
   // not the `row` prop — that only updates once the parent list reloads.
   const submitted = docs.filter((d) => d.url).map((d) => d.type);
-  const missing = REQUIRED_DOCS.filter((d) => !submitted.includes(d));
+  const missing = kycMissing({ ...row, documents: Object.fromEntries(submitted.map((t) => [t, true])) }).map(
+    (k) => KYC_ITEM_LABEL[k],
+  );
 
   return (
     <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/40 p-0 md:items-center md:p-6">
@@ -460,9 +464,14 @@ function ReviewModal({
           <Field label="Account holder" value={row.accountHolderName} />
           <Field label="Account number" value={row.accountNumber} mono />
           <Field label="IFSC" value={row.ifsc} mono />
-          <Field label="Bank" value={row.bankName} />
-          <Field label="Type" value={row.accountType} />
-          <Field label="PAN" value={row.pan} mono />
+          <Field label="Bank" value={[row.bankName, row.branchName].filter(Boolean).join(", ")} />
+          {row.accountType && <Field label="Type" value={row.accountType} />}
+          <Field label="GST number" value={row.gstin} mono />
+          <Field
+            label={row.gstin && panFromGstin(row.gstin) === row.pan ? "PAN (from GST number)" : "PAN"}
+            value={row.pan}
+            mono
+          />
           {row.upiId && <Field label="UPI" value={row.upiId} mono />}
         </div>
 
@@ -508,7 +517,7 @@ function ReviewModal({
 
         {missing.length > 0 && (
           <p className="mt-3 rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-900">
-            Still missing: {missing.map((m) => DOC_LABELS[m] ?? m).join(", ")}
+            Still missing: {missing.join(", ")}
           </p>
         )}
 
@@ -813,6 +822,7 @@ export function PayoutRunPanel() {
   // (firestore.rules: settings is write:false), so it is read and set through
   // the same admin route.
   const [enabled, setEnabled] = useState<boolean | null>(null);
+  const [autoPayout, setAutoPayout] = useState<boolean | null>(null);
   const [togglingFlag, setTogglingFlag] = useState(false);
 
   const authHeaders = useCallback(async () => {
@@ -831,7 +841,10 @@ export function PayoutRunPanel() {
           headers: await authHeaders(),
         });
         const json = await res.json();
-        if (!cancelled && res.ok) setEnabled(json.transfersEnabled === true);
+        if (!cancelled && res.ok) {
+          setEnabled(json.transfersEnabled === true);
+          setAutoPayout(json.autoPayout === true);
+        }
       } catch {
         /* leave unknown; the toggle shows a neutral state */
       }
@@ -841,21 +854,22 @@ export function PayoutRunPanel() {
     };
   }, [authHeaders]);
 
-  const toggleFlag = async (next: boolean) => {
+  const toggleFlag = async (next: boolean, key: "transfersEnabled" | "autoPayout" = "transfersEnabled") => {
     setTogglingFlag(true);
     setError(null);
     try {
       const res = await fetch("/api/admin/payout-transfer", {
         method: "PATCH",
         headers: await authHeaders(),
-        body: JSON.stringify({ transfersEnabled: next }),
+        body: JSON.stringify({ [key]: next }),
       });
       const json = await res.json();
       if (!res.ok) {
         setError(json.error ?? "Could not update the setting.");
         return;
       }
-      setEnabled(next);
+      if (key === "autoPayout") setAutoPayout(next);
+      else setEnabled(next);
     } catch {
       setError("Could not reach the server.");
     } finally {
@@ -924,14 +938,44 @@ export function PayoutRunPanel() {
         </button>
       </div>
 
+      {/* Automatic payout after KYC (functions/src/payouts/pay-after-kyc.ts):
+          every hour, pays verified sellers for orders that were not split at
+          checkout, once delivery + the hold has passed. Needs live transfers. */}
+      <div className="mb-3 flex flex-wrap items-center gap-3 rounded-xl border border-outline-variant/40 bg-surface-container-low/60 px-3 py-2">
+        <span className="text-sm font-semibold text-on-surface">Pay verified sellers automatically</span>
+        <span
+          className={`rounded-md px-2 py-0.5 text-xs font-bold ${
+            autoPayout === null
+              ? "bg-surface-container text-on-surface-variant"
+              : autoPayout && enabled
+                ? "bg-green-50 text-green-700"
+                : "bg-amber-50 text-amber-800"
+          }`}
+        >
+          {autoPayout === null ? "Checking…" : autoPayout ? (enabled ? "On" : "On, but live transfers are off") : "Off"}
+        </span>
+        <span className="basis-full text-xs text-on-surface-variant sm:basis-auto">
+          Every hour: sellers who sold before finishing KYC are paid once verified (and 24 hours after
+          their Razorpay account was created), {result?.holdDays ?? 7} days after delivery, less the
+          commission and gateway fee. Same amounts as this run.
+        </span>
+        <button
+          disabled={togglingFlag || autoPayout === null}
+          onClick={() => void toggleFlag(!autoPayout, "autoPayout")}
+          className="ml-auto rounded-lg border border-outline-variant/50 px-3 py-1.5 text-xs font-semibold hover:bg-surface-container disabled:opacity-60"
+        >
+          {togglingFlag ? "Saving…" : autoPayout ? "Turn off" : "Turn on"}
+        </button>
+      </div>
+
       <div className="flex flex-wrap items-center gap-3">
         <Banknote className="h-5 w-5 text-primary" />
         <div className="min-w-0 flex-1">
           <h2 className="text-sm font-bold text-on-surface">Release due payouts</h2>
           <p className="text-xs text-on-surface-variant">
             Pays verified sellers for orders delivered more than{" "}
-            {result?.holdDays ?? 7} days ago. Preview first — a live run cannot
-            be undone here.
+            {result?.holdDays ?? 7} days ago, less KrishiDukan&apos;s commission and the gateway fee
+            (the same split as checkout). Preview first — a live run cannot be undone here.
           </p>
         </div>
         <button

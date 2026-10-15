@@ -123,6 +123,13 @@ final payoutAccountProvider = FutureProvider<PayoutAccountModel?>((ref) {
   return ref.watch(payoutRepoProvider).fetch();
 });
 
+/// True while the seller's payout details aren't verified, so the payment
+/// timeline says money waits for KYC. False until known.
+final kycPendingProvider = Provider<bool>((ref) {
+  final a = ref.watch(payoutAccountProvider);
+  return a.hasValue && !(a.value?.isVerified ?? false);
+});
+
 /// The signed-in seller's earnings totals and recent holds (stats docs kept
 /// by a Cloud Function), live.
 final sellerEarningsStatsProvider = StreamProvider<

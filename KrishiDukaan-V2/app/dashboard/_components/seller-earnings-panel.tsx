@@ -10,6 +10,7 @@ import {
 } from "../_lib/seller-earnings";
 import { fetchSellerEarningsStats } from "../_lib/analytics-firestore";
 import { PayoutHeadline, PayoutTimelineView } from "../../components/shared/payout-timeline-view";
+import { useKycPending } from "../_lib/use-kyc-pending";
 
 /**
  * "What am I owed?" for a seller.
@@ -47,6 +48,7 @@ export function SellerEarningsPanel({
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(false);
   const [openRow, setOpenRow] = useState<string | null>(null);
+  const kycPending = useKycPending();
 
   const load = useCallback(async () => {
     if (!uid) {
@@ -175,7 +177,7 @@ export function SellerEarningsPanel({
                       </td>
                       <td className="py-2 pr-3 text-on-surface-variant">{fmtDate(r.deliveredAt)}</td>
                       <td className="py-2 pr-3">
-                        <PayoutHeadline order={r.order as never} />
+                        <PayoutHeadline order={r.order as never} kycPending={kycPending} />
                       </td>
                       <td className="py-2 pr-3 text-xs text-on-surface-variant">
                         {r.payout?.state === "settled" ? (
@@ -197,7 +199,7 @@ export function SellerEarningsPanel({
                     {open && (
                       <tr>
                         <td colSpan={6} className="bg-surface-container-low/40 px-4 py-4">
-                          <PayoutTimelineView order={r.order as never} />
+                          <PayoutTimelineView order={r.order as never} kycPending={kycPending} />
                         </td>
                       </tr>
                     )}

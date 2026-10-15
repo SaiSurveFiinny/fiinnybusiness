@@ -260,7 +260,10 @@ SellerEarnings computeSellerEarnings(
     // shown a fabricated deduction.
     final gatewayFee =
         (order.payment?.gatewayFee ?? 0) + (order.payment?.gatewayTax ?? 0);
-    final net = (gross - gatewayFee) > 0 ? gross - gatewayFee : 0.0;
+    // Once a payout transfer has paid the order, what it sent is the answer.
+    final sent = order.payment?.transferredNet ?? 0;
+    final paid = (order.payment?.transferId ?? '').isNotEmpty && sent > 0;
+    final net = paid ? sent : ((gross - gatewayFee) > 0 ? gross - gatewayFee : 0.0);
 
     rows.add(SellerEarningsRow(
       orderId: order.id,

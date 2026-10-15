@@ -155,9 +155,13 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ gatewayFee: null, gatewayTax: null, platformFee: 0 });
     }
 
-    const platformFee = (await orderWasRouted(paymentId))
-      ? await platformFeeFor(order)
-      : 0;
+    // Paid after KYC or by the payout run: the commission that payout took.
+    const paidSplit = order.payment?.payoutSplit as { commissionPaise?: number } | undefined;
+    const platformFee = typeof paidSplit?.commissionPaise === "number"
+      ? paidSplit.commissionPaise / 100
+      : (await orderWasRouted(paymentId))
+        ? await platformFeeFor(order)
+        : 0;
 
     const payment = await razorpay.payments.fetch(paymentId);
 

@@ -193,6 +193,9 @@ function rowOf(doc: FirebaseFirestore.DocumentSnapshot): TransferRow {
         transferredAt: ms(o.payment?.transferredAt) ?? o.payment?.transferredAt ?? null,
         refundedAmount: o.payment?.refundedAmount ?? null,
         refundedAt: ms(o.payment?.refundedAt) ?? o.payment?.refundedAt ?? null,
+        payoutError: o.payment?.payoutError ?? null,
+        payoutClaimed: Boolean(o.payment?.payoutClaim),
+        payoutVia: o.payment?.payoutVia ?? null,
       },
       routeRelease: o.routeRelease
         ? { status: o.routeRelease.status ?? null, releaseAt: ms(o.routeRelease.releaseAt), recordedAt: ms(o.routeRelease.recordedAt ?? o.routeRelease.scheduledAt) }

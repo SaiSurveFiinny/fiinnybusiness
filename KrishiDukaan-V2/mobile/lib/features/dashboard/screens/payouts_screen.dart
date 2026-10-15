@@ -12,7 +12,10 @@ import 'package:intl/intl.dart';
 import '../../../core/constants/app_colors.dart';
 import '../../../core/constants/app_text_styles.dart';
 import '../../../core/models/payout_account_model.dart';
+import '../../../core/providers/user_provider.dart';
 import '../../../core/utils/currency_utils.dart';
+import '../../../core/utils/kyc_rules.dart';
+import '../data/payout_repository.dart';
 import '../../../core/widgets/app_top_bar.dart';
 import '../data/seller_earnings.dart';
 import '../providers/dashboard_provider.dart';
@@ -165,7 +168,7 @@ class _EarningsSection extends StatelessWidget {
   }
 }
 
-class _EarningRow extends StatelessWidget {
+class _EarningRow extends ConsumerWidget {
   final SellerEarningsRow row;
   const _EarningRow({required this.row});
 
@@ -192,10 +195,11 @@ class _EarningRow extends StatelessWidget {
   };
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
     final order = row.order;
+    final kycPending = ref.watch(kycPendingProvider);
     // Razorpay's word on the money, the same headline as the timeline.
-    final badge = order != null ? _timelineBadge(order) : _badge;
+    final badge = order != null ? _timelineBadge(order, kycPending) : _badge;
     return InkWell(
       borderRadius: BorderRadius.circular(12),
       onTap: order == null
@@ -299,8 +303,11 @@ class _EarningRow extends StatelessWidget {
     );
   }
 
-  static ({String label, Color color}) _timelineBadge(OrderModel order) {
-    final t = payoutTimeline(order);
+  static ({String label, Color color}) _timelineBadge(
+    OrderModel order,
+    bool kycPending,
+  ) {
+    final t = payoutTimeline(order, kycPending: kycPending);
     final color = switch (t.tone) {
       TimelineTone.good => Colors.green.shade700,
       TimelineTone.info => Colors.blue.shade700,
@@ -383,6 +390,20 @@ class _BankSection extends ConsumerWidget {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
+        // Selling never waits for this; only the transfer to the bank does.
+        if (!(a?.isVerified ?? false)) ...[
+          _InlineNotice(
+            icon: Icons.verified_user_outlined,
+            color: Colors.green.shade800,
+            text:
+                'You can keep selling while you do this. Money from your '
+                'online orders is kept safe by KrishiDukan and sent to your '
+                'bank automatically once your details are verified.',
+          ),
+          const SizedBox(height: 16),
+        ],
+        _KycChecklist(account: a),
+        const SizedBox(height: 16),
         Text('Bank account', style: AppTextStyles.heading3),
         const SizedBox(height: 4),
         Text(
@@ -392,23 +413,21 @@ class _BankSection extends ConsumerWidget {
           ),
         ),
         const SizedBox(height: 12),
-        if (a == null)
-          _InlineNotice(
-            icon: Icons.account_balance_outlined,
-            color: Colors.orange.shade800,
-            text:
-                'No bank account added yet. We cannot send you money until '
-                'you add one.',
-          )
-        else
+        if (a != null && a.hasBank) ...[
           _SavedAccountCard(account: a),
-        const SizedBox(height: 12),
+          const SizedBox(height: 12),
+        ],
         SizedBox(
           width: double.infinity,
           child: FilledButton.icon(
             onPressed: () => _openForm(context, ref),
-            icon: Icon(a == null ? Icons.add : Icons.edit_outlined, size: 18),
-            label: Text(a == null ? 'Add bank account' : 'Change bank account'),
+            icon: Icon(
+              a?.hasBank ?? false ? Icons.edit_outlined : Icons.add,
+              size: 18,
+            ),
+            label: Text(
+              a?.hasBank ?? false ? 'Change details' : 'Add bank details',
+            ),
           ),
         ),
         const SizedBox(height: 24),
@@ -418,13 +437,80 @@ class _BankSection extends ConsumerWidget {
   }
 
   Future<void> _openForm(BuildContext context, WidgetRef ref) async {
+    final gstin = ref.read(currentUserProvider).value?.gstin;
     final saved = await showModalBottomSheet<bool>(
       context: context,
       isScrollControlled: true,
       backgroundColor: Colors.transparent,
-      builder: (_) => const _BankAccountForm(),
+      builder: (_) => _BankAccountForm(account: account, profileGstin: gstin),
     );
     if (saved == true) ref.invalidate(payoutAccountProvider);
+  }
+}
+
+/// Bank, PAN, licence: ticked as each is done, with where the account stands.
+class _KycChecklist extends StatelessWidget {
+  final PayoutAccountModel? account;
+  const _KycChecklist({required this.account});
+
+  @override
+  Widget build(BuildContext context) {
+    final a = account;
+    final missing = a?.missing ?? KycItem.values;
+    final line = switch (a?.status) {
+      'verified' => 'Verified. Your money goes to your bank automatically.',
+      'rejected' => 'Something needs fixing. See below.',
+      _ when missing.isEmpty =>
+        "All done. We're verifying your details, usually within 1 working day.",
+      _ => '${missing.length} of 3 left',
+    };
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: AppColors.divider),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            'Get paid to your bank: 3 quick steps',
+            style: AppTextStyles.bodyMedium.copyWith(
+              fontWeight: FontWeight.w700,
+            ),
+          ),
+          const SizedBox(height: 10),
+          for (final item in KycItem.values)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 6),
+              child: Row(
+                children: [
+                  Icon(
+                    missing.contains(item)
+                        ? Icons.radio_button_unchecked
+                        : Icons.check_circle,
+                    size: 18,
+                    color: missing.contains(item)
+                        ? AppColors.onSurfaceVariant
+                        : Colors.green.shade700,
+                  ),
+                  const SizedBox(width: 8),
+                  Text(kycItemLabel[item]!, style: AppTextStyles.bodySmall),
+                ],
+              ),
+            ),
+          const SizedBox(height: 2),
+          Text(
+            line,
+            style: AppTextStyles.bodySmall.copyWith(
+              color: AppColors.onSurfaceVariant,
+            ),
+          ),
+        ],
+      ),
+    );
   }
 }
 
@@ -485,9 +571,23 @@ class _SavedAccountCard extends StatelessWidget {
               color: AppColors.onSurfaceVariant,
             ),
           ),
-          if (account.bankName != null)
+          if (account.bankName != null || account.branchName != null)
             Text(
-              account.bankName!,
+              [
+                account.bankName,
+                account.branchName,
+              ].whereType<String>().join(', '),
+              style: AppTextStyles.bodySmall.copyWith(
+                color: AppColors.onSurfaceVariant,
+              ),
+            ),
+          if (account.gstin != null || account.pan != null)
+            Text(
+              [
+                if (account.gstin != null) 'GST ${account.gstin}',
+                if (account.pan != null)
+                  'PAN ••••••${account.pan!.substring(account.pan!.length - 4)}',
+              ].join('  ·  '),
               style: AppTextStyles.bodySmall.copyWith(
                 color: AppColors.onSurfaceVariant,
               ),
@@ -507,42 +607,101 @@ class _SavedAccountCard extends StatelessWidget {
   }
 }
 
-/// Bank details form. Validation rules are copied exactly from the web page so
-/// the same input is accepted or rejected identically on both platforms.
+/// Bank details form: three short steps, same rules as the website
+/// (core/utils/kyc_rules.dart mirrors app/lib/kyc.ts).
 class _BankAccountForm extends ConsumerStatefulWidget {
-  const _BankAccountForm();
+  final PayoutAccountModel? account;
+  final String? profileGstin;
+  const _BankAccountForm({this.account, this.profileGstin});
 
   @override
   ConsumerState<_BankAccountForm> createState() => _BankAccountFormState();
 }
 
 class _BankAccountFormState extends ConsumerState<_BankAccountForm> {
-  /// RBI IFSC format: 4 letters, a literal 0, then 6 alphanumerics.
-  static final _ifscRe = RegExp(r'^[A-Z]{4}0[A-Z0-9]{6}$');
-
-  /// Indian account numbers run 9–18 digits depending on the bank.
-  static final _accountRe = RegExp(r'^\d{9,18}$');
-  static final _panRe = RegExp(r'^[A-Z]{5}\d{4}[A-Z]$');
-  static final _upiRe = RegExp(r'^[\w.\-]{2,}@[a-zA-Z]{2,}$');
-
   final _formKey = GlobalKey<FormState>();
-  final _name = TextEditingController();
+  late final _name = TextEditingController(
+    text: widget.account?.accountHolderName,
+  );
   final _number = TextEditingController();
   final _confirm = TextEditingController();
-  final _ifsc = TextEditingController();
-  final _bank = TextEditingController();
-  final _upi = TextEditingController();
-  final _pan = TextEditingController();
-  String _type = 'savings';
+  late final _ifsc = TextEditingController(text: widget.account?.ifsc);
+  late final _bank = TextEditingController(text: widget.account?.bankName);
+  late final _branch = TextEditingController(text: widget.account?.branchName);
+  late final _gstin = TextEditingController(
+    text: widget.account?.gstin ?? widget.profileGstin,
+  );
+  late final _pan = TextEditingController(text: widget.account?.pan);
+
+  /// Shows the PAN taken from the GST number (read only).
+  final _panShown = TextEditingController();
   bool _saving = false;
   String? _error;
 
+  /// The IFSC last looked up, and what came back.
+  String? _ifscLooked;
+  String? _ifscFound;
+  String? _ifscError;
+
+  @override
+  void initState() {
+    super.initState();
+    _ifsc.addListener(_onIfsc);
+    _gstin.addListener(_onGstin);
+    _onGstin();
+  }
+
+  void _onGstin() {
+    final pan = panFromGstin(_gstin.text) ?? '';
+    if (_panShown.text != pan) _panShown.text = pan;
+    if (mounted) setState(() {});
+  }
+
   @override
   void dispose() {
-    for (final c in [_name, _number, _confirm, _ifsc, _bank, _upi, _pan]) {
+    for (final c in [
+      _name,
+      _number,
+      _confirm,
+      _ifsc,
+      _bank,
+      _branch,
+      _gstin,
+      _pan,
+      _panShown,
+    ]) {
       c.dispose();
     }
     super.dispose();
+  }
+
+  /// Bank and branch come from the IFSC, so the seller types one code
+  /// instead of two names. A failed lookup leaves them to type.
+  Future<void> _onIfsc() async {
+    final code = _ifsc.text.trim().toUpperCase();
+    if (!ifscRe.hasMatch(code) || code == _ifscLooked) return;
+    _ifscLooked = code;
+    try {
+      final info = await ref.read(payoutRepoProvider).lookupIfsc(code);
+      if (!mounted || _ifsc.text.trim().toUpperCase() != code) return;
+      setState(() {
+        _ifscError = null;
+        if (info == null) return;
+        if (info.bank.isNotEmpty) _bank.text = info.bank;
+        if (info.branch.isNotEmpty) _branch.text = info.branch;
+        _ifscFound = [
+          info.bank,
+          info.branch,
+        ].where((t) => t.isNotEmpty).join(', ');
+      });
+    } on IfscNotFound {
+      if (mounted) {
+        setState(() {
+          _ifscFound = null;
+          _ifscError = 'No bank branch has this IFSC. Please check it.';
+        });
+      }
+    }
   }
 
   Future<void> _save() async {
@@ -558,16 +717,16 @@ class _BankAccountFormState extends ConsumerState<_BankAccountForm> {
             accountHolderName: _name.text,
             accountNumber: _number.text,
             ifsc: _ifsc.text,
-            accountType: _type,
             bankName: _bank.text,
-            upiId: _upi.text,
+            branchName: _branch.text,
+            gstin: _gstin.text,
             pan: _pan.text,
           );
       if (mounted) Navigator.of(context).pop(true);
     } catch (e) {
       if (mounted) {
         setState(() {
-          _error = 'Could not save your bank account. $e';
+          _error = 'Could not save your details. $e';
           _saving = false;
         });
       }
@@ -576,6 +735,7 @@ class _BankAccountFormState extends ConsumerState<_BankAccountForm> {
 
   @override
   Widget build(BuildContext context) {
+    final panFromGst = panFromGstin(_gstin.text);
     return Padding(
       padding: EdgeInsets.only(
         bottom: MediaQuery.of(context).viewInsets.bottom,
@@ -593,17 +753,16 @@ class _BankAccountFormState extends ConsumerState<_BankAccountForm> {
               mainAxisSize: MainAxisSize.min,
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text('Bank account', style: AppTextStyles.heading3),
+                Text('Your bank details', style: AppTextStyles.heading3),
                 const SizedBox(height: 4),
                 Text(
-                  'Enter the details exactly as they appear on your bank '
-                  'account. Anything you change here has to be verified again '
-                  'before your next payout.',
+                  'Takes about 2 minutes. Keep your passbook or a cheque handy.',
                   style: AppTextStyles.bodySmall.copyWith(
                     color: AppColors.onSurfaceVariant,
                   ),
                 ),
                 const SizedBox(height: 16),
+                const _StepTitle(1, 'Bank account'),
                 _field(
                   _name,
                   'Account holder name',
@@ -612,18 +771,32 @@ class _BankAccountFormState extends ConsumerState<_BankAccountForm> {
                       : null,
                 ),
                 _field(
+                  _ifsc,
+                  'IFSC code',
+                  upper: true,
+                  maxLength: 11,
+                  helper: _ifscFound,
+                  errorText: _ifscError,
+                  validator: (v) =>
+                      ifscRe.hasMatch((v ?? '').trim().toUpperCase())
+                      ? null
+                      : 'IFSC should look like SBIN0001234. It is on your cheque book.',
+                ),
+                _field(_bank, 'Bank name'),
+                _field(_branch, 'Branch name'),
+                _field(
                   _number,
                   'Account number',
                   keyboard: TextInputType.number,
                   digitsOnly: true,
                   maxLength: 18,
-                  validator: (v) => _accountRe.hasMatch((v ?? '').trim())
+                  validator: (v) => accountRe.hasMatch((v ?? '').trim())
                       ? null
                       : 'Account number must be 9–18 digits, no spaces.',
                 ),
                 _field(
                   _confirm,
-                  'Confirm account number',
+                  'Re-enter account number',
                   keyboard: TextInputType.number,
                   digitsOnly: true,
                   maxLength: 18,
@@ -633,51 +806,57 @@ class _BankAccountFormState extends ConsumerState<_BankAccountForm> {
                       ? null
                       : 'The two account numbers do not match.',
                 ),
-                _field(
-                  _ifsc,
-                  'IFSC code',
-                  upper: true,
-                  maxLength: 11,
-                  validator: (v) =>
-                      _ifscRe.hasMatch((v ?? '').trim().toUpperCase())
-                      ? null
-                      : 'IFSC looks wrong — it should be like SBIN0001234.',
-                ),
-                _field(_bank, 'Bank name (optional)'),
-                const SizedBox(height: 4),
-                SegmentedButton<String>(
-                  segments: const [
-                    ButtonSegment(value: 'savings', label: Text('Savings')),
-                    ButtonSegment(value: 'current', label: Text('Current')),
+                Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Icon(
+                      Icons.warning_amber_rounded,
+                      size: 16,
+                      color: Colors.orange.shade800,
+                    ),
+                    const SizedBox(width: 6),
+                    Expanded(
+                      child: Text(
+                        'Please fill carefully and check each digit with your '
+                        'passbook. Your money is sent to this account.',
+                        style: AppTextStyles.bodySmall.copyWith(
+                          color: Colors.orange.shade900,
+                        ),
+                      ),
+                    ),
                   ],
-                  selected: {_type},
-                  onSelectionChanged: (s) => setState(() => _type = s.first),
                 ),
-                const SizedBox(height: 12),
+                const SizedBox(height: 20),
+                const _StepTitle(2, 'GST number or PAN'),
                 _field(
-                  _upi,
-                  'UPI ID (optional)',
+                  _gstin,
+                  'GST number (if you have one)',
+                  upper: true,
+                  maxLength: 15,
+                  helper: 'Your PAN is part of it, so we fill it in for you.',
                   validator: (v) {
                     final t = (v ?? '').trim();
-                    if (t.isEmpty) return null;
-                    return _upiRe.hasMatch(t)
-                        ? null
-                        : 'UPI ID should look like name@bank.';
+                    if (t.isEmpty || isValidGstin(t)) return null;
+                    return "This GST number doesn't look right. Please check it.";
                   },
                 ),
-                _field(
-                  _pan,
-                  'PAN (optional)',
-                  upper: true,
-                  maxLength: 10,
-                  validator: (v) {
-                    final t = (v ?? '').trim().toUpperCase();
-                    if (t.isEmpty) return null;
-                    return _panRe.hasMatch(t)
+                if (panFromGst != null)
+                  _field(
+                    _panShown,
+                    'PAN',
+                    readOnly: true,
+                    helper: 'Taken from your GST number',
+                  )
+                else
+                  _field(
+                    _pan,
+                    'PAN',
+                    upper: true,
+                    maxLength: 10,
+                    validator: (v) => isValidPan(v ?? '')
                         ? null
-                        : 'PAN should look like ABCDE1234F.';
-                  },
-                ),
+                        : 'Enter your PAN, like ABCPK1234L. Or enter your GST number.',
+                  ),
                 if (_error != null) ...[
                   const SizedBox(height: 8),
                   Text(
@@ -698,10 +877,18 @@ class _BankAccountFormState extends ConsumerState<_BankAccountForm> {
                             width: 18,
                             child: CircularProgressIndicator(strokeWidth: 2),
                           )
-                        : const Text('Save bank account'),
+                        : const Text('Save details'),
                   ),
                 ),
                 const SizedBox(height: 8),
+                Text(
+                  'Only you and our verification team can see these details. '
+                  'They are used only to send your order money through '
+                  'Razorpay, an RBI-regulated payment company.',
+                  style: AppTextStyles.bodySmall.copyWith(
+                    color: AppColors.onSurfaceVariant,
+                  ),
+                ),
               ],
             ),
           ),
@@ -717,7 +904,10 @@ class _BankAccountFormState extends ConsumerState<_BankAccountForm> {
     TextInputType? keyboard,
     bool digitsOnly = false,
     bool upper = false,
+    bool readOnly = false,
     int? maxLength,
+    String? helper,
+    String? errorText,
   }) {
     return Padding(
       padding: const EdgeInsets.only(bottom: 12),
@@ -726,6 +916,7 @@ class _BankAccountFormState extends ConsumerState<_BankAccountForm> {
         validator: validator,
         keyboardType: keyboard,
         maxLength: maxLength,
+        readOnly: readOnly,
         textCapitalization: upper
             ? TextCapitalization.characters
             : TextCapitalization.words,
@@ -735,11 +926,50 @@ class _BankAccountFormState extends ConsumerState<_BankAccountForm> {
         ],
         decoration: InputDecoration(
           labelText: label,
+          helperText: helper,
+          helperMaxLines: 2,
+          errorText: errorText,
           counterText: '',
           filled: true,
-          fillColor: Colors.white,
+          fillColor: readOnly ? AppColors.surfaceVariant : Colors.white,
           border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
         ),
+      ),
+    );
+  }
+}
+
+class _StepTitle extends StatelessWidget {
+  final int n;
+  final String title;
+  const _StepTitle(this.n, this.title);
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 10),
+      child: Row(
+        children: [
+          CircleAvatar(
+            radius: 10,
+            backgroundColor: AppColors.primary,
+            child: Text(
+              '$n',
+              style: const TextStyle(
+                fontSize: 11,
+                fontWeight: FontWeight.w700,
+                color: Colors.white,
+              ),
+            ),
+          ),
+          const SizedBox(width: 8),
+          Text(
+            title,
+            style: AppTextStyles.bodyMedium.copyWith(
+              fontWeight: FontWeight.w700,
+            ),
+          ),
+        ],
       ),
     );
   }
@@ -901,41 +1131,48 @@ class _DocSpec {
   });
 }
 
+/// One required upload: the licence to sell agri inputs. Bank, PAN and GST
+/// are typed in the form and checked by Razorpay, so the other documents are
+/// optional now; they stay listed so anything already sent is still visible,
+/// and a seller can add one if our team asks. Same list as the website's
+/// app/dashboard/_components/kyc-documents.tsx.
 const _kDocSpecs = [
   _DocSpec(
-    'pan_card',
-    'PAN card',
-    'Photo of the PAN card matching the account holder name',
-    front: true,
-  ),
-  _DocSpec(
     'trade_license',
-    'Trade / product license',
-    'Shop establishment, FSSAI, mandi, or other license permitting you to '
-        'sell agri produce or inputs',
+    'Licence to sell',
+    'Photo of your fertiliser, seed or pesticide licence, or shop licence',
     front: true,
-  ),
-  _DocSpec(
-    'cancelled_cheque',
-    'Cancelled cheque or passbook',
-    'Must clearly show account number, IFSC and holder name',
-  ),
-  _DocSpec(
-    'address_proof',
-    'Address proof',
-    'Aadhaar, electricity bill or shop licence',
-  ),
-  _DocSpec(
-    'owner_photo',
-    'Owner photo',
-    "A clear photo of the account holder's face, for identity verification",
-    selfie: true,
   ),
   _DocSpec(
     'gst_certificate',
     'GST certificate',
-    'Only if your business is GST registered',
+    'If you have GST',
     required: false,
+  ),
+  _DocSpec(
+    'pan_card',
+    'PAN card',
+    'Only if our team asks for it',
+    required: false,
+  ),
+  _DocSpec(
+    'cancelled_cheque',
+    'Cancelled cheque or passbook',
+    'Only if our team asks for it',
+    required: false,
+  ),
+  _DocSpec(
+    'address_proof',
+    'Address proof',
+    'Only if our team asks for it',
+    required: false,
+  ),
+  _DocSpec(
+    'owner_photo',
+    'Owner photo',
+    'Only if our team asks for it',
+    required: false,
+    selfie: true,
   ),
 ];
 
@@ -1028,11 +1265,10 @@ class _KycSectionState extends ConsumerState<_KycSection> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Text('Verification documents', style: AppTextStyles.heading3),
-        const SizedBox(height: 4),
+        const _StepTitle(3, 'Licence'),
         Text(
-          'We need these on file before money can be sent to your account. '
-          'Only you and our verification team can see them.',
+          'A clear photo is enough. Only you and our verification team can '
+          'see it.',
           style: AppTextStyles.bodySmall.copyWith(
             color: AppColors.onSurfaceVariant,
           ),
@@ -1044,9 +1280,7 @@ class _KycSectionState extends ConsumerState<_KycSection> {
             child: _InlineNotice(
               icon: Icons.description_outlined,
               color: Colors.orange.shade800,
-              text:
-                  '$missing required '
-                  '${missing == 1 ? 'document' : 'documents'} still needed.',
+              text: 'Please upload your licence.',
             ),
           ),
         if (_error != null)
@@ -1125,7 +1359,7 @@ class _MoreDocumentsState extends State<_MoreDocuments> {
                 children: [
                   Expanded(
                     child: Text(
-                      'More documents',
+                      'Other documents (optional)',
                       style: AppTextStyles.bodyMedium.copyWith(
                         fontWeight: FontWeight.w600,
                       ),

@@ -83,17 +83,21 @@ double? storePriceForVariant(
 /// supply that exact size are omitted entirely, and those that can are priced
 /// at THEIR price for it — so the sheet, the price shown on each row, and the
 /// line that reaches the cart can never disagree about what is being bought.
+///
+/// [onlineOnly] false keeps walk-in (offline) stores too — for showing the
+/// best price on the product page, not for ordering.
 List<StoreOption> buildStoreOptions(
     CatalogModel catalog, List<ListingModel> listings,
-    {VariantModel? selectedVariant}) {
+    {VariantModel? selectedVariant, bool onlineOnly = true}) {
   final discounts = catalog.sellerDiscounts;
   final options = <StoreOption>[];
-  if (catalog.sellMode == 'offline_store_only' || catalog.isOnline == false) {
+  if (onlineOnly &&
+      (catalog.sellMode == 'offline_store_only' || catalog.isOnline == false)) {
     return options; // No online delivery available
   }
 
   for (final l in listings) {
-    if (!l.isInStock || !l.isOnline) continue;
+    if (!l.isInStock || (onlineOnly && !l.isOnline)) continue;
 
     final base = storePriceForVariant(l, catalog, selectedVariant);
     if (base == null) continue; // this store cannot supply the selected size

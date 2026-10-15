@@ -108,18 +108,23 @@ function addEarnings(c: Contribution, totals: string, key: string, d: admin.fire
   const platformFee = Number(d.payment?.platformFee ?? 0) || 0;
   // Net of the gateway fee (the app's figure); the website also takes off the
   // platform fee, kept separately per state.
-  const net = Math.max(0, gross - gatewayFee);
+  // Once a payout transfer has paid the order, what it sent is the answer
+  // (same rule as netFor in seller-earnings.ts).
+  const sent = Number(d.payment?.transferredNet ?? 0) || 0;
+  const paid = Boolean(d.payment?.transferId) && sent > 0;
+  const net = paid ? sent : Math.max(0, gross - gatewayFee);
+  const webNet = paid ? sent : Math.max(0, gross - gatewayFee - platformFee);
   addTo(c, totals, "earnings.orders", 1);
   addTo(c, totals, `earnings.${phase}.net`, net);
   addTo(c, totals, `earnings.${phase}.platformFee`, platformFee);
-  addTo(c, totals, `earnings.${phase}.webNet`, Math.max(0, gross - gatewayFee - platformFee));
+  addTo(c, totals, `earnings.${phase}.webNet`, webNet);
   addTo(c, totals, "earnings.gatewayFees", gatewayFee);
   addTo(c, totals, "earnings.platformFees", platformFee);
   // Of the paid-out money, what has reached the seller's bank (Razorpay
   // settlement). A part of "transferred", so older screens still add up.
   if (phase === "transferred" && d.payout?.state === "settled") {
     addTo(c, totals, "earnings.settled.net", net);
-    addTo(c, totals, "earnings.settled.webNet", Math.max(0, gross - gatewayFee - platformFee));
+    addTo(c, totals, "earnings.settled.webNet", webNet);
   }
 
   // A delivered order is on hold for 7 days from its delivery time: record it

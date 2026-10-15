@@ -46,6 +46,10 @@ export type TimelineOrder = {
     transferredNet?: number;
     refundedAmount?: number;
     refundedAt?: unknown;
+    /** Automatic payout (pay-after-kyc) or payout run: last failure, claim, who paid. */
+    payoutError?: string | null;
+    payoutClaimed?: boolean;
+    payoutVia?: string | null;
   };
   routeRelease?: { status?: string; releaseAt?: unknown; scheduledAt?: unknown; recordedAt?: unknown };
   payout?: {
@@ -92,7 +96,12 @@ export const fmtWhen = (d: Date) =>
 
 export function payoutTimeline(
   order: TimelineOrder,
-  opts: { audience?: "seller" | "admin"; now?: Date } = {},
+  opts: {
+    audience?: "seller" | "admin";
+    now?: Date;
+    /** True while the seller's KYC isn't verified: unrouted money waits for it. */
+    kycPending?: boolean;
+  } = {},
 ): PayoutTimeline {
   const now = opts.now ?? new Date();
   const admin = opts.audience === "admin";
@@ -185,7 +194,13 @@ export function payoutTimeline(
 
   if (pay.transferId) {
     // Paid by KrishiDukan's payout run (a direct bank transfer).
-    released = { key: "released", label: "Sent by KrishiDukan", status: "done", at: toDate(pay.transferredAt), detail: `Payout transfer ${pay.transferId}.` };
+    released = {
+      key: "released",
+      label: "Sent by KrishiDukan",
+      status: "done",
+      at: toDate(pay.transferredAt),
+      detail: `Payout transfer ${pay.transferId}${pay.payoutVia === "after_kyc" ? ", sent automatically after KYC" : ""}.`,
+    };
   } else if (state === "processing" || state === "settled") {
     released = { key: "released", label: "Released to you", status: "done", at: releaseAt ?? toDate(order.routeRelease?.recordedAt) };
   } else if (state === "failed") {
@@ -208,6 +223,18 @@ export function payoutTimeline(
         : "Your money is ready to be released. KrishiDukan releases it shortly.",
     };
     needsAdmin = true;
+  } else if (opts.kycPending) {
+    // Seller not on Route yet: the money stays with KrishiDukan and is sent
+    // automatically once their KYC is verified (functions/src/payouts/pay-after-kyc.ts).
+    released = {
+      key: "released",
+      label: admin ? "Waiting for seller's KYC" : "Waiting for your KYC",
+      status: "current",
+      at: null,
+      detail: admin
+        ? "Paid automatically once the seller's bank details and licence are verified."
+        : "Your money is safe with KrishiDukan. Finish the 3 steps on the Payouts page and it is sent to your bank automatically.",
+    };
   } else {
     // Seller not on Route: paid by the payout run some days after delivery.
     const due = deliveredAt ? new Date(deliveredAt.getTime() + RUN_HOLD_DAYS * 86_400_000) : null;
@@ -217,10 +244,19 @@ export function payoutTimeline(
       status: "current",
       at: due,
       detail: due
-        ? `${due > now ? "Due" : "Was due"} ${fmtWhen(due)}, in KrishiDukan's payout run to your registered bank account.`
-        : "Paid in KrishiDukan's payout run to your registered bank account.",
+        ? `${due > now ? "Due" : "Was due"} ${fmtWhen(due)}. KrishiDukan sends it to your registered bank account.`
+        : "KrishiDukan sends it to your registered bank account.",
     };
     needsAdmin = due !== null && due <= now;
+    if (admin && pay.payoutClaimed) {
+      // A payout run stopped between paying and writing it down: never paid
+      // again automatically, so someone has to look.
+      released.detail = "A payout was started but not confirmed. Check Razorpay for a transfer with this order id before paying it.";
+      needsAdmin = true;
+    } else if (admin && pay.payoutError) {
+      released.detail = `Automatic payout failed: ${pay.payoutError}. It is tried again every 6 hours.`;
+      needsAdmin = true;
+    }
   }
 
   if (state === "settled") {
@@ -256,8 +292,14 @@ export function payoutTimeline(
       headline = "Releasing now";
       tone = "info";
     } else {
-      headline = released.label === "Waiting for payout" ? "Waiting for payout" : "Waiting for release";
-      tone = needsAdmin ? "warn" : "wait";
+      const waitingKyc = released.label === "Waiting for your KYC" || released.label === "Waiting for seller's KYC";
+      headline =
+        released.label === "Waiting for payout"
+          ? "Waiting for payout"
+          : waitingKyc
+            ? (admin ? released.label : "Finish KYC to get paid")
+            : "Waiting for release";
+      tone = needsAdmin || waitingKyc ? "warn" : "wait";
     }
   }
 

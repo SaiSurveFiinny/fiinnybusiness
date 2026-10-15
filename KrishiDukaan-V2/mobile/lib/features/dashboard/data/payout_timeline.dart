@@ -49,7 +49,9 @@ DateTime? _lastStatusAt(OrderModel o, String status) {
   return null;
 }
 
-PayoutTimeline payoutTimeline(OrderModel order, {DateTime? now}) {
+/// [kycPending]: the seller's KYC isn't verified yet, so money not sent at
+/// checkout waits for it (then pay-after-kyc sends it automatically).
+PayoutTimeline payoutTimeline(OrderModel order, {DateTime? now, bool kycPending = false}) {
   final at = now ?? DateTime.now();
   final status = order.status.toLowerCase();
   final pay = order.payment;
@@ -223,6 +225,14 @@ PayoutTimeline payoutTimeline(OrderModel order, {DateTime? now}) {
       detail:
           'Your money is ready to be released. KrishiDukan releases it shortly.',
     );
+  } else if (kycPending) {
+    released = const TimelineStep(
+      'released',
+      'Waiting for your KYC',
+      TimelineStatus.current,
+      detail: 'Your money is safe with KrishiDukan. Finish the 3 steps on the '
+          'Payouts page and it is sent to your bank automatically.',
+    );
   } else {
     final due = deliveredAt?.add(const Duration(days: _runHoldDays));
     released = TimelineStep(
@@ -231,8 +241,8 @@ PayoutTimeline payoutTimeline(OrderModel order, {DateTime? now}) {
       TimelineStatus.current,
       at: due,
       detail: due != null
-          ? '${due.isAfter(at) ? 'Due' : 'Was due'} ${fmtWhen(due)}, in KrishiDukan\'s payout run to your registered bank account.'
-          : 'Paid in KrishiDukan\'s payout run to your registered bank account.',
+          ? '${due.isAfter(at) ? 'Due' : 'Was due'} ${fmtWhen(due)}. KrishiDukan sends it to your registered bank account.'
+          : 'KrishiDukan sends it to your registered bank account.',
     );
   }
 
@@ -280,6 +290,9 @@ PayoutTimeline payoutTimeline(OrderModel order, {DateTime? now}) {
     } else if (released.label == 'Releasing now') {
       headline = 'Releasing now';
       tone = TimelineTone.info;
+    } else if (kycPending && released.label == 'Waiting for your KYC') {
+      headline = 'Finish KYC to get paid';
+      tone = TimelineTone.warn;
     } else {
       headline = released.label;
       tone = TimelineTone.wait;

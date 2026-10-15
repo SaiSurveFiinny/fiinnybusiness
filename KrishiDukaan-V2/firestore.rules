@@ -106,6 +106,23 @@ service cloud.firestore {
              storedPhone == ('+91' + myPhone());
     }
 
+    // True if the caller's phone, in either stored form (+91… or 10-digit), is
+    // in [phones]. Checks the sign-in token first, which costs no reads. Used
+    // by list rules, so a query must filter on the caller's own phone
+    // (array-contains) to be allowed.
+    function callerPhoneIn(phones) {
+      return ('phone_number' in request.auth.token
+                && (request.auth.token.phone_number in phones
+                    || request.auth.token.phone_number.replace('^[+]91', '') in phones))
+             || myPhone() in phones
+             || myPhone().replace('^[+]91', '') in phones;
+    }
+
+    // phoneMatches() for a field that may be missing or null.
+    function phoneFieldMatches(value) {
+      return value is string && value != '' && phoneMatches(value);
+    }
+
     // ─── uidIndex ────────────────────────────────────────────────────────────
     // Maps Firebase Auth UID → normalized phone. Written once on first login.
     // Rule deliberately avoids myPhone() to break the bootstrap chicken-and-egg.
@@ -121,15 +138,22 @@ service cloud.firestore {
     // Document ID = normalized phone e.g. "+919876543210"
     match /users/{phone} {
       allow read: if isAuthed() && (
+        request.auth.uid == phone ||
+        // Allow first-time phone-auth login to read their pre-created doc before uidIndex exists.
+        // request.auth.token.phone_number is the E.164 number from the Firebase auth JWT.
+        request.auth.token.phone_number == phone ||
+        myPhone() == phone ||
+        // Sellers may look up other SELLER accounts (shop headers, dealer and
+        // retailer pickers, a retailer's email for an invite), never a
+        // farmer's record. A list query must filter on role for this to hold.
+        // This used to be `myRole() in [...]` alone, which let any seller
+        // download every user's personal details.
+        ((resource == null || resource.data.role in ['retailer', 'manufacturer'])
+          && myRole() in ['retailer', 'manufacturer']) ||
         isAdmin() ||
         // Team members granted "users" need to list/browse every account to
         // monitor status and send pending-signup reminders.
-        teamHas('users') ||
-        request.auth.uid == phone ||
-        myPhone() == phone || myRole() in ['retailer', 'manufacturer'] ||
-        // Allow first-time phone-auth login to read their pre-created doc before uidIndex exists.
-        // request.auth.token.phone_number is the E.164 number from the Firebase auth JWT.
-        request.auth.token.phone_number == phone
+        teamHas('users')
       );
       allow create: if isAdmin()
                        || (isAuthed()
@@ -283,7 +307,7 @@ service cloud.firestore {
               (request.resource.data.ownerPhone is string && request.resource.data.ownerPhone == myPhone()) ||
               request.resource.data.ownerId == request.auth.uid
             )
-            && request.resource.data.isPromotional != true
+            && request.resource.data.get('isPromotional', false) != true
           )
         );
       allow update, delete: if isAdmin();
@@ -453,10 +477,13 @@ service cloud.firestore {
         (resource.data.sellerPhones is list &&
           resource.data.sellerPhones.hasAny([myPhone(), myPhone().replace('^[+]91', '')]))
       ));
-      // LIST (query): resource.data is NOT available during query evaluation,
-      // same as notifications — the query is always filtered by
-      // `sellerPhones arrayContains <callerPhone>`, so results are already scoped.
-      allow list: if isAuthed();
+      // LIST (query): must be filtered by `sellerPhones array-contains` the
+      // caller's own phone. This was `isAuthed()` alone, which let any
+      // signed-in user download every enquiry, buyers' names and phones
+      // included. Team "users" covers the admin view-a-seller's-dashboard link.
+      allow list: if isAuthed() && (
+        callerPhoneIn(resource.data.sellerPhones) || isAdmin() || teamHas('users')
+      );
       allow update: if isAdmin() || (isAuthed()
         && (phoneMatches(resource.data.sellerPhone) ||
             (resource.data.sellerPhones is list &&
@@ -479,11 +506,32 @@ service cloud.firestore {
     // ─── orders ──────────────────────────────────────────────────────────────
     // Accepts both new (customerPhone/sellerPhone) and legacy (customerId/sellerId) fields.
     match /orders/{orderId} {
+      // Payment fields only the server writes (transfers, refunds, fees). A
+      // customer setting payment.transferId would make the order look paid
+      // out, and the payout run would skip the seller.
+      function protectedPaymentKeys() {
+        return ['transferId', 'transferredAt', 'transferredNet', 'transferReversals',
+                'transferReversalId', 'refundId', 'refundedAmount', 'refundedAt',
+                'refundReason', 'platformFee', 'gatewayFee', 'gatewayTax', 'feeFetchedAt'];
+      }
+      function noProtectedPaymentKeys(p) {
+        return !(p is map) || !p.keys().hasAny(protectedPaymentKeys());
+      }
+      function keepsProtectedPayment(after, before) {
+        return (after is map && before is map)
+          ? !after.diff(before).affectedKeys().hasAny(protectedPaymentKeys())
+          : noProtectedPaymentKeys(after) && noProtectedPaymentKeys(before);
+      }
+
       allow create: if isAuthed() && (
         request.resource.data.customerPhone == myPhone() ||
         request.resource.data.customerId == request.auth.uid
       ) && request.resource.data.status == 'placed'
-        && request.resource.data.sellerType in ['retailer', 'manufacturer'];
+        && request.resource.data.sellerType in ['retailer', 'manufacturer']
+        // Who-gets-paid fields are the server's (payout: Razorpay's transfer
+        // status, functions/src/payouts/payout-status.ts).
+        && !request.resource.data.keys().hasAny(['payout', 'routeRelease', 'routeTransfer', 'reassignment'])
+        && noProtectedPaymentKeys(request.resource.data.get('payment', null));
 
       // teamHas('users') covers the admin "view seller's dashboard" link.
       allow read: if isAdmin() || teamHas('users') || teamHas('orders') || (isAuthed() && (
@@ -506,16 +554,23 @@ service cloud.firestore {
         resource.data.sellerPhone == myPhone() ||
         resource.data.sellerId == request.auth.uid
       ) && resource.data.status != 'reassigning'
+        // A cancelled/rejected order is closed (the customer was refunded) —
+        // a seller can't bring it back to life.
+        && !(resource.data.status in ['cancelled', 'rejected'])
         && request.resource.data.status in ['placed','accepted','dispatched','out_for_delivery','delivered']
+        // No going back to "placed": an accepted order must not become
+        // customer-cancellable again (POST /api/orders/cancel).
+        && (request.resource.data.status != 'placed' || resource.data.status == 'placed')
         && !request.resource.data.diff(resource.data).affectedKeys().hasAny([
-          'reassignment', 'routeTransfer', 'routeRelease', 'payment',
-          'sellerPhone', 'sellerId', 'customerId', 'customerPhone'
+          'reassignment', 'routeTransfer', 'routeRelease', 'payment', 'payout',
+          'sellerPhone', 'sellerId', 'customerId', 'customerPhone','tracking'
         ]))
         // Allow customer to update payment field on their own order
         || (isAuthed() && (
           resource.data.customerId == request.auth.uid ||
           resource.data.customerPhone == myPhone()
-        ) && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['payment', 'updatedAt']))
+        ) && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['payment', 'updatedAt'])
+          && keepsProtectedPayment(request.resource.data.get('payment', null), resource.data.get('payment', null)))
         // Allow customer to write invoice metadata after PDF upload
         || (isAuthed() && (
           resource.data.customerId == request.auth.uid ||
@@ -614,9 +669,22 @@ service cloud.firestore {
         phoneMatches(resource.data.retailerDocId) ||
         // Allow claiming assigned product if it matches the user's retailerDocId (from invite or admin assignment)
         ((resource.data.source == 'manufacturer_assigned' || resource.data.source == 'admin_assigned') && resource.data.retailerDocId != null && request.resource.data.retailerId == request.auth.uid) ||
-        // Allow any retailer to add their store to the product's availability array
-        request.resource.data.diff(resource.data).affectedKeys().hasOnly(['availability', 'updatedAt']) ||
-        request.resource.data.diff(resource.data).affectedKeys().hasOnly(['availability']) ||
+        // A write that changes no value. diff() counts 450 and 450.0 as equal
+        // and an order change as a change. The website writes a product's
+        // availability list back unchanged before editing its own entry when
+        // the app saved whole numbers as decimals (see availabilityWriteAllowed).
+        request.resource.data.diff(resource.data).affectedKeys().size() == 0 ||
+        // A seller may add their store to another seller's product, or edit or
+        // remove their own entry in its availability array — never anyone
+        // else's. This used to allow any signed-in user to rewrite the whole
+        // array (other sellers' prices and stock, or remove them). The
+        // product's manufacturer of record, and team members helping with
+        // inventory, may manage the whole list. updatedAt, when sent, must be
+        // the server time: it dates the product for listings and the sitemap.
+        (request.resource.data.diff(resource.data).affectedKeys().hasOnly(['availability', 'updatedAt'])
+          && (!request.resource.data.diff(resource.data).affectedKeys().hasAny(['updatedAt'])
+              || request.resource.data.updatedAt == request.time)
+          && (availabilityWriteAllowed() || teamHas('inventory'))) ||
         // Allow any authed shopper to bump the analytics counters only
         // (trackProductImpression/Click/StoreCall/DirectionRequest in
         // app/firebase.ts). Without this the seller-analytics counters were
@@ -625,11 +693,12 @@ service cloud.firestore {
         request.resource.data.diff(resource.data).affectedKeys().hasOnly([
           'impressions', 'clicks', 'positionSum', 'calls', 'directionRequests',
           'impressionsByDay', 'clicksByDay', 'callsByDay', 'directionRequestsByDay'
-        ]) ||
-        // Allow owner to update discount mirror fields (effectiveDiscountPct, maxDiscountPct, availability+discount)
-        request.resource.data.diff(resource.data).affectedKeys().hasOnly(['effectiveDiscountPct', 'updatedAt']) ||
-        request.resource.data.diff(resource.data).affectedKeys().hasOnly(['maxDiscountPct']) ||
-        request.resource.data.diff(resource.data).affectedKeys().hasOnly(['availability', 'updatedAt', 'effectiveDiscountPct'])
+        ])
+        // The discount mirrors (effectiveDiscountPct, maxDiscountPct) are no
+        // longer writable by non-owners: any signed-in user could set a fake
+        // "Up to 99% OFF" on any product. Owners still write them through the
+        // owner checks above, and maxDiscountPct on a manufacturer's product is
+        // recomputed by the syncMaxDiscountOnProductWrite Cloud Function.
       ));
       allow delete: if isAdmin() || (isAuthed() && (
         resource.data.ownerId == request.auth.uid ||
@@ -753,6 +822,42 @@ service cloud.firestore {
       allow delete: if isAdmin();
     }
 
+    // Retailer brand page (the shop's public page at /shop/{phone}). Doc ID =
+    // the retailer's E164 phone. Public only while `enabled` — switching it
+    // off hides the page from everyone but the owner and admins; a public get
+    // of a hidden or missing page is denied, which readers treat as "off".
+    function validRetailerBrandPage(d) {
+      return d.keys().hasOnly(['enabled', 'tagline', 'about', 'establishedYear',
+               'photos', 'openingHours', 'highlights', 'whatsapp', 'socialLinks',
+               'createdAt', 'updatedAt'])
+        && d.enabled is bool
+        && (!('tagline' in d) || (d.tagline is string && d.tagline.size() <= 120))
+        && (!('about' in d) || (d.about is string && d.about.size() <= 2000))
+        && (!('establishedYear' in d) || (d.establishedYear is string && d.establishedYear.size() <= 4))
+        && (!('photos' in d) || (d.photos is list && d.photos.size() <= 8))
+        && (!('openingHours' in d) || (d.openingHours is string && d.openingHours.size() <= 120))
+        && (!('highlights' in d) || (d.highlights is list && d.highlights.size() <= 8))
+        && (!('whatsapp' in d) || (d.whatsapp is string && d.whatsapp.size() <= 16))
+        && (!('socialLinks' in d) || d.socialLinks is map);
+    }
+    // "N people bought this in the last …" per product. Public, written only
+    // by the rebuildProductBuyStats function (holds counts and initials, no
+    // names, phones or photos).
+    match /productBuyStats/{productId} {
+      allow read: if true;
+      allow write: if false;
+    }
+
+    match /retailerBrandPages/{phone} {
+      allow get: if resource.data.enabled == true
+        || (isAuthed() && myPhone() == phone) || isAdmin();
+      // Listing (sitemap) only ever returns visible pages.
+      allow list: if resource.data.enabled == true || isAdmin();
+      allow create, update: if isAuthed() && (myPhone() == phone || isAdmin())
+        && validRetailerBrandPage(request.resource.data);
+      allow delete: if isAuthed() && (myPhone() == phone || isAdmin());
+    }
+
     // ─── Discount field validation helper ───────────────────────────────────
     // Returns true when the incoming write does not set invalid discount values.
     // discountPct must be 0–99; dates must be absent or timestamps.
@@ -763,7 +868,7 @@ service cloud.firestore {
     /// sets it to 'pending_verification' when submitting or editing.
     function payoutProtectedFields() {
       return ['razorpayLinkedAccountId', 'verifiedAt', 'verifiedBy',
-              'rejectionReason'];
+              'rejectionReason', 'linkedAccountId', 'linkedAccountCreatedAt'];
     }
 
     /// A seller may only ever put their payout account INTO review, never
@@ -772,6 +877,50 @@ service cloud.firestore {
     function payoutStatusOk() {
       return !('status' in request.resource.data)
              || request.resource.data.status == 'pending_verification';
+    }
+
+    // ─── availability[] ownership ──────────────────────────────────────────
+    // A seller's entry names its store by storeId (their auth UID, or their
+    // retailers/{phone} doc id) and storePhone. [ids] is the caller's uid and
+    // phone forms, worked out once: calling phoneMatches() per entry exceeds
+    // the rules engine's 1000-expression limit on this already long rule.
+    function isOneOf(value, ids) {
+      return value is string && value != '' && value in ids;
+    }
+
+    function availabilityEntryIsMine(e, ids) {
+      return isOneOf(e.get('storeId', ''), ids) || isOneOf(e.get('storePhone', ''), ids);
+    }
+
+    // Rules cannot loop, so up to three changed entries are checked; one write
+    // from the apps touches one entry (or a duplicate or two of it).
+    function availabilityEntriesAreMine(entries, ids) {
+      return entries.size() <= 3
+          && (entries.size() < 1 || availabilityEntryIsMine(entries[0], ids))
+          && (entries.size() < 2 || availabilityEntryIsMine(entries[1], ids))
+          && (entries.size() < 3 || availabilityEntryIsMine(entries[2], ids));
+    }
+
+    // An availability-only write by someone who doesn't own the product:
+    // allowed when every entry added, edited or removed is the caller's own
+    // (an edited entry shows up in both lists: new value added, old removed),
+    // or when the caller is the product's manufacturer of record by phone.
+    // removeAll() compares entries strictly by type: a price the app saved as
+    // 450.0 that the website sends back as 450 counts as edited. The website
+    // handles that refusal (updateOwnAvailabilityEntries); the app keeps types.
+    function availabilityWriteAllowed() {
+      let me = myPhone();
+      let token = request.auth.token.get('phone_number', '');
+      let ids = [request.auth.uid, me, me.replace('^[+]91', ''), '+91' + me,
+                 token, token.replace('^[+]91', '')];
+      let beforeRaw = resource.data.get('availability', []);
+      let afterRaw = request.resource.data.get('availability', []);
+      let before = beforeRaw is list ? beforeRaw : [];
+      let after = afterRaw is list ? afterRaw : [];
+      return isOneOf(resource.data.get('manufacturerPhone', ''), ids)
+          || isOneOf(resource.data.get('ownerPhone', ''), ids)
+          || (availabilityEntriesAreMine(after.removeAll(before), ids)
+              && availabilityEntriesAreMine(before.removeAll(after), ids));
     }
 
     function discountFieldsValid() {
@@ -840,7 +989,24 @@ service cloud.firestore {
         // Allow retailer to read their own invite by phone (for auto-accept flow)
         phoneMatches(resource.data.retailerPhone)
       );
-      allow list: if true;
+      // LIST (query). This was `if true`, which let anyone, signed in or not,
+      // download every invite and network link (retailers' phones, emails and
+      // shop names). Now a query must be one of:
+      //  - an invite-code lookup: one invite per query, filtered on the code
+      //    (signup before an account exists, claiming, checking a new code is
+      //    free) — so the collection can no longer be pulled in one request;
+      //  - the caller's own invites/network, filtered on their uid or phone;
+      //  - admin, or a team member with the "users" section.
+      allow list: if (request.query.limit <= 1 && resource.data.inviteCode is string)
+        || (isAuthed() && (
+          resource.data.manufacturerId == request.auth.uid ||
+          resource.data.retailerId == request.auth.uid ||
+          resource.data.retailerDocId == request.auth.uid ||
+          phoneFieldMatches(resource.data.manufacturerPhone) ||
+          phoneFieldMatches(resource.data.retailerPhone) ||
+          phoneFieldMatches(resource.data.retailerDocId) ||
+          isAdmin() || teamHas('users')
+        ));
       allow create: if isAuthed() && (
         request.resource.data.manufacturerId == request.auth.uid ||
         isAdmin()
@@ -982,9 +1148,22 @@ service cloud.firestore {
 
     // ─── siteVisits ──────────────────────────────────────────────────────────
     // Daily traffic analytics — admin read, public write (create/update to log visits).
+    // Written by every home page visit, signed in or not (trackPageView), so
+    // writes are limited to +1 on the known counters of a date-shaped doc.
+    // This was `if true`, which let anyone write anything here. The page
+    // counter is a literal "pages.home" field (set+merge keeps dots in names).
     match /siteVisits/{date} {
       allow read: if isAdmin();
-      allow create, update: if true;
+      allow create: if date.matches('^[0-9]{4}-[0-9]{2}-[0-9]{2}$')
+        && request.resource.data.keys().hasOnly(['date', 'total', 'pages.home'])
+        && request.resource.data.date == date
+        && request.resource.data.total == 1
+        && request.resource.data.get('pages.home', 1) == 1;
+      allow update: if request.resource.data.diff(resource.data).affectedKeys()
+            .hasOnly(['date', 'total', 'pages.home'])
+        && request.resource.data.date == date
+        && request.resource.data.total == resource.data.get('total', 0) + 1
+        && request.resource.data.get('pages.home', 0) == resource.data.get('pages.home', 0) + 1;
     }
 
     // ─── activeUsers / mau / retention ───────────────────────────────────────
@@ -1015,6 +1194,37 @@ service cloud.firestore {
       allow read: if isAdmin();
     }
 
+    // A seller's order totals, kept by sellerStatsOnOrderWrite (Admin SDK
+    // only). {sellerKey} is the seller's phone as +91 and 10 digits, or their
+    // Auth UID for orders that carry no phone. The seller, admins and team
+    // members who can open a seller's dashboard may read them.
+    function canReadSellerStats(sellerKey) {
+      return isAdmin() || teamHas('users') || (isAuthed() && (
+        sellerKey == request.auth.uid ||
+        sellerKey == myPhone() ||
+        sellerKey == '+91' + myPhone()
+      ));
+    }
+
+    match /sellerStats/{sellerKey} {
+      allow read: if canReadSellerStats(sellerKey);
+    }
+
+    // sellerDailyStats/{sellerKey}_{YYYY-MM-DD}: list queries must filter on
+    // sellerKey (rules are not filters).
+    match /sellerDailyStats/{docId} {
+      allow read: if canReadSellerStats(resource.data.sellerKey);
+    }
+
+    // Per-day platform totals (orders, subscriptions, payments, sign-ups,
+    // products added) kept by the platformStatsOn* functions for Admin →
+    // Analytics and the Orders page. Written only by the Admin SDK.
+    match /platformDailyStats/{date} {
+      // Team "orders" members already read every order; the Orders page
+      // shows gross order value from these totals.
+      allow read: if isAdmin() || teamHas('orders');
+    }
+
     // Retention cohort summaries written by the CF.
     match /retention/{cohortDay} {
       allow read: if isAdmin();
@@ -1026,7 +1236,7 @@ service cloud.firestore {
 
     match /appVersion/{vId} {
       allow read: if true;
-      allow write: if isAdmin();
+      allow write: if isAdmin() || teamHas('appVersion');
     }
 
     // ─── productReviews & storeReviews ───────────────────────────────────────
@@ -1053,10 +1263,10 @@ service cloud.firestore {
         (resource.data.recipientPhones is list &&
           resource.data.recipientPhones.hasAny([myPhone(), myPhone().replace('^[+]91', '')]))
       ));
-      // LIST (query): resource.data is NOT available during query evaluation.
-      // Allow any authenticated user — the query is always filtered by
-      // `recipientPhones arrayContains <callerPhone>` so results are already scoped.
-      allow list: if isAuthed();
+      // LIST (query): must be filtered by `recipientPhones array-contains` the
+      // caller's own phone. This was `isAuthed()` alone, which let any
+      // signed-in user download everyone's notifications.
+      allow list: if isAuthed() && (callerPhoneIn(resource.data.recipientPhones) || isAdmin());
       allow update: if isAuthed()
         && (phoneMatches(resource.data.recipientPhone) ||
             (resource.data.recipientPhones is list &&
@@ -1135,16 +1345,36 @@ service cloud.firestore {
 
     // ─── reel_likes ──────────────────────────────────────────────────────────
     // Doc ID = {reelId}_{userId}. Any authenticated user can like/unlike.
+    // Writes are limited to the caller's own like (this was `isAuthed()`
+    // alone, so anyone signed in could delete or rewrite other people's).
     match /reel_likes/{likeId} {
       allow read: if true;
-      allow write: if isAuthed();
+      allow create: if isAuthed()
+        && request.resource.data.keys().hasOnly(['reelId', 'userId', 'createdAt'])
+        && likeId == request.resource.data.reelId + '_' + request.resource.data.userId
+        && (request.resource.data.userId == request.auth.token.phone_number
+            || request.resource.data.userId == myPhone());
+      allow delete: if isAdmin() || (isAuthed()
+        && (resource.data.userId == request.auth.token.phone_number
+            || phoneFieldMatches(resource.data.userId)));
+      allow update: if false;
     }
 
     // ─── follows ─────────────────────────────────────────────────────────────
-    // Doc ID = {followerId}_{shopId}. Any authenticated user can follow/unfollow.
+    // Doc ID = {followerId}_{shopId}. Any authenticated user can follow/unfollow
+    // — for themselves only (this was `isAuthed()` alone, so anyone signed in
+    // could delete or forge other people's follows).
     match /follows/{followId} {
       allow read: if true;
-      allow write: if isAuthed();
+      allow create: if isAuthed()
+        && request.resource.data.keys().hasOnly(['followerId', 'followedShopId', 'createdAt'])
+        && followId == request.resource.data.followerId + '_' + request.resource.data.followedShopId
+        && (request.resource.data.followerId == request.auth.token.phone_number
+            || request.resource.data.followerId == myPhone());
+      allow delete: if isAdmin() || (isAuthed()
+        && (resource.data.followerId == request.auth.token.phone_number
+            || phoneFieldMatches(resource.data.followerId)));
+      allow update: if false;
     }
 
     // ─── engagement_buffer ───────────────────────────────────────────────────
