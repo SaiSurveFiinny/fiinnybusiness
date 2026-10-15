@@ -1219,7 +1219,9 @@ export default function App() {
 
 
     setCartItems((prev) => {
-      const variantUnit = variant?.unit;
+      // One-size products have no variants; carry their base size so the
+      // order and invoice show it (the app already sends catalog.unit).
+      const variantUnit = variant?.unit || (!product.variants?.length && product.unit ? String(product.unit) : undefined);
       const found = prev.find(
         (i) => i.productId === product.id && i.sellMode === "pending" && i.variantUnit === variantUnit,
       );
@@ -1577,7 +1579,8 @@ export default function App() {
 
     const sellerType: "retailer" | "manufacturer" =
       (store as any).retailerId ? "retailer" : "manufacturer";
-    const variantUnit = variant?.unit;
+    // One-size products: carry the base size, as above.
+    const variantUnit = variant?.unit || (!product.variants?.length && product.unit ? String(product.unit) : undefined);
 
     setCartItems((prev) => {
       const found = prev.find(

@@ -9,6 +9,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:http/http.dart' as http;
 import 'package:intl/intl.dart';
 import 'package:url_launcher/url_launcher.dart';
+import '../../../core/widgets/back_or_home_button.dart';
 import '../../../core/constants/app_colors.dart';
 import '../../../core/constants/app_config.dart';
 import '../../../core/constants/app_text_styles.dart';
@@ -89,7 +90,10 @@ class _SellerOrdersBodyState extends ConsumerState<_SellerOrdersBody> {
       appBar: AppBar(
         backgroundColor: AppColors.primary,
         foregroundColor: Colors.white,
-        title: Text('My Orders',
+        leading: const BackOrHomeButton(color: Colors.white),
+        // "Customer Orders", not "My Orders": that name is the seller's own
+        // purchases (/orders) — two screens with one title confused sellers.
+        title: Text('Customer Orders',
             style: AppTextStyles.heading2.copyWith(color: Colors.white)),
         actions: [
           IconButton(

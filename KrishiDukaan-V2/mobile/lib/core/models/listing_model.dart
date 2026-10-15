@@ -20,6 +20,10 @@ class ListingModel {
   final int? lowStockThreshold;
 
   final List<VariantModel> variants;
+
+  /// Base pack size (web's top-level `unit`, e.g. "1L"); the only size a
+  /// product added on web with one pack size has, since it has no variants.
+  final String? unit;
   final DiscountModel? discount;
 
   /// Quantity-based discount ladder — independent of [discount]: a product
@@ -81,6 +85,7 @@ class ListingModel {
     required this.price,
     required this.stockQuantity,
     this.lowStockThreshold,
+    this.unit,
     required this.variants,
     this.discount,
     this.bulkDiscountEnabled = false,
@@ -177,6 +182,7 @@ class ListingModel {
           (d['sellingPrice'] as num?)?.toDouble() ?? 0.0,
       stockQuantity: _parseStock(d),
       lowStockThreshold: (d['lowStockThreshold'] as num?)?.toInt(),
+      unit: (d['unit'] as String?)?.trim(),
       variants: (d['variants'] as List? ?? [])
           .map((v) => VariantModel.fromMap(v as Map<String, dynamic>))
           .toList(),

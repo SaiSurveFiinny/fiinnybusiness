@@ -18,6 +18,24 @@
 import type { MarketplaceProduct } from "./product-types";
 import { getActiveDiscountPct } from "./discount";
 
+/** Port of app/utils/weight.ts normalizeUnit: "2 Ltr", "2L" → "2l". */
+function normalizeUnit(unit: string): string {
+  const s = unit.trim().toLowerCase();
+  if (!s) return "";
+  const m = s.match(
+    /^(\d+(?:\.\d+)?)\s*(kilograms?|kilogram|kgs?|kg|grams?|gms?|gm|g|millilitres?|milliliters?|mls?|ml|litres?|liters?|ltrs?|ltr|ls?|l)$/,
+  );
+  if (!m) return s.replace(/\s+/g, "");
+  let num = m[1];
+  if (num.includes(".")) num = num.replace(/\.0+$/, "").replace(/(\.\d*?)0+$/, "$1");
+  const raw = m[2];
+  const canon = /^(kilograms?|kilogram|kgs?|kg)$/.test(raw) ? "kg"
+    : /^(millilitres?|milliliters?|mls?|ml)$/.test(raw) ? "ml"
+    : /^(grams?|gms?|gm|g)$/.test(raw) ? "g"
+    : "l";
+  return `${num}${canon}`;
+}
+
 type RatingAgg = Map<string, { sum: number; count: number }>;
 
 /** Build the per-catalogId rating aggregate from raw review rows. */
@@ -175,11 +193,12 @@ export function mergeMarketplaceProducts(
   ): MarketplaceProduct["variants"] => {
     if (!Array.isArray(extra) || extra.length === 0) return base;
     const out = Array.isArray(base) ? [...base] : [];
-    const seen = new Set(out.map((v) => String(v.unit ?? "").trim().toLowerCase()));
+    // Same size however it is spelled: "1L", "1 L" and "1 Ltr" are one chip.
+    const seen = new Set(out.map((v) => normalizeUnit(String(v.unit ?? ""))));
     for (const v of extra) {
       const unit = String(v?.unit ?? "").trim();
-      if (!unit || seen.has(unit.toLowerCase())) continue;
-      seen.add(unit.toLowerCase());
+      if (!unit || seen.has(normalizeUnit(unit))) continue;
+      seen.add(normalizeUnit(unit));
       out.push({ unit, price: Number(v.price) || 0 });
     }
     return out.length > 0 ? out : base;

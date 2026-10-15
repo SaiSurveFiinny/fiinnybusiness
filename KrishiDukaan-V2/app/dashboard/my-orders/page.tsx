@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import Link from "next/link";
 import { useEffectiveUser } from "../_context/effective-user-context";
 import {
   Package,
@@ -18,7 +19,7 @@ import {
 } from "lucide-react";
 import { auth, fetchOrdersForCustomer } from "../../firebase";
 import { PageHeader } from "../_components/page-header";
-import { ORDER_STATUS_FLOW, orderGrandTotal, type OrderDoc, type OrderStatus } from "../../../types/order";
+import { ORDER_STATUS_FLOW, normalizeOrderItems, orderGrandTotal, type OrderDoc, type OrderStatus } from "../../../types/order";
 import { openInvoice } from "../../utils/invoice-generator";
 
 // Visible progress steps — shared with the seller view and the public customer
@@ -232,7 +233,19 @@ export default function MyOrdersPage() {
         title="My Placed Orders"
         description="Orders you've placed as a buyer — track delivery status and download invoices."
         helperKey="dashMyOrders"
+        backHref="/dashboard"
       />
+
+      {/* Sellers see two order lists; say which one this is. */}
+      <div className="mb-5 flex flex-wrap items-center gap-x-3 gap-y-1 rounded-xl border border-blue-200 bg-blue-50 px-4 py-3 text-sm text-blue-800">
+        <span>
+          These are products <b>you bought</b> for yourself. Orders customers place with your shop are in{" "}
+          <b>Customer Orders</b>.
+        </span>
+        <Link href="/dashboard/orders" className="font-bold underline underline-offset-2">
+          Open Customer Orders
+        </Link>
+      </div>
 
       {!uid ? (
         <p className="rounded-xl border border-outline-variant/30 bg-surface-container-low px-4 py-3 text-sm text-on-surface-variant">
@@ -385,7 +398,7 @@ export default function MyOrdersPage() {
 
                       {/* Items */}
                       <div className="border rounded-xl border-surface-container overflow-hidden">
-                        {(order.items || []).map((item, idx) => (
+                        {normalizeOrderItems(order.items).map((item, idx) => (
                           <div
                             key={`${order.id}-${item.productId}-${idx}`}
                             className={`flex justify-between px-4 py-2.5 text-sm ${

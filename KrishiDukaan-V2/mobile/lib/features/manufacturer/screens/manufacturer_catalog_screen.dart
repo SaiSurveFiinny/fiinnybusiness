@@ -2,7 +2,6 @@ import 'dart:io';
 
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
-import 'package:image_picker/image_picker.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../../core/data/product_schema_repository.dart';
 import '../../dashboard/providers/dashboard_provider.dart';
@@ -15,10 +14,13 @@ import '../../../core/models/catalog_model.dart';
 import '../../../core/models/listing_model.dart';
 import '../../../core/providers/user_provider.dart';
 import '../../../core/utils/currency_utils.dart';
+import '../../../core/utils/weight_utils.dart';
 import '../../../core/widgets/empty_state.dart';
 import '../../../core/widgets/error_view.dart';
 import '../../../core/widgets/online_delivery_prompt.dart';
+import '../../../core/widgets/unsaved_changes_guard.dart';
 import '../../dashboard/widgets/product_form_sections.dart';
+import '../../dashboard/widgets/product_image_slots.dart';
 import '../../dashboard/data/dashboard_repository.dart';
 import '../../marketplace/data/catalog_repository.dart';
 import '../data/manufacturer_repository.dart';
@@ -276,6 +278,8 @@ class _CatalogBodyState extends ConsumerState<_CatalogBody> {
     showModalBottomSheet(
       context: context,
       isScrollControlled: true,
+      // Swipe-down would skip the unsaved-changes question.
+      enableDrag: false,
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
       ),
@@ -474,6 +478,7 @@ class _CatalogTile extends StatelessWidget {
                     showModalBottomSheet(
                       context: context,
                       isScrollControlled: true,
+                      enableDrag: false,
                       shape: const RoundedRectangleBorder(
                         borderRadius: BorderRadius.vertical(
                           top: Radius.circular(20),
@@ -560,6 +565,8 @@ class _CatalogTile extends StatelessWidget {
   }
 }
 
+const _kSizeChips = ['1', '2', '5', '10', '25', '50'];
+
 // ── Product Add/Edit Sheet ────────────────────────────────────────────────────
 
 class _ProductSheet extends ConsumerStatefulWidget {
@@ -617,7 +624,7 @@ class _ProductSheetState extends ConsumerState<_ProductSheet> {
   List<CatalogModel> _nameSuggestions = [];
 
   final List<VariantModel> _variants = [];
-  late List<TextEditingController> _imageUrlCtrls;
+  late final List<String> _imageUrls;
   final List<File?> _imageFiles = List.filled(5, null);
 
   /// Categories from `settings/productSchema` — the same doc the web
@@ -679,15 +686,30 @@ class _ProductSheetState extends ConsumerState<_ProductSheet> {
     if (p?.variants != null) {
       _variants.addAll(p!.variants!);
     }
+    // Start the size chips at the product's real pack size, not 1 KG.
+    _applyPackSize(_variants.firstOrNull?.label ?? p?.unit);
 
     final existingImages = p?.images ?? [];
-    _imageUrlCtrls = List.generate(
+    _imageUrls = List.generate(
       5,
-      (i) => TextEditingController(
-        text: i < existingImages.length ? existingImages[i] : '',
-      ),
+      (i) => i < existingImages.length ? existingImages[i] : '',
     );
+    _initialSnapshot = _snapshot();
   }
+
+  // Everything the form can change, compared on close to ask before
+  // throwing edits away.
+  late final String _initialSnapshot;
+  String _snapshot() => [
+        _nameCtrl.text, _priceCtrl.text, _descCtrl.text, _nCtrl.text,
+        _pCtrl.text, _kCtrl.text, _customUnitCtrl.text, _customSizeCtrl.text,
+        _stockCtrl.text, _category, _selectedUnit, _selectedSize, _isActive,
+        _gstApplicable, _gstRate, _sellMode, _videoUrl, _categoryInfo,
+        _composition, _customFields,
+        for (final v in _variants) '${v.label}|${v.price}|${v.stock}',
+        ..._imageUrls,
+        for (final f in _imageFiles) f?.path,
+      ].join('\u0001');
 
   Future<void> _refreshAccountDelivery() async {
     final enabled = await DashboardRepository().fetchAccountOnlineDelivery(
@@ -708,96 +730,20 @@ class _ProductSheetState extends ConsumerState<_ProductSheet> {
     _customUnitCtrl.dispose();
     _customSizeCtrl.dispose();
     _stockCtrl.dispose();
-    for (final c in _imageUrlCtrls) {
-      c.dispose();
-    }
     super.dispose();
   }
 
-  Future<void> _pickImage(int index) async {
-    final picker = ImagePicker();
-    final source = await showDialog<ImageSource>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('Select image source'),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx, ImageSource.camera),
-            child: const Text('Camera'),
-          ),
-          TextButton(
-            onPressed: () => Navigator.pop(ctx, ImageSource.gallery),
-            child: const Text('Gallery'),
-          ),
-        ],
-      ),
-    );
-    if (source == null) return;
-    final xFile = await picker.pickImage(
-      source: source,
-      maxWidth: 1024,
-      imageQuality: 85,
-    );
-    if (xFile != null && mounted) {
-      final file = File(xFile.path);
-      final bytes = await file.length();
-      if (bytes > 5 * 1024 * 1024) {
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('Image must be less than 5MB')),
-          );
-        }
-        return;
-      }
-      setState(() => _imageFiles[index] = file);
+  /// Sets the size/unit chips from a pack-size label ("1L", "500 ml"…).
+  void _applyPackSize(String? label) {
+    final p = splitPackSize(label);
+    if (p == null) return;
+    _selectedUnit = p.unit;
+    if (_kSizeChips.contains(p.size)) {
+      _selectedSize = p.size;
+    } else {
+      _selectedSize = 'Custom';
+      _customSizeCtrl.text = p.size;
     }
-  }
-
-  Widget _buildImageRow(int index) {
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 12),
-      child: Row(
-        children: [
-          Expanded(
-            child: TextField(
-              controller: _imageUrlCtrls[index],
-              decoration: InputDecoration(
-                labelText: index == 0 ? 'Main image URL' : 'Image ${index + 1} URL',
-                border: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(12),
-                ),
-              ),
-            ),
-          ),
-          const SizedBox(width: 12),
-          GestureDetector(
-            onTap: () => _pickImage(index),
-            child: Container(
-              width: 48,
-              height: 48,
-              decoration: BoxDecoration(
-                color: AppColors.surfaceVariant,
-                borderRadius: BorderRadius.circular(12),
-                border: Border.all(color: AppColors.divider),
-              ),
-              child: _imageFiles[index] != null
-                  ? ClipRRect(
-                      borderRadius: BorderRadius.circular(12),
-                      child: Image.file(
-                        _imageFiles[index]!,
-                        fit: BoxFit.cover,
-                      ),
-                    )
-                  : const Icon(
-                      Icons.add_photo_alternate_outlined,
-                      size: 24,
-                      color: AppColors.onSurfaceVariant,
-                    ),
-            ),
-          ),
-        ],
-      ),
-    );
   }
 
   void _addVariantSize() {
@@ -833,7 +779,11 @@ class _ProductSheetState extends ConsumerState<_ProductSheet> {
   @override
   Widget build(BuildContext context) {
     final isEdit = widget.product != null;
-    return Container(
+    return UnsavedChangesGuard(
+      isDirty: () => _snapshot() != _initialSnapshot,
+      busy: _saving,
+      onSave: _save,
+      child: Container(
       height: MediaQuery.of(context).size.height * 0.85,
       decoration: const BoxDecoration(
         color: Colors.white,
@@ -860,7 +810,8 @@ class _ProductSheetState extends ConsumerState<_ProductSheet> {
                     ),
                     IconButton(
                       icon: const Icon(Icons.close),
-                      onPressed: () => Navigator.pop(context),
+                      tooltip: 'Close',
+                      onPressed: () => Navigator.maybePop(context),
                     ),
                   ],
                 ),
@@ -964,10 +915,13 @@ class _ProductSheetState extends ConsumerState<_ProductSheet> {
                             _nameCtrl.text = cat.name;
                             _category = _matchCategory(cat.category);
                             _descCtrl.text = cat.description ?? '';
+                            _applyPackSize(
+                              cat.variants?.firstOrNull?.label ?? cat.unit,
+                            );
                             for (int j = 0;
                                 j < cat.images.length && j < 5;
                                 j++) {
-                              _imageUrlCtrls[j].text = cat.images[j];
+                              _imageUrls[j] = cat.images[j];
                             }
                             _nameSuggestions = [];
                           }),
@@ -1203,7 +1157,7 @@ class _ProductSheetState extends ConsumerState<_ProductSheet> {
                 Wrap(
                   spacing: 8,
                   runSpacing: 4,
-                  children: ['1', '2', '5', '10', '25', '50', 'Custom'].map((
+                  children: [..._kSizeChips, 'Custom'].map((
                     sz,
                   ) {
                     return ChoiceChip(
@@ -1264,7 +1218,11 @@ class _ProductSheetState extends ConsumerState<_ProductSheet> {
                   ),
                 ),
                 const SizedBox(height: 12),
-                ...List.generate(5, (i) => _buildImageRow(i)),
+                ProductImageSlots(
+                  urls: _imageUrls,
+                  files: _imageFiles,
+                  onChanged: () => setState(() {}),
+                ),
                 const SizedBox(height: 16),
 
                 ProductVideoSection(
@@ -1428,6 +1386,7 @@ class _ProductSheetState extends ConsumerState<_ProductSheet> {
           ),
         ],
       ),
+      ),
     );
   }
 
@@ -1458,7 +1417,12 @@ class _ProductSheetState extends ConsumerState<_ProductSheet> {
     }
 
     final priceInput = double.tryParse(_priceCtrl.text.trim());
-    if (priceInput != null) {
+    // Editing: the price box is pre-filled, so turning it into a size here
+    // added a fake "1 KG" pack on every save of a product that already had
+    // sizes. Sizes are added with "Add size" instead; the box only creates
+    // one for a new product, or an old one that has none yet.
+    final mayAddFromBox = widget.product == null || _variants.isEmpty;
+    if (priceInput != null && mayAddFromBox) {
       final unit = _selectedUnit == 'Custom'
           ? _customUnitCtrl.text.trim()
           : _selectedUnit;
@@ -1467,7 +1431,9 @@ class _ProductSheetState extends ConsumerState<_ProductSheet> {
           : _selectedSize;
       if (unit.isNotEmpty && size.isNotEmpty) {
         final label = '$size $unit';
-        if (!_variants.any((v) => v.label == label)) {
+        if (!_variants.any(
+          (v) => normalizeUnit(v.label) == normalizeUnit(label),
+        )) {
           _variants.add(
             VariantModel(label: label, price: priceInput, stock: 1),
           );
@@ -1508,8 +1474,8 @@ class _ProductSheetState extends ConsumerState<_ProductSheet> {
             widget.manufacturerPhone,
           );
           imageUrls.add(url);
-        } else if (_imageUrlCtrls[i].text.trim().isNotEmpty) {
-          imageUrls.add(_imageUrlCtrls[i].text.trim());
+        } else if (_imageUrls[i].trim().isNotEmpty) {
+          imageUrls.add(_imageUrls[i].trim());
         }
       }
 
@@ -1541,6 +1507,8 @@ class _ProductSheetState extends ConsumerState<_ProductSheet> {
         if (imageUrls.isNotEmpty) 'imageUrl': imageUrls.first,
         if (imageUrls.isNotEmpty) 'image': imageUrls.first,
         'variants': _variants.map((v) => v.toMap()).toList(),
+        // Base pack size web reads (inventory table, marketplace card).
+        if (_variants.isNotEmpty) 'unit': _variants.first.label,
         'isActive': _isActive,
         'sellMode': effectiveSellMode,
         'gstApplicable': effectiveGstApplicable,

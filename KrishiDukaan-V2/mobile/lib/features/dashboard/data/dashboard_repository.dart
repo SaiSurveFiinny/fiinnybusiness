@@ -426,6 +426,8 @@ class DashboardRepository {
       if (images.isNotEmpty) 'imageUrl': images.first,
       if (images.isNotEmpty) 'image': images.first,
       'variants': variants.map((v) => v.toMap()).toList(),
+      // Base pack size web reads (inventory table, duplicate check, cards).
+      if (variants.isNotEmpty) 'unit': variants.first.label,
       'isActive': isActive,
       'isOnline': sellMode != 'offline_store_only',
       'sellMode': sellMode,

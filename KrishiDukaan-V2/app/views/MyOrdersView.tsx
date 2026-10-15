@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { fetchOrdersForCustomer } from "../firebase";
-import { ORDER_STATUS_FLOW, orderGrandTotal, type OrderDoc, type OrderStatus } from "../../types/order";
+import { ORDER_STATUS_FLOW, normalizeOrderItems, orderGrandTotal, type OrderDoc, type OrderStatus } from "../../types/order";
 import { useI18n } from "../i18n/I18nContext";
 import { openInvoice } from "../utils/invoice-generator";
 
@@ -174,7 +174,7 @@ export default function MyOrdersView({ customerId }: { customerId: string }) {
 
           {/* Items */}
           <div className="border-t border-surface-container pt-3 pb-4 space-y-1.5">
-            {(order.items || []).map((item) => (
+            {normalizeOrderItems(order.items).map((item) => (
               <div key={`${order.id}-${item.productId}`} className="flex justify-between text-sm">
                 <span className="text-on-surface">
                   {item.name}
