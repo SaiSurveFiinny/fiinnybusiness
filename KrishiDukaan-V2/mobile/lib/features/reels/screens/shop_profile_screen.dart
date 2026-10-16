@@ -22,6 +22,7 @@ import '../../../core/utils/format_count.dart';
 import '../../marketplace/providers/marketplace_provider.dart';
 import '../providers/reels_provider.dart';
 import '../widgets/reel_filters.dart';
+import '../../../core/widgets/back_or_home_button.dart';
 
 class ShopProfileScreen extends ConsumerStatefulWidget {
   final String shopPhone;
@@ -125,6 +126,8 @@ class _ShopProfileScreenState extends ConsumerState<ShopProfileScreen> {
             pinned: true,
             backgroundColor: AppColors.primary,
             foregroundColor: Colors.white,
+            // Shared shop links open with nothing underneath.
+            leading: const BackOrHomeButton(fallback: '/'),
             flexibleSpace: FlexibleSpaceBar(
               background: Container(
                 decoration: BoxDecoration(
@@ -1542,16 +1545,27 @@ class _StandaloneReelsFeedState extends ConsumerState<StandaloneReelsFeed>
     }
   }
 
+  /// Whether another page (a profile, a product) is on top of this viewer.
+  /// The URL check alone missed it: go_router's `uri` ignores pushed pages,
+  /// so after tapping a username it still read the old path and kept the
+  /// reel — and its sound — playing under the profile.
+  bool _isCovered() => !(ModalRoute.of(context)?.isCurrent ?? true);
+
   void _handleRouteChange() {
     if (!mounted) return;
-    final path = _router!.routerDelegate.currentConfiguration.uri.path;
-    if (path != _basePath) {
-      for (final c in _controllers.values) {
-        c.pause();
+    // The router notifies before the pushed/popped page is in place, so
+    // decide after this frame.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      final path = _router!.routerDelegate.currentConfiguration.uri.path;
+      if (path != _basePath || _isCovered()) {
+        for (final c in _controllers.values) {
+          c.pause();
+        }
+      } else {
+        _controllers[widget.reels[_currentPage].id]?.play();
       }
-    } else {
-      _controllers[widget.reels[_currentPage].id]?.play();
-    }
+    });
   }
 
   @override
@@ -1572,6 +1586,7 @@ class _StandaloneReelsFeedState extends ConsumerState<StandaloneReelsFeed>
         c.pause();
       }
     } else {
+      if (_isCovered()) return;
       final id = widget.reels[_currentPage].id;
       _controllers[id]?.play();
     }
@@ -1586,7 +1601,7 @@ class _StandaloneReelsFeedState extends ConsumerState<StandaloneReelsFeed>
     ctrl.initialize().then((_) {
       if (!mounted) return;
       ctrl.setLooping(true);
-      if (index == _currentPage) ctrl.play();
+      if (index == _currentPage && !_isCovered()) ctrl.play();
       setState(() {});
     });
   }
@@ -1643,7 +1658,16 @@ class _StandaloneReelsFeedState extends ConsumerState<StandaloneReelsFeed>
                 alignment: Alignment.topLeft,
                 child: IconButton(
                   icon: const Icon(Icons.close_rounded, color: Colors.white),
-                  onPressed: () => Navigator.pop(context),
+                  // Opened from a shared reel link there is nothing to pop
+                  // to: go to the Reels tab instead of a blank screen.
+                  onPressed: () {
+                    final nav = Navigator.of(context);
+                    if (nav.canPop()) {
+                      nav.pop();
+                    } else {
+                      context.go('/reels');
+                    }
+                  },
                 ),
               ),
             ),
@@ -1683,6 +1707,13 @@ class _SingleReelViewState extends ConsumerState<_SingleReelView>
   String? _repostId;
   late AnimationController _likeAnim;
   late Animation<double> _likeScale;
+
+  /// Opens a page over the reel, pausing it first so its sound never plays
+  /// under the profile (the feed also pauses once the page is on top).
+  void _openOver(String location) {
+    widget.controller?.pause();
+    context.push(location);
+  }
 
   @override
   void initState() {
@@ -2050,7 +2081,7 @@ class _SingleReelViewState extends ConsumerState<_SingleReelView>
                 children: [
                   GestureDetector(
                     onTap: () =>
-                        context.push('/shop/${widget.reel.shopOwnerId}'),
+                        _openOver('/shop/${widget.reel.shopOwnerId}'),
                     child: Text(
                       '@${widget.reel.shopName}',
                       style: const TextStyle(

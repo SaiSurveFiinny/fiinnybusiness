@@ -17,6 +17,7 @@ import '../../../core/widgets/error_view.dart';
 import '../../marketplace/providers/marketplace_provider.dart';
 import '../../marketplace/widgets/review_sheet.dart';
 import '../data/brand_repository.dart';
+import '../../../core/widgets/back_or_home_button.dart';
 
 final _brandRepo = BrandRepository();
 
@@ -134,12 +135,15 @@ class BrandScreen extends ConsumerWidget {
     return Scaffold(
       backgroundColor: AppColors.background,
       body: brandAsync.when(
-        loading: () => const Center(child: CircularProgressIndicator()),
-        error: (_, _) => const ErrorView(message: 'Brand not found.'),
+        loading: () => const BackBarBody(
+          child: Center(child: CircularProgressIndicator()),
+        ),
+        error: (_, _) =>
+            const BackBarBody(child: ErrorView(message: 'Brand not found.')),
         data: (brand) {
           if (brand == null) {
             if (isOwner) return _SetUpPrompt(onSetUp: () => _openEditor(context, ref));
-            return const ErrorView(message: 'Brand not found.');
+            return const BackBarBody(child: ErrorView(message: 'Brand not found.'));
           }
 
           return DefaultTabController(
@@ -211,6 +215,8 @@ class _BrandHero extends StatelessWidget {
       pinned: true,
       backgroundColor: const Color(0xFF0A1F08),
       foregroundColor: Colors.white,
+      // Shared brand links open with nothing underneath.
+      leading: const BackOrHomeButton(fallback: '/'),
       actions: [
         if (WebLinks.brand(brand.phone) != null)
           Builder(
@@ -1582,3 +1588,4 @@ class _SetUpPrompt extends StatelessWidget {
     );
   }
 }
+

@@ -27,3 +27,20 @@ class BackOrHomeButton extends StatelessWidget {
     );
   }
 }
+
+/// A plain bar with [BackOrHomeButton] around [child], for the loading /
+/// error / not-found states of screens whose normal state draws its own
+/// (sliver) bar — those states otherwise had no way back at all.
+class BackBarBody extends StatelessWidget {
+  final Widget child;
+  final String fallback;
+
+  const BackBarBody({super.key, required this.child, this.fallback = '/'});
+
+  @override
+  Widget build(BuildContext context) => Scaffold(
+        backgroundColor: Colors.transparent,
+        appBar: AppBar(leading: BackOrHomeButton(fallback: fallback)),
+        body: child,
+      );
+}

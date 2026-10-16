@@ -9,6 +9,7 @@ import '../../../core/constants/app_colors.dart';
 import '../../../core/constants/app_config.dart';
 import '../../../core/constants/app_text_styles.dart';
 import '../../../core/widgets/app_top_bar.dart';
+import '../../../core/widgets/back_or_home_button.dart';
 
 /// Handles `https://krishidukan.com/invoice/{orderId}` links shared with
 /// customers over WhatsApp (see functions/src/wa/templateResolver.ts and
@@ -99,7 +100,11 @@ class _InvoiceScreenState extends State<InvoiceScreen> {
   Widget build(BuildContext context) {
     if (widget.orderId.isEmpty) {
       return Scaffold(
-        appBar: const AppTopBar(title: 'Invoice'),
+        appBar: const AppTopBar(
+        title: 'Invoice',
+        // Opened from a WhatsApp link there is nothing to go back to.
+        leading: BackOrHomeButton(fallback: '/orders'),
+      ),
         body: _Message(
           icon: Icons.receipt_long_outlined,
           title: 'Invoice link is missing an order number.',
@@ -108,7 +113,11 @@ class _InvoiceScreenState extends State<InvoiceScreen> {
     }
 
     return Scaffold(
-      appBar: const AppTopBar(title: 'Invoice'),
+      appBar: const AppTopBar(
+        title: 'Invoice',
+        // Opened from a WhatsApp link there is nothing to go back to.
+        leading: BackOrHomeButton(fallback: '/orders'),
+      ),
       body: Center(
         child: Padding(
           padding: const EdgeInsets.all(24),

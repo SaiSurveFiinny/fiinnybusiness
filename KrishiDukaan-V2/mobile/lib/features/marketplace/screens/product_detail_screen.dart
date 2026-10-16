@@ -36,6 +36,7 @@ import '../widgets/store_selector_sheet.dart';
 import '../../reels/providers/reels_provider.dart';
 import '../../reels/screens/shop_profile_screen.dart';
 import '../../../core/providers/user_provider.dart';
+import '../../../core/widgets/back_or_home_button.dart';
 
 /// Best-effort, silent bump of one or more `products/{catalogId}` analytics
 /// counters — same doc, same field shapes, same "authenticated shopper" gate
@@ -123,11 +124,17 @@ class _ProductDetailScreenState extends ConsumerState<ProductDetailScreen> {
     return Scaffold(
       backgroundColor: AppColors.background,
       body: catalogAsync.when(
-        loading: () => const Center(child: CircularProgressIndicator()),
-        error: (e, _) => ErrorView(message: 'Failed to load product.'),
+        loading: () => const BackBarBody(
+          child: Center(child: CircularProgressIndicator()),
+        ),
+        error: (e, _) =>
+            const BackBarBody(child: ErrorView(message: 'Failed to load product.')),
         data: (catalog) {
           if (catalog == null) {
-            return const ErrorView(message: 'Product not found.');
+            // e.g. a shared link to a deleted product.
+            return const BackBarBody(
+              child: ErrorView(message: 'Product not found.'),
+            );
           }
 
           final variants = catalog.variants;

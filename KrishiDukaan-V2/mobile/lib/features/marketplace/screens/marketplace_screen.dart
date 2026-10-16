@@ -42,8 +42,13 @@ class MarketplaceScreen extends ConsumerStatefulWidget {
   final String? sellerUid;
   final String? sellerName;
 
+  /// Search to run on open (`?search=`), e.g. a seed or fertilizer tapped in
+  /// a crop hub. The router used to drop it, so those taps searched nothing.
+  final String? initialSearch;
+
   const MarketplaceScreen({
     super.key,
+    this.initialSearch,
     this.initialCategory,
     this.searchFocusToken,
     this.sellerPhone,
@@ -86,6 +91,18 @@ class _MarketplaceScreenState extends ConsumerState<MarketplaceScreen> {
     );
   }
 
+  void _applyRouteSearch() {
+    final q = widget.initialSearch?.trim() ?? '';
+    if (q.isEmpty) return;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      _searchController
+        ..text = q
+        ..selection = TextSelection.collapsed(offset: q.length);
+      ref.read(marketplaceProvider.notifier).search(q);
+    });
+  }
+
   void _applyRouteSeller() {
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (mounted) {
@@ -106,6 +123,7 @@ class _MarketplaceScreenState extends ConsumerState<MarketplaceScreen> {
       }
     });
     if (_routeSeller != null) _applyRouteSeller();
+    _applyRouteSearch();
     _maybeFocusSearch();
     // Rebuilds when focus changes so the recent-searches dropdown can
     // appear/disappear as the field is focused/blurred, not just on typing.
@@ -131,6 +149,7 @@ class _MarketplaceScreenState extends ConsumerState<MarketplaceScreen> {
     super.didUpdateWidget(oldWidget);
     if (widget.initialCategory != oldWidget.initialCategory) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted) return;
         ref
             .read(marketplaceProvider.notifier)
             .setCategory(widget.initialCategory);
@@ -143,6 +162,7 @@ class _MarketplaceScreenState extends ConsumerState<MarketplaceScreen> {
         widget.sellerUid != oldWidget.sellerUid) {
       _applyRouteSeller();
     }
+    if (widget.initialSearch != oldWidget.initialSearch) _applyRouteSearch();
     _maybeFocusSearch();
   }
 
@@ -175,7 +195,12 @@ class _MarketplaceScreenState extends ConsumerState<MarketplaceScreen> {
     }
   }
 
+  // Only the newest suggestions request may update the list; a slow older
+  // one finishing late used to overwrite it.
+  int _suggestSeq = 0;
+
   Future<void> _fetchSuggestions(String q) async {
+    final seq = ++_suggestSeq;
     final query = q.trim();
     if (query.isEmpty) {
       if (mounted) {
@@ -228,7 +253,7 @@ class _MarketplaceScreenState extends ConsumerState<MarketplaceScreen> {
 
       final prods = await prodsF;
 
-      if (mounted) {
+      if (mounted && seq == _suggestSeq) {
         setState(() {
           _suggestionProducts = prods;
           _suggestionStores = storeSuggestions;
