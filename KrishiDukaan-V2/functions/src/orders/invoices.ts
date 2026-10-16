@@ -42,7 +42,7 @@ async function requestInvoice(orderId: string): Promise<boolean> {
  * orders are left to the sweep below, which only acts if their own browser-side
  * generation failed.
  */
-export const generateInvoiceForNewOrder = onDocumentCreated("orders/{orderId}", async (event) => {
+export const generateInvoiceForNewOrder = onDocumentCreated({ document: "orders/{orderId}", region: "asia-south1" }, async (event) => {
   const d = event.data?.data() as Record<string, unknown> | undefined;
   if (!d || d.invoiceNumber || (d.invoice as { storagePath?: string } | undefined)?.storagePath) return;
   await requestInvoice(event.params.orderId);

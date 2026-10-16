@@ -4,6 +4,8 @@ import { getAdminDb } from "../../../lib/firebase-admin";
 import { requireAdmin } from "../../../lib/admin-auth";
 import {
   addMonths,
+  isInvalidMarketingTemplate,
+  normalizeMarketingTemplate,
   parseEligibility,
   PROMOTIONS_COLLECTION,
   RECIPIENTS_SUBCOLLECTION,
@@ -98,12 +100,21 @@ export async function POST(request: Request) {
     const {
       name, targetRole, eligibility, seatsPerRecipient, durationMonths,
       startDate: startRaw, endDate: endRaw, notes, recipients, clientRequestId,
+      marketingTemplate: marketingRaw,
     } = body as {
       name?: string; targetRole?: PromotionTargetRole; eligibility?: EligibilityFilter[] | string;
       seatsPerRecipient?: number; durationMonths?: number; startDate?: string;
       endDate?: string | null; notes?: string; clientRequestId?: string;
       recipients?: Array<{ phone?: string; role?: string }>;
+      marketingTemplate?: string | null;
     };
+
+    // Optional marketing template. Reject an unknown non-empty value rather than
+    // silently dropping it; null = no marketing message (default behaviour).
+    if (isInvalidMarketingTemplate(marketingRaw)) {
+      return NextResponse.json({ error: "Unknown marketing template." }, { status: 400 });
+    }
+    const marketingTemplate = normalizeMarketingTemplate(marketingRaw);
 
     const promoName = String(name ?? "").trim();
     if (!promoName) return NextResponse.json({ error: "Promotion name is required." }, { status: 400 });
@@ -193,6 +204,7 @@ export async function POST(request: Request) {
       startDate: Timestamp.fromDate(startDate),
       endDate: endDate ? Timestamp.fromDate(endDate) : null,
       notes: notes ? String(notes).trim() : null,
+      marketingTemplate,
       recipientCount: valid.length,
       clientRequestId: clientRequestId ? String(clientRequestId) : null,
       createdBy: caller.uid,
@@ -247,6 +259,10 @@ export async function POST(request: Request) {
           role: r.role,
           businessName: r.businessName,
           seatsGranted: seats,
+          // Optional marketing template to send to this recipient (before the
+          // free_seats_assigned confirmation). Stored here so the
+          // notifyOnPromotionSeatAssigned Cloud Function has it per-recipient.
+          marketingTemplate,
           startDate: Timestamp.fromDate(startDate),
           expiryDate: Timestamp.fromDate(expiryDate),
           status: isScheduled ? "scheduled" : "active",

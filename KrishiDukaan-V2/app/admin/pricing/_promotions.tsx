@@ -12,10 +12,12 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { auth } from "../../firebase";
 import {
   ELIGIBILITY_OPTIONS,
+  MARKETING_TEMPLATES,
   ROLE_OPTIONS,
   STATUS_LABEL,
   type CandidateRecipient,
   type EligibilityFilter,
+  type MarketingTemplateId,
   type PromotionRecipientRecord,
   type PromotionSummary,
   type PromotionTargetRole,
@@ -208,13 +210,29 @@ function CreatePromotionModal({
   onCreated: () => void;
 }) {
   const [name, setName] = useState("");
-  const [targetRole, setTargetRole] = useState<PromotionTargetRole>("all");
+  // Role is chosen via two checkboxes; both on = "all". `targetRole` (the value
+  // the candidates API + POST expect) is derived from them.
+  const [roleSel, setRoleSel] = useState<{ retailer: boolean; manufacturer: boolean }>({
+    retailer: true,
+    manufacturer: true,
+  });
+  const noRoleSelected = !roleSel.retailer && !roleSel.manufacturer;
+  const targetRole: PromotionTargetRole =
+    roleSel.retailer && roleSel.manufacturer
+      ? "all"
+      : roleSel.retailer
+      ? "retailer"
+      : "manufacturer";
+  const toggleRole = (role: "retailer" | "manufacturer") =>
+    setRoleSel((prev) => ({ ...prev, [role]: !prev[role] }));
   const [eligibility, setEligibility] = useState<EligibilityFilter[]>(["all"]);
   const [seats, setSeats] = useState("1");
   const [durationMonths, setDurationMonths] = useState("1");
   const [startDate, setStartDate] = useState(todayInput());
   const [endDate, setEndDate] = useState("");
   const [notes, setNotes] = useState("");
+  // Optional WhatsApp marketing message ("" = none → confirmation-only, default).
+  const [marketingTemplate, setMarketingTemplate] = useState<MarketingTemplateId | "">("");
 
   // Recipient table
   const [search, setSearch] = useState("");
@@ -243,6 +261,13 @@ function CreatePromotionModal({
   // Load candidates whenever role/eligibility/search change.
   useEffect(() => {
     let cancelled = false;
+    // No role selected → nothing to show (and the API has no empty-role option).
+    if (noRoleSelected) {
+      setCandidates([]);
+      setCandLoading(false);
+      setCandError(null);
+      return;
+    }
     setCandLoading(true);
     setCandError(null);
     const params = new URLSearchParams({ role: targetRole, eligibility: eligibilityKey, search: debounced });
@@ -264,7 +289,7 @@ function CreatePromotionModal({
     return () => {
       cancelled = true;
     };
-  }, [targetRole, eligibilityKey, debounced]);
+  }, [targetRole, noRoleSelected, eligibilityKey, debounced]);
 
   const toggleEligibility = (value: EligibilityFilter) => {
     setEligibility((prev) => {
@@ -311,6 +336,10 @@ function CreatePromotionModal({
 
   const submit = async () => {
     setSubmitError(null);
+    if (noRoleSelected) {
+      setSubmitError("Select at least one role (Retailer / Manufacturer).");
+      return;
+    }
     if (!name.trim()) {
       setSubmitError("Promotion name is required.");
       return;
@@ -338,6 +367,7 @@ function CreatePromotionModal({
           startDate,
           endDate: endDate || null,
           notes: notes.trim() || null,
+          marketingTemplate: marketingTemplate || null,
           recipients,
           clientRequestId: requestId,
         }),
@@ -419,6 +449,47 @@ function CreatePromotionModal({
               className="mt-1 w-full rounded-xl border border-surface-container bg-surface-container-low px-3 py-2 text-sm text-on-surface"
             />
           </label>
+
+          {/* Optional WhatsApp marketing message — sent to each recipient BEFORE
+              the free_seats_assigned confirmation. Leaving it as "None" keeps the
+              current behaviour (confirmation only). */}
+          <label className="sm:col-span-2">
+            <span className="text-xs font-bold text-on-surface-variant">WhatsApp Marketing Message (optional)</span>
+            <select
+              value={marketingTemplate}
+              onChange={(e) => setMarketingTemplate(e.target.value as MarketingTemplateId | "")}
+              className="mt-1 w-full rounded-xl border border-surface-container bg-surface-container-low px-3 py-2 text-sm text-on-surface"
+            >
+              <option value="">None — send confirmation only</option>
+              {MARKETING_TEMPLATES.map((t) => (
+                <option key={t.id} value={t.id}>
+                  {t.label}
+                </option>
+              ))}
+            </select>
+          </label>
+
+          {marketingTemplate && (() => {
+            const tpl = MARKETING_TEMPLATES.find((t) => t.id === marketingTemplate)!;
+            return (
+              <div className="sm:col-span-2 rounded-xl border border-amber-300 bg-amber-50 px-4 py-3 space-y-1.5">
+                <p className="text-xs font-bold text-amber-800">
+                  Message preview · <span className="font-mono">{tpl.id}</span> ({tpl.language.toUpperCase()})
+                </p>
+                {tpl.hasImageHeader && (
+                  <p className="text-xs text-amber-700">🖼️ Header: static campaign image (resolved server-side from its media ID).</p>
+                )}
+                <p className="whitespace-pre-line rounded-lg bg-white/70 px-3 py-2 text-sm text-on-surface">
+                  {tpl.previewBody("[Business name]")}
+                </p>
+                <p className="text-[11px] text-amber-700">
+                  Only the business name ({"{{1}}"}) is dynamic per recipient. The {tpl.offerQuantity}-product
+                  offer is fixed in the approved template copy. Sent after seats are assigned, before the
+                  confirmation message.
+                </p>
+              </div>
+            );
+          })()}
         </div>
 
         {/* ── Targeting + recipient table ── */}
@@ -427,17 +498,7 @@ function CreatePromotionModal({
           <div className="mt-3 flex flex-wrap items-center gap-3">
             <div className="flex items-center gap-1.5">
               <span className="text-xs font-bold text-on-surface-variant">Role</span>
-              <select
-                value={targetRole}
-                onChange={(e) => setTargetRole(e.target.value as PromotionTargetRole)}
-                className="rounded-lg border border-surface-container bg-surface-container-low px-2 py-1.5 text-sm text-on-surface"
-              >
-                {ROLE_OPTIONS.map((o) => (
-                  <option key={o.value} value={o.value}>
-                    {o.label}
-                  </option>
-                ))}
-              </select>
+              <RoleMultiSelect selected={roleSel} onToggle={toggleRole} />
             </div>
             <div className="flex items-center gap-1.5">
               <span className="text-xs font-bold text-on-surface-variant">Subscription</span>
@@ -680,6 +741,68 @@ function Meta({ label, value }: { label: string; value: string }) {
     <div className="rounded-xl bg-surface-container-low p-3">
       <div className="text-[11px] font-bold uppercase tracking-wide text-on-surface-variant">{label}</div>
       <div className="mt-0.5 font-bold capitalize text-on-surface">{value}</div>
+    </div>
+  );
+}
+
+// ─── Checkbox multi-select for the target role (mirrors EligibilityMultiSelect) ─
+
+function RoleMultiSelect({
+  selected,
+  onToggle,
+}: {
+  selected: { retailer: boolean; manufacturer: boolean };
+  onToggle: (role: "retailer" | "manufacturer") => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener("mousedown", onDown);
+    return () => document.removeEventListener("mousedown", onDown);
+  }, [open]);
+
+  const summary =
+    selected.retailer && selected.manufacturer
+      ? "All"
+      : selected.retailer
+      ? "Retailer"
+      : selected.manufacturer
+      ? "Manufacturer"
+      : "None";
+
+  const OPTIONS: { value: "retailer" | "manufacturer"; label: string }[] = [
+    { value: "retailer", label: "Retailer" },
+    { value: "manufacturer", label: "Manufacturer" },
+  ];
+
+  return (
+    <div ref={ref} className="relative">
+      <button
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        className="flex min-w-[130px] items-center justify-between gap-2 rounded-lg border border-surface-container bg-surface-container-low px-2.5 py-1.5 text-sm text-on-surface"
+      >
+        <span className="truncate">{summary}</span>
+        <span className="text-on-surface-variant">▾</span>
+      </button>
+      {open && (
+        <div className="absolute z-10 mt-1 w-48 rounded-xl border border-surface-container bg-surface p-1.5 shadow-lg">
+          {OPTIONS.map((o) => (
+            <label
+              key={o.value}
+              className="flex cursor-pointer items-center gap-2 rounded-lg px-2 py-1.5 text-sm text-on-surface hover:bg-surface-container-low"
+            >
+              <input type="checkbox" checked={selected[o.value]} onChange={() => onToggle(o.value)} />
+              {o.label}
+            </label>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
