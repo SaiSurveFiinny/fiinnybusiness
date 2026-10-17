@@ -19,7 +19,7 @@ import {
 } from "lucide-react";
 import { auth, fetchOrdersForCustomer } from "../../firebase";
 import { PageHeader } from "../_components/page-header";
-import { ORDER_STATUS_FLOW, normalizeOrderItems, orderGrandTotal, type OrderDoc, type OrderStatus } from "../../../types/order";
+import { ORDER_STATUS_FLOW, isInvoiceReady, normalizeOrderItems, orderGrandTotal, type OrderDoc, type OrderStatus } from "../../../types/order";
 import { openInvoice } from "../../utils/invoice-generator";
 
 // Visible progress steps — shared with the seller view and the public customer
@@ -466,13 +466,18 @@ export default function MyOrdersPage() {
                             {cancellingId === order.id ? "Cancelling…" : "Cancel Order"}
                           </button>
                         )}
-                        <button
-                          type="button"
-                          onClick={() => openInvoice(order)}
-                          className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl text-xs font-bold border border-outline-variant/50 bg-white text-on-surface hover:border-primary hover:text-primary hover:bg-primary/5 transition-all"
-                        >
-                          <Download className="w-3.5 h-3.5" /> Download Invoice
-                        </button>
+                        {/* Invoice — created once the seller accepts the order. */}
+                        {isInvoiceReady(order.status) ? (
+                          <button
+                            type="button"
+                            onClick={() => openInvoice(order)}
+                            className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl text-xs font-bold border border-outline-variant/50 bg-white text-on-surface hover:border-primary hover:text-primary hover:bg-primary/5 transition-all"
+                          >
+                            <Download className="w-3.5 h-3.5" /> Download Invoice
+                          </button>
+                        ) : (order.status === "placed" || order.status === "reassigning") ? (
+                          <span className="self-center text-xs text-on-surface-variant">Invoice after the seller accepts</span>
+                        ) : null}
                       </div>
                     </div>
                   </div>

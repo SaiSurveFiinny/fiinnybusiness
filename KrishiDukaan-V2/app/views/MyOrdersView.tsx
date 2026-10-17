@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { fetchOrdersForCustomer } from "../firebase";
-import { ORDER_STATUS_FLOW, normalizeOrderItems, orderGrandTotal, type OrderDoc, type OrderStatus } from "../../types/order";
+import { ORDER_STATUS_FLOW, isInvoiceReady, normalizeOrderItems, orderGrandTotal, type OrderDoc, type OrderStatus } from "../../types/order";
 import { useI18n } from "../i18n/I18nContext";
 import { openInvoice } from "../utils/invoice-generator";
 
@@ -158,7 +158,8 @@ export default function MyOrdersView({ customerId }: { customerId: string }) {
               }`}>
                 {STATUS_BADGE_KEY[order.status] ? (t as Translate)(STATUS_BADGE_KEY[order.status]!) : order.status.replace(/_/g, " ")}
               </span>
-              {/* Download Invoice — available for all orders */}
+              {/* Invoice — created once the seller accepts the order. */}
+              {isInvoiceReady(order.status) ? (
               <button
                 type="button"
                 onClick={() => openInvoice(order)}
@@ -169,6 +170,9 @@ export default function MyOrdersView({ customerId }: { customerId: string }) {
                 </svg>
                 Invoice
               </button>
+              ) : (order.status === "placed" || order.status === "reassigning") ? (
+                <span className="text-[10px] text-on-surface-variant">Invoice after the seller accepts</span>
+              ) : null}
             </div>
           </div>
 

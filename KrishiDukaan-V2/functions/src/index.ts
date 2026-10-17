@@ -44,7 +44,7 @@ export {
 } from "./stores/directory";
 export { raiseAbandonedCheckoutEnquiries } from "./notifications/enquiries";
 export { notifySellerOfOrderOffer, expireOrderReassignments } from "./notifications/reassignment";
-export { generateInvoiceForNewOrder, sweepMissingInvoices } from "./orders/invoices";
+export { generateInvoiceOnAccept, sweepMissingInvoices } from "./orders/invoices";
 export {
   remindIncompleteProfiles,
   remindIncompletePayoutDetails,

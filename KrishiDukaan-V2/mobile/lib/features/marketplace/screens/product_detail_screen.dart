@@ -474,6 +474,10 @@ class _ProductDetailScreenState extends ConsumerState<ProductDetailScreen> {
           : 'Added ${catalog.name} from ${chosen.listing.sellerName}';
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
+          // A snackbar with an action stays until tapped unless told otherwise;
+          // the "added" note should fade on its own.
+          persist: false,
+          duration: const Duration(seconds: 4),
           content: Text(label),
           backgroundColor: AppColors.primary,
           action: SnackBarAction(
@@ -3031,6 +3035,10 @@ class _SellerTileState extends ConsumerState<_SellerTile> {
     unawaited(notifier.resolveCommercial(item));
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
+        // A snackbar with an action stays until tapped unless told otherwise;
+        // the "added" note should fade on its own.
+        persist: false,
+        duration: const Duration(seconds: 4),
         content: Text('Added ${widget.catalogName} to cart'),
         backgroundColor: AppColors.primary,
         action: SnackBarAction(

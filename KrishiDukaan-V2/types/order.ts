@@ -55,6 +55,23 @@ export const REVERTABLE_STATUSES: OrderStatus[] = [
  * way to `placed` would re-expose Accept/Reject, which is not what a revert is
  * for. Returns [] for any status that is not revertable.
  */
+/**
+ * Statuses that have an invoice. It is created when the seller accepts the
+ * order — before that the sale isn't confirmed (the seller may still reject
+ * it), so neither the seller nor the customer sees one. Rejected/cancelled
+ * orders never get one.
+ */
+export const INVOICE_READY_STATUSES: OrderStatus[] = [
+  "accepted",
+  "dispatched",
+  "out_for_delivery",
+  "delivered",
+];
+
+export function isInvoiceReady(status: string | null | undefined): boolean {
+  return INVOICE_READY_STATUSES.includes(String(status ?? "") as OrderStatus);
+}
+
 export function validRevertTargets(from: OrderStatus): OrderStatus[] {
   if (!REVERTABLE_STATUSES.includes(from)) return [];
   const fromIdx = ORDER_STATUS_FLOW.indexOf(from);

@@ -149,7 +149,6 @@ export type RetailerProfile = {
 
 import { MarketplaceProduct } from '../types/product';
 import type { CartItem, OrderDoc, OrderItem, OrderStatus, SellerType, StatusHistoryEntry } from '../types/order';
-import { generateAndStoreInvoice } from './utils/invoice-storage';
 import { CARDS_COLLECTION, cardToProduct } from './lib/marketplace-cards';
 import { STORE_DIRECTORY, sourcesFromDirectory, type StoreSources } from './lib/store-directory';
 import { MergedPager, type PagerStream } from './lib/merged-pager';
@@ -1643,36 +1642,9 @@ export async function createOrdersFromCart(params: {
       updatedAt: serverTimestamp(),
     });
 
-    // Generate PDF, upload to Storage, and write invoice metadata.
-    // Wrapped in try/catch — a failure here must never roll back the order.
-    try {
-      await generateAndStoreInvoice(orderRef.id, {
-        id: orderRef.id,
-        customerId,
-        customerName: customerName.trim(),
-        customerPhone: customerPhone.trim(),
-        customerAddress: customerAddress.trim(),
-        sellerId,
-        sellerType,
-        ...(sellerName ? { sellerName } : {}),
-        ...(sellerGstNumber ? { sellerGstNumber } : {}),
-        items: normalizedItems as OrderItem[],
-        mrpSubtotal,
-        subtotal: orderSubtotal,
-        ...(totalGst > 0 ? { totalGst } : {}),
-        ...(orderGstAdded > 0 ? { totalGstAdded: orderGstAdded } : {}),
-        deliveryCharge: orderDeliveryCharge,
-        deliveryBreakdown: orderDeliveryBreakdown,
-        grandTotal,
-        totalWeightKg,
-        invoiceNumber,
-        deliveryMode: "delivery",
-        status: "placed",
-        ...(payment ? { payment } : {}),
-      });
-    } catch (invoiceErr) {
-      console.error("[invoice] Failed to generate or store invoice", orderRef.id, invoiceErr);
-    }
+    // No invoice yet: it is created on the server when the seller accepts
+    // the order (functions generateInvoiceOnAccept). The number is reserved
+    // above so it never changes.
 
     createdOrderIds.push(orderRef.id);
   }

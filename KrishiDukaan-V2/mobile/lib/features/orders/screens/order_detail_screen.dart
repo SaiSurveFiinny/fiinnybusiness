@@ -243,8 +243,8 @@ class OrderDetailScreen extends ConsumerWidget {
                   ),
                 ),
                 // The tax invoice (GST, delivery, amount in words) — generated on
-                // the server for every order, so app orders have one too.
-                if (order.status != 'reassigning' && order.status != 'rejected') ...[
+                // the server once the seller accepts the order.
+                if (order.hasInvoice) ...[
                   const SizedBox(height: 16),
                   SizedBox(
                     width: double.infinity,
@@ -258,6 +258,14 @@ class OrderDetailScreen extends ConsumerWidget {
                         padding: const EdgeInsets.symmetric(vertical: 12),
                       ),
                     ),
+                  ),
+                ],
+                if (order.status == 'placed' || order.status == 'reassigning') ...[
+                  const SizedBox(height: 12),
+                  Text(
+                    'Your invoice will be ready once the seller accepts the order.',
+                    textAlign: TextAlign.center,
+                    style: AppTextStyles.caption,
                   ),
                 ],
                 // Self-service cancel — only until a seller ACCEPTS the order,
