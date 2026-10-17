@@ -4015,6 +4015,13 @@ export interface AdminSaveProfileInput {
   social: { instagram: string; facebook: string; whatsapp: string; youtube: string };
   geo: { latitude: number; longitude: number } | null;
   onlineDelivery: boolean;
+  /**
+   * Customer delivery address, written only for non-seller accounts to the
+   * addressArea/addressCity/addressDistrict/addressState/addressPincode fields the
+   * checkout flow persists (app/page.tsx). Omitted for sellers, who use the
+   * line1/city/state/pincode address model above.
+   */
+  customerAddress?: { area: string; city: string; district: string; state: string; pincode: string };
 }
 
 export async function adminSaveProfile(
@@ -4053,6 +4060,15 @@ export async function adminSaveProfile(
   if (isSeller) {
     userFields.onlineDelivery = data.onlineDelivery;
     if (role === "retailer") userFields.shopName = data.businessName.trim() || null;
+  } else if (data.customerAddress) {
+    // Customers store their delivery address in these checkout-written fields, not
+    // the seller-style address/city/state/pincode keys above.
+    const ca = data.customerAddress;
+    userFields.addressArea     = ca.area.trim()     || null;
+    userFields.addressCity     = ca.city.trim()     || null;
+    userFields.addressDistrict = ca.district.trim() || null;
+    userFields.addressState    = ca.state.trim()    || null;
+    userFields.addressPincode  = ca.pincode.trim()  || null;
   }
   await setDoc(doc(db, "users", phone), userFields, { merge: true });
 

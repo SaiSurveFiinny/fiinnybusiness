@@ -314,7 +314,7 @@ export default function WhatsAppInboxPage() {
   // ── UI
   const [selectedPhone, setSelectedPhone] = useState<string | null>(null);
   const [search, setSearch] = useState("");
-  const [filter, setFilter] = useState<"all" | "open" | "resolved">("all");
+  const [filter, setFilter] = useState<"all" | "open" | "resolved">("open");
   const [mobileChatOpen, setMobileChatOpen] = useState(false);
   const [loadingIncoming, setLoadingIncoming] = useState(true);
   const [loadingChat, setLoadingChat] = useState(false);
