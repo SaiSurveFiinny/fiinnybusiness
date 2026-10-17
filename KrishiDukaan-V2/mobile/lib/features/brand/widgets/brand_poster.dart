@@ -354,7 +354,13 @@ class BrandPoster extends StatelessWidget {
 }
 
 /// Preview + Share (the system sheet: Instagram, WhatsApp, Save image…).
-Future<void> showBrandPosterSheet(BuildContext context, BrandPosterData data) {
+/// [title] is the sheet heading: the owner shares "my shop"; a visitor
+/// sharing someone's page sees "Share this page".
+Future<void> showBrandPosterSheet(
+  BuildContext context,
+  BrandPosterData data, {
+  String title = 'Share my shop',
+}) {
   return showModalBottomSheet(
     context: context,
     isScrollControlled: true,
@@ -362,13 +368,58 @@ Future<void> showBrandPosterSheet(BuildContext context, BrandPosterData data) {
     shape: const RoundedRectangleBorder(
       borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
     ),
-    builder: (_) => _BrandPosterSheet(data: data),
+    builder: (_) => _BrandPosterSheet(data: data, title: title),
+  );
+}
+
+/// The share button on a public brand / shop page: an image poster (for
+/// WhatsApp status, Instagram, Facebook) or just the link. Built only from
+/// what the page has already loaded — no reads.
+Future<void> showBrandShareChoice(
+  BuildContext context, {
+  required BrandPosterData? poster,
+  required VoidCallback onShareLink,
+}) {
+  return showModalBottomSheet(
+    context: context,
+    backgroundColor: Colors.white,
+    shape: const RoundedRectangleBorder(
+      borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+    ),
+    builder: (sheetContext) => SafeArea(
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          const SizedBox(height: 8),
+          if (poster != null)
+            ListTile(
+              leading: const Icon(Icons.image_outlined, color: AppColors.primary),
+              title: const Text('Share as image'),
+              subtitle: const Text('A banner for WhatsApp status, Instagram, Facebook'),
+              onTap: () {
+                Navigator.pop(sheetContext);
+                showBrandPosterSheet(context, poster, title: 'Share this page');
+              },
+            ),
+          ListTile(
+            leading: const Icon(Icons.link, color: AppColors.primary),
+            title: const Text('Share link'),
+            onTap: () {
+              Navigator.pop(sheetContext);
+              onShareLink();
+            },
+          ),
+          const SizedBox(height: 8),
+        ],
+      ),
+    ),
   );
 }
 
 class _BrandPosterSheet extends StatefulWidget {
   final BrandPosterData data;
-  const _BrandPosterSheet({required this.data});
+  final String title;
+  const _BrandPosterSheet({required this.data, required this.title});
 
   @override
   State<_BrandPosterSheet> createState() => _BrandPosterSheetState();
@@ -463,9 +514,9 @@ class _BrandPosterSheetState extends State<_BrandPosterSheet> {
               ),
             ),
             const SizedBox(height: 12),
-            const Text(
-              'Share my shop',
-              style: TextStyle(fontSize: 18, fontWeight: FontWeight.w800),
+            Text(
+              widget.title,
+              style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w800),
             ),
             const Text(
               'Ready for Instagram, WhatsApp status and Facebook',

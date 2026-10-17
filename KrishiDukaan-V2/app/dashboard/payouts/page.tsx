@@ -34,6 +34,7 @@ import {
   IFSC_RE,
   KYC_ITEM_LABEL,
   isValidGstin,
+  isValidHolderName,
   isValidPan,
   kycMissing,
   panFromGstin,
@@ -90,8 +91,11 @@ const EMPTY_FORM: FormState = {
 function validate(f: FormState): Partial<Record<keyof FormState, string>> {
   const e: Partial<Record<keyof FormState, string>> = {};
 
-  if (!f.accountHolderName.trim()) {
-    e.accountHolderName = "Enter the name exactly as it appears on the bank account.";
+  if (!isValidHolderName(f.accountHolderName)) {
+    e.accountHolderName = "Enter the name exactly as it appears on the bank account (letters only).";
+  }
+  if (f.bankName.trim().length < 2) {
+    e.bankName = "Enter your bank name (filled in from the IFSC).";
   }
   if (!IFSC_RE.test(f.ifsc.trim().toUpperCase())) {
     e.ifsc = "IFSC should look like SBIN0001234. It is printed on your cheque book and passbook.";
@@ -99,7 +103,9 @@ function validate(f: FormState): Partial<Record<keyof FormState, string>> {
   if (!ACCOUNT_RE.test(f.accountNumber.trim())) {
     e.accountNumber = "Account number must be 9–18 digits, no spaces.";
   }
-  if (f.confirmAccountNumber.trim() !== f.accountNumber.trim()) {
+  if (!f.confirmAccountNumber.trim()) {
+    e.confirmAccountNumber = "Enter the account number again.";
+  } else if (f.confirmAccountNumber.trim() !== f.accountNumber.trim()) {
     e.confirmAccountNumber = "The two account numbers do not match.";
   }
   const gstin = f.gstin.trim().toUpperCase();
@@ -222,12 +228,18 @@ export default function PayoutsPage() {
     setStatus(null);
   }, []);
 
+  const ifscError =
+    ifscInfo?.code === form.ifsc.trim().toUpperCase() ? ifscInfo.error : undefined;
+  const formComplete = Object.keys(validate(form)).length === 0 && !ifscError;
+
   const handleSave = async () => {
     if (!phone) {
       setStatus({ type: "error", message: "No phone number on your account — complete your profile first." });
       return;
     }
     const e = validate(form);
+    // An IFSC the bank lookup doesn't know can't receive payouts.
+    if (!e.ifsc && ifscError) e.ifsc = ifscError;
     setErrors(e);
     if (Object.keys(e).length > 0) return;
 
@@ -459,7 +471,7 @@ export default function PayoutsPage() {
           <SectionTitle n={1} title="Bank account" />
           <div className="grid gap-4 md:grid-cols-2">
             <Field
-              label="Account holder name"
+              label="Account holder name *"
               value={form.accountHolderName}
               onChange={(v) => set("accountHolderName", v)}
               error={errors.accountHolderName}
@@ -469,7 +481,7 @@ export default function PayoutsPage() {
 
             <div className="md:col-span-2">
               <Field
-                label="IFSC code"
+                label="IFSC code *"
                 value={form.ifsc}
                 onChange={(v) => set("ifsc", v.toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 11))}
                 error={errors.ifsc ?? (ifscInfo?.code === form.ifsc ? ifscInfo.error : undefined)}
@@ -486,20 +498,21 @@ export default function PayoutsPage() {
             </div>
 
             <Field
-              label="Bank name"
+              label="Bank name *"
               value={form.bankName}
               onChange={(v) => set("bankName", v)}
+              error={errors.bankName}
               placeholder="Filled in from the IFSC"
             />
             <Field
-              label="Branch name"
+              label="Branch name (optional)"
               value={form.branchName}
               onChange={(v) => set("branchName", v)}
               placeholder="Filled in from the IFSC"
             />
 
             <Field
-              label="Account number"
+              label="Account number *"
               value={form.accountNumber}
               onChange={(v) => set("accountNumber", v.replace(/\D/g, ""))}
               error={errors.accountNumber}
@@ -509,7 +522,7 @@ export default function PayoutsPage() {
             />
 
             <Field
-              label="Re-enter account number"
+              label="Re-enter account number *"
               value={form.confirmAccountNumber}
               onChange={(v) => set("confirmAccountNumber", v.replace(/\D/g, ""))}
               error={errors.confirmAccountNumber}
@@ -551,7 +564,7 @@ export default function PayoutsPage() {
                 </>
               ) : (
                 <Field
-                  label="PAN"
+                  label="PAN *"
                   value={form.pan}
                   onChange={(v) => set("pan", v.toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 10))}
                   error={errors.pan}
@@ -566,7 +579,8 @@ export default function PayoutsPage() {
             <button
               type="button"
               onClick={handleSave}
-              disabled={saving}
+              // Enabled only once everything payouts need is filled in properly.
+              disabled={saving || !formComplete}
               className="inline-flex items-center gap-2 rounded-lg bg-primary px-4 py-2.5 text-sm font-semibold text-on-primary disabled:opacity-60"
             >
               {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}

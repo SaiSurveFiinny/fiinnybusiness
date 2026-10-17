@@ -19,6 +19,7 @@ import '../../../core/widgets/app_shell.dart';
 import '../../../core/widgets/user_tag_dialog.dart';
 import '../providers/reels_provider.dart';
 import '../widgets/reel_filters.dart';
+import '../widgets/reel_caption.dart';
 
 class ReelsFeedScreen extends ConsumerStatefulWidget {
   /// A one-shot token (from `?search=`) that asks the screen to open the same
@@ -91,11 +92,17 @@ class _ReelsFeedScreenState extends ConsumerState<ReelsFeedScreen>
   /// (it used to index the unfiltered feed, so after blocking someone the
   /// wrong video could play).
   List<ReelModel> _orderedReels(List<ReelModel> ranked, Set<String> blocked) {
-    final list = blocked.isEmpty
+    var list = blocked.isEmpty
         ? ranked
         : ranked
             .where((r) => !blocked.contains(r.shopOwnerId))
             .toList(growable: false);
+    if (_seenBeforeRefresh.isNotEmpty) {
+      list = [
+        ...list.where((r) => !_seenBeforeRefresh.contains(r.id)),
+        ...list.where((r) => _seenBeforeRefresh.contains(r.id)),
+      ];
+    }
     final pinId = _pinnedReelId;
     if (pinId == null) return list;
     final pinned = list.where((r) => r.id == pinId).firstOrNull ??
@@ -110,6 +117,41 @@ class _ReelsFeedScreenState extends ConsumerState<ReelsFeedScreen>
         ref.read(reelsFeedProvider).value ?? const [],
         ref.read(blockedUserIdsProvider).value ?? const {},
       );
+
+  /// Reels watched before the last refresh — shown after the rest, so a
+  /// refresh brings up reels not just seen instead of the same ones again.
+  /// A snapshot (not the live set) so the order doesn't shift while scrolling.
+  Set<String> _seenBeforeRefresh = const {};
+  bool _awaitingRefresh = false;
+
+  /// Refresh: fetch the feed again (new reels come in), start from the top
+  /// with unwatched reels first. It used to keep the scroll position while
+  /// resetting the page counter, so the picture and the sound came from
+  /// different reels, and it disposed players still on screen.
+  void _refreshFeed() {
+    for (final c in _controllers.values) {
+      c.pause();
+    }
+    final old = Map<String, VideoPlayerController>.of(_controllers);
+    _controllers.clear();
+    _pinnedReelId = null;
+    _pinnedReel = null;
+    _seenBeforeRefresh = Set<String>.of(_viewedReelIds);
+    // Set up players once the NEW list arrives, not for the old one still
+    // on screen while it loads (see the reelsFeedProvider listener).
+    _initialized = true;
+    _awaitingRefresh = true;
+    _currentPage = 0;
+    setState(() {});
+    if (_pageController.hasClients) _pageController.jumpToPage(0);
+    // Dispose once nothing on screen uses them any more.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      for (final c in old.values) {
+        c.dispose();
+      }
+    });
+    ref.invalidate(reelsFeedProvider);
+  }
 
   /// Shows the requested reel first when a new `?reel=` arrives.
   void _maybeStartAt() {
@@ -327,6 +369,19 @@ class _ReelsFeedScreenState extends ConsumerState<ReelsFeedScreen>
     }
 
     ref.listen<AsyncValue<List<ReelModel>>>(reelsFeedProvider, (prev, next) {
+      if (_awaitingRefresh && !next.isLoading && next.hasValue) {
+        _awaitingRefresh = false;
+        final reels = _currentReels();
+        _currentPage = 0;
+        if (_pageController.hasClients && _pageController.page != 0) {
+          _pageController.jumpToPage(0);
+        }
+        _ensureController(0, reels);
+        _ensureController(1, reels);
+        if (reels.isNotEmpty) _markReelAsSeen(reels[0].id);
+        setState(() {});
+        return;
+      }
       if (!_initialized && next.value != null && next.value!.isNotEmpty) {
         _initialized = true;
         final reels = _currentReels();
@@ -513,15 +568,8 @@ class _ReelsFeedScreenState extends ConsumerState<ReelsFeedScreen>
                               Icons.refresh_rounded,
                               color: Colors.white70,
                             ),
-                            onPressed: () {
-                              _initialized = false;
-                              for (final c in _controllers.values) {
-                                c.dispose();
-                              }
-                              _controllers.clear();
-                              _currentPage = 0;
-                              ref.invalidate(reelsFeedProvider);
-                            },
+                            tooltip: 'Refresh',
+                            onPressed: _refreshFeed,
                           ),
                         ],
                       ),
@@ -1360,15 +1408,14 @@ class _ReelPageState extends ConsumerState<_ReelPage>
                   ],
                   if (widget.reel.caption.isNotEmpty) ...[
                     const SizedBox(height: 3),
-                    Text(
+                    // Full description on tap ("more" / "less").
+                    ReelCaption(
                       widget.reel.caption,
                       style: const TextStyle(
                         color: Colors.white70,
                         fontSize: 12,
                         shadows: [Shadow(color: Colors.black45, blurRadius: 4)],
                       ),
-                      maxLines: 2,
-                      overflow: TextOverflow.ellipsis,
                     ),
                   ],
                   if (widget.reel.linkedProductId != null) ...[

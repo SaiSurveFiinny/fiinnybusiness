@@ -23,6 +23,8 @@ import '../../marketplace/providers/marketplace_provider.dart';
 import '../providers/reels_provider.dart';
 import '../widgets/reel_filters.dart';
 import '../../../core/widgets/back_or_home_button.dart';
+import '../../brand/widgets/brand_poster.dart';
+import '../widgets/reel_caption.dart';
 
 class ShopProfileScreen extends ConsumerStatefulWidget {
   final String shopPhone;
@@ -319,9 +321,36 @@ class _ShopProfileScreenState extends ConsumerState<ShopProfileScreen> {
                     tooltip: 'Share shop',
                     onPressed: () {
                       final user = shopAsync.value;
-                      LinkShare.shop(btnContext,
-                          phone: shopPhone,
-                          name: user?.businessName ?? user?.name ?? 'Shop');
+                      final profile = storeProfileAsync.value;
+                      final name = (profile?.name.isNotEmpty == true)
+                          ? profile!.name
+                          : (user?.businessName ?? user?.name ?? 'Shop');
+                      final link = WebLinks.shop(shopPhone);
+                      // Same poster the owner shares from their brand editor,
+                      // from data this page already loaded.
+                      final poster = link == null
+                          ? null
+                          : BrandPosterData(
+                              shopName: name,
+                              tagline: (brand?.tagline.isNotEmpty == true)
+                                  ? brand!.tagline
+                                  : (profile?.tagline ?? ''),
+                              place: [profile?.city, profile?.state]
+                                  .where((s) => s != null && s.isNotEmpty)
+                                  .join(', '),
+                              phone: brandPhone,
+                              logoUrl: profile?.logo,
+                              bannerUrl: profile?.banner,
+                              photos: brand?.photos ?? const [],
+                              highlights: brand?.highlights ?? const [],
+                              link: link.replaceFirst(RegExp(r'^https?://'), ''),
+                            );
+                      showBrandShareChoice(
+                        btnContext,
+                        poster: poster,
+                        onShareLink: () => LinkShare.shop(btnContext,
+                            phone: shopPhone, name: name),
+                      );
                     },
                   ),
                 ),
@@ -2105,11 +2134,10 @@ class _SingleReelViewState extends ConsumerState<_SingleReelView>
                   ],
                   if (widget.reel.caption.isNotEmpty) ...[
                     const SizedBox(height: 4),
-                    Text(
+                    // Full description on tap ("more" / "less").
+                    ReelCaption(
                       widget.reel.caption,
                       style: const TextStyle(color: Colors.white, fontSize: 13),
-                      maxLines: 2,
-                      overflow: TextOverflow.ellipsis,
                     ),
                   ],
                   if (widget.reel.linkedProductId != null) ...[
