@@ -69,20 +69,51 @@ async function authenticate(req: NextRequest): Promise<AuthResult> {
 
 /**
  * Whether this order's payout has moved far enough that a revert out of
- * `delivered` would desync the books from the money. Returns a human reason to
- * surface, or null when the revert is financially safe.
+ * `delivered` would desync the books from the money.
+ *
+ * Two levels, because they carry different risk:
+ *   • `overridable: true`  — the payout is only SCHEDULED (held with an
+ *     on_hold_until in the future). The money has NOT left yet, and re-delivering
+ *     later cannot re-pay (releaseTransferOnDelivery is idempotent on
+ *     routeRelease.transferId). An ADMIN may revert; the scheduled transfer is
+ *     deliberately left untouched (business decision: revert the status only,
+ *     never reach into the payment).
+ *   • `overridable: false` — the money has already RELEASED / settled. Never
+ *     reversed automatically, blocked for everyone.
+ *
+ * Returns null when the revert is financially safe for anyone.
  */
-function payoutBlockReason(order: FirebaseFirestore.DocumentData): string | null {
+type PayoutBlock = { reason: string; overridable: boolean };
+
+function payoutBlock(order: FirebaseFirestore.DocumentData): PayoutBlock | null {
   const release = order.routeRelease as { status?: string; transferId?: string } | undefined;
   if (release?.transferId) {
     if (release.status === "scheduled") {
-      return "This order's payout to the seller is already scheduled with Razorpay. Reverting it now would leave the order marked not-delivered while the money is on its way. Ask an admin to review the Route payout before changing the status.";
+      return {
+        overridable: true,
+        reason:
+          "This order's payout to the seller is already scheduled with Razorpay. Reverting it now would leave the order marked not-delivered while the money is on its way. Ask an admin to review the Route payout before changing the status.",
+      };
     }
-    return "This order's payout to the seller has already been released. The status can't be reverted — financial transactions are never reversed automatically.";
+    return {
+      overridable: false,
+      reason:
+        "This order's payout to the seller has already been released. The status can't be reverted — financial transactions are never reversed automatically.",
+    };
   }
   const payout = order.payout as { state?: string } | undefined;
-  if (payout?.state && ["scheduled", "processing", "settled"].includes(payout.state)) {
-    return `This order's payout is ${payout.state} with Razorpay. Reverting a delivered order whose money has already moved is blocked — review the payout first.`;
+  if (payout?.state === "scheduled") {
+    return {
+      overridable: true,
+      reason:
+        "This order's payout is scheduled with Razorpay. Ask an admin to review the Route payout before reverting the status.",
+    };
+  }
+  if (payout?.state && ["processing", "settled"].includes(payout.state)) {
+    return {
+      overridable: false,
+      reason: `This order's payout is ${payout.state} with Razorpay. Reverting a delivered order whose money has already moved is blocked — review the payout first.`,
+    };
   }
   return null;
 }
@@ -140,9 +171,14 @@ export async function POST(req: NextRequest) {
     }
 
     // ── Financial safety (requirement: block unsafe reversals, never auto-reverse) ──
-    const blocked = payoutBlockReason(order);
-    if (blocked) {
-      return NextResponse.json({ error: blocked }, { status: 409 });
+    // A SCHEDULED payout is overridable by an admin (the money hasn't left and a
+    // later re-delivery can't re-pay — releaseTransferOnDelivery is idempotent).
+    // The scheduled Razorpay transfer is intentionally NOT touched here; only the
+    // order status is reverted. A RELEASED payout is blocked for everyone.
+    const block = payoutBlock(order);
+    const payoutOverride = Boolean(block?.overridable && auth.isAdmin);
+    if (block && !payoutOverride) {
+      return NextResponse.json({ error: block.reason }, { status: 409 });
     }
 
     const now = new Date().toISOString();
@@ -154,6 +190,9 @@ export async function POST(req: NextRequest) {
       byRole: auth.isAdmin ? "admin" : "seller",
       reason: revertReason,
       revert: true,
+      // Flag an admin who reverted past a scheduled payout, so the trail shows
+      // the money was knowingly left to settle while the status went back.
+      ...(payoutOverride ? { payoutScheduledOverride: true } : {}),
     };
 
     const batch = db.batch();
@@ -175,6 +214,14 @@ export async function POST(req: NextRequest) {
       reason: revertReason,
       performedBy: auth.uid,
       performedByRole: auth.isAdmin ? "admin" : "seller",
+      // Record a scheduled-payout override explicitly: which transfer was left
+      // to settle, so Finance can reconcile a reverted-but-paid order later.
+      ...(payoutOverride
+        ? {
+            payoutScheduledOverride: true,
+            routeTransferId: String((order.routeRelease as { transferId?: string } | undefined)?.transferId ?? ""),
+          }
+        : {}),
       createdAt: now,
     });
     await batch.commit();

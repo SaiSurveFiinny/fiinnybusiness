@@ -68,6 +68,7 @@ export {
   platformStatsOnProductDelete,
 } from "./stats/platform-daily";
 export { sellerStatsOnOrderWrite } from "./stats/seller-stats";
+export { rebuildSocialStats } from "./stats/social-stats";
 
 admin.initializeApp();
 const db = admin.firestore();

@@ -1,16 +1,17 @@
 import {
   collection,
   doc,
-  getAggregateFromServer,
-  getCountFromServer,
   getDoc,
   getDocs,
   query,
-  sum,
   where,
 } from "firebase/firestore";
-import { db } from "../../firebase";
+import { db, fetchIncomingOrdersForSeller } from "../../firebase";
+
+/** Summary doc written by rebuildSocialStats (functions/src/stats/social-stats.ts). */
+const SOCIAL_STATS = "socialStats";
 import { getDocsByIds } from "../../lib/firestore-by-ids";
+import { normalizeOrderItems, orderGrandTotal, type OrderDoc } from "../../../types/order";
 import { PAYOUT_HOLD_DAYS, type EarningsHold, type EarningsStats } from "./seller-earnings";
 
 export type SearchAppearanceStats = {
@@ -45,6 +46,12 @@ export type RetailerAnalytics = {
   reelViews: number;
   reelLikes: number;
   reelComments: number;
+  /** Freshness of the Followers / Reel tiles, which come from the precomputed
+   *  socialStats summary doc. `available` is false when no summary has been
+   *  built yet (show "not available"); `stale` is true when the last rebuild is
+   *  old enough to flag. Lets the page distinguish "genuinely 0" from "unknown".
+   */
+  socialSync: { available: boolean; stale: boolean; lastUpdatedAt: number | null };
   /** False when every query came back empty — drives the honest empty state. */
   hasAnyData: boolean;
 };
@@ -151,6 +158,55 @@ function bucketSeries(
     });
   }
   return out;
+}
+
+/**
+ * Collapses a day series into one bucket per calendar month, summing the
+ * values in each — used for the Year view (and any custom range long enough
+ * that 365 daily bars would be unreadable), as the task's "monthly totals for
+ * Year" calls for. Labels read "Jan", "Feb", … The underlying daily totals are
+ * unchanged, so a chart's bars still sum to the matching summary metric.
+ */
+function monthlySeries(
+  days: DaySeries[],
+  valueByDay: Record<string, number>,
+): SeriesPoint[] {
+  const out: SeriesPoint[] = [];
+  const idx = new Map<string, number>();
+  for (const d of days) {
+    const ym = d.key.slice(0, 7); // YYYY-MM
+    let at = idx.get(ym);
+    if (at === undefined) {
+      at = out.length;
+      idx.set(ym, at);
+      out.push({
+        label: new Date(`${d.key}T00:00:00`).toLocaleDateString("en-US", { month: "short" }),
+        value: 0,
+      });
+    }
+    out[at].value += valueByDay[d.key] || 0;
+  }
+  return out;
+}
+
+/** Inclusive millisecond bounds of the day window — start of its first day to
+ *  the very end of its last — so a date-range filter keeps every record on the
+ *  final day instead of cutting off at that day's midnight. */
+function windowBoundsOf(days: DaySeries[]): { startMs: number; endMs: number } {
+  const startMs = new Date(`${days[0].key}T00:00:00.000`).getTime();
+  const endMs = new Date(`${days[days.length - 1].key}T23:59:59.999`).getTime();
+  return { startMs, endMs };
+}
+
+/** An order's createdAt in epoch ms — Firestore Timestamp, ISO string, or 0
+ *  when there is no parseable timestamp. Mirrors orderMillis in the Orders
+ *  page so both read the same instant off the same field. */
+function orderMillisOf(createdAt: unknown): number {
+  const ms = (createdAt as any)?.toMillis?.();
+  if (typeof ms === "number") return ms;
+  if (!createdAt) return 0;
+  const parsed = new Date(createdAt as string).getTime();
+  return Number.isFinite(parsed) ? parsed : 0;
 }
 
 /** Same as normalizeSellerKey in functions/src/stats/seller-stats.ts. */
@@ -274,8 +330,17 @@ export type LoadedProduct = { id: string } & Record<string, unknown>;
  *   sellerId/sellerPhone/shopOwnerId, which exist on no product doc, so it
  *   found nothing. Engagement counters (impressions/clicks/…ByDay) live on
  *   these docs, written by the track* helpers in app/firebase.ts.
- * - `orders` — sellerId and sellerPhone both store the seller's phone
- *   (order_repository.dart writes sellerId as phone for legacy compat).
+ * - `orders` — the live order docs, read through the SAME identity-expanded
+ *   query the Orders page uses (fetchIncomingOrdersForSeller: sellerId /
+ *   sellerPhone across every uid/phone form plus uidIndex), then filtered to
+ *   the selected window by each order's createdAt. This replaces the old
+ *   dependence on the pre-aggregated sellerStats/{key} docs, which were
+ *   all-time (so the tiles ignored the period picker) and drifted below the
+ *   real order count whenever the sellerStatsOnOrderWrite trigger had not
+ *   recorded every order — the cause of "5 orders / ₹8,799" on this page while
+ *   the Orders and Payments pages showed more. Reading the orders directly
+ *   makes the tiles period-specific and reconcile with those pages by
+ *   construction.
  *
  * The phantom `store_analytics` collection (never written, no security rule,
  * every read permission-denied) has been removed.
@@ -305,36 +370,72 @@ export async function fetchRetailerAnalytics(
   const errors: unknown[] = [];
 
   // ── Followers + reel engagement ──────────────────────────────────────────
-  // Mirrors StoreAnalyticsRepository on mobile so both platforms report the
-  // same figures from the same sources. Followers is a LIFETIME total, not a
-  // per-period count: `follows` docs carry createdAt, but ranging over it
-  // needs a composite index neither platform ships, and the running total is
-  // the more useful number on screen — so it does not change with the period
-  // picker, by design.
+  // Followers and reel views/likes/comments come from the precomputed
+  // socialStats/{phone} summary doc (rebuilt daily by rebuildSocialStats in
+  // functions/src/stats/social-stats.ts) — ONE document read, instead of the
+  // count()/sum() aggregation queries this page used to fire on every open.
+  // They are LIFETIME totals, not per-period counts, so they do not respond to
+  // the period picker, by design (the underlying follows/reels carry no
+  // per-day breakdown here). The doc is keyed by the seller's normalised phone;
+  // reels (shopOwnerId) and follows (followedShopId) are phone-keyed, never a
+  // uid, so a uid alone never resolves one.
   let followers = 0;
   let reelViews = 0;
   let reelLikes = 0;
   let reelComments = 0;
+  let socialAvailable = false;
+  let socialLastUpdatedAt: number | null = null;
 
   {
-    // Reels and follows are keyed by the seller's PHONE (shopOwnerId /
-    // followedShopId), never a uid — querying with a uid just returns empty.
-    // A follow or reel carries one phone value, so the phone forms' results
-    // never overlap: counts and sums add up. Count and sum queries instead of
-    // reading every follower and reel.
-    const phoneKeys = Array.from(phoneCandidates);
-    const settled = await Promise.allSettled(phoneKeys.flatMap((phone) => {
-      const reels = query(collection(db, "reels"), where("shopOwnerId", "==", phone));
-      return [
-        getCountFromServer(query(collection(db, "follows"), where("followedShopId", "==", phone)))
-          .then((c) => { followers += c.data().count; }),
-        getAggregateFromServer(reels, { v: sum("viewsCount") }).then((a) => { reelViews += Number(a.data().v ?? 0) || 0; }),
-        getAggregateFromServer(reels, { v: sum("likesCount") }).then((a) => { reelLikes += Number(a.data().v ?? 0) || 0; }),
-        getAggregateFromServer(reels, { v: sum("commentsCount") }).then((a) => { reelComments += Number(a.data().v ?? 0) || 0; }),
-      ];
-    }));
-    for (const r of settled) if (r.status === "rejected") errors.push(r.reason);
+    // The phone may be missing from `profile` (users/{phone} keeps the phone as
+    // the doc id, which getUserProfile drops), which is exactly why the old
+    // live queries returned 0 for many sellers. Fall back to uidIndex/{uid} —
+    // the canonical uid→phone map, same as the Orders page — before giving up.
+    if (phoneCandidates.size === 0 && retailerId) {
+      try {
+        const idx = await getDoc(doc(db, "uidIndex", retailerId));
+        const p = String(idx.data()?.phone ?? "").trim();
+        if (p) {
+          phoneCandidates.add(p);
+          const stripped = p.replace("+91", "").trim();
+          if (stripped) phoneCandidates.add(stripped);
+          if (!p.startsWith("+")) phoneCandidates.add(`+91${p}`);
+        }
+      } catch (err) {
+        errors.push(err);
+      }
+    }
+
+    // Normalise to the same key the Cloud Function writes under; usually one.
+    const socialKeys = Array.from(new Set(
+      Array.from(phoneCandidates).map(sellerKeyOf).filter(Boolean),
+    ));
+    const settled = await Promise.allSettled(
+      socialKeys.map((key) => getDoc(doc(db, SOCIAL_STATS, key))),
+    );
+    for (const r of settled) {
+      if (r.status === "rejected") { errors.push(r.reason); continue; }
+      const snap = r.value;
+      if (!snap.exists()) continue;
+      const d = snap.data() ?? {};
+      socialAvailable = true;
+      followers += Number(d.followers ?? 0) || 0;
+      reelViews += Number(d.reelViews ?? 0) || 0;
+      reelLikes += Number(d.reelLikes ?? 0) || 0;
+      reelComments += Number(d.reelComments ?? 0) || 0;
+      const ts = (d.lastUpdatedAt as any)?.toMillis?.() ?? null;
+      if (ts && (socialLastUpdatedAt === null || ts > socialLastUpdatedAt)) {
+        socialLastUpdatedAt = ts;
+      }
+    }
   }
+  // Flag the tiles as stale once the last rebuild is older than two daily
+  // cycles — cached numbers still show, just marked, rather than vanishing.
+  const SOCIAL_STALE_MS = 48 * 60 * 60 * 1000;
+  const socialStale =
+    socialAvailable &&
+    socialLastUpdatedAt !== null &&
+    Date.now() - socialLastUpdatedAt > SOCIAL_STALE_MS;
 
   // ── Products: engagement counters ────────────────────────────────────────
   const viewsByDay: Record<string, number> = {};
@@ -427,41 +528,76 @@ export async function fetchRetailerAnalytics(
   stats.forEach((data) => addCounters(data));
 
   // ── Orders: revenue and volume ───────────────────────────────────────────
+  // Read the live order docs the same way the Orders page does, then filter to
+  // the window by createdAt and compute every order metric here — so the tiles
+  // are period-specific and reconcile with the Orders / Payments pages instead
+  // of trusting the sellerStats aggregate, which was all-time and could lag the
+  // real order count.
   const revenueByDay: Record<string, number> = {};
   const ordersByDay: Record<string, number> = {};
   days.forEach((d) => {
     revenueByDay[d.key] = 0;
     ordersByDay[d.key] = 0;
   });
+  const { startMs, endMs } = windowBoundsOf(days);
 
-  // All-time totals and the window's per-day series from the seller's stats
-  // docs (sellerStatsOnOrderWrite), instead of every order the seller ever had.
-  const sellerKeys = sellerKeysFor(retailerId, profile);
-  const orderStats = await readSellerOrderStats(sellerKeys, days[0].key, days[days.length - 1].key);
-  errors.push(...orderStats.errors);
+  // fetchIncomingOrdersForSeller needs a seller id string; fall back to the
+  // profile's own identifiers when the caller has no uid (admin view of a
+  // uid-less account), exactly like the Orders page's identity seeding.
+  const sellerId = String(retailerId ?? profile?.uid ?? profile?.id ?? profile?.phone ?? "").trim();
+  const sellerType = profile?.role === "manufacturer" ? "manufacturer" : "retailer";
+  let orders: OrderDoc[] = [];
+  let ordersFailed = false;
+  if (sellerId) {
+    try {
+      orders = await fetchIncomingOrdersForSeller(sellerId, sellerType, profile);
+    } catch (err) {
+      ordersFailed = true;
+      errors.push(err);
+      console.error("[analytics] orders read failed:", err);
+    }
+  }
 
   let totalOrders = 0;
   let totalRevenue = 0;
   const statusCounts: Record<string, number> = {};
   const productAgg = new Map<string, { name: string; quantity: number; revenue: number }>();
-  for (const { totals, days: dayDocs } of orderStats.results) {
-    totalOrders += Number(totals.orders?.count ?? 0) || 0;
-    totalRevenue += Number(totals.orders?.revenue ?? 0) || 0;
-    for (const [status, n] of Object.entries(totals.orders?.status ?? {})) {
-      statusCounts[status] = (statusCounts[status] ?? 0) + (Number(n) || 0);
-    }
-    for (const item of Object.values(totals.items ?? {})) {
-      const name = String(item?.name ?? "Unknown product");
+  // fetchIncomingOrdersForSeller already de-dupes by doc id (Map keyed by id),
+  // so each order is seen once no matter how many identity queries matched it.
+  for (const order of orders) {
+    const ms = orderMillisOf(order.createdAt);
+    // An order with no parseable createdAt can't be placed in any day window.
+    if (ms < startMs || ms > endMs) continue;
+
+    const status = String(order.status ?? "unknown");
+    // Same business rule as the seller model and the Orders page: the order
+    // COUNT includes every status (cancelled/rejected show on the Orders page
+    // too), but REVENUE and products-sold leave out cancelled and rejected.
+    const cancelled = status === "cancelled" || status === "rejected";
+    totalOrders += 1;
+    statusCounts[status] = (statusCounts[status] ?? 0) + 1;
+
+    const dayKey = getLocalDayKey(new Date(ms));
+    if (dayKeys.has(dayKey)) ordersByDay[dayKey] += 1;
+
+    if (cancelled) continue;
+
+    // Revenue is the order's grand total net of any refund (full or partial),
+    // so refunded money is not counted as earned. COD/unpaid orders still count
+    // toward revenue (gross merchandise value) — the same scope the "Revenue"
+    // tile has always meant, and the documented difference from the Payments
+    // page's "Total Collected" (paid-online only).
+    const refunded = Number(order.payment?.refundedAmount ?? 0) || 0;
+    const net = Math.max(0, orderGrandTotal(order) - refunded);
+    totalRevenue += net;
+    if (dayKeys.has(dayKey)) revenueByDay[dayKey] += net;
+
+    for (const item of normalizeOrderItems(order.items as any)) {
+      const name = item.name || "Unknown product";
       const agg = productAgg.get(name) ?? { name, quantity: 0, revenue: 0 };
-      agg.quantity += Number(item?.qty ?? 0) || 0;
-      agg.revenue += Number(item?.revenue ?? 0) || 0;
+      agg.quantity += Number(item.qty ?? 0) || 0;
+      agg.revenue += Number(item.lineTotal ?? 0) || 0;
       productAgg.set(name, agg);
-    }
-    for (const day of dayDocs) {
-      const key = String(day.date ?? "");
-      if (!dayKeys.has(key)) continue;
-      ordersByDay[key] += Number(day.orders?.count ?? 0) || 0;
-      revenueByDay[key] += Number(day.orders?.revenue ?? 0) || 0;
     }
   }
 
@@ -474,10 +610,19 @@ export async function fetchRetailerAnalytics(
   const everythingFailed =
     errors.length > 0 &&
     productsFailed &&
-    orderStats.results.length === 0;
+    ordersFailed;
   if (everythingFailed) {
     throw errors[0];
   }
+
+  // Year (and any custom range too long for daily bars) is aggregated by month;
+  // shorter windows stay daily, capped by bucketSeries. The same shaping drives
+  // the engagement charts below, so every chart on the page groups alike.
+  const useMonthly = customRange ? days.length > 92 : period === "year";
+  const chartSeries = (valueByDay: Record<string, number>): SeriesPoint[] =>
+    useMonthly
+      ? monthlySeries(days, valueByDay)
+      : bucketSeries(days.map((day) => ({ label: day.label, value: valueByDay[day.key] || 0 })));
 
   const ctr = totalImpressions > 0 ? (totalClicks / totalImpressions) * 100 : 0;
   const avgPosition = totalImpressions > 0 ? totalPositionSum / totalImpressions : 0;
@@ -495,14 +640,14 @@ export async function fetchRetailerAnalytics(
       ctr: ctr.toFixed(1) + "%",
       avgPosition: avgPosition > 0 ? avgPosition.toFixed(1) : "—",
     },
-    viewsOverTime: bucketSeries(days.map((day) => ({ label: day.label, value: viewsByDay[day.key] || 0 }))),
-    callsOverTime: bucketSeries(days.map((day) => ({ label: day.label, value: callsByDay[day.key] || 0 }))),
-    directionRequests: bucketSeries(days.map((day) => ({ label: day.label, value: directionsByDay[day.key] || 0 }))),
+    viewsOverTime: chartSeries(viewsByDay),
+    callsOverTime: chartSeries(callsByDay),
+    directionRequests: chartSeries(directionsByDay),
     orders: {
       totalOrders,
       totalRevenue,
-      revenueOverTime: bucketSeries(days.map((day) => ({ label: day.label, value: revenueByDay[day.key] || 0 }))),
-      ordersOverTime: bucketSeries(days.map((day) => ({ label: day.label, value: ordersByDay[day.key] || 0 }))),
+      revenueOverTime: chartSeries(revenueByDay),
+      ordersOverTime: chartSeries(ordersByDay),
       statusCounts,
       topProducts,
     },
@@ -510,6 +655,11 @@ export async function fetchRetailerAnalytics(
     reelViews,
     reelLikes,
     reelComments,
+    socialSync: {
+      available: socialAvailable,
+      stale: socialStale,
+      lastUpdatedAt: socialLastUpdatedAt,
+    },
     hasAnyData:
       totalOrders > 0 ||
       totalImpressions > 0 ||

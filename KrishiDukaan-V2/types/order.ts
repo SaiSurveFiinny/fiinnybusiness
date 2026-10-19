@@ -86,6 +86,10 @@ export type StatusHistoryEntry = {
   reason?: string;
   /** Marks this entry as a status reversal rather than a forward step. */
   revert?: boolean;
+  /** An admin reverted this order even though its Route payout was already
+   *  SCHEDULED — the scheduled transfer was left untouched, so the money still
+   *  settles. Present only on such overrides, for the audit trail. */
+  payoutScheduledOverride?: boolean;
 };
 
 export type CartItem = {
