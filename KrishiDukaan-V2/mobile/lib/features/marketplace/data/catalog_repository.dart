@@ -23,6 +23,13 @@ const _copySources = {
 class CatalogRepository {
   final _db = FirebaseFirestore.instance;
 
+  /// Cards read per query by [_loadCards]. The whole collection in one query
+  /// reached Dart as a single platform message that Android builds in one
+  /// byte buffer — every card carries each seller's availability — and it
+  /// outgrew the Java heap (OutOfMemoryError in StandardMessageCodec, the
+  /// top crash on Play Console). Pages keep each message small.
+  static const _cardsPageSize = 100;
+
   /// Search, category filters and paging all work over this in-memory list,
   /// so it is read at most once per [_cardsTtl] instead of once per keystroke.
   ///
@@ -85,16 +92,7 @@ class CatalogRepository {
 
   Future<List<CatalogModel>> _loadCards() async {
     try {
-      final snap = await traced(
-          'load_marketplace_cards', () => _db.collection(_cardsCol).get());
-      final cards = <CatalogModel>[];
-      for (final doc in snap.docs) {
-        // One malformed card used to fail the whole load (so nothing was
-        // cached and the next keystroke downloaded everything again).
-        try {
-          cards.add(CatalogModel.fromCard(doc.data()));
-        } catch (_) {}
-      }
+      final cards = await traced('load_marketplace_cards', _readAllCards);
       cards.sort((a, b) {
           if (a.createdAt == null) return b.createdAt == null ? 0 : 1;
           if (b.createdAt == null) return -1;
@@ -109,6 +107,31 @@ class CatalogRepository {
       return _cards ?? [];
     } finally {
       _cardsLoad = null;
+    }
+  }
+
+  /// Every card, [_cardsPageSize] at a time in document-id order. Each page
+  /// is parsed and dropped before the next is requested, so only one page's
+  /// raw snapshot is ever in memory.
+  Future<List<CatalogModel>> _readAllCards() async {
+    final cards = <CatalogModel>[];
+    DocumentSnapshot<Map<String, dynamic>>? last;
+    while (true) {
+      var query = _db
+          .collection(_cardsCol)
+          .orderBy(FieldPath.documentId)
+          .limit(_cardsPageSize);
+      if (last != null) query = query.startAfterDocument(last);
+      final snap = await query.get();
+      for (final doc in snap.docs) {
+        // One malformed card used to fail the whole load (so nothing was
+        // cached and the next keystroke downloaded everything again).
+        try {
+          cards.add(CatalogModel.fromCard(doc.data()));
+        } catch (_) {}
+      }
+      if (snap.docs.length < _cardsPageSize) return cards;
+      last = snap.docs.last;
     }
   }
 
