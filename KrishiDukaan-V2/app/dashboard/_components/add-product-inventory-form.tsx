@@ -1,8 +1,9 @@
 "use client";
 
+import { normalizeUnit } from "../../utils/weight";
 import { FormEvent, useCallback, useEffect, useRef, useState } from "react";
 import {
-  Loader2, PackagePlus, Plus, X, Upload, Link as LinkIcon,
+  Loader2, PackagePlus, Plus, X, Upload,
   Tag, ImageIcon, AlignLeft, Layers, Search, ChevronDown, CheckCircle2, Receipt, Youtube,
 } from "lucide-react";
 import {
@@ -93,7 +94,9 @@ function buildPreviewLabel(v: Variant): string {
 function parseUnitToVariant(unit: string | undefined | null): Pick<Variant, "unitType" | "sizeAmount" | "customSize" | "customUnit"> {
   unit = (unit ?? "").trim();
   if (!unit) return { unitType: "custom", sizeAmount: "", customSize: "", customUnit: "" };
-  const match = unit.match(/^(\d+(?:\.\d+)?)(g|kg|ml|L)$/i);
+  // Canonical form first: "1 L", "500ML", "1 KG" and "1 Ltr" (app and bulk
+  // upload spellings) used to open as Custom, or lose their size on save.
+  const match = normalizeUnit(unit).match(/^(\d+(?:\.\d+)?)(g|kg|ml|l)$/);
   if (match) {
     const size = match[1];
     const type = match[2] === "l" ? "L" : match[2];
@@ -105,10 +108,11 @@ function parseUnitToVariant(unit: string | undefined | null): Pick<Variant, "uni
       customUnit: "",
     };
   }
-  if (unit === "pkt" || unit === "packet") return { unitType: "pkt", sizeAmount: "", customSize: "", customUnit: "" };
-  if (unit === "pcs" || unit === "piece")  return { unitType: "pcs", sizeAmount: "", customSize: "", customUnit: "" };
-  if (unit === "bottle")                   return { unitType: "bottle", sizeAmount: "", customSize: "", customUnit: "" };
-  if (unit === "can")                      return { unitType: "can", sizeAmount: "", customSize: "", customUnit: "" };
+  const lower = unit.toLowerCase();
+  if (lower === "pkt" || lower === "packet") return { unitType: "pkt", sizeAmount: "", customSize: "", customUnit: "" };
+  if (lower === "pcs" || lower === "piece")  return { unitType: "pcs", sizeAmount: "", customSize: "", customUnit: "" };
+  if (lower === "bottle")                   return { unitType: "bottle", sizeAmount: "", customSize: "", customUnit: "" };
+  if (lower === "can")                      return { unitType: "can", sizeAmount: "", customSize: "", customUnit: "" };
   return { unitType: "custom", sizeAmount: "", customSize: "", customUnit: unit };
 }
 
@@ -156,6 +160,10 @@ type AddProductInventoryFormProps = {
   onAdminSave?: (payload: AdminProductPayload) => Promise<void>;
   /** When true, shows both Online Delivery and GST toggles for non-admin sellers. */
   accountDeliveryEnabled?: boolean;
+  /** Told whether anything has been entered yet, so the host can ask before closing. */
+  onDirtyChange?: (dirty: boolean) => void;
+  /** id for the <form>, so a host's "Save" button can submit it. */
+  formId?: string;
 };
 
 const newVariant = (): Variant => ({
@@ -237,6 +245,11 @@ function CategoryInfoSection({
 
 // ─── Image Card ───────────────────────────────────────────────────────────────
 
+/**
+ * One product photo: tap to upload (compressed first), shown as a thumbnail.
+ * The Storage link behind it is never shown — sellers kept typing into it and
+ * breaking the image.
+ */
 function ImageCard({ slot, index, disabled, onChange, onClear }: {
   slot: ImageSlot; index: number; disabled: boolean;
   onChange: (p: Partial<ImageSlot>) => void; onClear: () => void;
@@ -253,71 +266,45 @@ function ImageCard({ slot, index, disabled, onChange, onClear }: {
       const snap = await uploadBytes(storageRef(storage, path), toUpload, imageUploadMetadata(toUpload));
       onChange({ url: await getDownloadURL(snap.ref), uploading: false });
     } catch {
-      onChange({ uploading: false, error: "Upload failed. Paste URL instead." });
+      onChange({ uploading: false, error: "Upload failed. Please try again." });
     }
   };
 
   return (
-    <div className={`flex-shrink-0 w-40 flex flex-col rounded-2xl border-2 overflow-hidden transition-colors ${
-      slot.url ? "border-primary/20 bg-surface-container-low" : "border-dashed border-outline-variant/40 bg-surface-container-low/50 hover:border-primary/40"
-    }`}>
-      {/* Preview area */}
-      {slot.url ? (
-        <div className="relative h-32 bg-surface-container">
-          <img src={slot.url} alt="" className="h-full w-full object-cover"
-            onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }} />
-          <button type="button" onClick={onClear}
+    <div className="flex-shrink-0 w-40 flex flex-col gap-1">
+      <div className={`relative h-40 rounded-2xl border-2 overflow-hidden transition-colors ${
+        slot.url ? "border-primary/20 bg-surface-container" : "border-dashed border-outline-variant/40 bg-surface-container-low/50 hover:border-primary/40"
+      }`}>
+        <input ref={fileRef} type="file" accept="image/*" className="hidden"
+          onChange={(e) => { const f = e.target.files?.[0]; e.target.value = ""; if (f) handleFile(f); }} />
+        <button type="button" disabled={disabled || slot.uploading}
+          onClick={() => fileRef.current?.click()}
+          title={slot.url ? "Change photo" : t('formChooseFile')}
+          className="flex h-full w-full flex-col items-center justify-center gap-1.5 text-on-surface-variant/60 hover:text-primary disabled:opacity-60">
+          {slot.uploading ? (
+            <><Loader2 className="h-6 w-6 animate-spin" /><span className="text-[11px] font-medium">{t('formUploadingLabel')}</span></>
+          ) : slot.url ? (
+            <img src={slot.url} alt="" loading="lazy" className="h-full w-full object-cover"
+              onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }} />
+          ) : (
+            <>
+              <Upload className="h-6 w-6" />
+              <span className="text-[11px] font-medium">{index === 0 ? t('formMainImage') : `${t('formImageLabel')} ${index + 1}`}</span>
+              <span className="text-[10px]">{t('formChooseFile')}</span>
+            </>
+          )}
+        </button>
+        {slot.url && !slot.uploading && (
+          <button type="button" onClick={onClear} disabled={disabled} aria-label="Remove photo"
             className="absolute right-1.5 top-1.5 flex h-6 w-6 items-center justify-center rounded-full bg-black/50 text-white hover:bg-red-500 transition-colors">
             <X className="h-3 w-3" />
           </button>
-          {index === 0 && (
-            <span className="absolute bottom-1.5 left-1.5 rounded-full bg-primary/90 px-2 py-0.5 text-[10px] font-semibold text-white">{t('formMainBadge')}</span>
-          )}
-        </div>
-      ) : (
-        <div className="flex h-32 flex-col items-center justify-center gap-1.5 text-on-surface-variant/40">
-          <ImageIcon className="h-7 w-7" />
-          <span className="text-[10px] font-medium">{index === 0 ? t('formMainImage') : `${t('formImageLabel')} ${index + 1}`}</span>
-        </div>
-      )}
-
-      {/* Controls */}
-      <div className="flex flex-col gap-2 p-2.5 bg-white/70">
-        {/* Mode toggle */}
-        <div className="flex rounded-lg border border-outline-variant/30 text-[11px] overflow-hidden">
-          {(["url", "upload"] as const).map((m) => (
-            <button key={m} type="button" disabled={disabled}
-              onClick={() => onChange({ mode: m, error: "" })}
-              className={`flex flex-1 items-center justify-center gap-1 py-1.5 font-semibold whitespace-nowrap transition-colors ${
-                slot.mode === m ? "bg-primary text-white" : "text-on-surface-variant hover:bg-surface-container"
-              } disabled:opacity-50`}
-            >
-              {m === "url" ? <LinkIcon className="h-3 w-3 flex-shrink-0" /> : <Upload className="h-3 w-3 flex-shrink-0" />}
-              <span>{m === "url" ? t('formLinkLabel') : t('formUploadLabel')}</span>
-            </button>
-          ))}
-        </div>
-
-        {/* Input */}
-        {slot.mode === "url" ? (
-          <input type="url" disabled={disabled} placeholder="https://…"
-            className="w-full rounded-xl border border-outline-variant/40 bg-surface-container-lowest px-2.5 py-1.5 text-[11px] outline-none ring-primary/30 focus:ring-2 disabled:opacity-50"
-            value={slot.url} onChange={(e) => onChange({ url: e.target.value, error: "" })} />
-        ) : (
-          <>
-            <input ref={fileRef} type="file" accept="image/*" className="hidden"
-              onChange={(e) => { const f = e.target.files?.[0]; if (f) handleFile(f); }} />
-            <button type="button" disabled={disabled || slot.uploading}
-              onClick={() => fileRef.current?.click()}
-              className="flex w-full items-center justify-center gap-1 rounded-xl border border-dashed border-outline-variant/40 py-2 text-[11px] font-medium text-on-surface-variant hover:border-primary hover:text-primary hover:bg-primary/5 disabled:opacity-50 transition-colors">
-              {slot.uploading
-                ? <><Loader2 className="h-3 w-3 animate-spin flex-shrink-0" /><span>{t('formUploadingLabel')}</span></>
-                : <><Upload className="h-3 w-3 flex-shrink-0" /><span>{t('formChooseFile')}</span></>}
-            </button>
-          </>
         )}
-        {slot.error && <p className="text-[10px] text-red-500 leading-tight">{slot.error}</p>}
+        {index === 0 && slot.url && (
+          <span className="pointer-events-none absolute bottom-1.5 left-1.5 rounded-full bg-primary/90 px-2 py-0.5 text-[10px] font-semibold text-white">{t('formMainBadge')}</span>
+        )}
       </div>
+      {slot.error && <p className="text-[10px] text-red-500 leading-tight">{slot.error}</p>}
     </div>
   );
 }
@@ -472,6 +459,8 @@ export function AddProductInventoryForm({
   initialProduct,
   onAdminSave,
   accountDeliveryEnabled,
+  onDirtyChange,
+  formId,
 }: AddProductInventoryFormProps) {
   const { t } = useI18n();
 
@@ -538,6 +527,15 @@ export function AddProductInventoryForm({
   const [submitting,    setSubmitting]    = useState(false);
   const [message,       setMessage]       = useState<{ type: "ok" | "err"; text: string } | null>(null);
   const [alreadyListed, setAlreadyListed] = useState(false);
+
+  // Anything typed or uploaded yet? (Resets to false after a successful add.)
+  const dirty =
+    !!name.trim() || !!description.trim() || !!videoUrl.trim() ||
+    images.some((im) => !!im.url) ||
+    variants.some((v) => !!v.price || !!v.stock) ||
+    composition.length > 0 || customFields.length > 0 ||
+    Object.values(categoryInfo).some((v) => !!String(v ?? "").trim());
+  useEffect(() => { onDirtyChange?.(dirty); }, [dirty, onDirtyChange]);
 
   // Auto-hide inline success after 5s
   useEffect(() => {
@@ -826,7 +824,12 @@ export function AddProductInventoryForm({
         await createProductAndInventory(userId, {
           name, category: savedCategory,
           unit: parsed[0].unit,
-          stockQuantity: parsed[0].stock || 1,
+          variants: parsed.length > 1
+            ? parsed.map(({ unit, price, stock }) => ({ unit, price, ...(Number.isFinite(stock) ? { stock } : {}) }))
+            : undefined,
+          stockQuantity: parsed.length > 1
+            ? parsed.reduce((n, v) => n + (Number.isFinite(v.stock) ? v.stock : 0), 0) || 1
+            : parsed[0].stock || 1,
           sellingPrice: parsed[0].price,
           reorderThreshold: 0,
           description,
@@ -898,7 +901,7 @@ export function AddProductInventoryForm({
         />
       )}
 
-      <form className="mt-6 flex flex-col gap-6" onSubmit={handleSubmit}>
+      <form id={formId} className="mt-6 flex flex-col gap-6" onSubmit={handleSubmit}>
 
         {/* ── Section 1: Product details (collapsible) ──────────────────────── */}
         <div className="rounded-2xl border border-outline-variant/20 bg-surface-container-low/40 p-4 flex flex-col gap-4">

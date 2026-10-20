@@ -44,7 +44,7 @@ export {
 } from "./stores/directory";
 export { raiseAbandonedCheckoutEnquiries } from "./notifications/enquiries";
 export { notifySellerOfOrderOffer, expireOrderReassignments } from "./notifications/reassignment";
-export { generateInvoiceForNewOrder, sweepMissingInvoices } from "./orders/invoices";
+export { generateInvoiceOnAccept, sweepMissingInvoices } from "./orders/invoices";
 export {
   remindIncompleteProfiles,
   remindIncompletePayoutDetails,
@@ -341,7 +341,7 @@ export const syncSellerProductToCanonical = onDocumentWritten(
  * stock change to the canonical availability[] entry automatically.
  */
 export const decrementStockOnOrder = onDocumentCreated(
-  "orders/{orderId}",
+  { document: "orders/{orderId}", region: "asia-south1" },
   async (event) => {
     const data = event.data?.data() as Record<string, unknown> | undefined;
     if (!data) return;
@@ -631,7 +631,7 @@ async function resolveSellerForOrder(
  * on create), so there is no write loop.
  */
 export const backfillOrderSeller = onDocumentCreated(
-  "orders/{orderId}",
+  { document: "orders/{orderId}", region: "asia-south1" },
   async (event) => {
     const snap = event.data;
     const d = snap?.data() as Record<string, unknown> | undefined;
@@ -679,7 +679,7 @@ export const backfillOrderSeller = onDocumentCreated(
 );
 
 export const notifySellerOnOrder = onDocumentCreated(
-  "orders/{orderId}",
+  { document: "orders/{orderId}", region: "asia-south1" },
   async (event) => {
     const d = event.data?.data() as Record<string, unknown> | undefined;
     if (!d) return;
@@ -826,7 +826,7 @@ export const notifySellerOnOrder = onDocumentCreated(
  * Fires on create too (before doesn't exist → status "placed" → confirmation).
  */
 export const notifyCustomerOnOrderStatus = onDocumentWritten(
-  "orders/{orderId}",
+  { document: "orders/{orderId}", region: "asia-south1" },
   async (event) => {
     const after = event.data?.after;
     if (!after?.exists) return;
@@ -839,6 +839,15 @@ export const notifyCustomerOnOrderStatus = onDocumentWritten(
         (before.data() as Record<string, unknown>).status ?? ""
       );
       if (prevStatus === status) return; // not a status change (e.g. payment field update)
+
+      // A REVERT (seller/admin stepping a mistakenly-advanced order back — see
+      // app/api/orders/revert-status) must not re-send a stage update the
+      // customer already received. Suppress any BACKWARD move along the forward
+      // flow; the customer is only ever messaged on genuine forward progress.
+      const FORWARD_FLOW = ["placed", "accepted", "dispatched", "out_for_delivery", "delivered"];
+      const prevIdx = FORWARD_FLOW.indexOf(prevStatus);
+      const nextIdx = FORWARD_FLOW.indexOf(status);
+      if (prevIdx >= 0 && nextIdx >= 0 && nextIdx < prevIdx) return;
     }
 
     const customerPhone = firstPhone(d.customerPhone, d.customerId);
@@ -923,7 +932,7 @@ export const notifyCustomerOnOrderStatus = onDocumentWritten(
  * Doc ID = {reelId}_{userId}. We need to look up the reel to get shopOwnerId.
  */
 export const notifyReelOwnerOnLike = onDocumentCreated(
-  "reel_likes/{likeId}",
+  { document: "reel_likes/{likeId}", region: "asia-south1" },
   async (event) => {
     const d = event.data?.data() as Record<string, unknown> | undefined;
     if (!d) return;
@@ -957,7 +966,7 @@ export const notifyReelOwnerOnLike = onDocumentCreated(
  * Someone commented on a reel → notify the reel owner.
  */
 export const notifyReelOwnerOnComment = onDocumentCreated(
-  "reels/{reelId}/reel_comments/{commentId}",
+  { document: "reels/{reelId}/reel_comments/{commentId}", region: "asia-south1" },
   async (event) => {
     const d = event.data?.data() as Record<string, unknown> | undefined;
     if (!d) return;
@@ -1016,7 +1025,7 @@ export const notifyReelOwnerOnComment = onDocumentCreated(
  * Doc ID = {followerId}_{shopId}.
  */
 export const notifyShopOwnerOnFollow = onDocumentCreated(
-  "follows/{followId}",
+  { document: "follows/{followId}", region: "asia-south1" },
   async (event) => {
     const d = event.data?.data() as Record<string, unknown> | undefined;
     if (!d) return;
@@ -1053,7 +1062,7 @@ export const notifyShopOwnerOnFollow = onDocumentCreated(
 const REPORT_FLAG_THRESHOLD = 3;
 
 export const flagReelOnReports = onDocumentCreated(
-  "reel_reports/{reportId}",
+  { document: "reel_reports/{reportId}", region: "asia-south1" },
   async (event) => {
     const d = event.data?.data() as Record<string, unknown> | undefined;
     if (!d) return;
@@ -1102,7 +1111,7 @@ export const flagReelOnReports = onDocumentCreated(
 
 /** Manufacturer/admin assigned a product to a retailer → notify the retailer. */
 export const notifyRetailerOnAssignment = onDocumentCreated(
-  "products/{productId}",
+  { document: "products/{productId}", region: "asia-south1" },
   async (event) => {
     const d = event.data?.data() as Record<string, unknown> | undefined;
     if (!d) return;
@@ -1186,7 +1195,7 @@ export const notifyRetailerOnAssignment = onDocumentCreated(
 
 /** Manufacturer added a retailer to their network → notify the retailer. */
 export const notifyRetailerOnNetworkAdd = onDocumentCreated(
-  "manufacturerRetailers/{docId}",
+  { document: "manufacturerRetailers/{docId}", region: "asia-south1" },
   async (event) => {
     const d = event.data?.data() as Record<string, unknown> | undefined;
     if (!d) return;
@@ -1245,7 +1254,7 @@ export const notifyRetailerOnNetworkAdd = onDocumentCreated(
  * Fires on both admin-created and payment-created subscriptions.
  */
 export const notifyOnSubscriptionCreated = onDocumentCreated(
-  "subscriptions/{subscriptionId}",
+  { document: "subscriptions/{subscriptionId}", region: "asia-south1" },
   async (event) => {
     const d = event.data?.data() as Record<string, unknown> | undefined;
     if (!d) return;
@@ -1297,7 +1306,7 @@ export const notifyOnSubscriptionCreated = onDocumentCreated(
  * separate trigger).
  */
 export const notifyOnPromotionSeatAssigned = onDocumentCreated(
-  "promotions/{promotionId}/recipients/{recipientId}",
+  { document: "promotions/{promotionId}/recipients/{recipientId}", region: "asia-south1" },
   async (event) => {
     const ref = event.data?.ref;
     const d = event.data?.data() as Record<string, unknown> | undefined;
@@ -1319,56 +1328,98 @@ export const notifyOnPromotionSeatAssigned = onDocumentCreated(
 
     const businessName = String(d.businessName ?? "") || phone;
 
-    // Duplicate guard: claim the doc exactly once. Writing waQueued is an
-    // UPDATE, so it does not re-trigger this onCreate handler; a redelivered
-    // create event finds waQueued already true and bails.
-    const claimed = await admin.firestore().runTransaction(async (txn) => {
-      const snap = await txn.get(ref);
-      if (!snap.exists) return false;
-      if (snap.get("waQueued") === true) return false;
-      txn.update(ref, { waQueued: true });
-      return true;
-    });
-    if (!claimed) {
-      logger.info("[notifyOnPromotionSeatAssigned] already queued — skipping", {
-        promotionId: event.params.promotionId,
-        phone,
-      });
-      return;
-    }
+    // Optional marketing template attached to the promotion. Only known
+    // marketing templates are honoured; anything else is ignored (confirmation
+    // still sends). Kept in sync with lib/promotions.ts MARKETING_TEMPLATES.
+    const MARKETING_TEMPLATES = new Set(["navratri_offer_free", "navratri_offer_paid"]);
+    const marketingRaw = String(d.marketingTemplate ?? "");
+    const marketingTemplate = MARKETING_TEMPLATES.has(marketingRaw)
+      ? (marketingRaw as "navratri_offer_free" | "navratri_offer_paid")
+      : null;
 
-    const docId = await queueWaNotification(
-      phone,
-      `आपको ${seats} मुफ़्त सीट${seats === 1 ? "" : "ें"} प्रदान की गई हैं।`,
-      {
-        template: "free_seats_assigned",
-        type: "subscription",
-        payload: { businessName, seats },
-        source: {
-          event: "promotion_seats_assigned",
-          entityType: "promotion",
-          entityId: `${event.params.promotionId}:${phone}`,
-        },
+    // Each message tracks its OWN claim flag on the recipient doc, so the two
+    // are independent: a retry never double-sends, and a failure in one neither
+    // blocks nor re-sends the other. Writing a flag is an UPDATE, so it never
+    // re-triggers this onCreate handler; a redelivered create event finds the
+    // flag already true and skips that message.
+    //   waMarketingQueued — the optional marketing message (Step 2)
+    //   waQueued          — the free_seats_assigned confirmation (Step 3)
+    // Seats are never touched here, so releasing a flag allows a safe message
+    // retry without any risk of re-assigning seats.
+    const claimFlag = (flag: string): Promise<boolean> =>
+      admin.firestore().runTransaction(async (txn) => {
+        const snap = await txn.get(ref);
+        if (!snap.exists) return false;
+        if (snap.get(flag) === true) return false;
+        txn.update(ref, { [flag]: true });
+        return true;
+      });
+
+    // ── Step 2: optional marketing message, queued BEFORE the confirmation. ──
+    if (marketingTemplate) {
+      if (await claimFlag("waMarketingQueued")) {
+        const mktId = await queueWaNotification(phone, "", {
+          template: marketingTemplate,
+          type: "marketing",
+          // Navratri body: {{1}} = businessName, {{2}} = seats (offered slots).
+          // The image header is resolved server-side from the template's media-ID secret.
+          payload: { businessName, name: businessName, seats },
+          source: {
+            event: "promotion_marketing_message",
+            entityType: "promotion",
+            entityId: `${event.params.promotionId}:${phone}`,
+          },
+        });
+        if (!mktId) {
+          await ref.update({ waMarketingQueued: false }).catch(() => {});
+          logger.error("[notifyOnPromotionSeatAssigned] failed to queue marketing message — released claim", {
+            promotionId: event.params.promotionId, phone, marketingTemplate,
+          });
+        } else {
+          logger.info("[notifyOnPromotionSeatAssigned] queued marketing message", {
+            promotionId: event.params.promotionId, phone, marketingTemplate, waDocId: mktId,
+          });
+        }
+      } else {
+        logger.info("[notifyOnPromotionSeatAssigned] marketing already queued — skipping", {
+          promotionId: event.params.promotionId, phone,
+        });
       }
-    );
-
-    if (!docId) {
-      // Queue write failed (queueWaNotification already logged it). Release the
-      // claim so the message can be retried instead of being lost.
-      await ref.update({ waQueued: false }).catch(() => {});
-      logger.error("[notifyOnPromotionSeatAssigned] failed to queue WhatsApp — released claim", {
-        promotionId: event.params.promotionId,
-        phone,
-      });
-      return;
     }
 
-    logger.info("[notifyOnPromotionSeatAssigned] queued free_seats_assigned", {
-      promotionId: event.params.promotionId,
-      phone,
-      seats,
-      waDocId: docId,
-    });
+    // ── Step 3: free_seats_assigned confirmation (default for every grant). ──
+    if (await claimFlag("waQueued")) {
+      const docId = await queueWaNotification(
+        phone,
+        `आपको ${seats} मुफ़्त सीट${seats === 1 ? "" : "ें"} प्रदान की गई हैं।`,
+        {
+          template: "free_seats_assigned",
+          type: "subscription",
+          payload: { businessName, seats },
+          source: {
+            event: "promotion_seats_assigned",
+            entityType: "promotion",
+            entityId: `${event.params.promotionId}:${phone}`,
+          },
+        }
+      );
+      if (!docId) {
+        // Queue write failed (queueWaNotification already logged it). Release the
+        // claim so the confirmation can be retried instead of being lost.
+        await ref.update({ waQueued: false }).catch(() => {});
+        logger.error("[notifyOnPromotionSeatAssigned] failed to queue confirmation — released claim", {
+          promotionId: event.params.promotionId, phone,
+        });
+        return;
+      }
+      logger.info("[notifyOnPromotionSeatAssigned] queued free_seats_assigned", {
+        promotionId: event.params.promotionId, phone, seats, waDocId: docId,
+      });
+    } else {
+      logger.info("[notifyOnPromotionSeatAssigned] confirmation already queued — skipping", {
+        promotionId: event.params.promotionId, phone,
+      });
+    }
   }
 );
 

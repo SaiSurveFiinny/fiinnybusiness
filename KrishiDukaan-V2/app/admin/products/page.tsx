@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { collection, getCountFromServer, orderBy, query, where } from "firebase/firestore";
 import { Box, Plus, Pencil, Trash2, Search, X, ImageIcon, Link2, Loader2, Check, Store, Users } from "lucide-react";
-import { auth, db, fetchAdminAssignedCopies, fetchInventoryForProducts, adminCreateProduct, adminUpdateProduct, adminDeleteProduct, adminAssignProductToSeller, adminRemoveAssignment, adminUpdateAssignmentPricing } from "../../firebase";
+import { auth, db, fetchAdminAssignedCopies, fetchInventoryForProducts, adminCreateProduct, adminUpdateProduct, adminDeleteProduct, adminAssignProductToSeller, adminRemoveAssignment, adminUpdateAssignmentPricing, deactivateSellerCopiesOfProducts } from "../../firebase";
 import { invalidateProducts } from "../_lib/admin-data";
 import { fetchSellers } from "../_lib/admin-queries";
 import { downloadCsv, readAllDocs, usePagedQuery } from "../_lib/use-paged-query";
@@ -371,6 +371,11 @@ export default function AdminProductsPage() {
         });
         await batch.commit().catch(err => console.error("Failed to delete duplicate docs:", err));
       }
+      // Deactivate the seller copies rooted at any of the deleted canonical docs.
+      // Without this, orphan manufacturer_assigned/admin_assigned copies (which
+      // dedup by name) get promoted back into a card and the product reappears.
+      await deactivateSellerCopiesOfProducts(docIds)
+        .catch(err => console.error("Failed to deactivate seller copies:", err));
       paged.setRows(prev => prev.filter(x => (x as any).cardId !== (row as any).cardId));
       setSearchRows(prev => (prev ? prev.filter(x => (x as any).cardId !== (row as any).cardId) : prev));
       setConfirmDelete(null);

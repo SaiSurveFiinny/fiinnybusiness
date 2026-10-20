@@ -166,6 +166,190 @@ export function variantPriceFor(variants: unknown, variantUnit: string | null | 
   return null;
 }
 
+// ─── Seller identity matching (single source of truth) ──────────────────────
+//
+// A product's sellers are stored across mixed schemas: a seller COPY, an
+// INVENTORY row, or a canonical availability[] entry, each naming its seller
+// under ANY of several fields (ownerId / retailerId / ownerPhone / retailerPhone
+// / manufacturerPhone / storeId / storePhone) and in either E164 or 10-digit
+// form. Resolving "does this doc belong to the selected seller?" in one place
+// keeps the checkout backend and the cart reader from diverging — the bug where
+// a copy keyed by ownerPhone was invisible to a retailerPhone-only lookup.
+
+/** A phone reduced to its last 10 digits, or "" when not phone-shaped. */
+export function phoneTail(s: unknown): string {
+  const d = String(s ?? "").replace(/\D/g, "");
+  return d.length >= 10 ? d.slice(-10) : "";
+}
+
+const SELLER_ID_FIELDS = [
+  "ownerId", "retailerId", "ownerPhone", "retailerPhone", "manufacturerPhone", "storeId", "storePhone",
+] as const;
+
+/**
+ * Build a predicate that tells whether a seller-shaped doc (copy / inventory /
+ * availability entry) belongs to the seller named by `keys` (any mix of phone
+ * and/or UID). Matches on any identifier field, with phone-tail equivalence so
+ * an E164 value matches a 10-digit one. Genuinely different sellers never
+ * collide: only non-empty identifiers are compared.
+ */
+export function makeSellerMatcher(
+  keys: Array<string | null | undefined>,
+): (doc: Record<string, unknown> | null | undefined) => boolean {
+  const idSet = new Set(keys.map((k) => String(k ?? "").trim()).filter(Boolean));
+  const tailSet = new Set(Array.from(idSet).map(phoneTail).filter(Boolean));
+  return (doc) => {
+    if (!doc) return false;
+    for (const f of SELLER_ID_FIELDS) {
+      const s = String((doc as Record<string, unknown>)[f] ?? "").trim();
+      if (!s) continue;
+      if (idSet.has(s)) return true;
+      const t = phoneTail(s);
+      if (t && tailSet.has(t)) return true;
+    }
+    return false;
+  };
+}
+
+/**
+ * The seller's own per-size ladder, taken from whichever of its sources
+ * configured one (inventory → copy → availability entry). The first NON-EMPTY
+ * ladder wins; undefined when the seller configured none (then the caller uses
+ * the canonical ladder or the base-size rule). This is deliberately independent
+ * of which doc named the seller, so a manufacturer selling its own copy and a
+ * retailer with an availability entry are handled by the same code.
+ */
+export function pickSellerLadder(
+  sources: Array<unknown>,
+): Array<Record<string, unknown>> | undefined {
+  for (const v of sources) {
+    if (Array.isArray(v) && v.length > 0) return v as Array<Record<string, unknown>>;
+  }
+  return undefined;
+}
+
+// ─── Variant resolution (single source of truth) ────────────────────────────
+//
+// Both the Product Detail store list and the checkout backend must resolve a
+// seller's price for the SELECTED pack size the same way, or the amount shown,
+// the amount charged and the order record drift. The rules below mirror the
+// client's resolveStoreVariant exactly:
+//
+//   • A seller that configured its OWN pack-size ladder is authoritative: the
+//     selected size is either in that ladder (use its price) or the seller does
+//     not stock it (NOT_STOCKED). There is no fall-through to another source or
+//     to the base price — that was the "charge 1 L money for a 5 L can" bug.
+//   • A seller with NO ladder (legacy single-price store) offers only the base
+//     size; any other size is NOT_STOCKED.
+//   • The manufacturer-direct / owner listing (no seller-specific source) uses
+//     the canonical product ladder under the same rules.
+//   • A product with no variants at all is single-size: the base price is the
+//     only price and is always valid.
+
+// A flat (non-discriminated) result shape on purpose: this project compiles with
+// `strict: false`, where TypeScript does NOT reliably narrow a discriminated
+// union on a boolean `ok` flag. Optional fields let callers read `code` on the
+// failure path and `price`/`stock` on the success path without a type error.
+export type VariantMatch = {
+  ok: boolean;
+  /** Present when ok. */
+  price?: number;
+  /** Present when ok; null when the source carries no per-variant stock count. */
+  stock?: number | null;
+  /** Present when !ok. */
+  code?: "not_stocked" | "invalid_price";
+};
+
+type Variant = { unit?: unknown; price?: unknown; stock?: unknown };
+
+/** The canonical base size's normalized unit — the size the base/selling price
+ *  refers to. Mirrors the client's baseVariantIdx (price match, else first). */
+export function baseVariantUnit(canonicalVariants: unknown, basePrice: number): string {
+  if (!Array.isArray(canonicalVariants) || canonicalVariants.length === 0) return "";
+  const list = canonicalVariants as Variant[];
+  const byPrice = list.find((v) => Number(v?.price) === basePrice);
+  return normalizeUnit(String((byPrice ?? list[0])?.unit ?? ""));
+}
+
+/** Look up the selected size in a ladder, distinguishing "size absent" from
+ *  "size present but priced 0/NaN" so the caller can report the right reason.
+ *  Tolerant of duplicate/conflicting rows for the same size: the FIRST row with
+ *  a valid positive price wins; invalid_price is reported only when the size is
+ *  present but no row prices it validly. */
+function matchInLadder(variants: unknown, variantUnit: string): VariantMatch | null {
+  if (!Array.isArray(variants) || variants.length === 0) return null;
+  const want = normalizeUnit(variantUnit);
+  const matches = (variants as Variant[]).filter((v) => normalizeUnit(String(v?.unit ?? "")) === want);
+  if (matches.length === 0) return { ok: false, code: "not_stocked" };
+  for (const m of matches) {
+    const price = Number(m.price);
+    if (Number.isFinite(price) && price > 0) {
+      const stockNum = Number(m.stock);
+      return { ok: true, price, stock: Number.isFinite(stockNum) ? stockNum : null };
+    }
+  }
+  return { ok: false, code: "invalid_price" };
+}
+
+/**
+ * Resolve the price (and variant stock, if the ladder carries it) for the
+ * selected pack size from ONE seller source plus the canonical product.
+ *
+ *   variantUnit        selected size; "" ⇒ single-size product, base price wins.
+ *   sellerVariants     the seller's OWN ladder (inventory/copy/availability), or
+ *                      undefined when this seller has none / is the owner listing.
+ *   sellerBasePrice    the seller's own base/selling price (0 when none).
+ *   hasSellerSource    true for a retailer/self listing, false for the canonical
+ *                      owner listing with no seller-specific document.
+ *   canonicalVariants  the product's own ladder; canonicalBasePrice its base.
+ */
+export function resolveVariant(opts: {
+  variantUnit: string;
+  sellerVariants?: unknown;
+  sellerBasePrice?: number;
+  hasSellerSource: boolean;
+  canonicalVariants?: unknown;
+  canonicalBasePrice: number;
+}): VariantMatch {
+  const {
+    variantUnit,
+    sellerVariants,
+    sellerBasePrice = 0,
+    hasSellerSource,
+    canonicalVariants,
+    canonicalBasePrice,
+  } = opts;
+
+  const positive = (n: number) => (Number.isFinite(n) && n > 0 ? n : null);
+
+  // Single-size product (no size selected): the base price is the only price.
+  if (!normalizeUnit(variantUnit)) {
+    const price = positive(sellerBasePrice) ?? positive(canonicalBasePrice);
+    return price !== null ? { ok: true, price, stock: null } : { ok: false, code: "invalid_price" };
+  }
+
+  // 1) Seller with its own ladder → authoritative, no fallback.
+  const sellerLadder = matchInLadder(sellerVariants, variantUnit);
+  if (sellerLadder) return sellerLadder;
+
+  // 2) Seller source present but no ladder → legacy single-price store: base only.
+  if (hasSellerSource) {
+    const baseUnit = baseVariantUnit(canonicalVariants, canonicalBasePrice);
+    const isBase = baseUnit === "" || baseUnit === normalizeUnit(variantUnit);
+    if (!isBase) return { ok: false, code: "not_stocked" };
+    const price = positive(sellerBasePrice) ?? positive(canonicalBasePrice);
+    return price !== null ? { ok: true, price, stock: null } : { ok: false, code: "invalid_price" };
+  }
+
+  // 3) Owner / manufacturer-direct listing → canonical ladder under the same rules.
+  const canonLadder = matchInLadder(canonicalVariants, variantUnit);
+  if (canonLadder) return canonLadder;
+
+  // Canonical product has no ladder at all → single-size; base price is valid.
+  const price = positive(canonicalBasePrice);
+  return price !== null ? { ok: true, price, stock: null } : { ok: false, code: "invalid_price" };
+}
+
 export type Commercial = {
   gstApplicable: boolean;
   gstRate: number;

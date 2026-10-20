@@ -158,4 +158,172 @@ t("an in-state customer spelled differently still gets the in-state slab", () =>
   assert.deepEqual([d.slab, d.deliveryType], [60, "in_state"]);
 });
 
+// ── resolveVariant: pricing precedence, no silent base fallback, stock ───────
+const CANON = [{ unit: "1L", price: 1000 }, { unit: "5L", price: 4500 }];
+
+t("E: retailer with its own ladder is authoritative for the selected size", () => {
+  const r = C.resolveVariant({
+    variantUnit: "5L",
+    sellerVariants: [{ unit: "1L", price: 900 }, { unit: "5L", price: 4200 }],
+    sellerBasePrice: 900,
+    hasSellerSource: true,
+    canonicalVariants: CANON,
+    canonicalBasePrice: 1000,
+  });
+  assert.deepEqual(r, { ok: true, price: 4200, stock: null });
+});
+t("E: normalized unit match ('5 ltr' == '5L')", () => {
+  const r = C.resolveVariant({
+    variantUnit: "5 ltr",
+    sellerVariants: [{ unit: "5L", price: 4200 }],
+    sellerBasePrice: 0, hasSellerSource: true, canonicalVariants: CANON, canonicalBasePrice: 1000,
+  });
+  assert.deepEqual([r.ok, (r as any).price], [true, 4200]);
+});
+t("F: retailer stocks a ladder but NOT the selected size -> not_stocked (no base fallback)", () => {
+  const r = C.resolveVariant({
+    variantUnit: "5L",
+    sellerVariants: [{ unit: "1L", price: 900 }],
+    sellerBasePrice: 900, hasSellerSource: true, canonicalVariants: CANON, canonicalBasePrice: 1000,
+  });
+  assert.deepEqual(r, { ok: false, code: "not_stocked" });
+});
+t("F: selected size present but priced 0 -> invalid_price (never charged as base)", () => {
+  const r = C.resolveVariant({
+    variantUnit: "5L",
+    sellerVariants: [{ unit: "5L", price: 0 }],
+    sellerBasePrice: 900, hasSellerSource: true, canonicalVariants: CANON, canonicalBasePrice: 1000,
+  });
+  assert.deepEqual(r, { ok: false, code: "invalid_price" });
+});
+t("legacy single-price retailer (no ladder) serves only the BASE size", () => {
+  const base = C.resolveVariant({
+    variantUnit: "1L", sellerVariants: undefined, sellerBasePrice: 950,
+    hasSellerSource: true, canonicalVariants: CANON, canonicalBasePrice: 1000,
+  });
+  assert.deepEqual(base, { ok: true, price: 950, stock: null });
+  const other = C.resolveVariant({
+    variantUnit: "5L", sellerVariants: undefined, sellerBasePrice: 950,
+    hasSellerSource: true, canonicalVariants: CANON, canonicalBasePrice: 1000,
+  });
+  assert.deepEqual(other, { ok: false, code: "not_stocked" });
+});
+t("manufacturer-direct (no seller source) uses the canonical ladder", () => {
+  const ok = C.resolveVariant({
+    variantUnit: "5L", hasSellerSource: false, canonicalVariants: CANON, canonicalBasePrice: 1000,
+  });
+  assert.deepEqual(ok, { ok: true, price: 4500, stock: null });
+  const miss = C.resolveVariant({
+    variantUnit: "10L", hasSellerSource: false, canonicalVariants: CANON, canonicalBasePrice: 1000,
+  });
+  assert.deepEqual(miss, { ok: false, code: "not_stocked" });
+});
+t("manufacturer-direct with a bare base-price inventory row still uses the canonical ladder (regression: Karate 500ml)", () => {
+  // Owner has an inventory doc carrying only sellingPrice=100 and NO ladder, but
+  // there is no retailer availability entry → hasSellerSource:false. The full
+  // canonical ladder must apply, so 500ml resolves to 420 (not "not_stocked").
+  const r = C.resolveVariant({
+    variantUnit: "500ml",
+    sellerVariants: undefined,          // bare inventory row, no ladder
+    sellerBasePrice: 100,               // its base sellingPrice
+    hasSellerSource: false,             // no availability/retailer listing
+    canonicalVariants: [{ unit: "100ml", price: 100 }, { unit: "250ml", price: 220 }, { unit: "500ml", price: 420 }],
+    canonicalBasePrice: 100,
+  });
+  assert.deepEqual(r, { ok: true, price: 420, stock: null });
+});
+t("single-size product (no variants, no unit) uses base price", () => {
+  const r = C.resolveVariant({
+    variantUnit: "", hasSellerSource: false, canonicalVariants: undefined, canonicalBasePrice: 500,
+  });
+  assert.deepEqual(r, { ok: true, price: 500, stock: null });
+});
+t("G: variant stock is returned and respected", () => {
+  const inStock = C.resolveVariant({
+    variantUnit: "5L", sellerVariants: [{ unit: "5L", price: 4200, stock: 3 }],
+    sellerBasePrice: 0, hasSellerSource: true, canonicalVariants: CANON, canonicalBasePrice: 1000,
+  });
+  assert.deepEqual(inStock, { ok: true, price: 4200, stock: 3 });
+});
+t("baseVariantUnit: the size whose price equals the base, else the first", () => {
+  assert.equal(C.baseVariantUnit(CANON, 1000), "1l");
+  assert.equal(C.baseVariantUnit([{ unit: "250g", price: 50 }, { unit: "1kg", price: 180 }], 180), "1kg");
+  assert.equal(C.baseVariantUnit([{ unit: "250g", price: 50 }], 999), "250g"); // no price match -> first
+  assert.equal(C.baseVariantUnit(undefined, 100), "");
+});
+
+// ── Seller identity matching (schema-agnostic) ──────────────────────────────
+t("phoneTail: last 10 digits; '' when not phone-shaped", () => {
+  assert.equal(C.phoneTail("+919370505272"), "9370505272");
+  assert.equal(C.phoneTail("9370505272"), "9370505272");
+  assert.equal(C.phoneTail("0919370505272"), "9370505272");
+  assert.equal(C.phoneTail("abc"), "");
+  assert.equal(C.phoneTail(undefined), "");
+});
+t("makeSellerMatcher: matches a copy keyed by ownerPhone/manufacturerPhone (the Bayer pattern)", () => {
+  const m = C.makeSellerMatcher(["+919370505272"]);
+  // retailerPhone is null; the seller's phone lives in ownerPhone/manufacturerPhone.
+  assert.ok(m({ ownerPhone: "+919370505272", manufacturerPhone: "+919370505272", retailerPhone: null }));
+});
+t("makeSellerMatcher: E164 key matches a 10-digit stored value and vice-versa", () => {
+  assert.ok(C.makeSellerMatcher(["+919370505272"])({ retailerPhone: "9370505272" }));
+  assert.ok(C.makeSellerMatcher(["9370505272"])({ ownerPhone: "+919370505272" }));
+});
+t("makeSellerMatcher: matches by UID (ownerId / retailerId / storeId)", () => {
+  const m = C.makeSellerMatcher(["UID_abc"]);
+  assert.ok(m({ ownerId: "UID_abc" }));
+  assert.ok(m({ retailerId: "UID_abc" }));
+  assert.ok(m({ storeId: "UID_abc" }));
+});
+t("makeSellerMatcher: different sellers never collide; empty identifiers ignored", () => {
+  const m = C.makeSellerMatcher(["+919370505272", "UID_abc"]);
+  assert.ok(!m({ ownerPhone: "+918888888888", retailerId: "UID_xyz" }));
+  assert.ok(!m({ ownerPhone: "", retailerPhone: null }));
+  assert.ok(!m(null));
+  assert.ok(!C.makeSellerMatcher([null, "", undefined])({ ownerPhone: "+919370505272" }));
+});
+t("pickSellerLadder: first non-empty ladder wins; undefined when none", () => {
+  const inv = [{ unit: "1L", price: 1 }];
+  const av = [{ unit: "5kg", price: 2 }];
+  assert.deepEqual(C.pickSellerLadder([undefined, inv, av]), inv);
+  assert.deepEqual(C.pickSellerLadder([[], [], av]), av);
+  assert.equal(C.pickSellerLadder([undefined, [], null]), undefined);
+});
+
+// ── Variant resolution: more catalog schema patterns ────────────────────────
+t("copy carries a SUPERSET of the canonical ladder (Bayer 5 KG) -> resolves from the copy", () => {
+  // Canonical lists only 1L; the seller copy adds 5 KG. No availability entry
+  // (hasSellerSource:false), but the seller ladder comes from the copy.
+  const r = C.resolveVariant({
+    variantUnit: "5 KG",
+    sellerVariants: [{ unit: "1L", price: 530, stock: 300 }, { unit: "5 KG", price: 2450, stock: 1 }],
+    sellerBasePrice: 530,
+    hasSellerSource: false,
+    canonicalVariants: [{ unit: "1L", price: 530 }],
+    canonicalBasePrice: 530,
+  });
+  assert.deepEqual(r, { ok: true, price: 2450, stock: 1 });
+});
+t("duplicate units in a ladder: first positive price wins, never 0", () => {
+  const r = C.resolveVariant({
+    variantUnit: "1kg",
+    sellerVariants: [{ unit: "1 KG", price: 0 }, { unit: "1kg", price: 180 }],
+    sellerBasePrice: 0, hasSellerSource: false, canonicalVariants: undefined, canonicalBasePrice: 0,
+  });
+  // "1 KG" (price 0) is skipped by variantPriceFor; the valid "1kg"=180 is used.
+  assert.deepEqual([r.ok, (r as any).price], [true, 180]);
+});
+t("malformed ladder (non-array / junk) is handled safely", () => {
+  const r = C.resolveVariant({
+    variantUnit: "1kg", sellerVariants: "oops" as any, sellerBasePrice: 0,
+    hasSellerSource: false, canonicalVariants: [{ unit: "1kg", price: 50 }], canonicalBasePrice: 50,
+  });
+  assert.deepEqual(r, { ok: true, price: 50, stock: null }); // falls through to canonical ladder
+});
+t("genuinely different units are NOT treated as equal (5kg != 500g, 1L != 1kg)", () => {
+  const ladder = [{ unit: "500g", price: 60 }, { unit: "1L", price: 120 }];
+  assert.deepEqual(C.resolveVariant({ variantUnit: "5kg", sellerVariants: ladder, hasSellerSource: false, canonicalBasePrice: 0 }), { ok: false, code: "not_stocked" });
+  assert.deepEqual(C.resolveVariant({ variantUnit: "1kg", sellerVariants: ladder, hasSellerSource: false, canonicalBasePrice: 0 }), { ok: false, code: "not_stocked" });
+});
+
 console.log(`\n${n} passed`);

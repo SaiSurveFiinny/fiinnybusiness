@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 
 import '../../../core/constants/app_colors.dart';
+import '../../../core/widgets/back_or_home_button.dart';
 
 /// Opens a brand page from its website address, krishidukan.com/brand/{slug}
 /// (the brand page's own link, e.g. shared from a browser): finds the
@@ -34,7 +35,8 @@ class _BrandLinkScreenState extends State<BrandLinkScreen> {
           .get();
       if (!mounted) return;
       if (snap.docs.isNotEmpty) {
-        context.go('/brand/${snap.docs.first.id}');
+        // Replace only this page, keeping whatever was underneath.
+        context.pushReplacement('/brand/${snap.docs.first.id}');
         return;
       }
     } catch (_) {
@@ -46,7 +48,7 @@ class _BrandLinkScreenState extends State<BrandLinkScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(),
+      appBar: AppBar(leading: const BackOrHomeButton(fallback: '/')),
       body: Center(
         child: _notFound
             ? Padding(

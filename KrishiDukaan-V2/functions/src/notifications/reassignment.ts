@@ -42,7 +42,7 @@ const APP_BASE_URL = "https://krishidukan.com";
  * notification opens the Requests section of the seller's Orders tab.
  */
 export const notifySellerOfOrderOffer = onDocumentCreated(
-  "sellerOffers/{sellerKey}/offers/{orderId}",
+  { document: "sellerOffers/{sellerKey}/offers/{orderId}", region: "asia-south1" },
   async (event) => {
     const d = event.data?.data() as Record<string, unknown> | undefined;
     if (!d || d.status !== "open") return;

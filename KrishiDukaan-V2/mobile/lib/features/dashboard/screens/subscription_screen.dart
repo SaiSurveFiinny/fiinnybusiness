@@ -22,6 +22,7 @@ import '../../cart/data/payment_service.dart' show PaymentService;
 import '../data/referral_service.dart';
 import '../data/subscription_pricing.dart';
 import '../providers/dashboard_provider.dart';
+import '../../../core/widgets/back_or_home_button.dart';
 
 /// Firestore document holding the live pricing ladder — the same one the web
 /// admin Pricing screen writes and `api/payment/create-order` charges from.
@@ -871,6 +872,8 @@ class _SubscriptionScreenState extends ConsumerState<SubscriptionScreen> {
       appBar: AppBar(
         backgroundColor: AppColors.primary,
         foregroundColor: Colors.white,
+        // New sellers and referral links land here with nothing underneath.
+        leading: const BackOrHomeButton(fallback: '/profile'),
         title: Text(
           'Subscription',
           style: AppTextStyles.heading2.copyWith(color: Colors.white),

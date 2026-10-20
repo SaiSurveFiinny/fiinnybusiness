@@ -9,10 +9,10 @@ import type { DeliverySettingsLike } from '../../../utils/delivery';
 import {
   commercialOf,
   computeSellerPricing,
-  discountedPrice,
   hasCommercial,
-  positive,
-  sizePrice,
+  makeSellerMatcher,
+  pickSellerLadder,
+  resolveVariant,
   type CartPricingLine,
   type SellerPricing,
 } from '../../../lib/cart-pricing';
@@ -25,6 +25,34 @@ const razorpay = new Razorpay({
 /** One priced cart line plus the seller phone used to find its delivery settings. */
 type ServerLine = CartPricingLine & { sellerPhone?: string };
 
+/** A reason one cart line cannot be ordered — surfaced to the client so it can
+ *  tell the shopper exactly which item to fix, never charging a wrong amount. */
+type LineValidation = {
+  productId: string;
+  name: string;
+  variantUnit: string;
+  code: 'not_stocked' | 'invalid_price' | 'out_of_stock' | 'insufficient_stock' | 'seller_not_eligible';
+};
+
+/** A single human-readable message for a batch of line validation failures. */
+function validationMessage(errors: LineValidation[]): string {
+  const label = (e: LineValidation) => (e.variantUnit ? `${e.name} (${e.variantUnit})` : e.name) || e.productId;
+  const first = errors[0]!;
+  const extra = errors.length > 1 ? ` (and ${errors.length - 1} more)` : '';
+  switch (first.code) {
+    case 'seller_not_eligible':
+      return `This store is not available for online ordering right now: ${label(first)}${extra}. Please choose another store.`;
+    case 'out_of_stock':
+      return `Out of stock: ${label(first)}${extra}. Please remove it to continue.`;
+    case 'insufficient_stock':
+      return `Not enough stock for ${label(first)}${extra}. Please reduce the quantity.`;
+    case 'invalid_price':
+    case 'not_stocked':
+    default:
+      return `This size is no longer available from the selected store: ${label(first)}${extra}. Please pick another size or store.`;
+  }
+}
+
 type CartItemInput = {
   productId:    string;
   sellerId:     string;
@@ -34,7 +62,18 @@ type CartItemInput = {
   variantUnit?: string;
 };
 
-const last10 = (v: unknown) => String(v ?? '').replace(/\D/g, '').slice(-10);
+/**
+ * Returns the active discount percentage from inventory fields (0–99), or 0.
+ * Mirrors the client-side getActiveDiscountPct() logic.
+ */
+function serverActiveDiscountPct(data: FirebaseFirestore.DocumentData): number {
+  if (!data.discountEnabled || !data.discountPct || data.discountPct <= 0) return 0;
+  const now   = Date.now();
+  const start = (data.discountStartDate as { toMillis?(): number } | null)?.toMillis?.() ?? 0;
+  const end   = (data.discountEndDate   as { toMillis?(): number } | null)?.toMillis?.() ?? Infinity;
+  if (now < start || now > end) return 0;
+  return Number(data.discountPct);
+}
 
 /**
  * POST /api/payment/create-cart-order
@@ -141,63 +180,24 @@ export async function POST(request: Request) {
       // the post-payment order write had nothing to key the order to, so no
       // order was created at all — a real ₹200 payment on 20 Sep 2026.
       let sellerKey = String(item.sellerPhone ?? '').trim() || String(item.sellerId ?? '').trim();
-
-      // Try multiple query strategies to find the inventory doc:
-      //   1. ownerId == sellerId (UID-keyed, most common for new accounts)
-      //   2. retailerId == sellerId (legacy UID field)
-      //   3. ownerPhone == sellerPhone (phone-keyed, when sellerId is a phone)
-      //   4. retailerPhone == sellerPhone (legacy phone field)
-      const queries: Promise<FirebaseFirestore.QuerySnapshot>[] = [
-        db.collection('inventory')
-          .where('productId', '==', item.productId)
-          .where('ownerId', '==', item.sellerId)
-          .limit(1)
-          .get(),
-        db.collection('inventory')
-          .where('productId', '==', item.productId)
-          .where('retailerId', '==', item.sellerId)
-          .limit(1)
-          .get(),
-      ];
-
-      if (item.sellerPhone) {
-        queries.push(
-          db.collection('inventory')
-            .where('productId', '==', item.productId)
-            .where('ownerPhone', '==', item.sellerPhone)
-            .limit(1)
-            .get(),
-          db.collection('inventory')
-            .where('productId', '==', item.productId)
-            .where('retailerPhone', '==', item.sellerPhone)
-            .limit(1)
-            .get(),
-        );
-      }
-
-      // Fetched in parallel with the pricing queries: the product names the item
-      // for the attempt record, and the seller's own COPY of it (when there is
-      // one) is the source of truth for that store's GST + delivery settings.
       const copyPhone = String(item.sellerPhone ?? '').trim();
-      const copyQueries: Promise<FirebaseFirestore.QuerySnapshot>[] = copyPhone
-        ? [
-            db.collection('products')
-              .where('manufacturerProductId', '==', item.productId)
-              .where('retailerPhone', '==', copyPhone)
-              .limit(1).get(),
-            db.collection('products')
-              .where('originalProductId', '==', item.productId)
-              .where('retailerPhone', '==', copyPhone)
-              .limit(1).get(),
-          ]
-        : [];
-      const [snaps, prodSnap, copySnaps] = await Promise.all([
-        Promise.all(queries),
+
+      // The seller's own listing of this product — a product COPY or an INVENTORY
+      // row — is where that store's real variant ladder, price, stock and
+      // commercial settings live. It may be keyed by ANY identifier (ownerId,
+      // retailerId, ownerPhone, retailerPhone or manufacturerPhone), so we fetch
+      // every copy/inventory doc for the product and match the seller in memory,
+      // exactly like reconstructCartItems indexes sellers client-side. (The old
+      // code matched copies on retailerPhone ONLY, so a copy that carried the
+      // seller's phone in ownerPhone/manufacturerPhone — a manufacturer selling
+      // its own listing — was never found, and every non-canonical size it added
+      // was wrongly rejected as "not stocked".)
+      const [origCopies, mfrCopies, invAll, prodSnap] = await Promise.all([
+        db.collection('products').where('originalProductId', '==', item.productId).limit(50).get(),
+        db.collection('products').where('manufacturerProductId', '==', item.productId).limit(50).get(),
+        db.collection('inventory').where('productId', '==', item.productId).limit(50).get(),
         db.collection('products').doc(item.productId).get(),
-        Promise.all(copyQueries),
       ]);
-      const invDoc = snaps.find((s) => !s.empty)?.docs[0] ?? null;
-      const copyDoc = copySnaps.find((s) => !s.empty)?.docs[0] ?? null;
       const prodData = prodSnap.exists ? prodSnap.data()! : null;
 
       if (!sellerKey && prodData) {
@@ -214,87 +214,114 @@ export async function POST(request: Request) {
         }
       }
 
+      // Does a seller-shaped doc belong to THIS seller? One shared matcher over
+      // every identifier the cart item and the owner-fallback gave us.
+      const matchesSeller = makeSellerMatcher([item.sellerPhone, item.sellerId, sellerKey, copyPhone]);
+
+      // An inactive copy is a withdrawn listing — never price from it.
+      const copyDoc =
+        [...origCopies.docs, ...mfrCopies.docs].find((s) => s.data().isActive !== false && matchesSeller(s.data())) ?? null;
+      const invDoc = invAll.docs.find((s) => matchesSeller(s.data())) ?? null;
+
       const variantUnit = String(item.variantUnit ?? '').trim();
-      // This store's entry in the canonical product's availability[], if any.
+      // This store's entry in the canonical product's availability[], if any —
+      // matched by the same seller-identity test, not copyPhone alone.
       const availList = Array.isArray(prodData?.availability)
         ? (prodData!.availability as Record<string, unknown>[])
         : [];
-      const avEntry: Record<string, unknown> | null = copyPhone
-        ? availList.find((e) => e.storePhone === copyPhone || e.storeId === copyPhone) ?? null
-        : null;
+      const avEntry: Record<string, unknown> | null = availList.find((e) => matchesSeller(e)) ?? null;
 
-      let finalPrice: number;
+      let finalPrice = 0;
       let priceSource: AttemptItem['priceSource'] = 'none';
       let itemName = '';
-      // Does this store own the product itself? Then the product's own size
-      // list is this store's size list.
-      const sellerTen = last10(item.sellerPhone) || last10(sellerKey);
-      const ownsProduct = !!prodData && (
-        (sellerTen.length === 10 && [prodData.ownerPhone, prodData.manufacturerPhone, prodData.retailerPhone]
-          .some((p) => last10(p) === sellerTen)) ||
-        (!!item.sellerId && [prodData.ownerId, prodData.manufacturerId, prodData.retailerId]
-          .some((id) => id && String(id) === String(item.sellerId)))
-      );
-      const ownLadder = ownsProduct ? prodData!.variants : undefined;
-      // Set when this store can't sell the chosen size (or has no price at all).
-      let unavailable = false;
+      // Variant resolution + stock, returned so the caller can reject the order
+      // BEFORE charging. null when there is no product at all.
+      let validation: LineValidation | null = null;
 
-      if (invDoc) {
-        const d    = invDoc.data();
-        const size = sizePrice(
-          variantUnit,
-          positive(d.sellingPrice, d.price),
-          [d.variants, copyDoc?.data().variants, avEntry?.variants, ownLadder],
-          prodData,
-        );
-        finalPrice  = size === null ? 0 : discountedPrice(d, size);
-        unavailable = size === null;
-        priceSource = 'inventory';
-        itemName = String(d.productName ?? d.name ?? '');
-        console.log('[create-cart-order] inventory doc found for', item.productId,
-          '| size:', variantUnit || '-', '| price:', size, 'final:', finalPrice);
-      } else if (copyDoc) {
-        const d    = copyDoc.data();
-        const size = sizePrice(
-          variantUnit,
-          positive(d.price, d.sellingPrice),
-          [d.variants, avEntry?.variants, ownLadder],
-          prodData,
-        );
-        finalPrice  = size === null ? 0 : discountedPrice(d, size);
-        unavailable = size === null;
-        priceSource = 'seller-copy';
-        itemName = String(d.name ?? d.productName ?? '');
-        console.log('[create-cart-order] seller copy found for', item.productId,
-          '| size:', variantUnit || '-', '| price:', size, 'final:', finalPrice);
-      } else if (!prodData) {
-        console.warn('[create-cart-order] no product doc for', item.productId);
-        finalPrice = 0;
-        unavailable = true;
-      } else if (avEntry && !ownsProduct) {
-        // Another store's entry on the canonical product: its own size list
-        // and price only — never the product owner's.
-        const size = sizePrice(variantUnit, positive(avEntry.sellingPrice), [avEntry.variants], prodData);
-        finalPrice  = size ?? 0;
-        unavailable = size === null;
-        priceSource = 'availability';
-        console.log('[create-cart-order] availability price for', item.productId,
-          '| size:', variantUnit || '-', '| price:', finalPrice);
+      // The seller's own documents, used for base price, stock, commercial
+      // settings and discount. inventory → product copy → availability entry.
+      const sellerDocData: FirebaseFirestore.DocumentData | Record<string, unknown> | null =
+        invDoc?.data() ?? copyDoc?.data() ?? avEntry ?? null;
+      const anySellerDoc = !!(invDoc || copyDoc || avEntry);
+      const sellerBasePrice = Number(
+        invDoc  ? (invDoc.data().sellingPrice ?? invDoc.data().price ?? 0)
+        : copyDoc ? (copyDoc.data().price ?? copyDoc.data().sellingPrice ?? 0)
+        : avEntry ? (avEntry.sellingPrice ?? 0)
+        : 0,
+      );
+
+      // The seller's OWN per-size ladder, wherever they configured it (inventory,
+      // copy, or availability entry) — the first non-empty one wins.
+      const sellerLadder = pickSellerLadder([invDoc?.data().variants, copyDoc?.data().variants, avEntry?.variants]);
+
+      // Only a RETAILER ASSIGNMENT (an availability[] entry) restricts a seller
+      // that has no ladder to the base size. A bare inventory/copy doc with no
+      // ladder does NOT — the manufacturer-direct / owner listing keeps the full
+      // canonical ladder, exactly as the Product Detail page prices it. (Bug: a
+      // manufacturer whose inventory row carried only a base sellingPrice had
+      // every non-base size rejected as "not stocked".)
+      const hasRetailerListing = !!avEntry;
+
+      // Discount applies only from a live inventory / copy doc, as before — an
+      // availability mirror or the canonical doc carry no checkout-time discount.
+      const discSrc = invDoc?.data() ?? copyDoc?.data() ?? null;
+
+      if (!prodData && !anySellerDoc) {
+        console.warn('[create-cart-order] no product doc for', item.productId, '— skipping');
       } else {
-        // The product owner's own listing.
-        const size = sizePrice(
-          variantUnit,
-          positive(prodData.price, avEntry?.sellingPrice),
-          [prodData.variants, avEntry?.variants],
-          prodData,
+        priceSource = sellerLadder && (invDoc || copyDoc)
+          ? (invDoc ? 'inventory' : 'seller-copy')
+          : avEntry ? 'availability'
+          : invDoc ? 'inventory' : copyDoc ? 'seller-copy' : 'canonical';
+        itemName = String(
+          invDoc?.data().productName ?? invDoc?.data().name
+          ?? copyDoc?.data().name ?? copyDoc?.data().productName
+          ?? avEntry?.storeName ?? prodData?.name ?? prodData?.productName ?? '',
         );
-        finalPrice  = size === null ? 0 : discountedPrice(prodData, size);
-        unavailable = size === null;
-        priceSource = 'canonical';
-        console.log('[create-cart-order] canonical price for', item.productId,
-          '| size:', variantUnit || '-', '| price:', size, 'final:', finalPrice);
+
+        const resolved = resolveVariant({
+          variantUnit,
+          sellerVariants: sellerLadder,
+          sellerBasePrice,
+          hasSellerSource: hasRetailerListing,
+          canonicalVariants: prodData?.variants,
+          canonicalBasePrice: Number(prodData?.price ?? 0),
+        });
+
+        if (!resolved.ok) {
+          // Missing / invalid variant price. Do NOT silently charge the base
+          // price (the historic "1 L money for a 5 L can" bug) — reject instead.
+          validation = { productId: item.productId, name: itemName, variantUnit, code: resolved.code };
+          console.warn('[create-cart-order] variant resolution failed for', item.productId,
+            '| size:', variantUnit || '-', '| code:', resolved.code);
+        } else {
+          const basePrice = Number(resolved.price ?? 0);
+          const discPct   = discSrc ? serverActiveDiscountPct(discSrc) : 0;
+          const discAmt   = Math.round((basePrice * discPct) / 100 * 100) / 100;
+          const discFixed = discSrc && discSrc.discountType === 'fixed_amount' && discSrc.discountEnabled
+            ? Math.max(0, Number(discSrc.discountFixedAmt ?? 0))
+            : 0;
+          finalPrice = Math.round(Math.max(0, basePrice - discAmt - discFixed) * 100) / 100;
+
+          // Stock: a variant-level stock count is authoritative when present; an
+          // explicit "Out of Stock" level blocks even without a count. Legacy docs
+          // with neither are left alone (checkout unchanged).
+          const variantStock = typeof resolved.stock === 'number' ? resolved.stock : null;
+          const stockLevel = String((sellerDocData as Record<string, unknown> | null)?.stockLevel ?? '')
+            .trim().toLowerCase();
+          if (variantStock !== null && variantStock <= 0) {
+            validation = { productId: item.productId, name: itemName, variantUnit, code: 'out_of_stock' };
+          } else if (variantStock !== null && qty > variantStock) {
+            validation = { productId: item.productId, name: itemName, variantUnit, code: 'insufficient_stock' };
+          } else if (stockLevel === 'out of stock') {
+            validation = { productId: item.productId, name: itemName, variantUnit, code: 'out_of_stock' };
+          }
+
+          console.log('[create-cart-order]', priceSource, 'price for', item.productId,
+            '| size:', variantUnit || '-', '| base:', basePrice, 'disc:', discPct + '%', 'final:', finalPrice,
+            '| stock:', variantStock ?? '-');
+        }
       }
-      if (!unavailable && !(finalPrice > 0)) unavailable = true;
 
       // This store's GST + delivery settings: its own product copy first (the
       // source of truth the web cart reads), then its inventory row, its
@@ -339,24 +366,51 @@ export async function POST(request: Request) {
             freeDelivery: commercial.freeDelivery,
           }
         : null;
-      return { lineTotal, priced, sellerKey, line, unavailable, variantUnit };
+      // Per-line eligibility inputs, evaluated after the parallel reads below:
+      // the seller's phone (for the account-level onlineDelivery read) and this
+      // listing's own isOnline flag (only an explicit false blocks).
+      const listingOnline = avEntry ? (avEntry as Record<string, unknown>).isOnline !== false : true;
+      return { lineTotal, priced, sellerKey, line, validation, sellerPhone: copyPhone || sellerKey, listingOnline };
     }));
 
-    // Refuse the whole payment if any line can't be priced for what the
-    // customer chose — never charge the base pack, ₹0, or the client's own
-    // figure in its place.
-    const blocked = itemResults.find((r) => r.unavailable);
-    if (blocked) {
-      const what = blocked.priced.name + (blocked.variantUnit ? ` (${blocked.variantUnit})` : '');
-      console.warn('[create-cart-order] unavailable line, refusing payment:', blocked.priced.productId, blocked.variantUnit);
+    // ── Reject BEFORE charging: variant / price / stock ───────────────────────
+    // Any line whose variant price is missing/invalid or whose stock is
+    // insufficient fails the whole order rather than quietly charging a wrong
+    // amount. Eligibility (seller online-delivery) is checked just below.
+    const validationErrors = itemResults
+      .map((r) => r.validation)
+      .filter((v): v is LineValidation => v !== null);
+
+    // ── Reject BEFORE charging: seller eligibility (online delivery) ──────────
+    // Manufacturer-direct and retailer listings are judged independently: each
+    // line's resolved seller must have online delivery ON at the account level
+    // AND this listing's availability.isOnline must not be explicitly false.
+    const onlinePhones = Array.from(
+      new Set(itemResults.map((r) => r.sellerPhone).filter((p): p is string => !!p && SELLER_PHONE_RE.test(p))),
+    );
+    const onlineByPhone = new Map<string, boolean>();
+    await Promise.all(onlinePhones.map(async (phone) => {
+      onlineByPhone.set(phone, await fetchStoreOnlineDeliveryAdmin(db, phone));
+    }));
+    for (const r of itemResults) {
+      if (!r.sellerKey || r.validation) continue; // already rejected or no seller
+      const phone = r.sellerPhone;
+      const accountOnline = phone && SELLER_PHONE_RE.test(phone) ? onlineByPhone.get(phone) === true : false;
+      if (!accountOnline || !r.listingOnline) {
+        validationErrors.push({
+          productId: r.priced.productId,
+          name: r.priced.name,
+          variantUnit: (r.priced as { variantUnit?: string }).variantUnit ?? '',
+          code: 'seller_not_eligible',
+        });
+      }
+    }
+
+    if (validationErrors.length > 0) {
+      console.warn('[create-cart-order] rejected before payment:', validationErrors);
       return NextResponse.json(
-        {
-          error: `${what} is not available from this seller at the moment. Please remove it or choose another size or seller.`,
-          code: 'ITEM_UNAVAILABLE',
-          productId: blocked.priced.productId,
-          variantUnit: blocked.variantUnit || null,
-        },
-        { status: 409 },
+        { error: validationMessage(validationErrors), code: 'order_validation_failed', items: validationErrors },
+        { status: 422 },
       );
     }
 
@@ -417,8 +471,10 @@ export async function POST(request: Request) {
     // ── Determine the Razorpay amount ─────────────────────────────────────────
     // Prefer the server-computed subtotal (can't be tampered with).
     // Fall back to the client-computed subtotal only if the server lookup returned 0.
+    const safeClientSubtotal  = Math.max(0, Number(clientSubtotal)  || 0);
     const safeClientDelivery  = Math.max(0, Number(clientDelivery)  || 0);
     const safeClientGstAdded  = Math.max(0, Number(clientGstAdded)  || 0);
+    const safeClientGrand     = Math.max(0, Number(clientGrandTotal)|| 0);
 
     // A "new client" splits exclusive GST out (clientGstAdded) and sends the
     // variantUnit + delivery state the server needs to price delivery itself.
@@ -427,9 +483,7 @@ export async function POST(request: Request) {
     // delivery + exclusive GST together) so their checkout is not broken.
     const isNewClient = clientGstAdded !== undefined;
 
-    // Every line was priced above (unpriceable ones are refused), so the
-    // server subtotal is the amount — the client's figure is never charged.
-    const subtotalForPayment  = serverSubtotal;
+    const subtotalForPayment  = serverSubtotal > 0 ? serverSubtotal : safeClientSubtotal;
 
     // DELIVERY and GST: server-computed for new clients — a client can neither
     // skip GST nor inflate it. clientDelivery is honoured only for legacy
@@ -440,9 +494,15 @@ export async function POST(request: Request) {
       console.warn('[create-cart-order] client GST differs from server:',
         { client: safeClientGstAdded, server: serverGstAdded });
     }
-    const totalForPayment    = Math.round(
+    let   totalForPayment    = Math.round(
       (subtotalForPayment + deliveryForPayment + gstForPayment) * 100,
     ) / 100;
+
+    // Last resort: use the client grand total if everything else is still 0
+    if (totalForPayment <= 0 && safeClientGrand > 0) {
+      totalForPayment = safeClientGrand;
+      console.warn('[create-cart-order] falling back to clientGrandTotal:', totalForPayment);
+    }
 
     if (totalForPayment <= 0) {
       console.error('[create-cart-order] total is still 0 after all fallbacks');
@@ -554,6 +614,54 @@ export async function POST(request: Request) {
 }
 
 const SELLER_PHONE_RE = /^(\+91)?[6-9]\d{9}$/;
+
+/**
+ * Server mirror of the client's fetchStoreOnlineDelivery (app/firebase.ts): the
+ * seller's account-level online-delivery switch, resolved with the same source
+ * precedence — profiles → users → retailers → manufacturers → legacy retailers
+ * queried by phone field. Returns false when the flag is off, missing, or
+ * unreadable, exactly as the client does, so the backend gate and the UI agree.
+ *
+ * Manufacturers and retailers are read the same way, so a manufacturer-direct
+ * listing and a retailer listing are each judged by their OWN account flag.
+ */
+async function fetchStoreOnlineDeliveryAdmin(
+  db: FirebaseFirestore.Firestore,
+  phone: string,
+): Promise<boolean> {
+  if (!phone) return false;
+  try {
+    const [profileSnap, userSnap] = await Promise.all([
+      db.collection('profiles').doc(phone).get(),
+      db.collection('users').doc(phone).get(),
+    ]);
+    if (profileSnap.exists && typeof profileSnap.data()?.onlineDelivery === 'boolean') {
+      return !!profileSnap.data()!.onlineDelivery;
+    }
+    if (userSnap.exists && typeof userSnap.data()?.onlineDelivery === 'boolean') {
+      return !!userSnap.data()!.onlineDelivery;
+    }
+    const [retailerSnap, mfrSnap] = await Promise.all([
+      db.collection('retailers').doc(phone).get(),
+      db.collection('manufacturers').doc(phone).get(),
+    ]);
+    if (retailerSnap.exists) return !!retailerSnap.data()?.onlineDelivery;
+    if (mfrSnap.exists) return !!mfrSnap.data()?.onlineDelivery;
+
+    // Legacy retailers keyed by a UID/GUID: the flag is only reachable via the
+    // `phone` field. Query both E164 and 10-digit forms, like the client does.
+    const phoneDigits = phone.replace(/^\+91/, '');
+    const [byE164, byDigits] = await Promise.all([
+      db.collection('retailers').where('phone', '==', phone).limit(1).get(),
+      db.collection('retailers').where('phone', '==', phoneDigits).limit(1).get(),
+    ]);
+    const legacy = byE164.docs[0] ?? byDigits.docs[0];
+    if (legacy) return !!legacy.data()?.onlineDelivery;
+  } catch (e) {
+    console.warn('[create-cart-order] online-delivery read failed for', phone, e);
+  }
+  return false;
+}
 
 /**
  * Load each seller's `deliverySettings` document, keyed the way checkout groups

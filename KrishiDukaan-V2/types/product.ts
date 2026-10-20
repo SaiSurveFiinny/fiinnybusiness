@@ -81,6 +81,8 @@ export type MarketplaceProduct = {
 
   /** Variants — package sizes with per-variant price and stock */
   variants?: { unit: string; price: number; stock?: number }[];
+  /** Base pack size ("1L") — set on marketplace cards; one-size products have no variants. */
+  unit?: string;
 
   /** Optional YouTube demonstration URL. Extract the video ID and embed via iframe. */
   videoUrl?: string;

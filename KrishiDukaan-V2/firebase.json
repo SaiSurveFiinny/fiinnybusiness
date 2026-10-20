@@ -31,7 +31,8 @@
       ],
       "frameworksBackend": {
         "region": "asia-south1"
-      }
+      },
+      "appAssociation": "NONE"
     },
     {
       "target": "admin",

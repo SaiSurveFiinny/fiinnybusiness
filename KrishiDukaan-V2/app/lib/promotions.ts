@@ -113,6 +113,69 @@ export function parseEligibility(raw: string | null | undefined): EligibilityFil
   return list.length ? list : ["all"];
 }
 
+// ─── Optional WhatsApp marketing template ────────────────────────────────────
+//
+// A promotion may OPTIONALLY attach a marketing WhatsApp template that is sent to
+// each recipient (before the free_seats_assigned confirmation) by the
+// notifyOnPromotionSeatAssigned Cloud Function. These ids must exist in the
+// WhatsApp template resolver (functions/src/wa/templateResolver.ts) — this is NOT
+// a parallel messaging system, just a selectable template for the existing queue.
+//
+// Per the LIVE Meta template definitions (verified 2026-10-10), both options are
+// Hindi Marketing templates with a static IMAGE header and a body that has
+// EXACTLY ONE variable: {{1}} = business name. The offer quantity (10 free /
+// 40 paid) is hard-coded in the approved copy, NOT a parameter. `offerQuantity`
+// below is informational only (shown in the preview); it is never sent as a
+// template parameter.
+
+export type MarketingTemplateId = "navratri_offer_free" | "navratri_offer_paid";
+
+export interface MarketingTemplateOption {
+  id: MarketingTemplateId;
+  label: string;
+  language: string;   // BCP-47, as registered in Meta
+  hasImageHeader: boolean;
+  /** Quantity baked into the approved copy (display only — not a parameter). */
+  offerQuantity: number;
+  /** Human preview of the body — {{1}} is the only variable (business name). */
+  previewBody: (businessName: string) => string;
+}
+
+export const MARKETING_TEMPLATES: MarketingTemplateOption[] = [
+  {
+    id: "navratri_offer_free",
+    label: "Navratri Offer — Free (Marketing · Hindi)",
+    language: "hi",
+    hasImageHeader: true,
+    offerQuantity: 10,
+    previewBody: (b) =>
+      `🪔 नवरात्रि और दिवाली स्पेशल ऑफर!\n\nनमस्ते ${b || "व्यापारी"} 🙏\nKrishiDukan पर 10 अतिरिक्त प्रॉडक्ट्स लिस्ट करें बिल्कुल FREE!`,
+  },
+  {
+    id: "navratri_offer_paid",
+    label: "Navratri Offer — Paid (Marketing · Hindi)",
+    language: "hi",
+    hasImageHeader: true,
+    offerQuantity: 40,
+    previewBody: (b) =>
+      `🪔 नवरात्रि और दिवाली स्पेशल ऑफर!\n\nनमस्ते ${b || "व्यापारी"} 🙏\nKrishiDukan पर 40 अतिरिक्त प्रॉडक्ट्स लिस्ट करें — 1 महीने के लिए बिल्कुल मुफ्त!`,
+  },
+];
+
+const MARKETING_TEMPLATE_IDS = new Set<string>(MARKETING_TEMPLATES.map((t) => t.id));
+
+/** Validates/normalizes an incoming marketing template id; null when absent/invalid-when-optional. */
+export function normalizeMarketingTemplate(raw: unknown): MarketingTemplateId | null {
+  if (raw == null || raw === "") return null;
+  const v = String(raw);
+  return MARKETING_TEMPLATE_IDS.has(v) ? (v as MarketingTemplateId) : null;
+}
+
+/** True only for a non-empty value that is NOT a known marketing template. */
+export function isInvalidMarketingTemplate(raw: unknown): boolean {
+  return raw != null && raw !== "" && !MARKETING_TEMPLATE_IDS.has(String(raw));
+}
+
 // ─── Validation (shared by server + client) ──────────────────────────────────
 
 export const MAX_SEATS_PER_RECIPIENT = 1000;

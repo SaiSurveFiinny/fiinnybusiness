@@ -34,6 +34,17 @@ class OrderModel {
 
   final double total;
   final String status;
+
+  /// Whether this order has an invoice: it is created when the seller
+  /// accepts (not while the order can still be rejected), and never for
+  /// rejected or cancelled orders. Same list as web's INVOICE_READY_STATUSES.
+  bool get hasInvoice => const {
+        'accepted',
+        'dispatched',
+        'out_for_delivery',
+        'delivered',
+      }.contains(status);
+
   final OrderPaymentModel? payment;
 
   /// The seller's Razorpay transfer as last reported (server-written; see

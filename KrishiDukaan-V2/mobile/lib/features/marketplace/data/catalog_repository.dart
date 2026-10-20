@@ -25,15 +25,20 @@ class CatalogRepository {
 
   /// Search, category filters and paging all work over this in-memory list,
   /// so it is read at most once per [_cardsTtl] instead of once per keystroke.
+  ///
+  /// Shared by every CatalogRepository (static): the inventory and catalogue
+  /// sheets create their own instance and each used to download the whole
+  /// collection again.
   static const _cardsTtl = Duration(minutes: 5);
-  List<CatalogModel>? _cards;
-  DateTime? _cardsAt;
-  Future<List<CatalogModel>>? _cardsLoad;
+  static List<CatalogModel>? _cards;
+  static DateTime? _cardsAt;
+  static Future<List<CatalogModel>>? _cardsLoad;
 
-  List<CatalogModel>? get _freshCards =>
-      _cards != null && DateTime.now().difference(_cardsAt!) < _cardsTtl
-          ? _cards
-          : null;
+  /// After a failed load, don't start another full download for this long —
+  /// it used to retry on every search keystroke, piling up downloads on slow
+  /// networks until the phone ran out of memory and the app closed.
+  static const _retryAfterFailure = Duration(seconds: 30);
+  static DateTime? _failedAt;
 
   /// Bounded fetch for Home's preview rails (Trending / Featured / Top
   /// Deals), which only ever show ~30 cards: the newest cards, already merged
@@ -52,26 +57,55 @@ class CatalogRepository {
 
   /// Every marketplace card, newest first (the order the in-app merge used
   /// to produce). Concurrent callers share one read.
+  ///
+  /// Once loaded, answers immediately: when the list is older than
+  /// [_cardsTtl] it is refreshed in the background instead of making the
+  /// search wait for a full download (that wait is what made slow searches
+  /// look frozen).
   Future<List<CatalogModel>> fetchAllMergedProducts() {
-    final fresh = _freshCards;
-    if (fresh != null) return Future.value(fresh);
+    final cards = _cards;
+    if (cards != null) {
+      if (DateTime.now().difference(_cardsAt!) >= _cardsTtl && !_inBackoff) {
+        _cardsLoad ??= _loadCards();
+      }
+      return Future.value(cards);
+    }
+    if (_inBackoff) return Future.value(const <CatalogModel>[]);
     return _cardsLoad ??= _loadCards();
   }
+
+  static List<CatalogModel>? get _freshCards =>
+      _cards != null && DateTime.now().difference(_cardsAt!) < _cardsTtl
+          ? _cards
+          : null;
+
+  bool get _inBackoff =>
+      _failedAt != null &&
+      DateTime.now().difference(_failedAt!) < _retryAfterFailure;
 
   Future<List<CatalogModel>> _loadCards() async {
     try {
       final snap = await traced(
           'load_marketplace_cards', () => _db.collection(_cardsCol).get());
-      final cards = snap.docs.map((doc) => CatalogModel.fromCard(doc.data())).toList()
-        ..sort((a, b) {
+      final cards = <CatalogModel>[];
+      for (final doc in snap.docs) {
+        // One malformed card used to fail the whole load (so nothing was
+        // cached and the next keystroke downloaded everything again).
+        try {
+          cards.add(CatalogModel.fromCard(doc.data()));
+        } catch (_) {}
+      }
+      cards.sort((a, b) {
           if (a.createdAt == null) return b.createdAt == null ? 0 : 1;
           if (b.createdAt == null) return -1;
           return b.createdAt!.compareTo(a.createdAt!);
         });
       _cards = cards;
       _cardsAt = DateTime.now();
+      _failedAt = null;
       return cards;
     } catch (_) {
+      _failedAt = DateTime.now();
       return _cards ?? [];
     } finally {
       _cardsLoad = null;
@@ -86,6 +120,19 @@ class CatalogRepository {
     String? searchQuery,
   }) async {
     final allProducts = await fetchAllMergedProducts();
+    return filterProducts(
+      allProducts,
+      category: category,
+      searchQuery: searchQuery,
+    );
+  }
+
+  /// [fetchFiltered]'s filter + relevance sort over an already-loaded list.
+  static List<CatalogModel> filterProducts(
+    List<CatalogModel> allProducts, {
+    String? category,
+    String? searchQuery,
+  }) {
     var filtered = allProducts;
 
     if (category != null && category.isNotEmpty) {

@@ -25,6 +25,7 @@ import '../../../core/widgets/loading_overlay.dart';
 import '../data/payment_service.dart';
 import '../../orders/data/order_repository.dart';
 import '../../../core/services/app_review_service.dart';
+import '../../../core/widgets/back_or_home_button.dart';
 
 class CheckoutScreen extends ConsumerStatefulWidget {
   const CheckoutScreen({super.key});
@@ -424,7 +425,12 @@ class _CheckoutScreenState extends ConsumerState<CheckoutScreen> {
     // title) invisible against the white background. AppTopBar is the same
     // gradient used correctly everywhere else in the app, with a dark
     // foreground that actually shows up on it.
-    const appBar = AppTopBar(title: 'Checkout');
+    // Back always works, even when checkout was opened after login (go)
+    // with nothing underneath.
+    const appBar = AppTopBar(
+      title: 'Checkout',
+      leading: BackOrHomeButton(fallback: '/cart'),
+    );
 
     if (items.isEmpty) {
       return Scaffold(

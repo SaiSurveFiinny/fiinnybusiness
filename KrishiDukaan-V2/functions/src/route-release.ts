@@ -136,6 +136,7 @@ function sellerKeyOfOrder(order: FirebaseFirestore.DocumentData): string {
 
 export const releaseTransferOnDelivery = onDocumentWritten(
   {
+    region: "asia-south1",
     document: "orders/{orderId}",
     secrets: [RAZORPAY_KEY_ID, RAZORPAY_KEY_SECRET],
   },

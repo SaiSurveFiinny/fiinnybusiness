@@ -17,6 +17,8 @@ import '../../../core/widgets/error_view.dart';
 import '../../marketplace/providers/marketplace_provider.dart';
 import '../../marketplace/widgets/review_sheet.dart';
 import '../data/brand_repository.dart';
+import '../../../core/widgets/back_or_home_button.dart';
+import '../widgets/brand_poster.dart';
 
 final _brandRepo = BrandRepository();
 
@@ -134,12 +136,15 @@ class BrandScreen extends ConsumerWidget {
     return Scaffold(
       backgroundColor: AppColors.background,
       body: brandAsync.when(
-        loading: () => const Center(child: CircularProgressIndicator()),
-        error: (_, _) => const ErrorView(message: 'Brand not found.'),
+        loading: () => const BackBarBody(
+          child: Center(child: CircularProgressIndicator()),
+        ),
+        error: (_, _) =>
+            const BackBarBody(child: ErrorView(message: 'Brand not found.')),
         data: (brand) {
           if (brand == null) {
             if (isOwner) return _SetUpPrompt(onSetUp: () => _openEditor(context, ref));
-            return const ErrorView(message: 'Brand not found.');
+            return const BackBarBody(child: ErrorView(message: 'Brand not found.'));
           }
 
           return DefaultTabController(
@@ -150,6 +155,14 @@ class BrandScreen extends ConsumerWidget {
                   _BrandHero(
                     brand: brand,
                     onEdit: isOwner ? () => _openEditor(context, ref) : null,
+                    // Product pictures for the share poster — already loaded.
+                    productPhotos: [
+                      for (final p in ref
+                              .watch(_brandProductsProvider(manufacturerPhone))
+                              .value ??
+                          const <CatalogModel>[])
+                        if (p.imageUrl.isNotEmpty) p.imageUrl,
+                    ].take(3).toList(),
                   ),
                   SliverToBoxAdapter(
                     child: _BrandStatsHeader(
@@ -202,7 +215,32 @@ class _BrandHero extends StatelessWidget {
   final BrandModel brand;
   /// Non-null only for the owner viewing their own page.
   final VoidCallback? onEdit;
-  const _BrandHero({required this.brand, this.onEdit});
+  final List<String> productPhotos;
+  const _BrandHero({
+    required this.brand,
+    this.onEdit,
+    this.productPhotos = const [],
+  });
+
+  BrandPosterData? _poster() {
+    final link = WebLinks.brand(brand.phone);
+    if (link == null) return null;
+    final since = int.tryParse(brand.establishedYear ?? '');
+    return BrandPosterData(
+      shopName: brand.businessName,
+      tagline: brand.tagline ?? '',
+      place: brand.location ?? '',
+      phone: brand.phone,
+      logoUrl: brand.logo,
+      bannerUrl: brand.banner,
+      photos: productPhotos,
+      highlights: [
+        if (since != null) 'Since $since',
+        ...brand.certifications,
+      ],
+      link: link.replaceFirst(RegExp(r'^https?://'), ''),
+    );
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -211,14 +249,20 @@ class _BrandHero extends StatelessWidget {
       pinned: true,
       backgroundColor: const Color(0xFF0A1F08),
       foregroundColor: Colors.white,
+      // Shared brand links open with nothing underneath.
+      leading: const BackOrHomeButton(fallback: '/'),
       actions: [
         if (WebLinks.brand(brand.phone) != null)
           Builder(
             builder: (btnContext) => IconButton(
               icon: const Icon(Icons.share_rounded),
               tooltip: 'Share brand page',
-              onPressed: () => LinkShare.brand(btnContext,
-                  phone: brand.phone, name: brand.businessName),
+              onPressed: () => showBrandShareChoice(
+                btnContext,
+                poster: _poster(),
+                onShareLink: () => LinkShare.brand(btnContext,
+                    phone: brand.phone, name: brand.businessName),
+              ),
             ),
           ),
         if (onEdit != null)
@@ -1582,3 +1626,4 @@ class _SetUpPrompt extends StatelessWidget {
     );
   }
 }
+

@@ -366,6 +366,26 @@ export async function createNetworkRetailer(
   // Resolve manufacturer's phone for dual-field writes and subcollection mirror
   const manufacturerPhone = await resolvePhone(input.manufacturerId);
 
+  // Guard against the phone-collision that produced retailers/+918658032751
+  // ("BHOSKRUSHI…"): a manufacturer added a retailer but typed its OWN number,
+  // so retailers/{phone} was created on top of an existing manufacturers/{phone}.
+  // A single phone key must not live in both collections — the marketplace
+  // profile lookup can only resolve one of them and silently shows the wrong
+  // store. Reject the manufacturer's own number and any phone already registered
+  // as a manufacturer, so the operator corrects the entry instead of forking a
+  // duplicate retailer account.
+  if (manufacturerPhone && normalizedPhone === manufacturerPhone) {
+    throw new Error(
+      "This phone number belongs to your own manufacturer account. Enter the retailer's own phone number.",
+    );
+  }
+  const mfrCollision = await getDoc(doc(db, "manufacturers", normalizedPhone)).catch(() => null);
+  if (mfrCollision?.exists()) {
+    throw new Error(
+      `Phone ${normalizedPhone} is already registered as a manufacturer account and cannot also be a retailer. Verify the retailer's phone number.`,
+    );
+  }
+
   // Pre-create retailer entity keyed by normalized phone (idempotent)
   const retailerRef = doc(db, "retailers", normalizedPhone);
   const retailerPayload: Record<string, unknown> = {

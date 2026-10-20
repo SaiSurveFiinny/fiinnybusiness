@@ -198,6 +198,9 @@ export async function repointReposts(db: admin.firestore.Firestore, reelId: stri
 
 export const transcodeReel = onObjectFinalized(
   {
+    // Must match the storage bucket's region (us-east1); the deploy refuses a
+    // storage trigger in another region. This is where it already runs.
+    region: "us-east1",
     // Transcoding is memory- and CPU-bound; the default 256MiB/60s cannot
     // complete a 90s 1080p encode.
     memory: "2GiB",

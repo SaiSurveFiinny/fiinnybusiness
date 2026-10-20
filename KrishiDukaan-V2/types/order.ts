@@ -37,9 +37,72 @@ export const ORDER_STATUS_FLOW: OrderStatus[] = [
   "delivered",
 ];
 
+/**
+ * Statuses a seller/admin is allowed to REVERT from (step a mistakenly-advanced
+ * order back to an earlier stage). Only post-handover states: an order that is
+ * still `placed` or `accepted` is undone with Reject/Cancel, not a revert, and
+ * `rejected`/`cancelled`/`reassigning` are off the forward flow entirely.
+ */
+export const REVERTABLE_STATUSES: OrderStatus[] = [
+  "dispatched",
+  "out_for_delivery",
+  "delivered",
+];
+
+/**
+ * Valid targets when reverting an order currently in `from`. A revert may move
+ * to any EARLIER in-flow status, but never below `accepted` — reverting all the
+ * way to `placed` would re-expose Accept/Reject, which is not what a revert is
+ * for. Returns [] for any status that is not revertable.
+ */
+/**
+ * Statuses that have an invoice. It is created when the seller accepts the
+ * order — before that the sale isn't confirmed (the seller may still reject
+ * it), so neither the seller nor the customer sees one. Rejected/cancelled
+ * orders never get one.
+ */
+export const INVOICE_READY_STATUSES: OrderStatus[] = [
+  "accepted",
+  "dispatched",
+  "out_for_delivery",
+  "delivered",
+];
+
+export function isInvoiceReady(status: string | null | undefined): boolean {
+  return INVOICE_READY_STATUSES.includes(String(status ?? "") as OrderStatus);
+}
+
+export function validRevertTargets(from: OrderStatus): OrderStatus[] {
+  if (!REVERTABLE_STATUSES.includes(from)) return [];
+  const fromIdx = ORDER_STATUS_FLOW.indexOf(from);
+  const floorIdx = ORDER_STATUS_FLOW.indexOf("accepted");
+  return ORDER_STATUS_FLOW.filter((_, idx) => idx >= floorIdx && idx < fromIdx);
+}
+
+/** True when moving `from` → `to` is a backward step along the forward flow
+ *  (i.e. a revert). Both must be on the flow for this to be meaningful. */
+export function isStatusRevert(from: OrderStatus, to: OrderStatus): boolean {
+  const fromIdx = ORDER_STATUS_FLOW.indexOf(from);
+  const toIdx = ORDER_STATUS_FLOW.indexOf(to);
+  return fromIdx >= 0 && toIdx >= 0 && toIdx < fromIdx;
+}
+
 export type StatusHistoryEntry = {
   status: OrderStatus;
   at: string; // ISO 8601 string
+  /** The status this entry moved AWAY from. Only written for reverts, so the
+   *  timeline can show "delivered → dispatched" rather than a bare step. */
+  from?: OrderStatus;
+  /** uid of the seller/admin who made this change (reverts record it; forward
+   *  steps historically don't, so it stays optional). */
+  by?: string;
+  /** Role of `by`: the order's seller, or a platform admin acting on their
+   *  behalf. */
+  byRole?: "seller" | "admin";
+  /** Operator-supplied reason — required for a revert. */
+  reason?: string;
+  /** Marks this entry as a status reversal rather than a forward step. */
+  revert?: boolean;
 };
 
 export type CartItem = {
@@ -230,6 +293,47 @@ export type InvoiceMetadata = {
   version: number;
 };
 
+/** A single SUCCESSFUL `order_tracking_link` WhatsApp send. Failed sends are
+ *  never appended here — only confirmed deliveries to Meta (metaMessageId
+ *  present) count toward the per-order send limit. */
+export type TrackingSend = {
+  at: string;              // ISO 8601 — when Meta accepted the message
+  url: string;             // the tracking URL actually sent (kept for resend audit)
+  metaMessageId: string;   // Meta's wamid for this send
+  waNotificationId: string;// the waNotifications doc written for this attempt
+  sentBy: string;          // uid of the seller/admin who triggered the send
+  requestId: string;       // client idempotency key that produced this send
+};
+
+/** Maximum number of SUCCESSFUL tracking-message sends allowed per order
+ *  (initial dispatch send + any later resend). Enforced on the server. */
+export const MAX_TRACKING_SENDS = 2;
+
+/**
+ * Shipment tracking state for an order. Written ONLY by the server
+ * (app/api/orders/tracking) via the Admin SDK — firestore.rules forbids any
+ * client write to `tracking`, so the two-send limit cannot be bypassed from
+ * the browser. Absent until a seller first saves or sends a tracking link.
+ */
+export type OrderTracking = {
+  /** Current tracking link (the last URL saved). */
+  url: string;
+  /** ISO — when a link was first saved on this order. */
+  addedAt: string;
+  /** uid that first saved a link. */
+  addedBy: string;
+  /** ISO — when the link was last changed. */
+  updatedAt?: string;
+  /**
+   * Short-lived in-flight guard. Set at the start of a send and cleared when it
+   * completes (success or failure). A second click arriving while this is set
+   * for a different requestId is rejected, so a double-click cannot double-send.
+   */
+  sendLock?: { requestId: string; at: string } | null;
+  /** Successful sends, newest last. Length is capped at MAX_TRACKING_SENDS. */
+  sends: TrackingSend[];
+};
+
 export type OrderDoc = {
   id: string;
   customerId: string;
@@ -282,6 +386,8 @@ export type OrderDoc = {
   deliveryMode: "delivery";
   status: OrderStatus;
   statusHistory?: StatusHistoryEntry[];
+  /** Shipment tracking link + send history. Server-written only. */
+  tracking?: OrderTracking;
   payment?: PaymentInfo;
   /**
    * Razorpay Route payout state, written by the releaseTransferOnDelivery
