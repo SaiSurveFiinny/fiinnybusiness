@@ -763,6 +763,17 @@ service cloud.firestore {
       allow delete: if isAdmin();
     }
 
+    // ─── socialStats ───────────────────────────────────────────────────────────
+    // Precomputed Followers + Reel views/likes/comments for the seller's
+    // Analytics "Audience" tiles, rebuilt on a schedule by rebuildSocialStats
+    // (functions/src/stats/social-stats.ts). Doc id = the seller's normalised
+    // phone. Only that seller (or an admin) may read their own doc — account
+    // isolation — and all writes are server-side (admin SDK bypasses rules).
+    match /socialStats/{phone} {
+      allow get: if isAdmin() || (isAuthed() && phoneMatches(phone));
+      allow list, write: if isAdmin();
+    }
+
     match /retailers/{retailerId} {
       allow read: if true;
       allow create: if isAuthed();

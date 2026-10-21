@@ -72,6 +72,7 @@ export {
 export { sellerStatsOnOrderWrite } from "./stats/seller-stats";
 export { rebuildProductBuyStats } from "./stats/product-buy-stats";
 export { syncOwnerSeatsOnSubscriptionWrite } from "./subscriptions/owner-seats";
+export { rebuildSocialStats } from "./stats/social-stats";
 
 admin.initializeApp();
 const db = admin.firestore();

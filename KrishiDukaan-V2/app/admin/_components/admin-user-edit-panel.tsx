@@ -112,6 +112,17 @@ export function AdminUserEditPanel({ user, onClose, onSaved }: AdminUserEditPane
     whatsapp:  user.socialLinks?.whatsapp  || "",
     youtube:   user.socialLinks?.youtube   || "",
   });
+  // Customer delivery address — stored on users/{phone} as the addressArea/addressCity/
+  // addressDistrict/addressState/addressPincode fields the checkout writes (app/page.tsx).
+  // Sellers keep their own address model (the Location section above), so this is
+  // only surfaced and saved for non-seller (customer) accounts.
+  const [custAddr, setCustAddr] = useState({
+    area:     user.addressArea     || "",
+    city:     user.addressCity     || "",
+    district: user.addressDistrict || "",
+    state:    user.addressState    || "",
+    pincode:  user.addressPincode  || "",
+  });
   const [geo, setGeo]               = useState<GeoPoint | null>(
     user.latitude && user.longitude ? new GeoPoint(user.latitude, user.longitude) : null,
   );
@@ -400,6 +411,9 @@ export function AdminUserEditPanel({ user, onClose, onSaved }: AdminUserEditPane
         ...form, line1, social,
         geo: geo ? { latitude: geo.latitude, longitude: geo.longitude } : null,
         onlineDelivery,
+        // Only customers have the checkout-style delivery address; sellers use the
+        // address model above, so leave this undefined for them.
+        ...(isSeller ? {} : { customerAddress: custAddr }),
       };
       await adminSaveProfile(phone, role, payload);
       setSaveMsg({ ok: true, text: "Profile saved." });
@@ -741,27 +755,67 @@ export function AdminUserEditPanel({ user, onClose, onSaved }: AdminUserEditPane
               </section>
             )}
 
-            {/* ── Social Links ── */}
-            <section>
-              <SL>Social Links</SL>
-              <div className="grid gap-3 sm:grid-cols-2">
-                {([
-                  { key: "instagram" as const, icon: Instagram,     label: "Instagram", placeholder: "instagram.com/page" },
-                  { key: "facebook"  as const, icon: Facebook,      label: "Facebook",  placeholder: "facebook.com/page" },
-                  { key: "whatsapp"  as const, icon: MessageCircle, label: "WhatsApp",  placeholder: "+91 98765 43210" },
-                  { key: "youtube"   as const, icon: Youtube,       label: "YouTube",   placeholder: "youtube.com/@channel" },
-                ]).map(({ key, icon: Icon, label, placeholder }) => (
-                  <label key={key} className="flex flex-col gap-1.5 text-sm">
+            {/* ── Delivery Address (customers only) ── */}
+            {!isSeller && (
+              <section>
+                <SL>Delivery Address</SL>
+                <div className="grid gap-4 sm:grid-cols-2">
+                  <label className="flex flex-col gap-1.5 text-sm sm:col-span-2">
                     <span className="font-medium text-on-surface flex items-center gap-1.5">
-                      <Icon className="h-3.5 w-3.5" /> {label}
+                      <MapPin className="h-3.5 w-3.5" /> Area / Street
                     </span>
-                    <input type="text" value={social[key]}
-                      onChange={e => setSocial(p => ({ ...p, [key]: e.target.value }))}
-                      className={inputCls} placeholder={placeholder} />
+                    <input value={custAddr.area} onChange={e => setCustAddr(p => ({ ...p, area: e.target.value }))}
+                      className={inputCls} placeholder="House / street / area" />
                   </label>
-                ))}
-              </div>
-            </section>
+                  <label className="flex flex-col gap-1.5 text-sm">
+                    <span className="font-medium text-on-surface">City</span>
+                    <input value={custAddr.city} onChange={e => setCustAddr(p => ({ ...p, city: e.target.value }))}
+                      className={inputCls} placeholder="City" />
+                  </label>
+                  <label className="flex flex-col gap-1.5 text-sm">
+                    <span className="font-medium text-on-surface">District</span>
+                    <input value={custAddr.district} onChange={e => setCustAddr(p => ({ ...p, district: e.target.value }))}
+                      className={inputCls} placeholder="District" />
+                  </label>
+                  <label className="flex flex-col gap-1.5 text-sm">
+                    <span className="font-medium text-on-surface">State</span>
+                    <input value={custAddr.state} onChange={e => setCustAddr(p => ({ ...p, state: e.target.value }))}
+                      className={inputCls} placeholder="State" />
+                  </label>
+                  <label className="flex flex-col gap-1.5 text-sm">
+                    <span className="font-medium text-on-surface">Pincode</span>
+                    <input type="text" inputMode="numeric" maxLength={6}
+                      value={custAddr.pincode}
+                      onChange={e => setCustAddr(p => ({ ...p, pincode: e.target.value.replace(/\D/g, "").slice(0, 6) }))}
+                      className={inputCls} placeholder="6-digit" />
+                  </label>
+                </div>
+              </section>
+            )}
+
+            {/* ── Social Links (sellers only) ── */}
+            {isSeller && (
+              <section>
+                <SL>Social Links</SL>
+                <div className="grid gap-3 sm:grid-cols-2">
+                  {([
+                    { key: "instagram" as const, icon: Instagram,     label: "Instagram", placeholder: "instagram.com/page" },
+                    { key: "facebook"  as const, icon: Facebook,      label: "Facebook",  placeholder: "facebook.com/page" },
+                    { key: "whatsapp"  as const, icon: MessageCircle, label: "WhatsApp",  placeholder: "+91 98765 43210" },
+                    { key: "youtube"   as const, icon: Youtube,       label: "YouTube",   placeholder: "youtube.com/@channel" },
+                  ]).map(({ key, icon: Icon, label, placeholder }) => (
+                    <label key={key} className="flex flex-col gap-1.5 text-sm">
+                      <span className="font-medium text-on-surface flex items-center gap-1.5">
+                        <Icon className="h-3.5 w-3.5" /> {label}
+                      </span>
+                      <input type="text" value={social[key]}
+                        onChange={e => setSocial(p => ({ ...p, [key]: e.target.value }))}
+                        className={inputCls} placeholder={placeholder} />
+                    </label>
+                  ))}
+                </div>
+              </section>
+            )}
 
             {/* ── Delivery Settings ── */}
             {isSeller && (

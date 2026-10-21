@@ -117,6 +117,20 @@ export default function AnalyticsPage() {
   const appearance = stats?.searchAppearance ?? { impressions: "0", ctr: "0.0%", avgPosition: "—" };
   const orders = stats?.orders;
 
+  // Audience tiles (Followers / Reels) read the precomputed socialStats doc.
+  // Distinguish "not synced yet" (show "—", never a fake 0) and "outdated"
+  // (show the cached number, flagged) from a fresh, genuine value.
+  const social = stats?.socialSync;
+  const socialAvailable = social?.available ?? false;
+  const socialStaleNote = social?.stale
+    ? social.lastUpdatedAt
+      ? ` · outdated (${formatShort(new Date(social.lastUpdatedAt))})`
+      : " · outdated"
+    : "";
+  const socialValue = (n: number | undefined) => (socialAvailable ? String(n ?? 0) : "—");
+  const socialHint = socialAvailable ? `All time${socialStaleNote}` : "Not available yet";
+  const socialReelHint = socialAvailable ? `Across your reels${socialStaleNote}` : "Not available yet";
+
   const emptySeries = [] as { label: string; value: number }[];
 
   // The window the charts cover, shown as a subtitle so the title no longer
@@ -129,8 +143,9 @@ export default function AnalyticsPage() {
         ? "Last 30 days"
         : "Last 12 months";
 
-  // "Share my stats" image: the selected window's numbers (the order tiles
-  // above are all-time; the series are the window).
+  // "Share my stats" image: the selected window's numbers. The order tiles and
+  // the series now both reflect the selected window, so summing the series
+  // matches the tiles.
   const sum = (series?: { value: number }[]) => (series ?? []).reduce((a, p) => a + (Number(p.value) || 0), 0);
   const shopName = String(profile?.businessName || profile?.shopName || profile?.name || "My shop");
   const shareLink = shopShareUrl(String(profile?.phone ?? ""));
@@ -269,42 +284,43 @@ export default function AnalyticsPage() {
         <MetricTile
           label={t('anOrdersTotal')}
           value={String(orders?.totalOrders ?? 0)}
-          hint={t('anOrdersHint')}
+          hint={`${t('anOrdersHint')} · ${periodLabel}`}
         />
         <MetricTile
           label={t('anRevenueTotal')}
           value={formatINR(orders?.totalRevenue ?? 0)}
-          hint={t('anRevenueHint')}
+          hint={`${t('anRevenueHint')} · ${periodLabel}`}
         />
       </section>
 
-      {/* Audience — Followers and reel reach, which the app has always shown
-          and web had no equivalent for. Followers is a lifetime total, so it
-          is labelled as such rather than appearing to respond to the period
-          picker. */}
+      {/* Audience — Followers and reel reach. These come from the precomputed
+          socialStats summary doc (rebuilt daily), so they are lifetime totals
+          that don't respond to the period picker. When no summary has been
+          built yet we show "—" and "Not available yet" rather than a misleading
+          0; when the last rebuild is old we flag the numbers as outdated. */}
       <section
         aria-label="Audience"
         className="mt-3 grid gap-3 sm:grid-cols-2 lg:grid-cols-4"
       >
         <MetricTile
           label="Followers"
-          value={String(stats?.followers ?? 0)}
-          hint="All time"
+          value={socialValue(stats?.followers)}
+          hint={socialHint}
         />
         <MetricTile
           label="Reel views"
-          value={String(stats?.reelViews ?? 0)}
-          hint="Across your reels"
+          value={socialValue(stats?.reelViews)}
+          hint={socialReelHint}
         />
         <MetricTile
           label="Reel likes"
-          value={String(stats?.reelLikes ?? 0)}
-          hint="Across your reels"
+          value={socialValue(stats?.reelLikes)}
+          hint={socialReelHint}
         />
         <MetricTile
           label="Reel comments"
-          value={String(stats?.reelComments ?? 0)}
-          hint="Across your reels"
+          value={socialValue(stats?.reelComments)}
+          hint={socialReelHint}
         />
       </section>
 
