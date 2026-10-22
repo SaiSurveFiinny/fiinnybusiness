@@ -829,7 +829,12 @@ service cloud.firestore {
     // Doc ID = manufacturerPhone (matches manufacturers/{phone}).
     match /brandPages/{manufacturerPhone} {
       allow read: if true;
-      allow create, update: if isAuthed() && (myPhone() == manufacturerPhone || isAdmin());
+      // "videos" (Tips & Videos links) must be a bounded list of strings; the
+      // owner/admin gate stays, and per-entry URL safety is enforced on the
+      // client (add) and at render time (SSR sanitisation strips unsafe URLs).
+      allow create, update: if isAuthed() && (myPhone() == manufacturerPhone || isAdmin())
+        && (!('videos' in request.resource.data)
+            || (request.resource.data.videos is list && request.resource.data.videos.size() <= 24));
       allow delete: if isAdmin();
     }
 

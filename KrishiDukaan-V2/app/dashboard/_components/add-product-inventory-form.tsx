@@ -3,7 +3,7 @@
 import { FormEvent, useCallback, useEffect, useRef, useState } from "react";
 import {
   Loader2, PackagePlus, Plus, X, Upload, Link as LinkIcon,
-  Tag, ImageIcon, AlignLeft, Layers, Search, ChevronDown, CheckCircle2, Receipt, Youtube,
+  Tag, ImageIcon, AlignLeft, Layers, Search, ChevronDown, CheckCircle2, Receipt, Youtube, Leaf,
 } from "lucide-react";
 import {
   PRODUCT_CATEGORIES, isStandardCategory, CATEGORY_FIELDS, CHIPS_FIELDS,
@@ -134,6 +134,7 @@ type AdminProductPayload = {
   isActive: true; source: "admin";
   categoryInfo?: Record<string, string | string[]>;
   gstApplicable: boolean; gstRate: number;
+  organicCertified: boolean;
   sellMode: "online_delivery" | "offline_store_only"; isOnline: boolean;
   editProductId: string | null;
   videoUrl?: string;
@@ -531,6 +532,9 @@ export function AddProductInventoryForm({
   const [gstApplicable, setGstApplicable] = useState(false);
   const [gstRate,       setGstRate]       = useState<GstRate>(0);
 
+  // Admin-only: "Organic Certified" badge flag on the canonical product doc.
+  const [organicCertified, setOrganicCertified] = useState(false);
+
   // New products default to offline; seller opts in when account delivery is enabled
   const [sellMode, setSellMode] = useState<"online_delivery" | "offline_store_only">("offline_store_only");
 
@@ -565,6 +569,7 @@ export function AddProductInventoryForm({
     setImages(urls.length ? urls.map((u: string) => ({ mode: "url" as const, url: u, uploading: false, error: "" })) : [newSlot()]);
     setGstApplicable(!!p.gstApplicable);
     setGstRate(p.gstRate ?? 0);
+    setOrganicCertified(p.organicCertified === true);
     setSellMode(p.sellMode === "offline_store_only" ? "offline_store_only" : "online_delivery");
     setVideoUrl((p as any).videoUrl ?? "");
     setComposition(Array.isArray((p as any).composition) ? (p as any).composition : []);
@@ -780,6 +785,7 @@ export function AddProductInventoryForm({
           isActive: true, source: "admin",
           categoryInfo: Object.keys(savedCategoryInfo).length ? savedCategoryInfo : undefined,
           gstApplicable: effectiveGstApplicable, gstRate: effectiveGstApplicable ? gstRate : 0,
+          organicCertified,
           sellMode: effectiveSellMode, isOnline: effectiveSellMode === "online_delivery",
           editProductId: initialProduct?.id ?? null,
           videoUrl: videoUrl.trim() || undefined,
@@ -798,7 +804,7 @@ export function AddProductInventoryForm({
           setName(""); setCategory(CATEGORIES[0]); setCustomCategory(""); setDescription("");
           setAutofilled(false); setExistingProductId(null); setAlreadyListed(false);
           setCategoryInfo({}); setShowAdditionalData(false);
-          setGstApplicable(false); setGstRate(0); setSellMode("offline_store_only");
+          setGstApplicable(false); setGstRate(0); setOrganicCertified(false); setSellMode("offline_store_only");
           setVariants([newVariant()]); setImages([newSlot()]); setCustomFields([]);
         }
         await onCreated();
@@ -1219,6 +1225,33 @@ export function AddProductInventoryForm({
             </>
           )}
         </div>
+
+        {/* ── Admin-only: Organic Certified ─────────────────────────────────── */}
+        {adminMode && (
+          <div className="rounded-2xl border border-outline-variant/20 bg-surface-container-low/40 p-4 flex flex-col gap-4">
+            <div className="flex items-center gap-2 text-sm font-semibold text-on-surface">
+              <Leaf className="h-4 w-4 text-primary" /> Certification
+            </div>
+            <div className="flex items-center justify-between rounded-xl border border-outline-variant/25 bg-white px-4 py-3">
+              <div>
+                <p className="text-sm font-medium text-on-surface">Organic Certified</p>
+                <p className="text-xs text-on-surface-variant mt-0.5">
+                  Shows the &ldquo;Organic Certified&rdquo; badge on this product. Enable only for products with a verified organic certification.
+                </p>
+              </div>
+              <label className="inline-flex items-center cursor-pointer select-none">
+                <input
+                  type="checkbox"
+                  className="sr-only peer"
+                  disabled={isDisabled}
+                  checked={organicCertified}
+                  onChange={(e) => setOrganicCertified(e.target.checked)}
+                />
+                <span className="relative h-6 w-11 rounded-full bg-outline-variant/40 peer-checked:bg-primary transition-colors peer-disabled:opacity-50 after:absolute after:top-0.5 after:left-0.5 after:h-5 after:w-5 after:rounded-full after:bg-white after:transition-transform peer-checked:after:translate-x-5" />
+              </label>
+            </div>
+          </div>
+        )}
 
         {/* Submit + inline success */}
         <div className="flex flex-wrap items-center gap-3">

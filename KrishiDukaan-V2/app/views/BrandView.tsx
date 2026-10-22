@@ -1,12 +1,14 @@
 'use client';
 
-import { useMemo, useState, useEffect } from 'react';
+import { useMemo, useRef, useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { GoogleMap, useJsApiLoader, MarkerF } from '@react-google-maps/api';
 import {
   MapPin, ShoppingBag, ArrowRight, Store, Tag,
   Leaf, ExternalLink, Package, BadgeCheck, Phone, Mail, ChevronRight, Navigation, Building2,
+  Instagram, Facebook, Film,
 } from 'lucide-react';
+import { parseBrandVideos } from '../lib/brand-videos';
 import { ReviewSection } from '../../components/shared/ReviewSection';
 import type { ManufacturerBrandData, BrandProductSummary, BrandRetailerSummary } from '../dashboard/_lib/brand-page-types';
 import { haversineDistance, formatDistance } from '../utils/haversine';
@@ -29,7 +31,14 @@ export interface BrandViewProps {
    * marketplace dedup.
    */
   marketProducts?: MarketplaceProduct[];
-  retailers?: BrandRetailerSummary[];
+  /**
+   * Total active retailers in the network. The list itself is NOT passed from
+   * the server — it loads on demand from GET /api/brand/retailers when the
+   * visitor opens "Where to Find Us". Rendering hundreds of map markers + cards
+   * up front was the brand page's dominant cost and retailers are not on the
+   * purchase path. The count feeds the hero stat and whether to offer the panel.
+   */
+  retailerCount?: number;
   onProductClick?: (id: string) => void;
   onFindNearYou?: () => void;
 }
@@ -335,7 +344,7 @@ export default function BrandView({
   brand,
   products,
   marketProducts = [],
-  retailers = [],
+  retailerCount = 0,
   onProductClick,
   onFindNearYou,
 }: BrandViewProps) {
@@ -343,6 +352,52 @@ export default function BrandView({
   const [userLocation, setUserLocation] = useState<{ lat: number; lng: number } | null>(null);
   const { addToCart, isInCart } = useSharedCart();
   const [toast, setToast] = useState<string | null>(null);
+
+  // Retailer network loads on demand, ONE bounded page at a time (see
+  // BrandViewProps.retailerCount). Nothing is fetched until the visitor opens
+  // the panel; "Show more" pulls the next page via cursor.
+  const [retailers, setRetailers] = useState<BrandRetailerSummary[]>([]);
+  const [retailerStatus, setRetailerStatus] =
+    useState<'idle' | 'loading' | 'loaded' | 'error'>('idle');
+  const [loadingMore, setLoadingMore] = useState(false);
+  const cursorRef = useRef<string | null>(null);
+  const [hasMore, setHasMore] = useState(false);
+  // Guards against duplicate requests from repeated clicks / re-renders.
+  const inFlight = useRef(false);
+
+  const fetchRetailerPage = async (reset: boolean) => {
+    if (inFlight.current) return;
+    if (!reset && !hasMore) return;
+    inFlight.current = true;
+    if (reset) {
+      cursorRef.current = null;
+      setRetailerStatus('loading');
+    } else {
+      setLoadingMore(true);
+    }
+    try {
+      const params = new URLSearchParams({ phone: brand.phone });
+      if (!reset && cursorRef.current) params.set('cursor', cursorRef.current);
+      const res = await fetch(`/api/brand/retailers?${params.toString()}`);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      const page: BrandRetailerSummary[] = Array.isArray(data.retailers) ? data.retailers : [];
+      setRetailers((prev) => {
+        if (reset) return page;
+        // Dedupe by phone so an overlapping cursor can never double-list a store.
+        const seen = new Set(prev.map((r) => r.phone));
+        return [...prev, ...page.filter((r) => !seen.has(r.phone))];
+      });
+      cursorRef.current = data.nextCursor ?? null;
+      setHasMore(Boolean(data.nextCursor));
+      setRetailerStatus('loaded');
+    } catch {
+      if (reset) setRetailerStatus('error');
+    } finally {
+      inFlight.current = false;
+      setLoadingMore(false);
+    }
+  };
 
   // Seller pricing lives on retailer product copies, not on the manufacturer's
   // catalog doc — so the server-rendered summaries carry no discount or sellMode.
@@ -436,7 +491,11 @@ export default function BrandView({
     try { return new URL(brand.website).hostname.replace('www.', ''); } catch { return brand.website; }
   }, [brand.website]);
 
-  const showWhereToBuy = brand.geo || locationDisplay || retailers.length > 0;
+  // Parse + sanitise stored "Tips & Videos" links (drops unsafe/malformed entries,
+  // keeps legacy bare YouTube ids working). Runs during SSR too — the server-side gate.
+  const brandVideos = useMemo(() => parseBrandVideos(brand.videos), [brand.videos]);
+
+  const showWhereToBuy = brand.geo || locationDisplay || retailerCount > 0;
   const hasMapData = brand.geo || retailers.some((r) => r.geo);
 
 
@@ -587,7 +646,7 @@ export default function BrandView({
             <div className="grid grid-cols-3 pb-4 border-b border-white/15">
               {[
                 { value: products.length.toString(), label: 'Products' },
-                { value: retailers.length > 0 ? retailers.length.toString() : '—', label: 'Retailers' },
+                { value: retailerCount > 0 ? retailerCount.toString() : '—', label: 'Retailers' },
                 { value: brand.establishedYear ? String(new Date().getFullYear() - parseInt(brand.establishedYear, 10)) + '+' : '—', label: 'Years' },
               ].map(({ value, label }, i) => (
                 <div key={label} className={`text-center ${i > 0 ? 'border-l border-white/15' : ''}`}>
@@ -619,8 +678,8 @@ export default function BrandView({
               <div>
                 <p className="text-[10px] font-black uppercase tracking-widest text-primary mb-1">Where to Find Us</p>
                 <h2 className="text-2xl font-bold text-on-surface">
-                  {retailers.length > 0
-                    ? `${retailers.length + 1} Location${retailers.length + 1 !== 1 ? 's' : ''}`
+                  {retailerCount > 0
+                    ? `${retailerCount + 1} Locations`
                     : 'Our Location'}
                 </h2>
                 {locationDisplay && (
@@ -643,7 +702,7 @@ export default function BrandView({
                   concrete pixel height. Shows placeholder when no geo data. ── */}
               <div className="h-80 md:flex-1 rounded-2xl overflow-hidden border border-surface-container shadow-sm bg-surface-container">
                 {hasMapData ? (
-                  <BrandGeoMap manufacturerGeo={brand.geo} retailers={retailers} />
+                  <BrandGeoMap manufacturerGeo={brand.geo} retailers={retailersWithDistance} />
                 ) : (
                   <div className="h-full w-full flex flex-col items-center justify-center gap-2 text-on-surface-variant/30">
                     <MapPin className="w-8 h-8" />
@@ -666,22 +725,72 @@ export default function BrandView({
                       )
                     }
                   />
-                  {retailersWithDistance.map((r) => (
-                    <RetailerStoreCard
-                      key={r.phone}
-                      retailer={r}
-                      isExpanded={expandedStoreId === r.phone}
-                      onToggle={() =>
-                        setExpandedStoreId(expandedStoreId === r.phone ? null : r.phone)
-                      }
-                    />
-                  ))}
+
+                  {/* Idle: offer to load the network (not fetched up front). */}
+                  {retailerCount > 0 && retailerStatus === 'idle' && (
+                    <button
+                      type="button"
+                      onClick={() => fetchRetailerPage(true)}
+                      className="w-full flex items-center justify-center gap-2 border-2 border-primary text-primary py-3 rounded-2xl text-xs font-black uppercase tracking-widest hover:bg-primary hover:text-white transition-colors"
+                    >
+                      <Store className="w-4 h-4" />
+                      View {retailerCount} Retailer{retailerCount !== 1 ? 's' : ''}
+                    </button>
+                  )}
+
+                  {/* Loading */}
+                  {retailerStatus === 'loading' && (
+                    <div className="flex items-center justify-center gap-2 py-6 text-on-surface-variant">
+                      <div className="animate-spin w-5 h-5 border-2 border-primary border-t-transparent rounded-full" />
+                      <span className="text-xs font-semibold">Loading retailers…</span>
+                    </div>
+                  )}
+
+                  {/* Error */}
+                  {retailerStatus === 'error' && (
+                    <div className="flex flex-col items-center gap-2 py-6 text-center">
+                      <p className="text-xs text-on-surface-variant">Couldn’t load retailers.</p>
+                      <button
+                        type="button"
+                        onClick={() => fetchRetailerPage(true)}
+                        className="text-xs font-bold text-primary hover:underline"
+                      >
+                        Try again
+                      </button>
+                    </div>
+                  )}
+
+                  {/* Loaded but empty (count was stale) */}
+                  {retailerStatus === 'loaded' && retailers.length === 0 && (
+                    <p className="text-xs text-on-surface-variant text-center py-6">
+                      No retailer stores listed yet.
+                    </p>
+                  )}
+
+                  {/* Loaded — accumulated pages, sorted nearest-first */}
+                  {retailerStatus === 'loaded' &&
+                    retailersWithDistance.map((r) => (
+                      <RetailerStoreCard
+                        key={r.phone}
+                        retailer={r}
+                        isExpanded={expandedStoreId === r.phone}
+                        onToggle={() =>
+                          setExpandedStoreId(expandedStoreId === r.phone ? null : r.phone)
+                        }
+                      />
+                    ))}
+
+                  {retailerStatus === 'loaded' && hasMore && (
+                    <button
+                      type="button"
+                      disabled={loadingMore}
+                      onClick={() => fetchRetailerPage(false)}
+                      className="w-full border border-outline-variant text-on-surface py-2.5 rounded-xl text-xs font-black uppercase tracking-widest hover:bg-surface-container transition-colors disabled:opacity-60"
+                    >
+                      {loadingMore ? 'Loading…' : 'Show more'}
+                    </button>
+                  )}
                 </div>
-                {retailersWithDistance.length >= 5 && (
-                  <p className="text-[10px] text-on-surface-variant/60 text-center pt-1">
-                    {retailersWithDistance.length + 1} locations total · scroll to see all
-                  </p>
-                )}
               </div>
             </div>
 
@@ -739,28 +848,54 @@ export default function BrandView({
         </section>
       )}
 
-      {/* ── YouTube Videos ───────────────────────────────────────────────────── */}
-      {brand.videos.length > 0 && (
+      {/* ── Tips & Videos ────────────────────────────────────────────────────── */}
+      {brandVideos.length > 0 && (
         <section className="bg-white border-b border-surface-container">
           <div className="max-w-7xl mx-auto w-full px-4 md:px-10 py-10 flex flex-col gap-5">
             <div>
               <p className="text-[10px] font-black uppercase tracking-widest text-primary mb-1">In Action</p>
-              <h2 className="text-xl md:text-2xl font-bold text-on-surface">See the Results</h2>
-              <p className="text-on-surface-variant text-sm mt-0.5">Farmers share their experience with {brand.businessName}</p>
+              <h2 className="text-xl md:text-2xl font-bold text-on-surface">Tips & Videos</h2>
+              <p className="text-on-surface-variant text-sm mt-0.5">Watch tips and stories from {brand.businessName}</p>
             </div>
             <div className="flex gap-3 overflow-x-auto pb-2 snap-x snap-mandatory scrollbar-hide">
-              {brand.videos.map((videoId, i) => (
-                <div key={videoId}
-                  className="shrink-0 snap-center rounded-2xl overflow-hidden border border-surface-container shadow-sm bg-black"
-                  style={{ width: 'min(200px, calc(50vw - 24px))', aspectRatio: '9/16' }}>
-                  <iframe
-                    src={`https://www.youtube.com/embed/${videoId}?rel=0&modestbranding=1`}
-                    title={`${brand.businessName} video ${i + 1}`}
-                    allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
-                    allowFullScreen className="w-full h-full" loading="lazy"
-                  />
-                </div>
-              ))}
+              {brandVideos.map((v, i) =>
+                v.embedUrl ? (
+                  // YouTube / Instagram / Facebook play inline in their embedded player.
+                  <div key={v.href}
+                    className="relative shrink-0 snap-center rounded-2xl overflow-hidden border border-surface-container shadow-sm bg-black"
+                    style={{ width: 'min(200px, calc(50vw - 24px))', aspectRatio: '9/16' }}>
+                    <iframe
+                      src={v.embedUrl}
+                      title={`${brand.businessName} ${v.label} video ${i + 1}`}
+                      allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
+                      allowFullScreen className="w-full h-full" loading="lazy"
+                    />
+                    {/* Reliable fallback: open the original if the embed is blocked/private.
+                        Omitted for YouTube, whose own player already links out. */}
+                    {v.platform !== 'youtube' && (
+                      <a href={v.href} target="_blank" rel="noopener noreferrer"
+                        title={`Open on ${v.label}`}
+                        className="absolute top-1.5 right-1.5 z-10 inline-flex items-center justify-center w-7 h-7 rounded-full bg-black/55 text-white backdrop-blur-sm hover:bg-black/80 transition-colors">
+                        <ExternalLink className="w-3.5 h-3.5" />
+                      </a>
+                    )}
+                  </div>
+                ) : (
+                  // Instagram / Facebook / other links: a clickable card that reliably
+                  // opens the original content in a new tab.
+                  <a key={v.href} href={v.href} target="_blank" rel="noopener noreferrer"
+                    className="group shrink-0 snap-center rounded-2xl overflow-hidden border border-surface-container shadow-sm bg-gradient-to-br from-primary/90 to-primary/50 relative flex flex-col items-center justify-center gap-2 text-white transition-transform hover:scale-[1.02]"
+                    style={{ width: 'min(200px, calc(50vw - 24px))', aspectRatio: '9/16' }}>
+                    {v.platform === 'instagram' ? <Instagram className="w-10 h-10 drop-shadow" />
+                      : v.platform === 'facebook' ? <Facebook className="w-10 h-10 drop-shadow" />
+                      : <Film className="w-10 h-10 drop-shadow" />}
+                    <span className="text-sm font-bold drop-shadow">{v.label}</span>
+                    <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-white/90">
+                      Open <ExternalLink className="w-3 h-3" />
+                    </span>
+                  </a>
+                ),
+              )}
             </div>
           </div>
         </section>

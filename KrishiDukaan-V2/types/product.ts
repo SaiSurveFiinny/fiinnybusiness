@@ -29,6 +29,13 @@ export type MarketplaceProduct = {
   sellMode?: "online_delivery" | "offline_store_only";
   isOnline?: boolean;
 
+  /**
+   * Admin-controlled certification flag on the canonical product document.
+   * The "Organic Certified" badge is shown ONLY when this is explicitly true.
+   * Never inferred from name/category/description; set only via /admin/products.
+   */
+  organicCertified?: boolean;
+
   /** GST configuration — set by the manufacturer/owner, applies to all sellers of this product */
   gstApplicable?: boolean;
   /** Predefined (0/5/12/18/28) or a custom seller-entered rate. */

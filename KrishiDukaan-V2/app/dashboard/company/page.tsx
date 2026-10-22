@@ -6,9 +6,10 @@ import {
   Loader2, Building2, Package, Store,
   Plus, Save, X, Check,
   Phone, Mail, Youtube, MapPin,
-  ExternalLink,
+  ExternalLink, Instagram, Facebook, Link as LinkIcon, Film,
   Tag, Info, ImageIcon,
 } from "lucide-react";
+import { isValidBrandVideoUrl, parseBrandVideo } from "../../lib/brand-videos";
 import {
   fetchManufacturerProducts, fetchManufacturerNetworkStores,
   type RetailerNetworkStore,
@@ -49,14 +50,13 @@ function StatusBanner({ status, onDismiss }: { status: Status; onDismiss: () => 
   );
 }
 
-// ─── YouTube helpers ──────────────────────────────────────────────────────────
-
-function extractYouTubeId(input: string): string | null {
-  const trimmed = input.trim();
-  if (/^[a-zA-Z0-9_-]{11}$/.test(trimmed)) return trimmed;
-  const m = trimmed.match(/(?:youtube\.com\/watch\?v=|youtu\.be\/|youtube\.com\/embed\/|youtube\.com\/shorts\/)([a-zA-Z0-9_-]{11})/);
-  return m ? m[1] : null;
-}
+// Platform → icon for the saved-link preview cards.
+const VIDEO_PLATFORM_ICON = {
+  youtube: Youtube,
+  instagram: Instagram,
+  facebook: Facebook,
+  link: LinkIcon,
+} as const;
 
 // ─── Brand Customization Form ─────────────────────────────────────────────────
 
@@ -106,10 +106,12 @@ function CustomizationForm({
   };
 
   const addVideo = () => {
-    const id = extractYouTubeId(form.videoInput);
-    if (!id) { setVideoError(t("cpYoutubeParseError")); return; }
-    if (videos.includes(id)) { setVideoError(t("cpYoutubeAlreadyAdded")); return; }
-    setVideos((p) => [...p, id]);
+    const url = form.videoInput.trim();
+    // Accept any well-formed http/https link (or a legacy bare YouTube id);
+    // reject malformed strings and unsupported protocols client-side.
+    if (!isValidBrandVideoUrl(url)) { setVideoError(t("cpYoutubeParseError")); return; }
+    if (videos.includes(url)) { setVideoError(t("cpYoutubeAlreadyAdded")); return; }
+    setVideos((p) => [...p, url]);
     setForm((p) => ({ ...p, videoInput: "" }));
     setVideoError(null);
   };
@@ -287,33 +289,42 @@ function CustomizationForm({
         </div>
         <div className="flex gap-2">
           <div className="relative flex-1">
-            <Youtube className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-red-500" />
+            <Film className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-primary" />
             <input className={`${inputCls} pl-10`} value={form.videoInput}
               onChange={(e) => { setForm((p) => ({ ...p, videoInput: e.target.value })); setVideoError(null); }}
               onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); addVideo(); } }}
               placeholder={t("cpYoutubePlaceholder")} />
           </div>
           <button type="button" onClick={addVideo}
-            className="flex items-center gap-1.5 px-4 py-2 rounded-xl bg-red-500 text-white text-sm font-bold hover:opacity-90 shrink-0">
+            className="flex items-center gap-1.5 px-4 py-2 rounded-xl bg-primary text-white text-sm font-bold hover:opacity-90 shrink-0">
             <Plus className="w-4 h-4" /> {t("cpAdd")}
           </button>
         </div>
         {videoError && <p className="text-xs text-red-600">✗ {videoError}</p>}
         {videos.length > 0 && (
           <div className="flex flex-wrap gap-3">
-            {videos.map((id) => (
-              <div key={id} className="relative rounded-2xl overflow-hidden bg-black shrink-0 border border-outline-variant/30"
-                style={{ width: 100, aspectRatio: "9/16" }}>
-                <img src={`https://img.youtube.com/vi/${id}/mqdefault.jpg`} alt="" className="w-full h-full object-cover opacity-70" />
-                <div className="absolute inset-0 flex items-center justify-center">
-                  <Youtube className="w-7 h-7 text-white drop-shadow" />
+            {videos.map((entry) => {
+              const v = parseBrandVideo(entry);
+              const Icon = VIDEO_PLATFORM_ICON[v?.platform ?? "link"];
+              return (
+                <div key={entry} className="relative rounded-2xl overflow-hidden bg-black shrink-0 border border-outline-variant/30"
+                  style={{ width: 100, aspectRatio: "9/16" }}>
+                  {v?.thumbnail ? (
+                    <img src={v.thumbnail} alt="" className="w-full h-full object-cover opacity-70" />
+                  ) : (
+                    <div className="w-full h-full bg-gradient-to-br from-primary/80 to-primary/40" />
+                  )}
+                  <div className="absolute inset-0 flex flex-col items-center justify-center gap-1 px-1 text-center">
+                    <Icon className="w-7 h-7 text-white drop-shadow" />
+                    <span className="text-[9px] font-bold text-white/90 drop-shadow">{v?.label ?? "Link"}</span>
+                  </div>
+                  <button type="button" onClick={() => setVideos((p) => p.filter((x) => x !== entry))}
+                    className="absolute top-1 right-1 w-5 h-5 rounded-full bg-black/60 flex items-center justify-center text-white hover:bg-red-600">
+                    <X className="w-3 h-3" />
+                  </button>
                 </div>
-                <button type="button" onClick={() => setVideos((p) => p.filter((v) => v !== id))}
-                  className="absolute top-1 right-1 w-5 h-5 rounded-full bg-black/60 flex items-center justify-center text-white hover:bg-red-600">
-                  <X className="w-3 h-3" />
-                </button>
-              </div>
-            ))}
+              );
+            })}
           </div>
         )}
       </div>

@@ -2661,6 +2661,8 @@ export function mapAdminProductDocs(docs: RawProductDoc[]): MarketplaceProduct[]
         store: String(data.store || ''),
         distance: String(data.distance || 'Nearby'),
         source: data.source ? String(data.source) : undefined,
+        // Admin certification flag — carried so the edit form prefills the toggle.
+        organicCertified: data.organicCertified === true ? true : undefined,
         _sort: ts?.toMillis?.() ?? 0,
       } as MarketplaceProduct & { _sort: number };
     })

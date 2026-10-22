@@ -1784,11 +1784,13 @@ export default function ProductDetailView({
         {/* Name + badges */}
         <div className="flex flex-col gap-2">
           <div className="flex items-center gap-4 flex-wrap">
-            <HelperTooltip side="bottom" textKey="productQualityBadge">
-              <span className="bg-secondary-container text-on-secondary-container px-3 py-1 rounded-xl text-[10px] font-black uppercase tracking-widest border border-secondary/20 cursor-help">
-                {t('organicCertified')}
-              </span>
-            </HelperTooltip>
+            {product.organicCertified === true && (
+              <HelperTooltip side="bottom" textKey="productQualityBadge">
+                <span className="bg-secondary-container text-on-secondary-container px-3 py-1 rounded-xl text-[10px] font-black uppercase tracking-widest border border-secondary/20 cursor-help">
+                  {t('organicCertified')}
+                </span>
+              </HelperTooltip>
+            )}
             <HelperTooltip side="bottom" textKey="productReviews">
               <div className="flex items-center gap-1 text-secondary cursor-help">
                 <ICONS.Star className="w-4 h-4 fill-secondary" />

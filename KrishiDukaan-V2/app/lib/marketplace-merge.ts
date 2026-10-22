@@ -65,6 +65,8 @@ export function mapMarketplaceDoc(
     manufacturerPhone: data.manufacturerPhone ? String(data.manufacturerPhone) : undefined,
     sellMode: data.sellMode === "offline_store_only" ? "offline_store_only" : "online_delivery",
     isOnline: data.sellMode !== "offline_store_only",
+    // Only an explicit `true` certifies the product; missing/false → no badge.
+    organicCertified: data.organicCertified === true ? true : undefined,
     availability: data.availability || undefined,
     source: data.source ? String(data.source) : undefined,
     gstApplicable: data.gstApplicable === true,

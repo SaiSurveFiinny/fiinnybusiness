@@ -4,6 +4,7 @@ import Link from "next/link";
 import {
   collection,
   doc,
+  getCount,
   getDoc,
   getDocs,
   limit,
@@ -17,7 +18,6 @@ import BrandView from "../../views/BrandView";
 import type {
   ManufacturerBrandData,
   BrandProductSummary,
-  BrandRetailerSummary,
   BrandPageCustomization,
 } from "../../dashboard/_lib/brand-page-types";
 import { assembleBrandData } from "../../dashboard/_lib/brand-page-types";
@@ -66,13 +66,22 @@ async function fetchRatingAggForCatalogIds(
   db: ReturnType<typeof getClientDb>,
   ids: string[],
 ) {
-  const rows: { catalogId: string; rating: number }[] = [];
+  const chunks: string[][] = [];
   for (let i = 0; i < ids.length; i += REVIEW_IN_CHUNK) {
     const chunk = ids.slice(i, i + REVIEW_IN_CHUNK);
-    if (chunk.length === 0) continue;
-    const snap = await getDocs(
-      query(collection(db, "productReviews"), where("catalogId", "in", chunk)),
-    ).catch(() => null);
+    if (chunk.length > 0) chunks.push(chunk);
+  }
+  // Fire all `in`-chunk queries in parallel instead of serially — a brand with
+  // hundreds of seller copies otherwise pays one round-trip per 30 ids in turn.
+  const snaps = await Promise.all(
+    chunks.map((chunk) =>
+      getDocs(
+        query(collection(db, "productReviews"), where("catalogId", "in", chunk)),
+      ).catch(() => null),
+    ),
+  );
+  const rows: { catalogId: string; rating: number }[] = [];
+  for (const snap of snaps) {
     if (!snap) continue;
     for (const d of snap.docs) {
       const r = d.data() as Record<string, unknown>;
@@ -89,15 +98,35 @@ async function fetchPageData(manufacturerPhone: string): Promise<{
   brand: ManufacturerBrandData;
   products: BrandProductSummary[];
   marketProducts: MarketplaceProduct[];
-  retailers: BrandRetailerSummary[];
+  retailerCount: number;
 } | null> {
   const db = getClientDb();
 
-  const [mfrSnap, retailerDocsSnap] = await Promise.all([
+  // ── Perf instrumentation ───────────────────────────────────────────────────
+  // Per-stage wall-clock timings + approximate doc-read counts, logged once as a
+  // single [BrandPagePerf] line. Safe to remove once latency is settled.
+  const _perf: Record<string, number> = {};
+  let _mark = performance.now();
+  const _stage = (name: string) => {
+    _perf[name] = +(performance.now() - _mark).toFixed(1);
+    _mark = performance.now();
+  };
+  let _reads = 0;
+
+  // Retailer network is NOT fetched here — it is not on the purchase path and
+  // rendering hundreds of map markers + cards was the brand page's dominant
+  // cost. Only the count is read (for the hero stat + whether to offer the
+  // "Where to Find Us" panel); the list loads on demand via
+  // GET /api/brand/retailers. See app/lib/brand-retailers.ts.
+  const [mfrSnap, retailerCountSnap] = await Promise.all([
     getDoc(doc(db, "manufacturers", manufacturerPhone)),
-    // Fetch ALL linked retailer mirror docs — no limit, subcollection is scoped to one manufacturer.
-    getDocs(collection(db, "manufacturers", manufacturerPhone, "retailers")),
+    getCount(
+      query(collection(db, "manufacturers", manufacturerPhone, "retailers")),
+    ).catch(() => null),
   ]);
+  const retailerCount = retailerCountSnap?.data().count ?? 0;
+  _reads += 1;
+  _stage("profile+count");
 
   if (!mfrSnap.exists()) return null;
 
@@ -107,9 +136,12 @@ async function fetchPageData(manufacturerPhone: string): Promise<{
   // Brand page may be stored under phone (canonical) or uid (when manufacturer dashboard saved
   // before uidIndex was created for the account). Try phone first, then uid as fallback.
   let brandSnap = await getDoc(doc(db, "brandPages", manufacturerPhone));
+  _reads += 1;
   if (!brandSnap.exists() && uid && uid !== manufacturerPhone) {
     brandSnap = await getDoc(doc(db, "brandPages", uid));
+    _reads += 1;
   }
+  _stage("brandPages");
 
   const customization = brandSnap.exists()
     ? (brandSnap.data() as Partial<BrandPageCustomization>)
@@ -148,6 +180,9 @@ async function fetchPageData(manufacturerPhone: string): Promise<{
       ),
     ]);
 
+    _reads += byManufacturerId.docs.length + byOwnerId.docs.length;
+    _perf["product.docsFetched"] = byManufacturerId.docs.length + byOwnerId.docs.length;
+
     // Dedup every fetched doc by id — canonical manufacturer products AND their
     // seller copies (manufacturer_assigned etc. carry manufacturerId == uid, so
     // they come back from the first query). Both the card list and the merge are
@@ -180,133 +215,31 @@ async function fetchPageData(manufacturerPhone: string): Promise<{
       db,
       activeEntries.map(([id]) => id),
     );
+    // Rating path runs sequential `in`-chunks of 30 over every active id (incl.
+    // seller copies) — record how many round-trips that is.
+    _perf["rating.activeIds"] = activeEntries.length;
+    _perf["rating.inChunks"] = Math.ceil(activeEntries.length / REVIEW_IN_CHUNK);
     const mapped = activeEntries.map(([id, r]) => mapMarketplaceDoc(id, r));
     marketProducts = mergeMarketplaceProducts(mapped, ratingAgg);
   }
+  _stage("products+ratings");
 
-  // ── Retailers: build summaries, enriching from retailers/{docId} when mirror lacks geo ──
-  function parseGeo(g: unknown): { latitude: number; longitude: number } | null {
-    if (!g || typeof g !== "object") return null;
-    const { latitude, longitude } = g as { latitude?: number; longitude?: number };
-    return typeof latitude === "number" && typeof longitude === "number"
-      ? { latitude, longitude }
-      : null;
-  }
-
-  // Match Retailer Network dashboard logic: exclude only explicitly revoked/removed/inactive
-  // entries. "invited" retailers (pending claim) are visible — they appear in the dashboard too.
-  const activeMirrors = retailerDocsSnap.docs.filter((d) => {
-    const r = d.data() as Record<string, unknown>;
-    const status = String(r.status ?? "invited");
-    const onboarding = String(r.onboardingStatus ?? "active");
-    return (
-      status !== "revoked" &&
-      onboarding !== "removed" &&
-      onboarding !== "inactive"
-    );
-  });
-
-  // Debug: log mirror counts server-side so mismatches are visible in server logs.
+  // One structured line per request. Grep server logs for [BrandPagePerf].
+  // Only ms-valued keys are summed for totalMs (count metrics live alongside).
+  const _msKeys = ["profile+count", "brandPages", "products+ratings"];
   console.log(
-    `[BrandPage] ${manufacturerPhone} — subcollection docs: ${retailerDocsSnap.docs.length}, ` +
-    `after filter: ${activeMirrors.length}`,
-  );
-
-  // For each mirror, fetch the full retailers/{docId} profile in parallel to get geo/address.
-  // retailerDocId field in the mirror points to the correct doc in the retailers collection.
-  // Process all filtered mirrors — no cap, subcollection is fetched in full.
-  const retailers: BrandRetailerSummary[] = await Promise.all(
-    activeMirrors.map(async (d) => {
-      const r = d.data() as Record<string, unknown>;
-      const mirrorAddr = (r.address ?? {}) as Record<string, unknown>;
-      const mirrorGeo = parseGeo(r.geo);
-      const shopName = String(r.shopName ?? r.ownerName ?? "");
-      const ownerName = String(r.ownerName ?? "");
-
-      const mirrorLogo = String(r.logo ?? "");
-
-      // If mirror already has both geo and city, use it directly
-      if (mirrorGeo && mirrorAddr.city) {
-        return {
-          phone: d.id,
-          secondaryPhone: String(r.secondaryPhone ?? ""),
-          shopName,
-          ownerName,
-          address: {
-            city: String(mirrorAddr.city ?? ""),
-            state: String(mirrorAddr.state ?? ""),
-            line1: String(mirrorAddr.line1 ?? ""),
-          },
-          geo: mirrorGeo,
-          logo: mirrorLogo || undefined,
-        };
-      }
-
-      // Slow path: fetch the retailer's global profile to get address/geo.
-      // Try retailers/{docId} first (may be stored as E164 "+91…" or bare 10-digit).
-      // Fall back to profiles/{docId} which is always publicly readable.
-      const retailerDocId = String(r.retailerDocId ?? d.id);
-      // Derive the alternate phone format so we catch both stored forms.
-      const altRetailerId = retailerDocId.startsWith("+91")
-        ? retailerDocId.slice(3)
-        : `+91${retailerDocId}`;
-
-      const tryFetch = async (id: string) => {
-        try {
-          const snap = await getDoc(doc(db, "retailers", id));
-          if (snap.exists()) return snap.data() as Record<string, unknown>;
-        } catch { /* fall through */ }
-        return null;
-      };
-
-      const tryProfileFetch = async (id: string) => {
-        try {
-          const snap = await getDoc(doc(db, "profiles", id));
-          if (snap.exists()) return snap.data() as Record<string, unknown>;
-        } catch { /* fall through */ }
-        return null;
-      };
-
-      const rd =
-        (await tryFetch(retailerDocId)) ??
-        (retailerDocId !== altRetailerId ? await tryFetch(altRetailerId) : null) ??
-        (await tryProfileFetch(retailerDocId)) ??
-        (retailerDocId !== altRetailerId ? await tryProfileFetch(altRetailerId) : null);
-
-      if (rd) {
-        const rdAddr = (rd.address ?? {}) as Record<string, unknown>;
-        return {
-          phone: d.id,
-          secondaryPhone: String(rd.secondaryPhone ?? r.secondaryPhone ?? ""),
-          shopName: shopName || String(rd.shopName ?? rd.businessName ?? rd.ownerName ?? ""),
-          ownerName: ownerName || String(rd.ownerName ?? ""),
-          address: {
-            city: String(rdAddr.city ?? rd.city ?? mirrorAddr.city ?? ""),
-            state: String(rdAddr.state ?? rd.state ?? mirrorAddr.state ?? ""),
-            line1: String(rdAddr.line1 ?? mirrorAddr.line1 ?? ""),
-          },
-          geo: parseGeo(rd.geo) ?? mirrorGeo,
-          logo: String(rd.logo ?? "") || mirrorLogo || undefined,
-        };
-      }
-
-      return {
-        phone: d.id,
-        secondaryPhone: String(r.secondaryPhone ?? ""),
-        shopName,
-        ownerName,
-        address: {
-          city: String(mirrorAddr.city ?? ""),
-          state: String(mirrorAddr.state ?? ""),
-          line1: String(mirrorAddr.line1 ?? ""),
-        },
-        geo: mirrorGeo,
-        logo: mirrorLogo || undefined,
-      };
+    "[BrandPagePerf]",
+    JSON.stringify({
+      phone: manufacturerPhone,
+      retailerCount,
+      productDocsFetched: _perf["product.docsFetched"] ?? 0,
+      totalReads: _reads,
+      stagesMs: _perf,
+      totalMs: +_msKeys.reduce((a, k) => a + (_perf[k] ?? 0), 0).toFixed(1),
     }),
   );
 
-  return { brand, products, marketProducts, retailers };
+  return { brand, products, marketProducts, retailerCount };
 }
 
 // ─── Metadata ─────────────────────────────────────────────────────────────────
@@ -390,7 +323,7 @@ export default async function BrandPage({ params }: PageProps) {
         brand={data.brand}
         products={data.products}
         marketProducts={data.marketProducts}
-        retailers={data.retailers}
+        retailerCount={data.retailerCount}
       />
     </main>
   );
