@@ -988,6 +988,9 @@ export async function updateSubscriptionStatus(
         razorpayOrderId: paymentDetails?.orderId ?? null,
         razorpayPaymentId: paymentDetails?.paymentId ?? null,
         subscriptionStatus: 'active',
+        // Genuine (gateway-paid) subscription, not a promotional grant. Written
+        // explicitly so the admin status filters can query non-promotional subs.
+        isPromotional: false,
         // Promo attribution — written only when a gateway-verified code was
         // used. Absent field = no promo, so usage queries filter on presence.
         ...(normalizedPromo ? { promoCode: normalizedPromo } : {}),
@@ -2616,6 +2619,9 @@ export async function adminManualActivate(
     razorpayOrderId: orderId || null,
     razorpayPaymentId: paymentId,
     subscriptionStatus: 'active',
+    // Genuine admin activation, not a promotional grant — see the status filters
+    // on /admin/subscriptions, which query isPromotional === false.
+    isPromotional: false,
     startDate: Timestamp.fromDate(now),
     expiryDate: Timestamp.fromDate(expiry),
     activatedByAdmin: true,

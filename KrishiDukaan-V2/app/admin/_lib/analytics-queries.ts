@@ -73,7 +73,7 @@ type Counts = Record<string, number | undefined>;
 export type DailyStats = {
   date: string;
   orders?: { count?: number; gmv?: number; platformFee?: number; status?: Counts };
-  subs?: { count?: number; revenuePaid?: number; revenueManual?: number; seats?: number; renewals?: number };
+  subs?: { count?: number; revenuePaid?: number; revenueManual?: number; seats?: number; renewals?: number; promoCount?: number; promoSeats?: number };
   payments?: { attempts?: number; paid?: number; failed?: number; open?: number; failedAmount?: number };
   users?: { retailer?: number; manufacturer?: number; customer?: number; admin?: number };
   products?: { added?: number };
@@ -303,17 +303,27 @@ export type SubscriptionRevenue = {
   totalRevenue: number;
   paidRevenue: number;
   manualRevenue: number;
+  /** Genuine (non-promotional) new subscriptions started in the window. */
   newSubscriptions: number;
   /** Subscriptions in the window whose owner already had an earlier subscription. */
   renewalsInRange: number;
   seatsPurchasedInRange: number;
+  /** Promotional grants started in the window — free awards, not revenue. */
+  promoActivations: number;
+  promoSeats: number;
   /** Revenue per day, split so the chart can stack paid (gateway) vs manual (admin). */
   perDay: { date: string; paid: number; manual: number }[];
 };
 
 /**
- * Subscription revenue for a window, split paid (gateway) vs manual (admin)
- * using the existing `activatedByAdmin` flag, from the per-day totals.
+ * Subscription revenue for a window, from the per-day totals.
+ *
+ *  - Paid (gateway) and manual (admin) revenue are sourced from the payments
+ *    ledger (functions/src/stats/platform-daily.ts: paymentRevenueContribution),
+ *    the record of money actually taken — so they reconcile with Razorpay.
+ *  - Promotional grants record no payment, so they contribute zero revenue and
+ *    are reported separately (promoActivations / promoSeats). New-subscription,
+ *    renewal and seat counts already exclude promotional grants in the rollup.
  */
 export async function getSubscriptionRevenue(range: DateRange): Promise<SubscriptionRevenue> {
   const days = await getDailyStats(range);
@@ -326,6 +336,8 @@ export async function getSubscriptionRevenue(range: DateRange): Promise<Subscrip
   let seatsPurchasedInRange = 0;
   let newSubscriptions = 0;
   let renewalsInRange = 0;
+  let promoActivations = 0;
+  let promoSeats = 0;
 
   for (const day of days) {
     const sub = day.subs;
@@ -335,6 +347,8 @@ export async function getSubscriptionRevenue(range: DateRange): Promise<Subscrip
     seatsPurchasedInRange += num(sub.seats);
     newSubscriptions += num(sub.count);
     renewalsInRange += num(sub.renewals);
+    promoActivations += num(sub.promoCount);
+    promoSeats += num(sub.promoSeats);
     const bucket = perDayMap.get(day.date);
     if (bucket) {
       bucket.paid += num(sub.revenuePaid);
@@ -349,6 +363,8 @@ export async function getSubscriptionRevenue(range: DateRange): Promise<Subscrip
     newSubscriptions,
     renewalsInRange,
     seatsPurchasedInRange,
+    promoActivations,
+    promoSeats,
     perDay: dayKeysInRange(range).map((date) => ({ date, ...perDayMap.get(date)! })),
   };
 }

@@ -63,6 +63,7 @@ export {
   platformStatsOnOrderWrite,
   platformStatsOnSubscriptionWrite,
   platformStatsOnPaymentAttemptWrite,
+  platformStatsOnPaymentWrite,
   platformStatsOnUserWrite,
   platformStatsOnProductCreate,
   platformStatsOnProductDelete,

@@ -5,6 +5,7 @@ import { motion } from 'framer-motion';
 import { useI18n } from '../i18n/I18nContext';
 import { saveContactMessage } from '../firebase';
 import { PLAY_STORE_URL, APP_STORE_URL, androidLive, iosLive } from '../lib/store-links';
+import { COMPANY } from '../lib/legal-constants';
 
 export default function AboutView() {
   const { t } = useI18n();
@@ -242,7 +243,14 @@ export default function AboutView() {
                   </div>
                   <div>
                     <div className="text-xs font-black uppercase tracking-widest text-white/60 mb-0.5">{t('aboutContactEmailLabel')}</div>
-                    <div className="font-bold">arjun.tanpure@fiinny.com</div>
+                    <div className="flex flex-col gap-0.5">
+                      <a href="mailto:arjun.tanpure@fiinny.com" className="font-bold hover:underline">
+                        Founder: arjun.tanpure@fiinny.com
+                      </a>
+                      <a href={`mailto:${COMPANY.supportEmail}`} className="font-bold hover:underline">
+                        Support: {COMPANY.supportEmail}
+                      </a>
+                    </div>
                   </div>
                 </div>
                 <div className="flex items-center gap-3 text-white">

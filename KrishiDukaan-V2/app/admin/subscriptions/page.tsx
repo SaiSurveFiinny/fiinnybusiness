@@ -8,7 +8,7 @@ import {
 import {
   CreditCard, Search, RefreshCw, ShieldOff, Plus, X, Check,
   ChevronDown, CalendarPlus, AlertTriangle, Pencil, Package, Archive,
-  UserPlus, Trash2, Ban,
+  UserPlus, Trash2, Ban, Gift,
 } from "lucide-react";
 import {
   auth, db,
@@ -216,7 +216,8 @@ export default function AdminSubscriptionsPage() {
   const [activeTab, setActiveTab] = useState<'subscriptions' | 'plans' | 'failedPayments' | 'finance'>('subscriptions');
   const [failedPaymentsSearch, setFailedPaymentsSearch] = useState("");
   const [search, setSearch] = useState("");
-  const [statusFilter, setStatusFilter] = useState("all");
+  // Opens on Active so admins see paid + admin-activated subscriptions first.
+  const [statusFilter, setStatusFilter] = useState("active");
   const [subDateFilter, setSubDateFilter] = useState<DateFilterKey>("all");
   const [subCustomFrom, setSubCustomFrom] = useState("");
   const [subCustomTo, setSubCustomTo] = useState("");
@@ -294,17 +295,30 @@ export default function AdminSubscriptionsPage() {
   const subDateRange = dateRangeFor(subDateFilter, subCustomFrom, subCustomTo);
   const subsBase = useMemo(() => {
     const c: QueryConstraint[] = [];
-    if (statusFilter !== "all") c.push(where("subscriptionStatus", "==", statusFilter));
+    // "Promotional" is a cross-cutting flag (isPromotional), not a lifecycle
+    // status. Promotional shows only flagged grants; the status filters show
+    // only genuine (isPromotional === false) subs so promotional grants are
+    // never mixed into them; "all" applies no flag filter and shows everything.
+    const promotional = statusFilter === "promotional";
+    const genuineStatus = statusFilter !== "all" && !promotional;
+    if (promotional) c.push(where("isPromotional", "==", true));
+    else if (genuineStatus) {
+      c.push(where("isPromotional", "==", false));
+      c.push(where("subscriptionStatus", "==", statusFilter));
+    }
     const dated = subDateRange.from !== null || subDateRange.to !== null;
     if (subDateRange.from !== null) c.push(where("startDate", ">=", Timestamp.fromMillis(subDateRange.from)));
     if (subDateRange.to !== null) c.push(where("startDate", "<=", Timestamp.fromMillis(subDateRange.to)));
-    // A date filter needs startDate order; the expiry sort then applies to the loaded rows.
-    c.push(sortMode === "expiry" && !dated ? orderBy("expiryDate", "asc") : orderBy("startDate", "desc"));
+    // Only the plain "all" view can order by expiryDate directly; the filtered
+    // views order by startDate and let the expiry sort apply to loaded rows
+    // (avoids a composite index per status × sort combination).
+    const canOrderExpiry = sortMode === "expiry" && !dated && statusFilter === "all";
+    c.push(canOrderExpiry ? orderBy("expiryDate", "asc") : orderBy("startDate", "desc"));
     return query(collection(db, "subscriptions"), ...c);
   }, [statusFilter, subDateRange.from, subDateRange.to, sortMode]);
   const subsPaged = usePagedQuery(subsBase, (d) => ({ id: d.id, ...d.data() }));
   const loading = subsPaged.loading;
-  const [counts, setCounts] = useState({ all: 0, active: 0, unpaid: 0, revoked: 0 });
+  const [counts, setCounts] = useState({ all: 0, active: 0, unpaid: 0, revoked: 0, promotional: 0 });
   // Subscriptions found by search outside the loaded pages (phone, payment id, owner name).
   const [searchedSubs, setSearchedSubs] = useState<any[]>([]);
 
@@ -320,11 +334,26 @@ export default function AdminSubscriptionsPage() {
 
   const loadCounts = async () => {
     const col = collection(db, "subscriptions");
-    const count = async (status?: string) =>
-      (await getCountFromServer(status ? query(col, where("subscriptionStatus", "==", status)) : col)).data().count;
+    const countBy = async (...c: QueryConstraint[]) =>
+      (await getCountFromServer(c.length ? query(col, ...c) : col)).data().count;
+    const notPromo = where("isPromotional", "==", false);
+    const isPromo = where("isPromotional", "==", true);
+    const byStatus = (s: string) => where("subscriptionStatus", "==", s);
     try {
-      const [all, active, unpaid, revoked] = await Promise.all([count(), count("active"), count("unpaid"), count("revoked")]);
-      setCounts({ all, active, unpaid, revoked });
+      // All = every record (paid, unpaid, revoked AND promotional). The
+      // Active/Unpaid/Revoked buckets are GENUINE (isPromotional === false) so
+      // promotional grants are never mixed into the status views — they live
+      // only in their own bucket, and no record is counted in two buckets.
+      // Counts use the same flag filter as the list queries so the two always
+      // agree (both reflect the isPromotional backfill state).
+      const [all, active, unpaid, revoked, promotional] = await Promise.all([
+        countBy(),
+        countBy(notPromo, byStatus("active")),
+        countBy(notPromo, byStatus("unpaid")),
+        countBy(notPromo, byStatus("revoked")),
+        countBy(isPromo),
+      ]);
+      setCounts({ all, active, unpaid, revoked, promotional });
     } catch {
       // counts are informational
     }
@@ -466,7 +495,14 @@ export default function AdminSubscriptionsPage() {
       const user = users.find(u => u.id === phone || u.uid === phone);
       const nameStr = `${user?.name || ""} ${user?.email || ""} ${phone}`.toLowerCase();
       const matchSearch = !q || nameStr.includes(q) || (s.razorpayPaymentId || "").toLowerCase().includes(q);
-      const matchStatus = statusFilter === "all" || s.subscriptionStatus === statusFilter;
+      const isPromo = s.isPromotional === true || !!s.promotionId;
+      // All shows every record (incl. promotional); the status filters show
+      // genuine subs only, so promotional grants aren't mixed into the default
+      // (Active) view — they appear solely under the Promotional filter.
+      const matchStatus =
+        statusFilter === "all" ? true
+        : statusFilter === "promotional" ? isPromo
+        : (s.subscriptionStatus === statusFilter && !isPromo);
       if (subDateRange.from !== null || subDateRange.to !== null) {
         const ms = toMillisLoose(s.startDate);
         if (subDateRange.from !== null && ms < subDateRange.from) return false;
@@ -884,12 +920,13 @@ export default function AdminSubscriptionsPage() {
       </div>
 
       {/* Stats */}
-      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+      <div className="grid grid-cols-2 sm:grid-cols-5 gap-3">
         {[
           { label: "Total", count: counts.all, color: "text-on-surface" },
           { label: "Active", count: counts.active, color: "text-green-600" },
           { label: "Unpaid", count: counts.unpaid, color: "text-gray-500" },
           { label: "Revoked", count: counts.revoked, color: "text-red-500" },
+          { label: "Promotional", count: counts.promotional, color: "text-amber-600" },
         ].map(s => (
           <div key={s.label} className="rounded-2xl border border-outline-variant/30 bg-surface-container-lowest px-4 py-3">
             <p className={`text-2xl font-black ${s.color}`}>{s.count}</p>
@@ -900,10 +937,10 @@ export default function AdminSubscriptionsPage() {
 
       {/* Filters */}
       <div className="flex gap-2 overflow-x-auto pb-1 scrollbar-hide">
-        {(["all", "active", "unpaid", "revoked"] as const).map(s => (
+        {(["all", "active", "unpaid", "revoked", "promotional"] as const).map(s => (
           <button key={s} onClick={() => setStatusFilter(s)}
             className={`px-3 sm:px-4 py-1.5 rounded-full text-[11px] sm:text-xs font-bold transition-all whitespace-nowrap shrink-0 ${statusFilter === s ? "bg-primary text-white" : "bg-surface-container text-on-surface-variant hover:bg-surface-container-high"}`}>
-            {s.charAt(0).toUpperCase() + s.slice(1)} ({counts[s as keyof typeof counts] ?? counts.all})
+            {s === "all" ? "All" : s.charAt(0).toUpperCase() + s.slice(1)} ({s === "all" ? counts.all : counts[s as keyof typeof counts] ?? 0})
           </button>
         ))}
       </div>
@@ -972,6 +1009,11 @@ export default function AdminSubscriptionsPage() {
                       <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold ${sub.isCustom ? "bg-purple-50 text-purple-700 border border-purple-200" : "bg-surface-container text-on-surface-variant"}`}>
                         <Package className="h-2.5 w-2.5" /> {subscriptionPlanLabel(sub)}
                       </span>
+                      {(sub.isPromotional === true || sub.promotionId) && (
+                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-50 text-amber-700 border border-amber-200" title={sub.promotionId ? `Promotion ${sub.promotionId}` : "Promotional grant"}>
+                          <Gift className="h-2.5 w-2.5" /> Promotional
+                        </span>
+                      )}
                       {sub.basePlanPrice != null && Number(sub.basePlanPrice) !== Number(sub.amountPaid) && (
                         <span className="text-[10px] text-on-surface-variant">
                           base ₹{sub.basePlanPrice} → <span className="font-bold text-on-surface">₹{sub.amountPaid}</span>
@@ -1025,10 +1067,12 @@ export default function AdminSubscriptionsPage() {
                     </span>
                   </div>
 
-                  {/* Dates */}
+                  {/* Dates + activation source */}
                   <div className="text-[11px] sm:text-xs text-on-surface-variant shrink-0">
                     <p>{fmt(sub.startDate)} → {fmt(sub.expiryDate)}</p>
-                    {sub.activatedByAdmin && <p className="text-purple-600 font-semibold">Manual activation</p>}
+                    {(sub.isPromotional === true || sub.promotionId)
+                      ? <p className="text-amber-600 font-semibold">Promotional grant{sub.planName ? ` · ${sub.planName}` : ""}</p>
+                      : sub.activatedByAdmin && <p className="text-purple-600 font-semibold">Manual activation</p>}
                   </div>
 
                   {/* Payment ID — hidden on mobile to save space */}

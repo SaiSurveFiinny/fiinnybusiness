@@ -58,6 +58,9 @@ async function main(): Promise<void> {
 
   const scanned: Record<string, number> = {};
   scanned.orders = await forEachDoc("orders", (d) => add(stats.orderContribution(d)));
+  // Subscription revenue is sourced from the payments ledger (success /
+  // manual_admin / admin_granted), not from subscription docs.
+  scanned.payments = await forEachDoc("payments", (d) => add(stats.paymentRevenueContribution(d)));
   scanned.paymentAttempts = await forEachDoc("paymentAttempts", (d) => add(stats.paymentContribution(d)));
   scanned.users = await forEachDoc("users", (d) => add(stats.userContribution(d)));
   scanned.products = await forEachDoc("products", (d) => add(stats.productContribution(d)));

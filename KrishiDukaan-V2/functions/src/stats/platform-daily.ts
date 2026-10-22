@@ -18,7 +18,9 @@ import {
  * doc per day instead of every order, subscription, payment and user.
  *
  *   orders:   { count, gmv, platformFee, status: { placed: n, ... } }
- *   subs:     { count, revenuePaid, revenueManual, seats, renewals }
+ *   subs:     { count, seats, renewals,          // genuine (non-promotional) subs
+ *               revenuePaid, revenueManual,       // from the payments ledger
+ *               promoCount, promoSeats }          // promotional grants (not revenue)
  *   payments: { attempts, paid, failed, open, failedAmount }
  *   users:    { retailer, manufacturer, customer, admin }   (by current role)
  *   products: { added }                                     (existing products)
@@ -59,16 +61,65 @@ export function orderContribution(d: Data): Contribution {
   return c;
 }
 
-/** `isRenewal`: the owner had an earlier subscription when this one was created. */
+/**
+ * A promotional grant — a free seat award from /api/admin/promotions, flagged
+ * `isPromotional` (with a `promotionId`). This is the authoritative signal; a
+ * plain admin-assigned or manually-activated subscription is NOT promotional.
+ */
+export function isPromotionalSub(d: admin.firestore.DocumentData): boolean {
+  return d.isPromotional === true || Boolean(d.promotionId);
+}
+
+/**
+ * Per-day subscription COUNTS only — revenue is no longer derived here; it comes
+ * from the payments ledger (paymentRevenueContribution), the actual record of
+ * money taken. Promotional grants are free awards, not purchases, so they are
+ * kept out of count/seats/renewals and tracked separately under subs.promo*.
+ *
+ * `isRenewal`: the owner had an earlier subscription when this one was created.
+ */
 export function subscriptionContribution(d: Data, isRenewal: boolean): Contribution {
   const c: Contribution = new Map();
   const path = d && dayPath(d.createdAt);
   if (!d || !path) return c;
-  const amount = Number(d.amountPaid ?? 0) || 0;
+  if (isPromotionalSub(d)) {
+    addTo(c, path, "subs.promoCount", 1);
+    addTo(c, path, "subs.promoSeats", Number(d.seatsPurchased ?? 0) || 0);
+    return c;
+  }
   addTo(c, path, "subs.count", 1);
-  addTo(c, path, d.activatedByAdmin === true ? "subs.revenueManual" : "subs.revenuePaid", amount);
   addTo(c, path, "subs.seats", Number(d.seatsPurchased ?? 0) || 0);
   if (isRenewal) addTo(c, path, "subs.renewals", 1);
+  return c;
+}
+
+/**
+ * Revenue bucket for a payments-ledger doc. Gateway checkout writes `success`;
+ * admin manual activation writes `manual_admin`; the custom-assign flow writes
+ * `admin_granted`. Promotional grants write NO payment doc, so promotional is
+ * excluded from revenue by construction. Unknown/other statuses are ignored.
+ */
+export function paymentRevenueBucket(status: unknown): "paid" | "manual" | null {
+  if (status === "success") return "paid";
+  if (status === "manual_admin" || status === "admin_granted") return "manual";
+  return null;
+}
+
+/**
+ * Subscription REVENUE from the payments ledger, bucketed by the payment's
+ * timestamp (IST day). `success` → gateway revenue; admin grants → manual
+ * revenue. This is the source of truth that reconciles with Razorpay, and it
+ * naturally excludes promotional grants (which record no payment).
+ */
+export function paymentRevenueContribution(d: Data): Contribution {
+  const c: Contribution = new Map();
+  if (!d) return c;
+  const path = dayPath(d.timestamp);
+  if (!path) return c;
+  const bucket = paymentRevenueBucket(d.status);
+  if (!bucket) return c;
+  const amount = Number(d.amount ?? 0) || 0;
+  addTo(c, path, bucket === "paid" ? "subs.revenuePaid" : "subs.revenueManual", amount);
   return c;
 }
 
@@ -158,6 +209,13 @@ export const platformStatsOnSubscriptionWrite = onDocumentWritten({ ...TRIGGER, 
 
 export const platformStatsOnPaymentAttemptWrite = onDocumentWritten({ ...TRIGGER, document: "paymentAttempts/{id}" }, async (event) => {
   await apply(event.id, paymentContribution(event.data?.before.data()), paymentContribution(event.data?.after.data()), "payment");
+});
+
+// Subscription revenue comes from the payments ledger (the record of money
+// actually taken), not from subscription docs — so gateway/manual revenue
+// reconciles with Razorpay and promotional grants (no payment) are excluded.
+export const platformStatsOnPaymentWrite = onDocumentWritten({ ...TRIGGER, document: "payments/{id}" }, async (event) => {
+  await apply(event.id, paymentRevenueContribution(event.data?.before.data()), paymentRevenueContribution(event.data?.after.data()), "paymentRevenue");
 });
 
 export const platformStatsOnUserWrite = onDocumentWritten({ ...TRIGGER, document: "users/{id}" }, async (event) => {
