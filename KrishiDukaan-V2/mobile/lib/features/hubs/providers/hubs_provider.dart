@@ -9,6 +9,12 @@ final hubsListProvider = FutureProvider<List<HubModel>>((ref) {
 });
 
 final hubDetailProvider =
-    FutureProvider.family<HubModel?, String>((ref, id) {
+    FutureProvider.family<HubModel?, String>((ref, id) async {
+  // Already loaded with the list (Home's Shop by Crop / the Hubs tab)?
+  // Then opening one costs no extra read.
+  final cached = ref.read(hubsListProvider).value;
+  for (final h in cached ?? const <HubModel>[]) {
+    if (h.id == id) return h;
+  }
   return _repo.fetchHubById(id);
 });

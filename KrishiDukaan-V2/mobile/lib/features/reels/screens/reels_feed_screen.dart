@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -18,6 +19,7 @@ import '../../../core/widgets/app_shell.dart';
 import '../../../core/widgets/user_tag_dialog.dart';
 import '../providers/reels_provider.dart';
 import '../widgets/reel_filters.dart';
+import '../widgets/reel_caption.dart';
 
 class ReelsFeedScreen extends ConsumerStatefulWidget {
   /// A one-shot token (from `?search=`) that asks the screen to open the same
@@ -31,7 +33,24 @@ class ReelsFeedScreen extends ConsumerStatefulWidget {
   /// Marketplace's token does.
   final String? searchToken;
 
-  const ReelsFeedScreen({super.key, this.searchToken});
+  /// Reel to show first (from `?reel=<id>`), e.g. a reel tapped in Home's
+  /// Latest/More Reels rail: it opens here, in the normal feed, and swiping
+  /// continues through the feed. Looked up in the already-cached feed, so it
+  /// costs no read. [startToken] (`?t=`) makes a repeat tap work while this
+  /// branch's state is kept, like [searchToken].
+  final String? startReelId;
+  final String? startToken;
+
+  /// The tapped reel itself (route `extra`), used if it isn't in the feed.
+  final ReelModel? startReel;
+
+  const ReelsFeedScreen({
+    super.key,
+    this.searchToken,
+    this.startReelId,
+    this.startToken,
+    this.startReel,
+  });
 
   @override
   ConsumerState<ReelsFeedScreen> createState() => _ReelsFeedScreenState();
@@ -46,6 +65,11 @@ class _ReelsFeedScreenState extends ConsumerState<ReelsFeedScreen>
   bool _initialized = false;
   String? _handledSearchToken;
 
+  // Reel pinned to the top of the feed (see ReelsFeedScreen.startReelId).
+  String? _pinnedReelId;
+  ReelModel? _pinnedReel;
+  String? _handledStartToken;
+
   GoRouter? _router;
 
   @override
@@ -53,12 +77,108 @@ class _ReelsFeedScreenState extends ConsumerState<ReelsFeedScreen>
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     _maybeOpenSearch();
+    _maybeStartAt();
   }
 
   @override
   void didUpdateWidget(covariant ReelsFeedScreen oldWidget) {
     super.didUpdateWidget(oldWidget);
     _maybeOpenSearch();
+    _maybeStartAt();
+  }
+
+  /// The list the PageView shows: ranked feed minus blocked users, with the
+  /// pinned reel first. Every page index in this screen refers to this list
+  /// (it used to index the unfiltered feed, so after blocking someone the
+  /// wrong video could play).
+  List<ReelModel> _orderedReels(List<ReelModel> ranked, Set<String> blocked) {
+    var list = blocked.isEmpty
+        ? ranked
+        : ranked
+            .where((r) => !blocked.contains(r.shopOwnerId))
+            .toList(growable: false);
+    if (_seenBeforeRefresh.isNotEmpty) {
+      list = [
+        ...list.where((r) => !_seenBeforeRefresh.contains(r.id)),
+        ...list.where((r) => _seenBeforeRefresh.contains(r.id)),
+      ];
+    }
+    final pinId = _pinnedReelId;
+    if (pinId == null) return list;
+    final pinned = list.where((r) => r.id == pinId).firstOrNull ??
+        (_pinnedReel != null && !blocked.contains(_pinnedReel!.shopOwnerId)
+            ? _pinnedReel
+            : null);
+    if (pinned == null) return list;
+    return [pinned, ...list.where((r) => r.id != pinId)];
+  }
+
+  List<ReelModel> _currentReels() => _orderedReels(
+        ref.read(reelsFeedProvider).value ?? const [],
+        ref.read(blockedUserIdsProvider).value ?? const {},
+      );
+
+  /// Reels watched before the last refresh — shown after the rest, so a
+  /// refresh brings up reels not just seen instead of the same ones again.
+  /// A snapshot (not the live set) so the order doesn't shift while scrolling.
+  Set<String> _seenBeforeRefresh = const {};
+  bool _awaitingRefresh = false;
+
+  /// Refresh: fetch the feed again (new reels come in), start from the top
+  /// with unwatched reels first. It used to keep the scroll position while
+  /// resetting the page counter, so the picture and the sound came from
+  /// different reels, and it disposed players still on screen.
+  void _refreshFeed() {
+    for (final c in _controllers.values) {
+      c.pause();
+    }
+    final old = Map<String, VideoPlayerController>.of(_controllers);
+    _controllers.clear();
+    _pinnedReelId = null;
+    _pinnedReel = null;
+    _seenBeforeRefresh = Set<String>.of(_viewedReelIds);
+    // Set up players once the NEW list arrives, not for the old one still
+    // on screen while it loads (see the reelsFeedProvider listener).
+    _initialized = true;
+    _awaitingRefresh = true;
+    _currentPage = 0;
+    setState(() {});
+    if (_pageController.hasClients) _pageController.jumpToPage(0);
+    // Dispose once nothing on screen uses them any more.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      for (final c in old.values) {
+        c.dispose();
+      }
+    });
+    ref.invalidate(reelsFeedProvider);
+  }
+
+  /// Shows the requested reel first when a new `?reel=` arrives.
+  void _maybeStartAt() {
+    final id = widget.startReelId;
+    if (id == null || id.isEmpty) return;
+    final token = widget.startToken ?? id;
+    if (token == _handledStartToken) return;
+    _handledStartToken = token;
+    for (final c in _controllers.values) {
+      c.pause();
+    }
+    _pinnedReelId = id;
+    _pinnedReel = widget.startReel?.id == id ? widget.startReel : null;
+    _currentPage = 0;
+    // Re-run the first-page setup (controllers for 0 and 1, mark seen).
+    _initialized = false;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      if (_pageController.hasClients && _pageController.page != 0) {
+        _pageController.jumpToPage(0);
+      }
+      const reelsTab = 4;
+      if (ref.read(activeShellIndexProvider) != reelsTab) return;
+      if (!ref.read(reelsFeedPlaybackActiveProvider)) return;
+      final reels = _currentReels();
+      if (reels.isNotEmpty) _controllers[reels[0].id]?.play();
+    });
   }
 
   /// Opens the search/"Explore Reels" sheet when a new token arrives (e.g.
@@ -74,7 +194,7 @@ class _ReelsFeedScreenState extends ConsumerState<ReelsFeedScreen>
   }
 
   void _openSearchSheet() {
-    final reels = ref.read(reelsFeedProvider).value ?? [];
+    final reels = _currentReels();
     showModalBottomSheet(
       context: context,
       isScrollControlled: true,
@@ -111,7 +231,7 @@ class _ReelsFeedScreenState extends ConsumerState<ReelsFeedScreen>
         c.pause();
       }
     } else {
-      final reels = ref.read(reelsFeedProvider).value ?? [];
+      final reels = _currentReels();
       if (_currentPage < reels.length) {
         _controllers[reels[_currentPage].id]?.play();
       }
@@ -143,7 +263,7 @@ class _ReelsFeedScreenState extends ConsumerState<ReelsFeedScreen>
       const reelsTab = 4;
       if (ref.read(activeShellIndexProvider) != reelsTab) return;
       if (!ref.read(reelsFeedPlaybackActiveProvider)) return;
-      final reels = ref.read(reelsFeedProvider).value ?? [];
+      final reels = _currentReels();
       if (_currentPage < reels.length) {
         _controllers[reels[_currentPage].id]?.play();
       }
@@ -174,7 +294,7 @@ class _ReelsFeedScreenState extends ConsumerState<ReelsFeedScreen>
   }
 
   void _onPageChanged(int index) {
-    final reels = ref.read(reelsFeedProvider).value ?? [];
+    final reels = _currentReels();
     if (_currentPage < reels.length) {
       _controllers[reels[_currentPage].id]?.pause();
     }
@@ -215,7 +335,7 @@ class _ReelsFeedScreenState extends ConsumerState<ReelsFeedScreen>
         }
       } else {
         ref.read(reelsFeedPlaybackActiveProvider.notifier).setPlayable(true);
-        final reels = ref.read(reelsFeedProvider).value ?? [];
+        final reels = _currentReels();
         if (_currentPage < reels.length) {
           _controllers[reels[_currentPage].id]?.play();
         }
@@ -230,14 +350,16 @@ class _ReelsFeedScreenState extends ConsumerState<ReelsFeedScreen>
       } else {
         const reelsTab = 4;
         if (ref.read(activeShellIndexProvider) != reelsTab) return;
-        final reels = ref.read(reelsFeedProvider).value ?? [];
+        final reels = _currentReels();
         if (_currentPage < reels.length) {
           _controllers[reels[_currentPage].id]?.play();
         }
       }
     });
 
-    final reelsData = feedAsync.value;
+    final reelsData = feedAsync.value == null
+        ? null
+        : _orderedReels(feedAsync.value!, blockedIds);
     if (reelsData != null && reelsData.isNotEmpty && !_initialized) {
       _initialized = true;
       _ensureController(_currentPage, reelsData);
@@ -247,9 +369,22 @@ class _ReelsFeedScreenState extends ConsumerState<ReelsFeedScreen>
     }
 
     ref.listen<AsyncValue<List<ReelModel>>>(reelsFeedProvider, (prev, next) {
+      if (_awaitingRefresh && !next.isLoading && next.hasValue) {
+        _awaitingRefresh = false;
+        final reels = _currentReels();
+        _currentPage = 0;
+        if (_pageController.hasClients && _pageController.page != 0) {
+          _pageController.jumpToPage(0);
+        }
+        _ensureController(0, reels);
+        _ensureController(1, reels);
+        if (reels.isNotEmpty) _markReelAsSeen(reels[0].id);
+        setState(() {});
+        return;
+      }
       if (!_initialized && next.value != null && next.value!.isNotEmpty) {
         _initialized = true;
-        final reels = next.value!;
+        final reels = _currentReels();
         _ensureController(0, reels);
         _ensureController(1, reels);
         if (reels.isNotEmpty) {
@@ -295,11 +430,7 @@ class _ReelsFeedScreenState extends ConsumerState<ReelsFeedScreen>
             ),
           ),
           data: (rankedReels) {
-            final reels = blockedIds.isEmpty
-                ? rankedReels
-                : rankedReels
-                    .where((r) => !blockedIds.contains(r.shopOwnerId))
-                    .toList(growable: false);
+            final reels = _orderedReels(rankedReels, blockedIds);
             if (reels.isEmpty) {
               return Center(
                 child: Column(
@@ -437,15 +568,8 @@ class _ReelsFeedScreenState extends ConsumerState<ReelsFeedScreen>
                               Icons.refresh_rounded,
                               color: Colors.white70,
                             ),
-                            onPressed: () {
-                              _initialized = false;
-                              for (final c in _controllers.values) {
-                                c.dispose();
-                              }
-                              _controllers.clear();
-                              _currentPage = 0;
-                              ref.invalidate(reelsFeedProvider);
-                            },
+                            tooltip: 'Refresh',
+                            onPressed: _refreshFeed,
                           ),
                         ],
                       ),
@@ -1195,8 +1319,11 @@ class _ReelPageState extends ConsumerState<_ReelPage>
                   Row(
                     children: [
                       GestureDetector(
-                        onTap: () =>
-                            context.push('/shop/${widget.reel.shopOwnerId}'),
+                        onTap: () {
+                          // Pause first so the sound never plays under the profile.
+                          widget.controller?.pause();
+                          context.push('/shop/${widget.reel.shopOwnerId}');
+                        },
                         child: _ShopAvatar(
                           imageUrl: widget.reel.shopProfilePic,
                           shopName: widget.reel.shopName,
@@ -1281,15 +1408,14 @@ class _ReelPageState extends ConsumerState<_ReelPage>
                   ],
                   if (widget.reel.caption.isNotEmpty) ...[
                     const SizedBox(height: 3),
-                    Text(
+                    // Full description on tap ("more" / "less").
+                    ReelCaption(
                       widget.reel.caption,
                       style: const TextStyle(
                         color: Colors.white70,
                         fontSize: 12,
                         shadows: [Shadow(color: Colors.black45, blurRadius: 4)],
                       ),
-                      maxLines: 2,
-                      overflow: TextOverflow.ellipsis,
                     ),
                   ],
                   if (widget.reel.linkedProductId != null) ...[
@@ -1973,8 +2099,16 @@ class _ShopSearchSheetState extends ConsumerState<_ShopSearchSheet> {
   bool _isLoading = false;
   List<Map<String, dynamic>> _shopResults = [];
 
-  Future<void> _search(String query) async {
+  Timer? _debounce;
+  int _searchSeq = 0;
+
+  /// Reels below filter on every keystroke (in memory); the shop lookup
+  /// (Firestore) waits until typing pauses, and only the newest lookup may
+  /// update the list. A failed lookup no longer leaves the spinner stuck.
+  void _search(String query) {
+    _debounce?.cancel();
     final trimmed = query.trim();
+    final seq = ++_searchSeq;
     if (trimmed.isEmpty) {
       setState(() {
         _shopResults = [];
@@ -1983,17 +2117,26 @@ class _ShopSearchSheetState extends ConsumerState<_ShopSearchSheet> {
       return;
     }
     setState(() => _isLoading = true);
-    final results = await ref.read(reelsRepoProvider).searchShops(trimmed);
-    if (mounted) {
-      setState(() {
-        _shopResults = results;
-        _isLoading = false;
-      });
-    }
+    _debounce = Timer(const Duration(milliseconds: 350), () async {
+      List<Map<String, dynamic>> results = const [];
+      try {
+        results = await ref
+            .read(reelsRepoProvider)
+            .searchShops(trimmed)
+            .timeout(const Duration(seconds: 15));
+      } catch (_) {}
+      if (mounted && seq == _searchSeq) {
+        setState(() {
+          _shopResults = results;
+          _isLoading = false;
+        });
+      }
+    });
   }
 
   @override
   void dispose() {
+    _debounce?.cancel();
     _searchController.dispose();
     super.dispose();
   }
@@ -2181,9 +2324,12 @@ class _ShopSearchSheetState extends ConsumerState<_ShopSearchSheet> {
                     radius: 18,
                     backgroundColor: AppColors.primaryContainer,
                     child: Text(
-                      (shop['businessName'] as String? ?? '?')
-                          .substring(0, 1)
-                          .toUpperCase(),
+                      // An empty name used to throw here (''.substring).
+                      () {
+                        final n =
+                            (shop['businessName'] as String?)?.trim() ?? '';
+                        return n.isEmpty ? '?' : n.substring(0, 1).toUpperCase();
+                      }(),
                       style: const TextStyle(
                         color: AppColors.primary,
                         fontWeight: FontWeight.bold,

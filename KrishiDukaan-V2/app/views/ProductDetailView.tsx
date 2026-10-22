@@ -22,6 +22,8 @@ import {
 } from '../dashboard/_lib/retailer-profile-firestore';
 import { ReviewSection } from '../../components/shared/ReviewSection';
 import { ProductListingCard } from '../../components/shared/ProductListingCard';
+import { BoughtBy } from '../../components/shared/bought-by';
+import { displayPrice, pctOff } from '../lib/price-display';
 
 type StoreListItem = {
   id: string;
@@ -631,6 +633,7 @@ function SimilarProductsSection({
               name={p.name}
               category={p.category}
               price={p.price}
+              priceDisplay={displayPrice(p)}
               averageRating={p.averageRating}
               totalReviews={p.totalReviews}
               onClick={() => onProductClick?.(p.id)}
@@ -1799,6 +1802,7 @@ export default function ProductDetailView({
             </HelperTooltip>
           </div>
           <h1 className="text-3xl md:text-4xl font-bold text-on-surface tracking-tight leading-tight">{product.fullName || product.name}</h1>
+          <BoughtBy productId={product.id} className="mt-1" />
         </div>
 
         {/* Price + quantity + CTA */}
@@ -1830,7 +1834,11 @@ export default function ProductDetailView({
                 <>
                   <div className="flex items-baseline gap-2">
                     <span className="text-4xl font-extrabold text-green-700 tracking-tight">₹{currentPrice.toLocaleString('en-IN')}</span>
-                    <span className="text-lg text-outline line-through">₹{mrp.toLocaleString('en-IN')}</span>
+                    <span className="text-lg text-outline">
+                      <span className="text-sm">{t('mrpLabel')} </span>
+                      <span className="line-through">₹{mrp.toLocaleString('en-IN')}</span>
+                    </span>
+                    <span className="text-lg font-black text-green-700">{t('pctOff', { pct: discountPct })}</span>
                   </div>
                   <div className="flex items-center gap-2 flex-wrap">
                     <span className="inline-flex items-center gap-1.5 rounded-xl bg-green-600 px-3 py-1 text-sm font-black text-white shadow-sm shadow-green-600/30">
@@ -1860,8 +1868,10 @@ export default function ProductDetailView({
                   {!selectedVariant && product.oldPrice && (
                     <span className="text-xl text-on-surface-variant line-through mb-1">₹{product.oldPrice}</span>
                   )}
-                  {!selectedVariant && product.oldPrice && (
-                    <span className="bg-primary-container text-on-primary-container px-3 py-1 rounded-full text-xs font-black uppercase tracking-widest">{t('savePercent')}</span>
+                  {!selectedVariant && product.oldPrice && product.oldPrice > currentPrice && (
+                    <span className="bg-primary-container text-on-primary-container px-3 py-1 rounded-full text-xs font-black uppercase tracking-widest">
+                      {t('savePercent', { pct: pctOff(product.oldPrice, currentPrice) })}
+                    </span>
                   )}
                 </div>
               )}

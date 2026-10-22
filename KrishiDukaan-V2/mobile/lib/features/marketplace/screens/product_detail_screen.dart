@@ -23,6 +23,9 @@ import '../../../core/providers/cart_provider.dart';
 import '../../../core/models/cart_model.dart';
 import '../../../core/utils/currency_utils.dart';
 import '../../../core/utils/geo_utils.dart';
+import '../../../core/utils/price_display.dart';
+import '../../../core/widgets/price_tag.dart';
+import '../../../core/widgets/bought_by.dart';
 import '../../../core/utils/store_focus_route.dart';
 import '../../../core/utils/web_links.dart';
 import '../../../core/widgets/error_view.dart';
@@ -33,6 +36,7 @@ import '../widgets/store_selector_sheet.dart';
 import '../../reels/providers/reels_provider.dart';
 import '../../reels/screens/shop_profile_screen.dart';
 import '../../../core/providers/user_provider.dart';
+import '../../../core/widgets/back_or_home_button.dart';
 
 /// Best-effort, silent bump of one or more `products/{catalogId}` analytics
 /// counters — same doc, same field shapes, same "authenticated shopper" gate
@@ -120,11 +124,17 @@ class _ProductDetailScreenState extends ConsumerState<ProductDetailScreen> {
     return Scaffold(
       backgroundColor: AppColors.background,
       body: catalogAsync.when(
-        loading: () => const Center(child: CircularProgressIndicator()),
-        error: (e, _) => ErrorView(message: 'Failed to load product.'),
+        loading: () => const BackBarBody(
+          child: Center(child: CircularProgressIndicator()),
+        ),
+        error: (e, _) =>
+            const BackBarBody(child: ErrorView(message: 'Failed to load product.')),
         data: (catalog) {
           if (catalog == null) {
-            return const ErrorView(message: 'Product not found.');
+            // e.g. a shared link to a deleted product.
+            return const BackBarBody(
+              child: ErrorView(message: 'Product not found.'),
+            );
           }
 
           final variants = catalog.variants;
@@ -224,7 +234,15 @@ class _ProductDetailScreenState extends ConsumerState<ProductDetailScreen> {
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     // ── Product header (name, price, max discount) ──────────
-                    _buildProductHeader(catalog, displayPrice),
+                    _buildProductHeader(
+                      catalog,
+                      _headerPrice(
+                        catalog,
+                        listingsAsync.value,
+                        selectedVariant,
+                        displayPrice,
+                      ),
+                    ),
 
                     // ── Image thumbnails (gallery) ──────────────────────────
                     if (catalog.images.length > 1)
@@ -456,6 +474,10 @@ class _ProductDetailScreenState extends ConsumerState<ProductDetailScreen> {
           : 'Added ${catalog.name} from ${chosen.listing.sellerName}';
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
+          // A snackbar with an action stays until tapped unless told otherwise;
+          // the "added" note should fade on its own.
+          persist: false,
+          duration: const Duration(seconds: 4),
           content: Text(label),
           backgroundColor: AppColors.primary,
           action: SnackBarAction(
@@ -699,7 +721,41 @@ class _ProductDetailScreenState extends ConsumerState<ProductDetailScreen> {
 
   // ─────────────────────────── Product header ────────────────────────────────
 
-  Widget _buildProductHeader(CatalogModel catalog, double displayPrice) {
+  /// The best offer for the selected size across stores that stock it, with
+  /// that store's own price struck out — the same resolver the buy bar and
+  /// seller rows use, so the header can never quote a price no store charges.
+  DisplayPrice _headerPrice(
+    CatalogModel catalog,
+    List<ListingModel>? listings,
+    VariantModel? selectedVariant,
+    double fallback,
+  ) {
+    if (listings != null && listings.isNotEmpty) {
+      final options = buildStoreOptions(
+        catalog,
+        listings,
+        selectedVariant: selectedVariant,
+        onlineOnly: false,
+      );
+      if (options.isNotEmpty) {
+        final best = options.reduce((a, b) {
+          if (b.effectivePrice < a.effectivePrice) return b;
+          if (b.effectivePrice == a.effectivePrice &&
+              b.originalPrice > a.originalPrice) {
+            return b;
+          }
+          return a;
+        });
+        return DisplayPrice.of(best.effectivePrice, best.originalPrice);
+      }
+    }
+    // Listings still loading: the card's own pairing for the base size.
+    return selectedVariant == null
+        ? catalog.displayPrice
+        : DisplayPrice.of(fallback, null);
+  }
+
+  Widget _buildProductHeader(CatalogModel catalog, DisplayPrice price) {
     return Padding(
       padding: const EdgeInsets.fromLTRB(16, 16, 16, 12),
       child: Column(
@@ -723,6 +779,7 @@ class _ProductDetailScreenState extends ConsumerState<ProductDetailScreen> {
           ),
           const SizedBox(height: 8),
           Text(catalog.name, style: AppTextStyles.heading1),
+          BoughtBy(productId: catalog.id),
           const SizedBox(height: 8),
 
           // Rating + reviews
@@ -749,40 +806,28 @@ class _ProductDetailScreenState extends ConsumerState<ProductDetailScreen> {
             const SizedBox(height: 8),
           ],
 
-          // Price + maximum discount (the headline info for farmers)
-          Row(
-            crossAxisAlignment: CrossAxisAlignment.center,
-            children: [
-              Flexible(
-                child: Text(
-                  CurrencyUtils.format(displayPrice),
-                  style: AppTextStyles.priceLarge,
+          // Price, struck MRP and % off (the headline info for farmers);
+          // the badge points at the best seller offer below.
+          PriceTag(value: price, fontSize: 24),
+          if (catalog.maxDiscountPct > price.pct) ...[
+            const SizedBox(height: 6),
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+              decoration: BoxDecoration(
+                color: const Color(0xFF16A34A),
+                borderRadius: BorderRadius.circular(6),
+              ),
+              child: Text(
+                'Offers up to ${catalog.maxDiscountPct.toStringAsFixed(0)}% OFF',
+                style: const TextStyle(
+                  color: Colors.white,
+                  fontSize: 11,
+                  fontWeight: FontWeight.w800,
+                  letterSpacing: 0.3,
                 ),
               ),
-              if (catalog.maxDiscountPct > 0) ...[
-                const SizedBox(width: 10),
-                Container(
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 8,
-                    vertical: 4,
-                  ),
-                  decoration: BoxDecoration(
-                    color: const Color(0xFF16A34A),
-                    borderRadius: BorderRadius.circular(6),
-                  ),
-                  child: Text(
-                    'Up to ${catalog.maxDiscountPct.toStringAsFixed(0)}% OFF',
-                    style: const TextStyle(
-                      color: Colors.white,
-                      fontSize: 11,
-                      fontWeight: FontWeight.w800,
-                      letterSpacing: 0.3,
-                    ),
-                  ),
-                ),
-              ],
-            ],
-          ),
+            ),
+          ],
           // GST note — product-level settings; the store you buy from can
           // override them at the cart. Same wording as the website:
           //  included → the price already contains it; excluded → added at checkout.
@@ -2409,6 +2454,8 @@ class _SellerTileState extends ConsumerState<_SellerTile> {
     final hasDiscount = _hasDiscount;
     final originalPrice = _basePrice;
     final effectivePrice = hasDiscount ? _effectivePrice : originalPrice;
+    // % from the actual prices, so a fixed-₹ discount badges correctly too.
+    final shown = DisplayPrice.of(effectivePrice, originalPrice);
 
     return GestureDetector(
       onTap: () => setState(() => _expanded = !_expanded),
@@ -2524,8 +2571,9 @@ class _SellerTileState extends ConsumerState<_SellerTile> {
                                     ),
                                   ),
                                 ],
-                                if (hasDiscount) ...[
+                                if (shown.hasOffer) ...[
                                   const SizedBox(width: 6),
+                                  // This shop is running an offer.
                                   Container(
                                     padding: const EdgeInsets.symmetric(
                                       horizontal: 6,
@@ -2535,13 +2583,24 @@ class _SellerTileState extends ConsumerState<_SellerTile> {
                                       color: const Color(0xFF16A34A),
                                       borderRadius: BorderRadius.circular(20),
                                     ),
-                                    child: Text(
-                                      '${discountPct.toStringAsFixed(0)}% OFF',
-                                      style: const TextStyle(
-                                        color: Colors.white,
-                                        fontSize: 9,
-                                        fontWeight: FontWeight.w800,
-                                      ),
+                                    child: Row(
+                                      mainAxisSize: MainAxisSize.min,
+                                      children: [
+                                        const Icon(
+                                          Icons.local_offer,
+                                          size: 9,
+                                          color: Colors.white,
+                                        ),
+                                        const SizedBox(width: 3),
+                                        Text(
+                                          'OFFER · ${shown.pct}% OFF',
+                                          style: const TextStyle(
+                                            color: Colors.white,
+                                            fontSize: 9,
+                                            fontWeight: FontWeight.w800,
+                                          ),
+                                        ),
+                                      ],
                                     ),
                                   ),
                                 ],
@@ -2635,28 +2694,8 @@ class _SellerTileState extends ConsumerState<_SellerTile> {
                   // Price + stock on their own row so they never crowd the name
                   Row(
                     children: [
-                      if (hasDiscount) ...[
-                        Text(
-                          CurrencyUtils.format(effectivePrice),
-                          style: const TextStyle(
-                            fontSize: 16,
-                            fontWeight: FontWeight.w800,
-                            color: Color(0xFF15803D),
-                          ),
-                        ),
-                        const SizedBox(width: 6),
-                        Text(
-                          CurrencyUtils.format(originalPrice),
-                          style: AppTextStyles.caption.copyWith(
-                            decoration: TextDecoration.lineThrough,
-                          ),
-                        ),
-                      ] else
-                        Text(
-                          CurrencyUtils.format(effectivePrice),
-                          style: AppTextStyles.price,
-                        ),
-                      const Spacer(),
+                      Expanded(child: PriceTag(value: shown, fontSize: 16)),
+                      const SizedBox(width: 8),
                       Container(
                         padding: const EdgeInsets.symmetric(
                           horizontal: 8,
@@ -2996,6 +3035,10 @@ class _SellerTileState extends ConsumerState<_SellerTile> {
     unawaited(notifier.resolveCommercial(item));
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
+        // A snackbar with an action stays until tapped unless told otherwise;
+        // the "added" note should fade on its own.
+        persist: false,
+        duration: const Duration(seconds: 4),
         content: Text('Added ${widget.catalogName} to cart'),
         backgroundColor: AppColors.primary,
         action: SnackBarAction(

@@ -31,6 +31,7 @@ import type { SeatStats } from "../_types/subscriptions";
 import { deriveStockStatus } from "../_types/inventory";
 import { CheckCircle2, Download, KeyRound, Loader2, Plus, PlusCircle, Search, X, Zap } from "lucide-react";
 import Link from "next/link";
+import { UnsavedChangesDialog, useBeforeUnload } from "../_components/unsaved-changes-dialog";
 import { HelperIcon, HelperTooltip } from "../../../components/helpers";
 import { useI18n } from "../../i18n/I18nContext";
 
@@ -254,6 +255,14 @@ export default function InventoryPage() {
   const [seatStats, setSeatStats] = useState<SeatStats>(DEFAULT_STATS);
 
   const [addModalOpen, setAddModalOpen] = useState(false);
+  // Add Product drawer: ask before closing it with something already entered.
+  const [addDirty, setAddDirty] = useState(false);
+  const [confirmCloseAdd, setConfirmCloseAdd] = useState(false);
+  useBeforeUnload(addModalOpen && addDirty);
+  const requestCloseAdd = () => {
+    if (addDirty) setConfirmCloseAdd(true);
+    else setAddModalOpen(false);
+  };
 
   // Inventory state — single unified row list for both roles
   const [rows, setRows] = useState<InventoryRow[]>([]);
@@ -622,7 +631,16 @@ export default function InventoryPage() {
         <>
           <div
             className="fixed inset-0 z-[60] bg-black/40 backdrop-blur-sm"
-            onClick={() => setAddModalOpen(false)}
+            onClick={requestCloseAdd}
+          />
+          <UnsavedChangesDialog
+            open={confirmCloseAdd}
+            onKeepEditing={() => setConfirmCloseAdd(false)}
+            onDiscard={() => { setConfirmCloseAdd(false); setAddDirty(false); setAddModalOpen(false); }}
+            onSave={() => {
+              setConfirmCloseAdd(false);
+              (document.getElementById("add-product-form") as HTMLFormElement | null)?.requestSubmit();
+            }}
           />
           <div className="fixed inset-y-0 right-0 z-[61] flex w-full max-w-xl flex-col bg-surface shadow-2xl">
             <div className="flex items-center justify-between border-b border-outline-variant/30 px-5 py-4 shrink-0">
@@ -634,7 +652,8 @@ export default function InventoryPage() {
               </div>
               <button
                 type="button"
-                onClick={() => setAddModalOpen(false)}
+                onClick={requestCloseAdd}
+                aria-label="Close"
                 className="flex h-8 w-8 items-center justify-center rounded-full hover:bg-surface-container text-on-surface-variant"
               >
                 <X className="h-5 w-5" />
@@ -645,10 +664,12 @@ export default function InventoryPage() {
                 userId={userId}
                 role={role}
                 disabled={false}
-                onCreated={async () => { setAddModalOpen(false); await refresh(); }}
+                onCreated={async () => { setAddDirty(false); setAddModalOpen(false); await refresh(); }}
                 seatStats={seatStats}
                 storeName={profile?.shopName}
                 accountDeliveryEnabled={accountDeliveryEnabled}
+                onDirtyChange={setAddDirty}
+                formId="add-product-form"
               />
               <BulkProductUpload
                 userId={userId}

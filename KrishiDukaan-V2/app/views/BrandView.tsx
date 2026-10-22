@@ -14,6 +14,8 @@ import { ShareLinkButton } from '../components/shared/share-link-button';
 import { brandShareUrl } from '../lib/share-links';
 import { useSharedCart } from '../lib/useSharedCart';
 import type { MarketplaceProduct } from '../../types/product';
+import { displayPrice } from '../lib/price-display';
+import { PriceTag } from '../../components/shared/price-tag';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -833,15 +835,11 @@ function ProductCard({
   onBuyNow: () => void;
   onProductClick?: (id: string) => void;
 }) {
-  // Same derivation the Market grid uses: "X% OFF" only for a genuine
-  // seller-configured discount (lowestFinalPrice below that seller's own
-  // lowestPrice), never for ordinary price variance between sellers.
-  const sellerBasePrice = market?.lowestPrice ?? market?.price ?? product.price;
-  const discountedPrice = market?.lowestFinalPrice ?? sellerBasePrice;
-  const showsDiscount = discountedPrice < sellerBasePrice;
-  const savingsPct = showsDiscount && sellerBasePrice > 0
-    ? Math.round((1 - discountedPrice / sellerBasePrice) * 100)
-    : 0;
+  // Same derivation as the Market grid (see displayPrice): "X% off" only for
+  // a genuine seller discount, struck against that seller's own price.
+  const dp = market ? displayPrice(market) : displayPrice({ price: product.price });
+  const showsDiscount = dp.mrp !== null;
+  const savingsPct = dp.pct;
   // Absent marketplace data we can't prove it's offline-only, so keep the CTA.
   const orderable = market ? market.sellMode !== 'offline_store_only' : true;
 
@@ -889,23 +887,7 @@ function ProductCard({
         <p className="text-[10px] font-black uppercase tracking-wide text-primary">{product.category}</p>
         <p className="text-xs md:text-sm font-bold text-on-surface leading-tight line-clamp-2">{product.name}</p>
 
-        <div className="mt-1.5">
-          {showsDiscount ? (
-            <div className="flex items-baseline gap-1.5 flex-wrap">
-              <span className="text-[9px] font-bold text-outline uppercase tracking-wide">From</span>
-              <span className="text-base md:text-lg font-black text-green-700 leading-none">
-                ₹{discountedPrice.toLocaleString('en-IN')}
-              </span>
-              <span className="text-xs font-semibold text-outline line-through leading-none">
-                ₹{sellerBasePrice.toLocaleString('en-IN')}
-              </span>
-            </div>
-          ) : (
-            <span className="text-sm md:text-base font-extrabold text-secondary">
-              ₹{sellerBasePrice.toLocaleString('en-IN')}
-            </span>
-          )}
-        </div>
+        <PriceTag value={dp} size="sm" className="mt-1.5" />
 
         {/* CTA block mirrors the Market grid card exactly: one compact button on
             mobile, Add to Cart + Buy Now side by side on desktop. Keeping the two

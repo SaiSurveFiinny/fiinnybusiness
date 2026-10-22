@@ -32,7 +32,7 @@ import {
 import { auth, fetchIncomingOrdersForSeller, updateOrderStatus } from "../../firebase";
 import { PageHeader } from "../_components/page-header";
 import { formatCustomerAddress, normalizeOrderItems, orderGrandTotal } from "../../../types/order";
-import { ORDER_STATUS_FLOW, REVERTABLE_STATUSES, validRevertTargets, type OrderDoc, type OrderStatus } from "../../../types/order";
+import { ORDER_STATUS_FLOW, REVERTABLE_STATUSES, isInvoiceReady, validRevertTargets, type OrderDoc, type OrderStatus } from "../../../types/order";
 import { useI18n } from "../../i18n/I18nContext";
 import { openInvoice } from "../../utils/invoice-generator";
 import { OrderRequestsPanel } from "../_components/order-requests-panel";
@@ -460,7 +460,7 @@ function OrderDetailModal({
             <div className="rounded-xl border border-surface-container p-4 space-y-1.5">
               <p className="text-[10px] font-black uppercase tracking-widest text-on-surface-variant">Order</p>
               <p className="text-xs text-on-surface-variant">Placed <span className="font-semibold text-on-surface">{formatDate(order.createdAt)}</span></p>
-              {order.invoiceNumber && (
+              {order.invoiceNumber && isInvoiceReady(order.status) && (
                 <p className="text-xs text-on-surface-variant">Invoice <span className="font-mono font-semibold text-on-surface">{order.invoiceNumber}</span></p>
               )}
               <p className="text-xs text-on-surface-variant">Items <span className="font-semibold text-on-surface">{items.length}</span></p>
@@ -623,13 +623,16 @@ function OrderDetailModal({
                 )}
               </button>
             ))}
-            <button
-              type="button"
-              onClick={() => openInvoice(order, seller ? { name: seller.name, phone: seller.phone, gstin: seller.gstin || undefined } : undefined)}
-              className="inline-flex items-center gap-1.5 px-4 py-2.5 rounded-xl text-xs font-bold border border-outline-variant/50 bg-white text-on-surface hover:border-primary hover:text-primary hover:bg-primary/5 transition-all"
-            >
-              <Download className="w-3.5 h-3.5" /> Download Invoice
-            </button>
+            {/* The invoice exists once the order is accepted — not while it can still be rejected. */}
+            {isInvoiceReady(order.status) && (
+              <button
+                type="button"
+                onClick={() => openInvoice(order, seller ? { name: seller.name, phone: seller.phone, gstin: seller.gstin || undefined } : undefined)}
+                className="inline-flex items-center gap-1.5 px-4 py-2.5 rounded-xl text-xs font-bold border border-outline-variant/50 bg-white text-on-surface hover:border-primary hover:text-primary hover:bg-primary/5 transition-all"
+              >
+                <Download className="w-3.5 h-3.5" /> Download Invoice
+              </button>
+            )}
             {REVERTABLE_STATUSES.includes(order.status) && (
               <button
                 type="button"
@@ -1172,7 +1175,7 @@ export default function OrdersPage() {
                           >
                             <td className="px-4 py-3 align-top">
                               <span className="font-mono font-bold text-primary">{order.id.slice(0, 8).toUpperCase()}</span>
-                              {order.invoiceNumber && <p className="text-[10px] text-on-surface-variant">{order.invoiceNumber}</p>}
+                              {order.invoiceNumber && isInvoiceReady(order.status) && <p className="text-[10px] text-on-surface-variant">{order.invoiceNumber}</p>}
                             </td>
                             <td className="px-4 py-3 align-top text-xs text-on-surface-variant">
                               {(() => {
@@ -1296,7 +1299,7 @@ export default function OrdersPage() {
                           >
                             <td className="px-4 py-3 align-top">
                               <span className="font-mono font-bold text-primary">{order.id.slice(0, 8).toUpperCase()}</span>
-                              {order.invoiceNumber && (
+                              {order.invoiceNumber && isInvoiceReady(order.status) && (
                                 <p className="text-[10px] text-on-surface-variant">{order.invoiceNumber}</p>
                               )}
                             </td>
@@ -1359,14 +1362,16 @@ export default function OrdersPage() {
                                     <Undo2 className="w-3 h-3" /> Revert
                                   </button>
                                 )}
-                                <button
-                                  type="button"
-                                  onClick={() => openInvoice(order, sellerInfo ? { name: sellerInfo.name, phone: sellerInfo.phone, gstin: sellerInfo.gstin || undefined } : undefined)}
-                                  title="Download Invoice"
-                                  className="inline-flex shrink-0 items-center gap-1 whitespace-nowrap rounded-lg border border-outline-variant/50 bg-white px-2.5 py-1.5 text-[10px] font-bold text-on-surface hover:border-primary hover:text-primary hover:bg-primary/5 transition-all"
-                                >
-                                  <FileText className="w-3 h-3" /> Invoice
-                                </button>
+                                {isInvoiceReady(order.status) && (
+                                  <button
+                                    type="button"
+                                    onClick={() => openInvoice(order, sellerInfo ? { name: sellerInfo.name, phone: sellerInfo.phone, gstin: sellerInfo.gstin || undefined } : undefined)}
+                                    title="Download Invoice"
+                                    className="inline-flex shrink-0 items-center gap-1 whitespace-nowrap rounded-lg border border-outline-variant/50 bg-white px-2.5 py-1.5 text-[10px] font-bold text-on-surface hover:border-primary hover:text-primary hover:bg-primary/5 transition-all"
+                                  >
+                                    <FileText className="w-3 h-3" /> Invoice
+                                  </button>
+                                )}
                               </div>
                             </td>
                           </tr>

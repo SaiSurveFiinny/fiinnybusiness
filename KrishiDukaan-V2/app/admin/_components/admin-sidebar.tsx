@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useEffect, useState } from "react";
-import { Box, LayoutDashboard, Layers, Users, X, Mail, MessageSquare, Building2, BarChart3, CreditCard, BookOpen, Tag, Package, MessageCircle, Video, UserCog, ShoppingCart, IndianRupee, Banknote, ReceiptText, ShieldAlert, Contact, GalleryHorizontal, Link2, Search, ChevronDown } from "lucide-react";
+import { Box, LayoutDashboard, Layers, Users, X, Mail, MessageSquare, Building2, BarChart3, CreditCard, BookOpen, Tag, Package, MessageCircle, Video, UserCog, ShoppingCart, IndianRupee, Banknote, ReceiptText, ShieldAlert, Contact, GalleryHorizontal, Link2, Search, ChevronDown, Smartphone } from "lucide-react";
 import { cn } from "../../dashboard/_lib/cn";
 import { useAdminAuth, hasSection, type AdminSection } from "../_context/admin-auth-context";
 
@@ -73,6 +73,7 @@ const navGroups: NavGroup[] = [
       // Apple Guideline 1.2 requires reports on user-generated content to reach a
       // human who can act within 24 hours — this is that queue.
       { href: "/admin/moderation", label: "Moderation", icon: ShieldAlert, sections: ["moderation"], keywords: "reports abuse" },
+      { href: "/admin/app-version", label: "App updates", icon: Smartphone, sections: ["appVersion"], keywords: "version force update play store release" },
     ],
   },
   {

@@ -649,11 +649,41 @@ class _BankAccountFormState extends ConsumerState<_BankAccountForm> {
     _ifsc.addListener(_onIfsc);
     _gstin.addListener(_onGstin);
     _onGstin();
+    // Save stays disabled until every required field is valid.
+    for (final c in [_name, _number, _confirm, _ifsc, _bank, _pan]) {
+      c.addListener(_onAnyChange);
+    }
+  }
+
+  void _onAnyChange() {
+    final complete = _isComplete;
+    if (complete != _wasComplete && mounted) {
+      setState(() => _wasComplete = complete);
+    }
+  }
+
+  bool _wasComplete = false;
+
+  /// Everything payouts need: holder name, a known IFSC, bank name, the
+  /// account number twice, and a PAN (typed, or read from the GST number).
+  bool get _isComplete {
+    final ifsc = _ifsc.text.trim().toUpperCase();
+    final gst = _gstin.text.trim();
+    final pan = panFromGstin(gst) ?? _pan.text.trim();
+    return isValidHolderName(_name.text) &&
+        ifscRe.hasMatch(ifsc) &&
+        _ifscError == null &&
+        _bank.text.trim().length >= 2 &&
+        accountRe.hasMatch(_number.text.trim()) &&
+        _confirm.text.trim() == _number.text.trim() &&
+        (gst.isEmpty || isValidGstin(gst)) &&
+        isValidPan(pan);
   }
 
   void _onGstin() {
     final pan = panFromGstin(_gstin.text) ?? '';
     if (_panShown.text != pan) _panShown.text = pan;
+    _wasComplete = _isComplete;
     if (mounted) setState(() {});
   }
 
@@ -679,13 +709,24 @@ class _BankAccountFormState extends ConsumerState<_BankAccountForm> {
   /// instead of two names. A failed lookup leaves them to type.
   Future<void> _onIfsc() async {
     final code = _ifsc.text.trim().toUpperCase();
-    if (!ifscRe.hasMatch(code) || code == _ifscLooked) return;
+    if (!ifscRe.hasMatch(code)) {
+      // A changed code drops the old lookup's error.
+      if (_ifscError != null && mounted) {
+        setState(() {
+          _ifscError = null;
+          _ifscLooked = null;
+        });
+      }
+      return;
+    }
+    if (code == _ifscLooked) return;
     _ifscLooked = code;
     try {
       final info = await ref.read(payoutRepoProvider).lookupIfsc(code);
       if (!mounted || _ifsc.text.trim().toUpperCase() != code) return;
       setState(() {
         _ifscError = null;
+        _wasComplete = _isComplete;
         if (info == null) return;
         if (info.bank.isNotEmpty) _bank.text = info.bank;
         if (info.branch.isNotEmpty) _branch.text = info.branch;
@@ -699,13 +740,14 @@ class _BankAccountFormState extends ConsumerState<_BankAccountForm> {
         setState(() {
           _ifscFound = null;
           _ifscError = 'No bank branch has this IFSC. Please check it.';
+          _wasComplete = false;
         });
       }
     }
   }
 
   Future<void> _save() async {
-    if (!(_formKey.currentState?.validate() ?? false)) return;
+    if (!(_formKey.currentState?.validate() ?? false) || !_isComplete) return;
     setState(() {
       _saving = true;
       _error = null;
@@ -748,6 +790,8 @@ class _BankAccountFormState extends ConsumerState<_BankAccountForm> {
         padding: const EdgeInsets.all(20),
         child: Form(
           key: _formKey,
+          // Show what's wrong as soon as a field is left, not only on Save.
+          autovalidateMode: AutovalidateMode.onUserInteraction,
           child: SingleChildScrollView(
             child: Column(
               mainAxisSize: MainAxisSize.min,
@@ -765,28 +809,34 @@ class _BankAccountFormState extends ConsumerState<_BankAccountForm> {
                 const _StepTitle(1, 'Bank account'),
                 _field(
                   _name,
-                  'Account holder name',
-                  validator: (v) => (v ?? '').trim().isEmpty
-                      ? 'Enter the name exactly as it appears on the bank account.'
-                      : null,
+                  'Account holder name *',
+                  validator: (v) => isValidHolderName(v ?? '')
+                      ? null
+                      : 'Enter the name exactly as it appears on the bank account (letters only).',
                 ),
                 _field(
                   _ifsc,
-                  'IFSC code',
+                  'IFSC code *',
                   upper: true,
                   maxLength: 11,
                   helper: _ifscFound,
                   errorText: _ifscError,
                   validator: (v) =>
                       ifscRe.hasMatch((v ?? '').trim().toUpperCase())
-                      ? null
+                      ? _ifscError
                       : 'IFSC should look like SBIN0001234. It is on your cheque book.',
                 ),
-                _field(_bank, 'Bank name'),
-                _field(_branch, 'Branch name'),
+                _field(
+                  _bank,
+                  'Bank name *',
+                  validator: (v) => (v ?? '').trim().length >= 2
+                      ? null
+                      : 'Enter your bank name (filled in from the IFSC).',
+                ),
+                _field(_branch, 'Branch name (optional)'),
                 _field(
                   _number,
-                  'Account number',
+                  'Account number *',
                   keyboard: TextInputType.number,
                   digitsOnly: true,
                   maxLength: 18,
@@ -796,13 +846,15 @@ class _BankAccountFormState extends ConsumerState<_BankAccountForm> {
                 ),
                 _field(
                   _confirm,
-                  'Re-enter account number',
+                  'Re-enter account number *',
                   keyboard: TextInputType.number,
                   digitsOnly: true,
                   maxLength: 18,
                   // Retyped rather than prefilled, so a mistyped digit can't
                   // hide behind a copy of itself.
-                  validator: (v) => (v ?? '').trim() == _number.text.trim()
+                  validator: (v) => (v ?? '').trim().isEmpty
+                      ? 'Enter the account number again.'
+                      : (v ?? '').trim() == _number.text.trim()
                       ? null
                       : 'The two account numbers do not match.',
                 ),
@@ -850,7 +902,7 @@ class _BankAccountFormState extends ConsumerState<_BankAccountForm> {
                 else
                   _field(
                     _pan,
-                    'PAN',
+                    'PAN *',
                     upper: true,
                     maxLength: 10,
                     validator: (v) => isValidPan(v ?? '')
@@ -870,7 +922,7 @@ class _BankAccountFormState extends ConsumerState<_BankAccountForm> {
                 SizedBox(
                   width: double.infinity,
                   child: FilledButton(
-                    onPressed: _saving ? null : _save,
+                    onPressed: _saving || !_wasComplete ? null : _save,
                     child: _saving
                         ? const SizedBox(
                             height: 18,
@@ -880,6 +932,16 @@ class _BankAccountFormState extends ConsumerState<_BankAccountForm> {
                         : const Text('Save details'),
                   ),
                 ),
+                if (!_wasComplete && !_saving) ...[
+                  const SizedBox(height: 6),
+                  Text(
+                    'Fill in all fields marked * to save.',
+                    textAlign: TextAlign.center,
+                    style: AppTextStyles.bodySmall.copyWith(
+                      color: AppColors.onSurfaceVariant,
+                    ),
+                  ),
+                ],
                 const SizedBox(height: 8),
                 Text(
                   'Only you and our verification team can see these details. '

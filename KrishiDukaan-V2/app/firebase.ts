@@ -149,7 +149,6 @@ export type RetailerProfile = {
 
 import { MarketplaceProduct } from '../types/product';
 import type { CartItem, OrderDoc, OrderItem, OrderStatus, SellerType, StatusHistoryEntry } from '../types/order';
-import { generateAndStoreInvoice } from './utils/invoice-storage';
 import { CARDS_COLLECTION, cardToProduct } from './lib/marketplace-cards';
 import { STORE_DIRECTORY, sourcesFromDirectory, type StoreSources } from './lib/store-directory';
 import { MergedPager, type PagerStream } from './lib/merged-pager';
@@ -1643,36 +1642,9 @@ export async function createOrdersFromCart(params: {
       updatedAt: serverTimestamp(),
     });
 
-    // Generate PDF, upload to Storage, and write invoice metadata.
-    // Wrapped in try/catch — a failure here must never roll back the order.
-    try {
-      await generateAndStoreInvoice(orderRef.id, {
-        id: orderRef.id,
-        customerId,
-        customerName: customerName.trim(),
-        customerPhone: customerPhone.trim(),
-        customerAddress: customerAddress.trim(),
-        sellerId,
-        sellerType,
-        ...(sellerName ? { sellerName } : {}),
-        ...(sellerGstNumber ? { sellerGstNumber } : {}),
-        items: normalizedItems as OrderItem[],
-        mrpSubtotal,
-        subtotal: orderSubtotal,
-        ...(totalGst > 0 ? { totalGst } : {}),
-        ...(orderGstAdded > 0 ? { totalGstAdded: orderGstAdded } : {}),
-        deliveryCharge: orderDeliveryCharge,
-        deliveryBreakdown: orderDeliveryBreakdown,
-        grandTotal,
-        totalWeightKg,
-        invoiceNumber,
-        deliveryMode: "delivery",
-        status: "placed",
-        ...(payment ? { payment } : {}),
-      });
-    } catch (invoiceErr) {
-      console.error("[invoice] Failed to generate or store invoice", orderRef.id, invoiceErr);
-    }
+    // No invoice yet: it is created on the server when the seller accepts
+    // the order (functions generateInvoiceOnAccept). The number is reserved
+    // above so it never changes.
 
     createdOrderIds.push(orderRef.id);
   }
@@ -2299,13 +2271,26 @@ export async function fetchProductsForUserKeys(keys: string[]): Promise<RawProdu
 }
 
 /** Fetches only the subscription docs for the given owner phones — scoped equivalent of fetchAllSubscriptions. */
-export async function fetchSubscriptionsForPhones(phones: string[]): Promise<any[]> {
-  const uniquePhones = Array.from(new Set(phones.filter(Boolean).map(String)));
-  if (uniquePhones.length === 0) return [];
+/**
+ * Subscriptions for a set of owners. Matched by ownerPhone (as given and as
+ * "+91" + 10 digits) and, when [uids] are passed, by ownerId too — plans
+ * bought before the owner's phone was indexed carry only ownerId.
+ */
+export async function fetchSubscriptionsForPhones(phones: string[], uids: string[] = []): Promise<any[]> {
+  const phoneValues = new Set<string>();
+  for (const p of phones.filter(Boolean).map(String)) {
+    phoneValues.add(p);
+    const digits = p.replace(/\D/g, '');
+    if (digits.length >= 10) phoneValues.add(`+91${digits.slice(-10)}`);
+  }
+  const uniquePhones = Array.from(phoneValues);
+  const uniqueUids = Array.from(new Set(uids.filter(Boolean).map(String)));
+  if (uniquePhones.length === 0 && uniqueUids.length === 0) return [];
   const subsCol = collection(db, 'subscriptions');
-  const snaps = await Promise.all(
-    chunk(uniquePhones, 30).map(batch => getDocs(query(subsCol, where('ownerPhone', 'in', batch)))),
-  );
+  const snaps = await Promise.all([
+    ...chunk(uniquePhones, 30).map(batch => getDocs(query(subsCol, where('ownerPhone', 'in', batch)))),
+    ...chunk(uniqueUids, 30).map(batch => getDocs(query(subsCol, where('ownerId', 'in', batch)))),
+  ]);
   const byId = new Map<string, any>();
   for (const snap of snaps) {
     for (const d of snap.docs) byId.set(d.id, { id: d.id, ...d.data() });

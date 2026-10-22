@@ -6,6 +6,8 @@ import {
   buildProductSlug,
 } from "../../lib/seo/products-server";
 import { getCategoryBySlug, SEO_CATEGORIES } from "../../lib/seo/category-meta";
+import { displayPrice } from "../../lib/price-display";
+import { PriceTag } from "../../../components/shared/price-tag";
 
 // ISR — cached at the edge, refreshed hourly.
 export const revalidate = 3600;
@@ -160,7 +162,7 @@ export default async function CategoryPage({ params }: PageProps) {
             <h2 className="sr-only">{meta.heading} products</h2>
             <ul className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-5">
               {products.map((p) => {
-                const price = p.lowestFinalPrice ?? p.lowestPrice ?? p.price;
+                const dp = displayPrice(p);
                 return (
                   <li key={p.id}>
                     <Link
@@ -180,9 +182,7 @@ export default async function CategoryPage({ params }: PageProps) {
                       <h3 className="mt-3 font-bold text-sm text-on-surface line-clamp-2 group-hover:text-primary transition-colors">
                         {p.name}
                       </h3>
-                      <p className="mt-1 text-primary font-black text-sm">
-                        ₹{price.toLocaleString("en-IN")}
-                      </p>
+                      <PriceTag value={dp} size="sm" className="mt-1" />
                     </Link>
                   </li>
                 );

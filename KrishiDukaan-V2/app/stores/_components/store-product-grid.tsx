@@ -24,6 +24,10 @@ import { Tag } from "lucide-react";
 import { fetchMarketplaceProducts } from "../../firebase";
 import type { MarketplaceProduct } from "../../../types/product";
 import { useSharedCart } from "../../lib/useSharedCart";
+import { displayPrice, sellerDisplayPrice, type DisplayPrice } from "../../lib/price-display";
+import { PriceTag } from "../../../components/shared/price-tag";
+
+const last10 = (v?: string) => (v ?? "").replace(/\D/g, "").slice(-10);
 
 export interface StoreGridProduct {
   id: string;
@@ -36,9 +40,14 @@ export interface StoreGridProduct {
 export default function StoreProductGrid({
   products,
   storeName,
+  storePhone,
+  storeIds = [],
 }: {
   products: StoreGridProduct[];
   storeName: string;
+  /** This shop's phone — picks ITS price and discount out of availability[]. */
+  storePhone?: string;
+  storeIds?: string[];
 }) {
   const { addToCart, isInCart } = useSharedCart();
   const [marketByName, setMarketByName] = useState<Map<string, MarketplaceProduct>>(
@@ -65,6 +74,23 @@ export default function StoreProductGrid({
 
   const marketFor = (p: StoreGridProduct) =>
     marketByName.get(p.name.toLowerCase().trim());
+
+  // This page is one shop, so show what THIS shop charges (and its own
+  // discount) — not the cheapest price anywhere in the marketplace.
+  const phone10 = last10(storePhone);
+  const priceFor = (p: StoreGridProduct): DisplayPrice => {
+    const market = marketFor(p);
+    const own = market?.availability?.find(
+      (a) =>
+        (phone10 && (last10(a.storePhone) === phone10 || last10(a.storeId) === phone10)) ||
+        (a.storeId && storeIds.includes(a.storeId)),
+    );
+    if (own?.sellingPrice && own.sellingPrice > 0) {
+      return sellerDisplayPrice(own.sellingPrice, own.discountPct);
+    }
+    return market ? displayPrice(market) : displayPrice({ price: p.price });
+  };
+  const bestShopOffer = products.reduce((m, p) => Math.max(m, priceFor(p).pct), 0);
 
   const add = (p: StoreGridProduct): boolean => {
     const market = marketFor(p);
@@ -99,14 +125,17 @@ export default function StoreProductGrid({
 
   return (
     <>
+      {bestShopOffer > 0 && (
+        <p className="mb-4 inline-flex items-center gap-1.5 rounded-full bg-green-600 px-3 py-1 text-xs font-black text-white">
+          <Tag className="h-3.5 w-3.5" /> Offers in this shop · up to {bestShopOffer}% off
+        </p>
+      )}
       <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4">
         {products.map((p) => {
           const market = marketFor(p);
-          const base = market?.lowestPrice ?? market?.price ?? p.price;
-          const final = market?.lowestFinalPrice ?? base;
-          const showsDiscount = final < base;
-          const savingsPct =
-            showsDiscount && base > 0 ? Math.round((1 - final / base) * 100) : 0;
+          const dp = priceFor(p);
+          const showsDiscount = dp.mrp !== null;
+          const savingsPct = dp.pct;
           const orderable = market ? market.sellMode !== "offline_store_only" : true;
           const inCart = isInCart(market?.id ?? p.id);
 
@@ -161,25 +190,7 @@ export default function StoreProductGrid({
                   </p>
                 </a>
 
-                <div className="mt-1.5">
-                  {showsDiscount ? (
-                    <div className="flex flex-wrap items-baseline gap-1.5">
-                      <span className="text-[9px] font-bold uppercase tracking-wide text-outline">
-                        From
-                      </span>
-                      <span className="text-base font-black leading-none text-green-700 md:text-lg">
-                        ₹{final.toLocaleString("en-IN")}
-                      </span>
-                      <span className="text-xs font-semibold leading-none text-outline line-through">
-                        ₹{base.toLocaleString("en-IN")}
-                      </span>
-                    </div>
-                  ) : (
-                    <span className="text-sm font-extrabold text-secondary md:text-base">
-                      ₹{base.toLocaleString("en-IN")}
-                    </span>
-                  )}
-                </div>
+                <PriceTag value={dp} size="sm" className="mt-1.5" />
 
                 {orderable ? (
                   <div className="mt-2">

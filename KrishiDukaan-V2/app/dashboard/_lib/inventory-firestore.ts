@@ -639,6 +639,8 @@ export type AddProductInventoryInput = {
   name: string;
   category: string;
   unit: string;
+  /** Every pack size; [unit]/[sellingPrice] are the first one. */
+  variants?: { unit: string; price: number; stock?: number }[];
   stockQuantity: number;
   sellingPrice: number;
   reorderThreshold: number;
@@ -725,6 +727,9 @@ export async function createProductAndInventory(
     image: image || "",
     unit: input.unit.trim(),
     price: input.sellingPrice,
+    // All pack sizes — only the first used to be kept, so a 500ml + 1L
+    // product lost its 1L size (and opened on the app with no sizes).
+    ...(input.variants?.length ? { variants: input.variants } : {}),
     isActive: true,
     ownerId,
     ownerPhone: ownerPhone ?? null,

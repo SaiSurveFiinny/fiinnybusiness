@@ -6,6 +6,7 @@ import { logger } from "firebase-functions/v2";
 import { queueWaNotification } from "./wa-notify";
 import { looksLikePhone, firstPhone, notify, displayName } from "./notify";
 import { recordEngagement } from "./notifications/engagement";
+import { reconcileAllOwnerSeats } from "./subscriptions/owner-seats";
 
 export { sendWaNotification, retryWaNotifications, webhookReceiver } from "./wa-dispatch";
 export { transcodeReel } from "./reels/media/transcodeReel";
@@ -32,6 +33,7 @@ export {
   reconcileMarketplaceCards,
 } from "./marketplace/cards";
 export { syncMaxDiscountOnProductWrite } from "./marketplace/max-discount";
+export { normalizeProductOwnerOnWrite } from "./marketplace/owner-fields";
 export {
   markStoreDirectoryDirtyOnRetailer,
   markStoreDirectoryDirtyOnManufacturer,
@@ -42,7 +44,7 @@ export {
 } from "./stores/directory";
 export { raiseAbandonedCheckoutEnquiries } from "./notifications/enquiries";
 export { notifySellerOfOrderOffer, expireOrderReassignments } from "./notifications/reassignment";
-export { generateInvoiceForNewOrder, sweepMissingInvoices } from "./orders/invoices";
+export { generateInvoiceOnAccept, sweepMissingInvoices } from "./orders/invoices";
 export {
   remindIncompleteProfiles,
   remindIncompletePayoutDetails,
@@ -68,6 +70,8 @@ export {
   platformStatsOnProductDelete,
 } from "./stats/platform-daily";
 export { sellerStatsOnOrderWrite } from "./stats/seller-stats";
+export { rebuildProductBuyStats } from "./stats/product-buy-stats";
+export { syncOwnerSeatsOnSubscriptionWrite } from "./subscriptions/owner-seats";
 export { rebuildSocialStats } from "./stats/social-stats";
 
 admin.initializeApp();
@@ -429,15 +433,21 @@ export const decrementStockOnOrder = onDocumentCreated(
  * creation time for a scheduled subscription, only once it actually starts.
  */
 export const expireSubscriptions = onSchedule(
-  { schedule: "every 24 hours", timeZone: "Asia/Kolkata" },
+  { schedule: "every 24 hours", timeZone: "Asia/Kolkata", timeoutSeconds: 540 },
   async () => {
     const now = admin.firestore.Timestamp.now();
+
+    // Only subscription STATUSES change here. The seller's user doc
+    // (totalSeats / isPaid / subscriptionStatus) follows through
+    // syncOwnerSeatsOnSubscriptionWrite, which recomputes it from all of the
+    // owner's plans. This used to add seats on promotion and never take them
+    // off on expiry, so expired seats stayed counted; it also batch-updated
+    // users/{ownerId} docs that may not exist, which fails the whole batch.
 
     // ── Promote scheduled subscriptions whose start date has arrived ───────
     // Single-field equality query (no composite index needed — scheduled
     // subscriptions are rare, admin-assigned only, so filtering startDate
-    // in code instead of a second range clause is cheap and avoids needing
-    // a new Firestore composite index deploy for this one query).
+    // in code instead of a second range clause is cheap).
     const scheduledSnap = await db
       .collection("subscriptions")
       .where("subscriptionStatus", "==", "scheduled")
@@ -447,90 +457,34 @@ export const expireSubscriptions = onSchedule(
       return !!startDate && startDate.toMillis() <= now.toMillis();
     });
 
-    if (dueDocs.length > 0) {
-      const promoteBatch = db.batch();
-      for (const subDoc of dueDocs) {
-        const d = subDoc.data() as Record<string, unknown>;
-        promoteBatch.update(subDoc.ref, {
-          subscriptionStatus: "active",
-          updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-        });
-        const ownerPhone = String(d.ownerPhone ?? "");
-        const seats = Number(d.seatsPurchased) || 0;
-        if (ownerPhone) {
-          const userRef = db.collection("users").doc(ownerPhone);
-          const userSnap = await userRef.get();
-          const currentSeats = Number(userSnap.data()?.totalSeats) || 0;
-          promoteBatch.update(userRef, {
-            isPaid: true,
-            subscriptionStatus: "paid",
-            totalSeats: currentSeats + seats,
-            updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-          });
-        }
-      }
-      await promoteBatch.commit();
-      console.log(`[expireSubscriptions] promoted ${dueDocs.length} scheduled subscriptions to active`);
-    }
-
-    // Find active subscriptions that have passed their expiry date
+    // ── Expire active subscriptions past their expiry date ─────────────────
     const expiredSnap = await db
       .collection("subscriptions")
       .where("subscriptionStatus", "==", "active")
       .where("expiryDate", "<", now)
       .get();
 
-    if (expiredSnap.empty) return;
-
-    const batch = db.batch();
-
-    for (const subDoc of expiredSnap.docs) {
-      const d = subDoc.data() as Record<string, unknown>;
-
-      // Mark subscription as expired
-      batch.update(subDoc.ref, {
-        subscriptionStatus: "expired",
-        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-      });
-
-      // Check if this owner has any other active non-expired subscription
-      const ownerPhone = String(d.ownerPhone ?? "");
-      const ownerId    = String(d.ownerId    ?? "");
-
-      const otherActiveSubs = await db
-        .collection("subscriptions")
-        .where("subscriptionStatus", "==", "active")
-        .where(
-          ownerPhone ? "ownerPhone" : "ownerId",
-          "==",
-          ownerPhone || ownerId,
-        )
-        .where("expiryDate", ">=", now)
-        .limit(1)
-        .get();
-
-      if (otherActiveSubs.empty) {
-        // No other valid sub — revoke dashboard access
-        if (ownerPhone) {
-          batch.update(db.collection("users").doc(ownerPhone), {
-            isPaid: false,
-            subscriptionStatus: "expired",
-            updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-          });
-        }
-        if (ownerId) {
-          // Legacy uid-keyed user doc
-          batch.update(db.collection("users").doc(ownerId), {
-            isPaid: false,
-            subscriptionStatus: "expired",
-            updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-          });
-        }
+    const updates: Array<[FirebaseFirestore.DocumentReference, "active" | "expired"]> = [
+      ...dueDocs.map((d) => [d.ref, "active"] as [FirebaseFirestore.DocumentReference, "active"]),
+      ...expiredSnap.docs.map((d) => [d.ref, "expired"] as [FirebaseFirestore.DocumentReference, "expired"]),
+    ];
+    for (let i = 0; i < updates.length; i += 400) {
+      const batch = db.batch();
+      for (const [ref, status] of updates.slice(i, i + 400)) {
+        batch.update(ref, {
+          subscriptionStatus: status,
+          updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+        });
       }
+      await batch.commit();
     }
+    console.log(`[expireSubscriptions] promoted ${dueDocs.length}, expired ${expiredSnap.size}`);
 
-    await batch.commit();
-    console.log(`[expireSubscriptions] processed ${expiredSnap.size} expired subscriptions`);
+    // ── Self-heal every seller's seat snapshot ─────────────────────────────
+    // Catches anything the trigger missed and repairs seats left behind by
+    // the old add-only logic (first run fixes the backlog).
+    const report = await reconcileAllOwnerSeats();
+    console.log("[expireSubscriptions] owner seats reconciled", report);
   }
 );
 

@@ -5,6 +5,7 @@ import '../providers/auth_provider.dart';
 import '../utils/web_links.dart';
 import '../providers/user_provider.dart';
 import '../widgets/app_shell.dart';
+import '../../features/brand/screens/retailer_brand_editor_screen.dart';
 import '../../features/auth/screens/phone_entry_screen.dart';
 import '../../features/auth/screens/otp_verification_screen.dart';
 import '../../features/auth/screens/onboarding_screen.dart';
@@ -54,6 +55,7 @@ import '../../features/reels/screens/shop_products_screen.dart';
 import '../../features/reels/screens/shop_profile_screen.dart';
 import '../../features/reels/screens/followers_screen.dart';
 import '../../features/reels/providers/reels_provider.dart';
+import '../models/reel_model.dart';
 
 final _rootKey = GlobalKey<NavigatorState>(debugLabel: 'root');
 
@@ -540,6 +542,12 @@ final routerProvider = Provider<GoRouter>((ref) {
         builder: (_, _) => const _RootBackFallback(child: DeliverySettingsScreen()),
       ),
       GoRoute(
+        path: RetailerBrandEditorScreen.route,
+        parentNavigatorKey: _rootKey,
+        builder: (_, _) =>
+            const _RootBackFallback(child: RetailerBrandEditorScreen()),
+      ),
+      GoRoute(
         path: '/dashboard/profile',
         parentNavigatorKey: _rootKey,
         builder: (_, _) => const _RootBackFallback(child: DashboardProfileScreen()),
@@ -674,6 +682,7 @@ final routerProvider = Provider<GoRouter>((ref) {
                   final q = state.uri.queryParameters;
                   return MarketplaceScreen(
                     initialCategory: q['category'],
+                    initialSearch: q['search'],
                     searchFocusToken: q['focus'],
                     // Store-scoped browsing (from "View Store Products").
                     sellerPhone: q['seller'],
@@ -688,7 +697,13 @@ final routerProvider = Provider<GoRouter>((ref) {
           StatefulShellBranch(
             navigatorKey: _hubsKey,
             routes: [
-              GoRoute(path: '/hubs', builder: (_, _) => const HubsScreen()),
+              GoRoute(
+                path: '/hubs',
+                builder: (_, state) => HubsScreen(
+                  initialHubId: state.uri.queryParameters['hub'],
+                  token: state.uri.queryParameters['t'],
+                ),
+              ),
             ],
           ),
           StatefulShellBranch(
@@ -728,6 +743,10 @@ final routerProvider = Provider<GoRouter>((ref) {
                 path: '/reels',
                 builder: (_, state) => ReelsFeedScreen(
                   searchToken: state.uri.queryParameters['search'],
+                  startReelId: state.uri.queryParameters['reel'],
+                  startToken: state.uri.queryParameters['t'],
+                  startReel:
+                      state.extra is ReelModel ? state.extra as ReelModel : null,
                 ),
               ),
             ],

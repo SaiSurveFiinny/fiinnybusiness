@@ -6,6 +6,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
+import '../data/server_priced_items.dart';
 import '../../../core/payments/app_razorpay.dart';
 import '../../../core/constants/app_colors.dart';
 import '../../../core/constants/app_config.dart';
@@ -24,6 +25,7 @@ import '../../../core/widgets/loading_overlay.dart';
 import '../data/payment_service.dart';
 import '../../orders/data/order_repository.dart';
 import '../../../core/services/app_review_service.dart';
+import '../../../core/widgets/back_or_home_button.dart';
 
 class CheckoutScreen extends ConsumerStatefulWidget {
   const CheckoutScreen({super.key});
@@ -50,6 +52,9 @@ class _CheckoutScreenState extends ConsumerState<CheckoutScreen> {
   /// (create-cart-order's `sellerBreakdown`), keyed by seller. The order is
   /// written from these — the figures the customer was actually charged.
   Map<String, SellerPricing>? _serverPricing;
+
+  /// The lines as the server priced them (create-cart-order's `items`).
+  Object? _serverItems;
 
   late final AppRazorpay _razorpay;
   final _paymentService = PaymentService();
@@ -158,6 +163,7 @@ class _CheckoutScreenState extends ConsumerState<CheckoutScreen> {
 
       // The server's own per-seller pricing, when it sent it — what we are
       // about to charge, and what the order will be written from.
+      _serverItems = result['items'];
       final rawBreakdown = result['sellerBreakdown'];
       _serverPricing = rawBreakdown is List
           ? {
@@ -286,7 +292,8 @@ class _CheckoutScreenState extends ConsumerState<CheckoutScreen> {
     final delivery = await ref.read(deliveryChargeProvider.future);
 
     await _orderRepo.createOrdersAfterPayment(
-      items: items,
+      // Each line at the price the server charged, so the order matches it.
+      items: withServerPrices(items, _serverItems),
       customerName: _nameCtrl.text.trim(),
       customerPhone: user.phoneNumber ?? '',
       customerAddress: _addressMap(),
@@ -418,7 +425,12 @@ class _CheckoutScreenState extends ConsumerState<CheckoutScreen> {
     // title) invisible against the white background. AppTopBar is the same
     // gradient used correctly everywhere else in the app, with a dark
     // foreground that actually shows up on it.
-    const appBar = AppTopBar(title: 'Checkout');
+    // Back always works, even when checkout was opened after login (go)
+    // with nothing underneath.
+    const appBar = AppTopBar(
+      title: 'Checkout',
+      leading: BackOrHomeButton(fallback: '/cart'),
+    );
 
     if (items.isEmpty) {
       return Scaffold(
@@ -454,7 +466,7 @@ class _CheckoutScreenState extends ConsumerState<CheckoutScreen> {
                   children: [
                     for (var i = 0; i < items.length; i++) ...[
                       if (i > 0) const Divider(height: 20),
-                      _ItemTile(item: items[i]),
+                      _ItemTile(item: items[i], locked: _isLoading),
                     ],
                   ],
                 ),
@@ -913,7 +925,48 @@ class _SectionCard extends StatelessWidget {
 
 class _ItemTile extends ConsumerWidget {
   final CartItemModel item;
-  const _ItemTile({required this.item});
+
+  /// True while a payment is being started — the cart must not change under it.
+  final bool locked;
+  const _ItemTile({required this.item, this.locked = false});
+
+  /// Asks first. Removing the LAST product would leave an empty checkout, so
+  /// that case says so and returns the buyer to the cart instead.
+  Future<void> _confirmRemove(BuildContext context, WidgetRef ref) async {
+    final isLast = ref.read(cartProvider).length <= 1;
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Remove product?'),
+        content: Text(
+          isLast
+              ? '${item.catalogName} is the only product in your order. '
+                  'Removing it empties your cart.'
+              : 'Remove ${item.catalogName} from this order?',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(false),
+            child: const Text('Keep'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(ctx).pop(true),
+            style: FilledButton.styleFrom(backgroundColor: AppColors.error),
+            child: const Text('Remove'),
+          ),
+        ],
+      ),
+    );
+    if (ok != true || !context.mounted) return;
+    ref.read(cartProvider.notifier).removeItem(item.listingId, item.variantLabel);
+    if (isLast) {
+      context.go('/cart');
+    } else {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('${item.catalogName} removed')),
+      );
+    }
+  }
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -998,7 +1051,24 @@ class _ItemTile extends ConsumerWidget {
               // total on this screen (subtotal, savings, GST, delivery) is
               // derived from cartProvider, so they all recompute on change —
               // nothing needs recalculating by hand.
-              _CheckoutQtyControl(item: item),
+              // Wraps on narrow phones rather than overflowing the line.
+              Wrap(
+                spacing: 6,
+                crossAxisAlignment: WrapCrossAlignment.center,
+                children: [
+                  _CheckoutQtyControl(item: item),
+                  TextButton.icon(
+                    onPressed: locked ? null : () => _confirmRemove(context, ref),
+                    icon: const Icon(Icons.delete_outline, size: 18),
+                    label: const Text('Remove'),
+                    style: TextButton.styleFrom(
+                      foregroundColor: AppColors.error,
+                      visualDensity: VisualDensity.compact,
+                      padding: const EdgeInsets.symmetric(horizontal: 6),
+                    ),
+                  ),
+                ],
+              ),
             ],
           ),
         ),
@@ -1030,10 +1100,9 @@ class _ItemTile extends ConsumerWidget {
 
 /// Compact +/- stepper for a checkout line.
 ///
-/// Deliberately stops at 1 rather than removing the line the way the cart's
-/// control does: emptying the cart from the checkout screen would bounce the
-/// buyer out to "Your cart is empty" mid-payment. Removing a product stays a
-/// cart action.
+/// Stops at 1 rather than removing the line: removal is the explicit Remove
+/// button beside it (_ItemTile._confirmRemove), which asks first and handles
+/// the last product.
 class _CheckoutQtyControl extends ConsumerWidget {
   final CartItemModel item;
   const _CheckoutQtyControl({required this.item});
@@ -1062,7 +1131,7 @@ class _CheckoutQtyControl extends ConsumerWidget {
             padding: const EdgeInsets.all(4),
             constraints: const BoxConstraints(minWidth: 28, minHeight: 28),
             visualDensity: VisualDensity.compact,
-            tooltip: atMinimum ? 'Remove from the cart screen' : 'Reduce quantity',
+            tooltip: atMinimum ? 'Use Remove to take it out' : 'Reduce quantity',
             onPressed: atMinimum ? null : () => setQty(item.quantity - 1),
           ),
           Padding(

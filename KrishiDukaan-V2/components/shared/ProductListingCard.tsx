@@ -7,14 +7,21 @@
  * MarketplaceProduct, so non-marketplace callers (e.g. the subscription pitch
  * preview) can render a representative card without constructing a real product.
  *
+ * Pass `priceDisplay` (from displayPrice) to show a discount as
+ * "₹final ₹mrp X% off"; a bare `price` renders on its own.
+ *
  * Interactive when `onClick` is given (renders a <button>, as the Similar
  * Products rail needs); a plain, non-clickable <div> otherwise.
  */
+
+import { PriceTag } from "./price-tag";
+import type { DisplayPrice } from "../../app/lib/price-display";
 
 interface ProductListingCardProps {
   image: string;
   name: string;
   price: number;
+  priceDisplay?: DisplayPrice;
   category?: string;
   averageRating?: number;
   totalReviews?: number;
@@ -27,6 +34,7 @@ export function ProductListingCard({
   image,
   name,
   price,
+  priceDisplay,
   category,
   averageRating,
   totalReviews,
@@ -58,9 +66,7 @@ export function ProductListingCard({
             {totalReviews ? <span className="text-outline">({totalReviews})</span> : null}
           </span>
         )}
-        <span className="text-secondary font-extrabold text-sm">
-          ₹{price.toLocaleString("en-IN")}
-        </span>
+        <PriceTag value={priceDisplay ?? { price, mrp: null, pct: 0 }} size="sm" />
       </div>
     </>
   );

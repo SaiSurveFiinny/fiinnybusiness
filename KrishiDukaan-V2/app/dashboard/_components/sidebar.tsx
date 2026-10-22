@@ -15,6 +15,7 @@ import {
   PhoneCall,
   ReceiptText,
   Star,
+  Store,
   Truck,
   UserCircle2,
   UsersRound,
@@ -137,7 +138,8 @@ export function Sidebar({ mobileOpen, onMobileOpenChange }: SidebarProps) {
     }
     if (role === "retailer") {
       const items: NavItem[] = [...base.slice(0, 3), subscriptionNavKey, ...base.slice(3)];
-      if (companyPageNavItem) items.splice(items.length - 1, 0, companyPageNavItem);
+      // The retailer's own brand page sits where manufacturers see Company Page.
+      items.splice(items.length - 1, 0, { href: "/dashboard/brand-page", labelKey: "sideBrandPage", icon: Store });
       return items;
     }
     const items: NavItem[] = [...base];
