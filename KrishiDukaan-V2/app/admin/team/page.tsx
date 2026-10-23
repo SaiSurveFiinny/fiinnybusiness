@@ -35,6 +35,7 @@ const SECTION_LABELS: Record<AdminSection, string> = {
   payouts: "Seller payments: payout run, bank & KYC",
   routePayouts: "Seller payments: overview & Route transfers",
   moderation: "Moderation",
+  appVersion: "App updates",
   pricing: "Pricing & Promos",
   products: "Products",
   reels: "Reels",

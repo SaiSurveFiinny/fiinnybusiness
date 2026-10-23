@@ -341,7 +341,9 @@ export async function syncPriceToRetailers(
   for (const snap of copySnaps) {
     if (!snap.exists()) continue;
     if (snap.data().hasCustomPrice === true) { skipped++; continue; }
-    batch.update(snap.ref, { price, variants, updatedAt: serverTimestamp() });
+    // unit follows the first size so the copy's base size can't go stale.
+    const baseUnit = Array.isArray(variants) && variants[0]?.unit ? { unit: variants[0].unit } : {};
+    batch.update(snap.ref, { price, variants, ...baseUnit, updatedAt: serverTimestamp() });
     updated++;
   }
 

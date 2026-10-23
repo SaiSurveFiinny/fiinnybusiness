@@ -10,6 +10,8 @@ import { PlayCircle, Video, Eye } from 'lucide-react';
 import { HelperIcon, HelperTooltip } from '../../components/helpers';
 import { Tag } from 'lucide-react';
 import { BannerSlideVisual } from '../components/BannerSlide';
+import { displayPrice } from '../lib/price-display';
+import { PriceTag } from '../../components/shared/price-tag';
 
 interface HomeViewProps {
   products?: MarketplaceProduct[];
@@ -480,22 +482,12 @@ export default function HomeView({
 
         <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-4">
           {products.length > 0 ? products.slice(0, 10).map((product) => {
-            // "X% OFF" only appears for a GENUINE seller-configured discount —
-            // lowestFinalPrice (each seller's price after their own discountPct)
-            // being below lowestPrice (their plain price). We used to also treat
-            // "cheapest seller's price is below the catalog's reference price" as
-            // an offer, but that's just ordinary price variance between
-            // independent sellers (nobody ran a promotion) — it produced a fake
-            // "8% OFF" ribbon on products no seller had actually discounted.
-            const sellerBasePrice = product.lowestPrice ?? product.price;
-            const discountedPrice = product.lowestFinalPrice ?? sellerBasePrice;
-            const hasOffer = discountedPrice < sellerBasePrice;
-            const ribbonOriginal = sellerBasePrice;
-            const ribbonFinal = discountedPrice;
-            const maxPct = hasOffer && ribbonOriginal > 0
-              ? Math.round((1 - ribbonFinal / ribbonOriginal) * 100)
-              : 0;
-            const savings = Math.round(ribbonOriginal - ribbonFinal);
+            // "X% off" only for a GENUINE seller-configured discount, struck
+            // against that same seller's own price (see displayPrice) — never
+            // cheapest-seller variance dressed up as an offer.
+            const dp = displayPrice(product);
+            const hasOffer = dp.mrp !== null;
+            const maxPct = dp.pct;
             return (
             <motion.div
               key={product.id}
@@ -536,24 +528,7 @@ export default function HomeView({
               </div>
               <div className={`p-3 flex flex-col flex-1 ${hasOffer ? 'bg-gradient-to-b from-green-50/30 to-white' : ''}`}>
                 <h3 className="text-sm font-bold text-on-surface line-clamp-2 mb-1 leading-tight">{product.name}</h3>
-                {hasOffer ? (
-                  <div className="mt-auto">
-                    <div className="flex items-baseline gap-1.5">
-                      <span className="text-base font-black text-green-700">₹{ribbonFinal.toLocaleString('en-IN')}</span>
-                      <span className="text-[11px] text-outline line-through">₹{ribbonOriginal.toLocaleString('en-IN')}</span>
-                    </div>
-                    <span className="inline-flex items-center gap-1 mt-1 rounded-md bg-green-600 px-1.5 py-0.5 text-[9px] font-black text-white">
-                      <Tag className="h-2 w-2 shrink-0" />Save ₹{savings}
-                    </span>
-                  </div>
-                ) : (
-                  <div className="mt-auto flex items-baseline gap-1.5">
-                    <span className="text-base font-bold text-secondary">₹{sellerBasePrice.toLocaleString('en-IN')}</span>
-                    {product.oldPrice && product.oldPrice > sellerBasePrice && (
-                      <span className="text-[11px] text-outline line-through">₹{product.oldPrice}</span>
-                    )}
-                  </div>
-                )}
+                <PriceTag value={dp} size="sm" className="mt-auto" />
                 {product.sellMode !== "offline_store_only" && (
                   <div className="mt-2" onClick={(e) => e.stopPropagation()}>
                     <HelperTooltip side="top" textKey="marketAddToCart">

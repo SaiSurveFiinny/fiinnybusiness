@@ -22,6 +22,7 @@ import '../../cart/data/payment_service.dart' show PaymentService;
 import '../data/referral_service.dart';
 import '../data/subscription_pricing.dart';
 import '../providers/dashboard_provider.dart';
+import '../../../core/widgets/back_or_home_button.dart';
 
 /// Firestore document holding the live pricing ladder — the same one the web
 /// admin Pricing screen writes and `api/payment/create-order` charges from.
@@ -871,6 +872,8 @@ class _SubscriptionScreenState extends ConsumerState<SubscriptionScreen> {
       appBar: AppBar(
         backgroundColor: AppColors.primary,
         foregroundColor: Colors.white,
+        // New sellers and referral links land here with nothing underneath.
+        leading: const BackOrHomeButton(fallback: '/profile'),
         title: Text(
           'Subscription',
           style: AppTextStyles.heading2.copyWith(color: Colors.white),
@@ -998,20 +1001,24 @@ class _SubscriptionScreenState extends ConsumerState<SubscriptionScreen> {
 
           if (_tier == PlanTier.standard) ...[
             // ── Standard plan cards ─────────────────────────────────────────
-            Row(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                for (final p in _tierPlans) ...[
-                  Expanded(
-                    child: _StandardPlanCard(
-                      plan: p,
-                      selected: _duration.key == p.key,
-                      onTap: () => setState(() => _duration = p),
+            // Same height side by side: Yearly carries a badge and a struck
+            // price Monthly doesn't, so top-aligned cards came out uneven.
+            IntrinsicHeight(
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  for (final p in _tierPlans) ...[
+                    Expanded(
+                      child: _StandardPlanCard(
+                        plan: p,
+                        selected: _duration.key == p.key,
+                        onTap: () => setState(() => _duration = p),
+                      ),
                     ),
-                  ),
-                  if (p != _tierPlans.last) const SizedBox(width: 10),
+                    if (p != _tierPlans.last) const SizedBox(width: 10),
+                  ],
                 ],
-              ],
+              ),
             ),
             const SizedBox(height: 16),
           ] else ...[

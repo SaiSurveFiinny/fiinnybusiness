@@ -50,7 +50,7 @@ type PaymentRow = {
   buyerUserId: string | null; isSubscription: boolean; alreadyLinked: boolean; linkedOrderIds: string[]; note: string | null;
   fromInternal?: boolean;
 };
-type CreateResult = { ok: true; orderId: string; alreadyExisted: boolean; status: string; grandTotal: number; invoice: { ok: boolean; generated?: boolean; invoiceNumber?: string; error?: string } };
+type CreateResult = { ok: true; orderId: string; alreadyExisted: boolean; status: string; grandTotal: number; invoice: { ok: boolean; generated?: boolean; pending?: boolean; invoiceNumber?: string; error?: string } };
 
 const STEPS = ["Customer", "Retailer", "Products", "Review", "Payment", "Create"] as const;
 
@@ -625,7 +625,9 @@ export default function CreateManualOrderPage() {
               <p className="font-bold">{result.alreadyExisted ? "Order already existed (not re-created)." : "Order created."}</p>
               <p className="mt-1">Order ID <span className="font-mono font-bold">{result.orderId}</span> · status <span className="font-bold">{result.status}</span> · {inr(result.grandTotal)}</p>
             </Banner>
-            {result.invoice.ok
+            {result.invoice.ok && result.invoice.pending
+              ? <Banner tone="info">The invoice will be created when the seller accepts the order.</Banner>
+              : result.invoice.ok
               ? <Banner tone="info">Invoice {result.invoice.generated ? "generated" : "already present"}{result.invoice.invoiceNumber ? `: ${result.invoice.invoiceNumber}` : ""}.</Banner>
               : <Banner tone="warn">Invoice not generated: {result.invoice.error ?? "unknown error"}. You can safely re-run Create to retry — it will not duplicate the order or notifications.</Banner>}
             <Banner tone="info">Customer and seller WhatsApp notifications and inventory are handled automatically by the existing order triggers — exactly once.</Banner>

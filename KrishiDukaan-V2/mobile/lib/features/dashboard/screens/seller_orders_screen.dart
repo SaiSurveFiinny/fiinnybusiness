@@ -9,6 +9,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:http/http.dart' as http;
 import 'package:intl/intl.dart';
 import 'package:url_launcher/url_launcher.dart';
+import '../../../core/widgets/back_or_home_button.dart';
 import '../../../core/constants/app_colors.dart';
 import '../../../core/constants/app_config.dart';
 import '../../../core/constants/app_text_styles.dart';
@@ -89,7 +90,10 @@ class _SellerOrdersBodyState extends ConsumerState<_SellerOrdersBody> {
       appBar: AppBar(
         backgroundColor: AppColors.primary,
         foregroundColor: Colors.white,
-        title: Text('My Orders',
+        leading: const BackOrHomeButton(color: Colors.white),
+        // "Customer Orders", not "My Orders": that name is the seller's own
+        // purchases (/orders) — two screens with one title confused sellers.
+        title: Text('Customer Orders',
             style: AppTextStyles.heading2.copyWith(color: Colors.white)),
         actions: [
           IconButton(
@@ -684,7 +688,7 @@ class _SellerOrderCard extends StatelessWidget {
                           ),
                         Text(
                           '${order.items.length} item${order.items.length != 1 ? "s" : ""}'
-                          '${order.invoiceNumber != null ? " · ${order.invoiceNumber}" : ""}',
+                          '${order.invoiceNumber != null && order.hasInvoice ? " · ${order.invoiceNumber}" : ""}',
                           style: AppTextStyles.caption.copyWith(fontSize: 9),
                         ),
                       ],
@@ -1205,7 +1209,12 @@ class _ActionButtonsState extends State<_ActionButtons> {
       ),
     );
 
+    // The invoice exists once the order is accepted — not while it can
+    // still be rejected (or after it was rejected/cancelled).
+    final showInvoice = widget.order.hasInvoice;
+
     if (!hasActions) {
+      if (!showInvoice) return const SizedBox.shrink();
       return SizedBox(
         width: double.infinity,
         child: invoiceButton,
@@ -1247,11 +1256,13 @@ class _ActionButtonsState extends State<_ActionButtons> {
             ],
           ],
         ),
-        const SizedBox(height: 10),
-        SizedBox(
-          width: double.infinity,
-          child: invoiceButton,
-        ),
+        if (showInvoice) ...[
+          const SizedBox(height: 10),
+          SizedBox(
+            width: double.infinity,
+            child: invoiceButton,
+          ),
+        ],
       ],
     );
   }

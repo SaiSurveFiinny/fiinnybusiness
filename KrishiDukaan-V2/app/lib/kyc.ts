@@ -20,6 +20,20 @@
 export const IFSC_RE = /^[A-Z]{4}0[A-Z0-9]{6}$/;
 /** Indian account numbers run 9–18 digits depending on the bank. */
 export const ACCOUNT_RE = /^\d{9,18}$/;
+
+/** Account holder name as the bank has it: letters (any script), spaces and
+ *  . , ' & ( ) / - only ("M/s Sai Agro"), at least two letters, no digits.
+ *  Same rule as mobile/lib/core/utils/kyc_rules.dart. */
+// Built with the constructor: the project's TS target rejects the /u flag on
+// literals, while every supported browser and Node has it.
+const HOLDER_NAME_RE = new RegExp("^[\\p{L}\\p{M} .,'&()/-]+$", "u");
+const LETTER_RE = new RegExp("\\p{L}", "gu");
+
+export function isValidHolderName(raw: string): boolean {
+  const t = raw.trim();
+  if (t.length < 2 || !HOLDER_NAME_RE.test(t)) return false;
+  return (t.match(LETTER_RE) ?? []).length >= 2;
+}
 export const PAN_RE = /^[A-Z]{3}[ABCFGHJLPT][A-Z]\d{4}[A-Z]$/;
 export const GSTIN_RE = /^\d{2}[A-Z]{5}\d{4}[A-Z][1-9A-Z]Z[0-9A-Z]$/;
 

@@ -47,8 +47,10 @@ List<DashboardNavItem> buildDashboardNavItems({
           '/dashboard/subscription'),
     const DashboardNavItem(
         Icons.video_collection_outlined, 'Reels', '/dashboard/reels'),
+    // Orders customers place with this shop — the seller's OWN purchases
+    // are "My Orders" (/orders) on the Profile screen.
     const DashboardNavItem(
-        Icons.receipt_long_outlined, 'Orders', '/dashboard/orders'),
+        Icons.receipt_long_outlined, 'Customer Orders', '/dashboard/orders'),
     if (isSeller)
       // Customers who started an order for this seller's products but never
       // paid. Sits under Orders because it is the same question one step
@@ -67,7 +69,11 @@ List<DashboardNavItem> buildDashboardNavItems({
         Icons.star_outline, 'Reviews', '/dashboard/reviews'),
     if (isManufacturer)
       const DashboardNavItem(Icons.business_outlined, 'Company Page',
-          '/dashboard/manufacturer/brand'),
+          '/dashboard/manufacturer/brand')
+    else if (isSeller)
+      // The retailer's own brand page — same slot as the Company Page.
+      const DashboardNavItem(Icons.storefront_outlined, 'Brand Page',
+          '/dashboard/brand-page'),
     const DashboardNavItem(Icons.account_circle_outlined,
         'Business Settings', '/dashboard/profile'),
   ];

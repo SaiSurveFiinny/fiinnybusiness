@@ -38,4 +38,14 @@ void main() {
     expect(m(docs: ['pan_card']), [KycItem.licence]);
     expect(m(acct: false), [KycItem.bank]);
   });
+
+  test('account holder name: letters only, at least two', () {
+    expect(isValidHolderName('Ramesh Patil'), isTrue);
+    expect(isValidHolderName('M/s Sai Agro'), isTrue);
+    expect(isValidHolderName("D'Souza & Sons"), isTrue);
+    expect(isValidHolderName('रमेश पाटील'), isTrue);
+    expect(isValidHolderName('Ramesh 123'), isFalse);
+    expect(isValidHolderName(' R '), isFalse);
+    expect(isValidHolderName(''), isFalse);
+  });
 }

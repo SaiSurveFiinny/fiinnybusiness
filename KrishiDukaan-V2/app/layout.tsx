@@ -4,6 +4,7 @@ import "./globals.css";
 import Script from "next/script";
 import { OpenAIPixel } from "../components/shared/openai-pixel";
 import { I18nProvider } from "./i18n/I18nContext";
+import { UpdatePrompt } from "./components/shared/update-prompt";
 
 // Self-hosted via next/font (replaces the render-blocking CSS @import in
 // globals.css). Exposed as the --font-jakarta CSS variable, which Tailwind's
@@ -167,6 +168,7 @@ export default function RootLayout({
         />
         <I18nProvider>
           {children}
+          <UpdatePrompt />
           <Script
             id="razorpay-checkout-js"
             src="https://checkout.razorpay.com/v1/checkout.js"

@@ -22,8 +22,8 @@ import '../../../core/widgets/section_header.dart';
 import '../../../core/widgets/shimmer_product_card.dart';
 import '../../notifications/notifications.dart';
 import '../providers/marketplace_provider.dart';
+import '../../hubs/widgets/shop_by_crop_section.dart';
 import '../../reels/providers/reels_provider.dart';
-import '../../reels/screens/shop_profile_screen.dart' show StandaloneReelsFeed;
 import '../../../core/models/reel_model.dart';
 import '../../../core/utils/format_count.dart';
 
@@ -234,6 +234,9 @@ class HomeScreen extends ConsumerWidget {
                       );
                     },
                   ),
+                  const SizedBox(height: 24),
+                  // Same place as on the website: right after categories.
+                  const ShopByCropSection(),
                   const SizedBox(height: 24),
                   const _BenefitsStrip(),
                   const SizedBox(height: 28),
@@ -1227,7 +1230,7 @@ class _ReelsRail extends ConsumerWidget {
                 separatorBuilder: (_, _) => const SizedBox(width: 12),
                 itemBuilder: (_, i) => SizedBox(
                   width: 120,
-                  child: _ReelRailCard(reel: displayReels[i], allReels: reels),
+                  child: _ReelRailCard(reel: displayReels[i]),
                 ),
               ),
             ),
@@ -1254,32 +1257,21 @@ String? _reelThumb(ReelModel reel) {
 class _ReelRailCard extends ConsumerWidget {
   final ReelModel reel;
 
-  /// The rail's full (ranked) list — the fullscreen feed opens over it at the
-  /// tapped reel's position, so the reel shown is exactly the thumbnail
-  /// tapped. Routing through the /reels tab instead was racy: the tab's feed
-  /// re-ranks on open, so it frequently started on a different reel.
-  final List<ReelModel> allReels;
-
-  const _ReelRailCard({required this.reel, required this.allReels});
+  const _ReelRailCard({required this.reel});
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     return GestureDetector(
+      // Opens in the main Reels tab with this reel first, then the normal
+      // feed — the standard Reels experience (share, follow, comments, and
+      // pausing when a profile opens). Picked by id, not position, so the
+      // feed re-ranking can't start it on a different reel; the feed is
+      // already cached, so this costs no read. `t` makes a repeat tap work.
       onTap: () {
-        final index = allReels.indexWhere((r) => r.id == reel.id);
-        final user = ref.read(currentUserProvider).value;
-        Navigator.of(context, rootNavigator: true).push(
-          MaterialPageRoute(
-            fullscreenDialog: true,
-            builder: (_) => ProviderScope(
-              child: StandaloneReelsFeed(
-                reels: allReels,
-                initialIndex: index < 0 ? 0 : index,
-                currentUserId: user?.phone,
-                currentUserName: user?.businessName ?? user?.name ?? '',
-              ),
-            ),
-          ),
+        context.go(
+          '/reels?reel=${Uri.encodeQueryComponent(reel.id)}'
+          '&t=${DateTime.now().millisecondsSinceEpoch}',
+          extra: reel,
         );
       },
       child: Container(

@@ -13,6 +13,15 @@ final ifscRe = RegExp(r'^[A-Z]{4}0[A-Z0-9]{6}$');
 
 /// Indian account numbers run 9–18 digits depending on the bank.
 final accountRe = RegExp(r'^\d{9,18}$');
+
+/// Account holder name as the bank has it: letters (any script), spaces and
+/// . , ' & ( ) / - only ("M/s Sai Agro"), at least two letters, no digits. Same rule as app/lib/kyc.ts.
+bool isValidHolderName(String raw) {
+  final t = raw.trim();
+  if (t.length < 2) return false;
+  if (!RegExp(r"^[\p{L}\p{M} .,'&()/-]+$", unicode: true).hasMatch(t)) return false;
+  return RegExp(r'\p{L}', unicode: true).allMatches(t).length >= 2;
+}
 final panRe = RegExp(r'^[A-Z]{3}[ABCFGHJLPT][A-Z]\d{4}[A-Z]$');
 final gstinRe = RegExp(r'^\d{2}[A-Z]{5}\d{4}[A-Z][1-9A-Z]Z[0-9A-Z]$');
 

@@ -57,5 +57,10 @@ export async function POST(request: Request) {
 
   const res = await ensureOrderInvoice(orderId, { force: body.force === true && isAdmin });
   if (res.ok === false) return NextResponse.json({ error: res.error }, { status: res.status });
-  return NextResponse.json({ ok: true, generated: res.generated, invoiceNumber: res.invoiceNumber });
+  return NextResponse.json({
+    ok: true,
+    generated: res.generated,
+    invoiceNumber: res.invoiceNumber,
+    ...(res.pending ? { pending: true } : {}),
+  });
 }

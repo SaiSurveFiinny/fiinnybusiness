@@ -21,6 +21,7 @@
 
 import { computeLinePricing } from "../utils/gst";
 import { normalizeUnit } from "../utils/weight";
+import { getActiveDiscountAmt, getActiveDiscountPct, type DiscountFields } from "../utils/discount";
 import {
   chargeFromSlabs,
   resolveDeliverySlabs,
@@ -385,4 +386,67 @@ export function hasCommercial(d: Record<string, unknown> | null | undefined): bo
     d.extraDeliveryCharge !== undefined ||
     d.freeDelivery !== undefined
   );
+}
+
+/**
+ * The seller's discount on [price], from a priced doc's discount fields —
+ * the same helpers the cart and product page use (app/utils/discount.ts), so
+ * the charge matches what the customer was shown:
+ *  - a percentage applies only when discountType isn't "fixed_amount" (the
+ *    app stores a leftover discountPct next to a fixed discount), and
+ *  - a fixed amount respects the discount's start/end dates (an expired
+ *    ₹300-off was still being taken off a ₹400 item).
+ */
+export function discountedPrice(d: Record<string, unknown>, price: number): number {
+  const fields = d as unknown as DiscountFields;
+  const pct = getActiveDiscountPct(fields);
+  const pctOff = Math.round((price * pct) / 100 * 100) / 100;
+  const fixedOff = getActiveDiscountAmt(fields);
+  return Math.round(Math.max(0, price - pctOff - fixedOff) * 100) / 100;
+}
+
+/** First value that is a positive number — a stored 0 is "not priced", never "free". */
+export function positive(...values: unknown[]): number {
+  for (const v of values) {
+    const n = Number(v);
+    if (Number.isFinite(n) && n > 0) return n;
+  }
+  return 0;
+}
+
+/**
+ * The unit price of the pack size the customer chose, at THIS store.
+ *
+ * [ladders] are this store's size lists, most specific first (its inventory
+ * row, its product copy, its availability[] entry, and the product's own
+ * list when the store owns the product). The first one listing the size wins.
+ * When none does:
+ *  - no size asked, or a single-size product → [storeBase];
+ *  - the product's base size → [storeBase] (the store's plain price is the
+ *    base size's price);
+ *  - any other size → null: this store doesn't price that size, and the line
+ *    is refused rather than charged at the base price. Charging the base was
+ *    the bug: a 5 L can of a product whose 1 L costs ₹200 was charged ₹200.
+ */
+export function sizePrice(
+  variantUnit: string,
+  storeBase: number,
+  ladders: unknown[],
+  catalog: Record<string, unknown> | null,
+): number | null {
+  if (!variantUnit) return storeBase > 0 ? storeBase : null;
+  for (const ladder of ladders) {
+    const p = variantPriceFor(ladder, variantUnit);
+    if (p !== null) return p;
+  }
+  const catalogSizes = Array.isArray(catalog?.variants)
+    ? (catalog!.variants as Array<Record<string, unknown> | null>).filter((v) => v && normalizeUnit(String(v.unit ?? '')))
+    : [];
+  if (catalogSizes.length < 2) return storeBase > 0 ? storeBase : null;
+  const catalogPrice = Number(catalog?.price);
+  const base = catalogSizes.find((v) => Number(v!.price) === catalogPrice) ?? catalogSizes[0];
+  if (normalizeUnit(String(base!.unit ?? '')) === normalizeUnit(variantUnit)) {
+    return storeBase > 0 ? storeBase : null;
+  }
+  return null;
 }

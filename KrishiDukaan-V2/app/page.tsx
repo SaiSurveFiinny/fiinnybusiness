@@ -37,6 +37,7 @@ import { getUserLocation, DEFAULT_LOCATION, DEFAULT_LOCATION_LABEL, GeoResult } 
 import { computeStoreDistances, storeStocksProduct } from './utils/nearby';
 import type { CartItem } from '../types/order';
 import { cartItemKey } from '../types/order';
+import { withServerPrices, type ServerPricedItem } from './lib/server-priced-items';
 import { calcDiscount } from './utils/discount';
 import { computeLinePricing } from './utils/gst';
 import { saveCart, loadStoredCart, reconstructCartItems, mergeCartItems } from './cartService';
@@ -1218,7 +1219,9 @@ export default function App() {
 
 
     setCartItems((prev) => {
-      const variantUnit = variant?.unit;
+      // One-size products have no variants; carry their base size so the
+      // order and invoice show it (the app already sends catalog.unit).
+      const variantUnit = variant?.unit || (!product.variants?.length && product.unit ? String(product.unit) : undefined);
       const found = prev.find(
         (i) => i.productId === product.id && i.sellMode === "pending" && i.variantUnit === variantUnit,
       );
@@ -1268,8 +1271,12 @@ export default function App() {
     .reduce((sum, item) => sum + item.price * item.qty, 0);
 
   // Core order creation — called after successful payment
-  const createOrdersAfterPayment = async (paymentDetails?: any, serverBreakdown?: any[]) => {
-    const readyItems = cartItems.filter((i) => i.sellMode === "online_delivery" && i.sellerId);
+  const createOrdersAfterPayment = async (paymentDetails?: any, serverBreakdown?: any[], serverItems?: ServerPricedItem[]) => {
+    // Each line at the price the server charged, so the order matches the payment.
+    const readyItems = withServerPrices(
+      cartItems.filter((i) => i.sellMode === "online_delivery" && i.sellerId),
+      serverItems,
+    );
     const pendingItems = cartItems.filter((i) => i.sellMode === "pending" || !i.sellerId);
 
     const orderIds = await createOrdersFromCart({
@@ -1412,6 +1419,22 @@ export default function App() {
       const rzpOrder = await orderRes.json();
       console.log("[Checkout] rzpOrder:", { id: rzpOrder.id, amount: rzpOrder.amount, serverTotal: rzpOrder.serverTotal });
 
+      // The server prices every line itself (seller's current price, pack size,
+      // discount, GST, delivery). If that differs from the cart, say so before
+      // taking money — same as the app's "Your total has changed" step.
+      const serverTotal = Number(rzpOrder.serverTotal ?? rzpOrder.amount / 100);
+      if (Number.isFinite(serverTotal) && Math.abs(serverTotal - clientGrandTotal) > 1) {
+        const ok = window.confirm(
+          `The seller's current prices make your total ₹${serverTotal.toLocaleString("en-IN")} ` +
+          `(your cart showed ₹${clientGrandTotal.toLocaleString("en-IN")}). Continue to pay ₹${serverTotal.toLocaleString("en-IN")}?`,
+        );
+        if (!ok) {
+          setCheckoutLoading(false);
+          setCheckoutMessage("Payment not started. Your cart is safe.");
+          return;
+        }
+      }
+
       // Step 2: Open Razorpay modal
       const rzp = new (window as any).Razorpay({
         key: process.env.NEXT_PUBLIC_RAZORPAY_KEY_ID,
@@ -1447,7 +1470,7 @@ export default function App() {
                 amount: rzpOrder.amount / 100,
                 status: "paid",
                 paidAt: new Date().toISOString(),
-              }, rzpOrder.sellerBreakdown);
+              }, rzpOrder.sellerBreakdown, rzpOrder.items);
             } else {
               setCheckoutMessage("❌ Payment verification failed. Contact support if money was deducted.");
             }
@@ -1501,7 +1524,7 @@ export default function App() {
               amount: rzpOrder.amount / 100,
               status: "paid",
               paidAt: new Date().toISOString(),
-            }, rzpOrder.sellerBreakdown);
+            }, rzpOrder.sellerBreakdown, rzpOrder.items);
             setCheckoutLoading(false);
             return;
           }
@@ -1556,7 +1579,8 @@ export default function App() {
 
     const sellerType: "retailer" | "manufacturer" =
       (store as any).retailerId ? "retailer" : "manufacturer";
-    const variantUnit = variant?.unit;
+    // One-size products: carry the base size, as above.
+    const variantUnit = variant?.unit || (!product.variants?.length && product.unit ? String(product.unit) : undefined);
 
     setCartItems((prev) => {
       const found = prev.find(
