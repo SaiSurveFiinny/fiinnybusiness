@@ -2675,6 +2675,23 @@ export async function adminUpdateProduct(productId: string, product: Partial<Mar
   await setDoc(doc(db, 'products', productId), { ...clean, updatedAt: serverTimestamp() }, { merge: true });
 }
 
+/**
+ * Admin: set ONLY the Organic Certified flag on the canonical product document.
+ *
+ * Deliberately a single-field merge write — it never touches variants, price,
+ * stock, availability or any other field. The full product-edit save rebuilds
+ * the variant array from the form, so routing a mere badge toggle through it
+ * could alter variants/stock; this keeps the toggle isolated to the boolean the
+ * public product page reads (see types/product.ts organicCertified).
+ */
+export async function adminSetOrganicCertified(productId: string, value: boolean): Promise<void> {
+  await setDoc(
+    doc(db, 'products', productId),
+    { organicCertified: value === true, updatedAt: serverTimestamp() },
+    { merge: true },
+  );
+}
+
 export async function adminDeleteProduct(productId: string): Promise<void> {
   await deleteDoc(doc(db, 'products', productId));
 }

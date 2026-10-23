@@ -15,7 +15,7 @@ import { CompositionEditor, COMPOSITION_CATEGORIES, type CompositionEntry } from
 import { CustomFieldsEditor, type CustomFieldEntry } from "../_components/custom-fields-editor";
 import Link from "next/link";
 import { ref as storageRef, uploadBytes, getDownloadURL } from "firebase/storage";
-import { storage, fetchAllMarketplaceProducts, adminCreateProduct, adminUpdateProduct } from "../../firebase";
+import { storage, fetchAllMarketplaceProducts, adminCreateProduct, adminUpdateProduct, adminSetOrganicCertified } from "../../firebase";
 import { compressImage, imageUploadMetadata } from "../../utils/compressImage";
 import { createManufacturerProduct, fetchProductForAutofill, searchProductsByName, type ProductSearchResult } from "../_lib/manufacturer-products-firestore";
 import { createProductAndInventory, retailerHasProduct } from "../_lib/inventory-firestore";
@@ -523,6 +523,10 @@ export function AddProductInventoryForm({
 
   // Admin-only: "Organic Certified" badge flag on the canonical product doc.
   const [organicCertified, setOrganicCertified] = useState(false);
+  // Status of the isolated organic-only write when editing an existing product.
+  const [organicSaving, setOrganicSaving] = useState(false);
+  const [organicSaved, setOrganicSaved] = useState(false);
+  const [organicError, setOrganicError] = useState<string | null>(null);
 
   // New products default to offline; seller opts in when account delivery is enabled
   const [sellMode, setSellMode] = useState<"online_delivery" | "offline_store_only">("offline_store_only");
@@ -568,6 +572,7 @@ export function AddProductInventoryForm({
     setGstApplicable(!!p.gstApplicable);
     setGstRate(p.gstRate ?? 0);
     setOrganicCertified(p.organicCertified === true);
+    setOrganicSaved(false); setOrganicError(null); setOrganicSaving(false);
     setSellMode(p.sellMode === "offline_store_only" ? "offline_store_only" : "online_delivery");
     setVideoUrl((p as any).videoUrl ?? "");
     setComposition(Array.isArray((p as any).composition) ? (p as any).composition : []);
@@ -863,6 +868,31 @@ export function AddProductInventoryForm({
       setMessage({ type: "err", text: err instanceof Error ? err.message : "Failed to create product." });
     } finally {
       setSubmitting(false);
+    }
+  };
+
+  /**
+   * Organic Certified toggle. For an existing product it persists on its own —
+   * a single-field merge write to the canonical doc (adminSetOrganicCertified)
+   * — so flipping the badge never runs the full product save that rebuilds the
+   * variant array. For a new product it only updates local state and is written
+   * once by the create payload. It never creates/edits variants, price, stock
+   * or availability.
+   */
+  const toggleOrganic = async (next: boolean) => {
+    setOrganicCertified(next);
+    setOrganicSaved(false);
+    setOrganicError(null);
+    if (!adminMode || !initialProduct?.id) return; // new product → saved by create payload
+    setOrganicSaving(true);
+    try {
+      await adminSetOrganicCertified(initialProduct.id, next);
+      setOrganicSaved(true);
+    } catch (err) {
+      setOrganicCertified(!next); // revert the UI so it matches what's stored
+      setOrganicError(err instanceof Error ? err.message : "Could not save. Try again.");
+    } finally {
+      setOrganicSaving(false);
     }
   };
 
@@ -1241,14 +1271,25 @@ export function AddProductInventoryForm({
                 <p className="text-xs text-on-surface-variant mt-0.5">
                   Shows the &ldquo;Organic Certified&rdquo; badge on this product. Enable only for products with a verified organic certification.
                 </p>
+                {initialProduct?.id && (
+                  <p className="mt-1 text-[11px] font-medium">
+                    {organicSaving ? (
+                      <span className="inline-flex items-center gap-1 text-on-surface-variant"><Loader2 className="h-3 w-3 animate-spin" /> Saving…</span>
+                    ) : organicError ? (
+                      <span className="text-red-600">{organicError}</span>
+                    ) : organicSaved ? (
+                      <span className="text-green-700">Saved — only the certification flag was changed.</span>
+                    ) : null}
+                  </p>
+                )}
               </div>
               <label className="inline-flex items-center cursor-pointer select-none">
                 <input
                   type="checkbox"
                   className="sr-only peer"
-                  disabled={isDisabled}
+                  disabled={isDisabled || organicSaving}
                   checked={organicCertified}
-                  onChange={(e) => setOrganicCertified(e.target.checked)}
+                  onChange={(e) => void toggleOrganic(e.target.checked)}
                 />
                 <span className="relative h-6 w-11 rounded-full bg-outline-variant/40 peer-checked:bg-primary transition-colors peer-disabled:opacity-50 after:absolute after:top-0.5 after:left-0.5 after:h-5 after:w-5 after:rounded-full after:bg-white after:transition-transform peer-checked:after:translate-x-5" />
               </label>

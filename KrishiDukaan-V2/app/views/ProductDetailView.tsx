@@ -730,6 +730,8 @@ export default function ProductDetailView({
           variants: Array.isArray(d.variants) ? (d.variants as any) : undefined,
           effectiveDiscountPct: 0,
           maxDiscountPct: 0,
+          // Canonical certification flag — badge shows only on an explicit true.
+          organicCertified: d.organicCertified === true ? true : undefined,
           gstApplicable: d.gstApplicable === true,
           freeDelivery: d.freeDelivery === true ? true : undefined,
           extraDeliveryCharge: typeof d.extraDeliveryCharge === 'number' && d.extraDeliveryCharge > 0 ? d.extraDeliveryCharge : undefined,
@@ -758,6 +760,23 @@ export default function ProductDetailView({
   const [liveStoreRatings, setLiveStoreRatings] = useState<Record<string, { avg: number; count: number }>>({});
   const [activeImage, setActiveImage] = useState<string>('');
   const [shareToast, setShareToast] = useState<string | null>(null);
+
+  // Organic Certified is authoritative from the CANONICAL product document only.
+  // The prebuilt marketplaceCards the in-memory list comes from do not carry the
+  // flag, so read products/{id} directly rather than inferring it from a card,
+  // a retailer copy or the name. Skipped when the resolved product already
+  // carries an explicit true (the direct-by-id fallback above).
+  const [canonicalOrganic, setCanonicalOrganic] = useState(false);
+  useEffect(() => {
+    const id = product?.id;
+    if (!id) { setCanonicalOrganic(false); return; }
+    if (product?.organicCertified === true) { setCanonicalOrganic(true); return; }
+    let cancelled = false;
+    getDoc(doc(db, 'products', id))
+      .then((snap) => { if (!cancelled) setCanonicalOrganic(snap.exists() && snap.data()?.organicCertified === true); })
+      .catch(() => { if (!cancelled) setCanonicalOrganic(false); });
+    return () => { cancelled = true; };
+  }, [product?.id, product?.organicCertified]);
 
   const handleStoreAggregate = useCallback((phone: string, avg: number, count: number) => {
     setLiveStoreRatings((prev) => {
@@ -1787,7 +1806,7 @@ export default function ProductDetailView({
         {/* Name + badges */}
         <div className="flex flex-col gap-2">
           <div className="flex items-center gap-4 flex-wrap">
-            {product.organicCertified === true && (
+            {canonicalOrganic && (
               <HelperTooltip side="bottom" textKey="productQualityBadge">
                 <span className="bg-secondary-container text-on-secondary-container px-3 py-1 rounded-xl text-[10px] font-black uppercase tracking-widest border border-secondary/20 cursor-help">
                   {t('organicCertified')}

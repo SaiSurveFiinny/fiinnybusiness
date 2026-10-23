@@ -43,7 +43,7 @@ export {
   rebuildStoreDirectoryIfDirty,
 } from "./stores/directory";
 export { raiseAbandonedCheckoutEnquiries } from "./notifications/enquiries";
-export { notifySellerOfOrderOffer, expireOrderReassignments } from "./notifications/reassignment";
+export { notifySellerOfOrderOffer, expireOrderReassignments, notifyOnAdminReassignment } from "./notifications/reassignment";
 export { generateInvoiceOnAccept, sweepMissingInvoices } from "./orders/invoices";
 export {
   remindIncompleteProfiles,

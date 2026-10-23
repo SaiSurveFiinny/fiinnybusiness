@@ -112,9 +112,11 @@ export function matchOrderTransfer(transfers: RazorpayTransfer[], order: Order):
     return Boolean(note) && (ids.includes(note) || keys.has(phoneKey(note)));
   });
   if (tagged) return tagged;
-  // A reassigned order never falls back to the payment's only transfer: that
-  // is the seller who rejected it (see route-release.ts).
-  if (!order.reassignment && transfers.length === 1 && !notesOf(transfers[0]).sellerKey) return transfers[0];
+  // A reassigned order never falls back to the payment's only transfer: that is
+  // the original/rejecting seller's transfer, so it would resolve the wrong
+  // seller (see route-release.ts). Covers both seller-rejection (reassignment)
+  // and admin "Route Order" (adminReassignment) reassignments.
+  if (!order.reassignment && !order.adminReassignment && transfers.length === 1 && !notesOf(transfers[0]).sellerKey) return transfers[0];
   return null;
 }
 

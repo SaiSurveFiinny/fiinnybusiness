@@ -530,7 +530,7 @@ service cloud.firestore {
         && request.resource.data.sellerType in ['retailer', 'manufacturer']
         // Who-gets-paid fields are the server's (payout: Razorpay's transfer
         // status, functions/src/payouts/payout-status.ts).
-        && !request.resource.data.keys().hasAny(['payout', 'routeRelease', 'routeTransfer', 'reassignment'])
+        && !request.resource.data.keys().hasAny(['payout', 'routeRelease', 'routeTransfer', 'reassignment', 'adminReassignment'])
         && noProtectedPaymentKeys(request.resource.data.get('payment', null));
 
       // teamHas('users') covers the admin "view seller's dashboard" link.
@@ -562,7 +562,7 @@ service cloud.firestore {
         // customer-cancellable again (POST /api/orders/cancel).
         && (request.resource.data.status != 'placed' || resource.data.status == 'placed')
         && !request.resource.data.diff(resource.data).affectedKeys().hasAny([
-          'reassignment', 'routeTransfer', 'routeRelease', 'payment', 'payout',
+          'reassignment', 'adminReassignment', 'routeTransfer', 'routeRelease', 'payment', 'payout',
           'sellerPhone', 'sellerId', 'customerId', 'customerPhone','tracking'
         ]))
         // Allow customer to update payment field on their own order

@@ -406,8 +406,43 @@ export type OrderDoc = {
    * Written by the server only.
    */
   payout?: PayoutInfo;
+  /**
+   * Audit trail for an admin "Route Order" reassignment (app/lib/admin-order-
+   * reassignment.ts). Present only on orders an admin moved from one retailer to
+   * another before acceptance. Server-written only.
+   */
+  adminReassignment?: AdminReassignmentInfo;
   createdAt?: unknown;
   updatedAt?: unknown;
+};
+
+export type AdminReassignmentInfo = {
+  /** ISO — when the reassignment was committed. */
+  at: string;
+  /** Admin uid who reassigned it. */
+  by: string;
+  /** Operator-supplied reason. */
+  reason: string;
+  fromSellerPhone: string;
+  fromSellerName?: string;
+  toSellerPhone: string;
+  toSellerName: string;
+  /** False when reassigned via the fallback list (store has online delivery on
+   *  but does not necessarily stock every item in the order). */
+  fullyEligible?: boolean;
+  /**
+   * The ORIGINAL retailer's transfer state as inspected at reassignment time.
+   * Reassignment is ownership-only — it creates/reverses nothing — so this just
+   * records what was found:
+   *   none       — no transfer, or already reversed.
+   *   held       — parked on an indefinite hold; never settles unless released,
+   *                and release resolves the current seller, so it is left as-is.
+   *   unverified — the transfer state couldn't be read from Razorpay.
+   */
+  existingTransfer?:
+    | { kind: "none" }
+    | { kind: "held"; transferId: string; paise: number }
+    | { kind: "unverified"; error: string };
 };
 
 export type RouteReleaseInfo = {
