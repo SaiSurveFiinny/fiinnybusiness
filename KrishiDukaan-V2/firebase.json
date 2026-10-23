@@ -32,7 +32,15 @@
       "frameworksBackend": {
         "region": "asia-south1"
       },
-      "appAssociation": "NONE"
+      "appAssociation": "NONE",
+      "headers": [
+        {
+          "source": "/.well-known/apple-app-site-association",
+          "headers": [
+            { "key": "Content-Type", "value": "application/json" }
+          ]
+        }
+      ]
     },
     {
       "target": "admin",
