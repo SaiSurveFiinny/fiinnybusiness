@@ -58,6 +58,7 @@ const navGroups: NavGroup[] = [
     label: "Catalogue",
     items: [
       { href: "/admin/products", label: "Products", icon: Box, sections: ["products"] },
+      { href: "/admin/product-identity", label: "Product identity", icon: Link2, sections: ["products"], keywords: "duplicates link canonical merge same product" },
       { href: "/admin/inventory", label: "Inventory", icon: Package, sections: ["inventory"], keywords: "stock" },
       { href: "/admin/companies", label: "Company pages", icon: Building2, sections: ["companies"], keywords: "brands manufacturers" },
       { href: "/admin/hubs", label: "Hubs", icon: Layers, sections: ["hubs"] },

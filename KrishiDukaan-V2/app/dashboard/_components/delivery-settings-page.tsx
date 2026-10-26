@@ -7,6 +7,7 @@ import {
   Loader2, CheckCircle2, AlertTriangle, ChevronDown, ChevronUp, Info, Lock,
 } from "lucide-react";
 import Link from "next/link";
+import { useSearchParams } from "next/navigation";
 import { getUserProfile } from "../../firebase";
 import {
   fetchDeliverySettings,
@@ -85,7 +86,7 @@ function Section({
 
 // ─── Slab Row ─────────────────────────────────────────────────────────────────
 
-type SlabDraft = WeightSlab & { error?: string };
+export type SlabDraft = WeightSlab & { error?: string };
 
 function SlabRow({
   slab,
@@ -179,13 +180,13 @@ function SlabRow({
   );
 }
 
-function slabSetHasErrors(slabs: WeightSlab[]): boolean {
+export function slabSetHasErrors(slabs: WeightSlab[]): boolean {
   return slabs.some((s, i) => validateSlab(s, slabs, i) !== null);
 }
 
 // ─── Slab List (add / edit / remove a set of weight slabs) ─────────────────────
 
-function SlabList({
+export function SlabList({
   slabs,
   setSlabs,
   disabled,
@@ -348,6 +349,10 @@ function StatePicker({
 
 export function DeliverySettingsPage() {
   const { t } = useI18n();
+  const searchParams = useSearchParams();
+  // Set by the profile "enable delivery" flow right after seeding first-time
+  // defaults, so we can tell the seller these are editable default charges.
+  const isFirstTimeSetup = searchParams.get("setup") === "1";
   const { uid: effectiveUid, profile: effectiveProfile } = useEffectiveUser();
   const [uid, setUid] = useState<string | null>(null);
   const [sellerPhone, setSellerPhone] = useState<string | null>(null);
@@ -521,6 +526,18 @@ export function DeliverySettingsPage() {
         title={t('deliverySettingsTitle')}
         description={t('deliverySettingsSubtitle')}
       />
+
+      {isFirstTimeSetup && (
+        <div className="flex items-start gap-3 rounded-2xl border border-primary/20 bg-primary/5 px-5 py-4">
+          <Info className="h-5 w-5 shrink-0 text-primary mt-0.5" />
+          <div>
+            <p className="text-sm font-bold text-on-surface">{t('deliveryDefaultsBannerTitle')}</p>
+            <p className="mt-0.5 text-xs text-on-surface-variant leading-relaxed">
+              {t('deliveryDefaultsBannerBody')}
+            </p>
+          </div>
+        </div>
+      )}
 
       {/* ── Section 2: Delivery Charge Slabs ── */}
       <Section

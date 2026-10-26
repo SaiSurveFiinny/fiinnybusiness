@@ -2697,6 +2697,74 @@ export async function adminDeleteProduct(productId: string): Promise<void> {
 }
 
 /**
+ * Admin: LINK two or more product docs as the SAME real product by stamping a
+ * shared `canonicalId` on each (the authoritative doc's own id).
+ *
+ * Deliberately an additive, single-concern merge write — like
+ * adminSetOrganicCertified, it touches ONLY canonicalId + its two metadata
+ * fields + updatedAt. It NEVER changes name, image, variants, price, stock,
+ * availability, source or ownership, so no seller-specific listing data can be
+ * overwritten, and no doc is deleted or renamed. The marketplace card pipeline
+ * does not read canonicalId yet (see types/product.ts), so this changes no
+ * storefront behaviour — grouping stays name-based until the separately
+ * approved catalogId migration. Linking never happens automatically; it is only
+ * ever called from an explicit admin confirmation in /admin/product-identity.
+ *
+ * Idempotent: re-linking the same set to the same canonicalId is a no-op-ish
+ * re-stamp. When the selection spans docs that already carry DIFFERENT
+ * canonicalIds, every selected doc is re-pointed at the chosen one (a group
+ * merge) — the caller is responsible for confirming that with the operator
+ * first.
+ */
+export async function adminLinkProductsToCanonical(
+  productIds: string[],
+  canonicalId: string,
+  adminUid: string,
+): Promise<number> {
+  const ids = Array.from(new Set(productIds.filter(Boolean)));
+  if (ids.length < 2) throw new Error('Select at least two products to link.');
+  if (!canonicalId) throw new Error('A canonical (authoritative) product id is required.');
+  if (!ids.includes(canonicalId)) {
+    throw new Error('The authoritative product must be one of the selected products.');
+  }
+  const batch = writeBatch(db);
+  for (const id of ids) {
+    batch.set(
+      doc(db, 'products', id),
+      {
+        canonicalId,
+        canonicalLinkedAt: serverTimestamp(),
+        canonicalLinkedBy: adminUid || 'admin',
+        updatedAt: serverTimestamp(),
+      },
+      { merge: true },
+    );
+  }
+  await batch.commit();
+  return ids.length;
+}
+
+/**
+ * Admin: UNLINK one product doc from its canonical group — clears canonicalId
+ * and its metadata. Reverses adminLinkProductsToCanonical for a single doc; the
+ * doc reverts to standing on its own (no canonicalId == its own identity). Like
+ * the link write, it touches nothing else.
+ */
+export async function adminUnlinkProductFromCanonical(productId: string): Promise<void> {
+  if (!productId) throw new Error('A product id is required.');
+  await setDoc(
+    doc(db, 'products', productId),
+    {
+      canonicalId: deleteField(),
+      canonicalLinkedAt: deleteField(),
+      canonicalLinkedBy: deleteField(),
+      updatedAt: serverTimestamp(),
+    },
+    { merge: true },
+  );
+}
+
+/**
  * Soft-deletes every seller COPY rooted at the given canonical product ids.
  *
  * Deleting a catalogue product used to leave its `manufacturer_assigned` /

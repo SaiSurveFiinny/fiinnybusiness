@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import * as C from "../../app/lib/cart-pricing";
 import { computeLinePricing } from "../../app/utils/gst";
+import { DEFAULT_IN_STATE_SLABS, DEFAULT_OUT_STATE_SLABS } from "../../app/dashboard/_types/delivery-settings";
 let n = 0; const t = (name: string, f: () => void) => { f(); n++; console.log("ok -", name); };
 
 const slabs = (x: [number, number, number][]) => x.map(([minKg, maxKg, charge]) => ({ minKg, maxKg, charge }));
@@ -325,5 +326,35 @@ t("genuinely different units are NOT treated as equal (5kg != 500g, 1L != 1kg)",
   assert.deepEqual(C.resolveVariant({ variantUnit: "5kg", sellerVariants: ladder, hasSellerSource: false, canonicalBasePrice: 0 }), { ok: false, code: "not_stocked" });
   assert.deepEqual(C.resolveVariant({ variantUnit: "1kg", sellerVariants: ladder, hasSellerSource: false, canonicalBasePrice: 0 }), { ok: false, code: "not_stocked" });
 });
+
+// ── First-time default delivery slabs: boundary behavior at checkout ────────
+// Guards the auto-applied defaults against drift and proves the half-open
+// [min, max) matching resolves 1 / 5 / 6 kg to the UPPER slab (no overlap/gap).
+{
+  const def = {
+    coverageType: "pan_india",
+    sellerState: "Maharashtra",
+    weightSlabs: DEFAULT_IN_STATE_SLABS,
+    inStateSlabs: DEFAULT_IN_STATE_SLABS,
+    outStateSlabs: DEFAULT_OUT_STATE_SLABS,
+  };
+  const inCharge = (kg: number) => C.computeSellerDelivery([line({ weightKg: kg })], def, "Maharashtra").slab;
+  const outCharge = (kg: number) => C.computeSellerDelivery([line({ weightKg: kg })], def, "Gujarat").slab;
+
+  t("default in-state: within first slab (0.5kg) -> 70", () => assert.equal(inCharge(0.5), 70));
+  t("default in-state: boundary 1kg -> upper slab 150 (not 70)", () => assert.equal(inCharge(1), 150));
+  t("default in-state: 4.9kg -> 150", () => assert.equal(inCharge(4.9), 150));
+  t("default in-state: boundary 5kg -> upper slab 250 (not 150)", () => assert.equal(inCharge(5), 250));
+  t("default in-state: 5kg and above -> top slab 250 (open-ended)", () => {
+    assert.equal(inCharge(9), 250); assert.equal(inCharge(50), 250); assert.equal(inCharge(2000), 250);
+  });
+
+  t("default out-state: 0.5kg -> 70", () => assert.equal(outCharge(0.5), 70));
+  t("default out-state: boundary 1kg -> 150", () => assert.equal(outCharge(1), 150));
+  t("default out-state: boundary 5kg -> upper slab 300 (not 150)", () => assert.equal(outCharge(5), 300));
+  t("default out-state: 10kg and above -> top slab 300 (open-ended)", () => {
+    assert.equal(outCharge(10), 300); assert.equal(outCharge(100), 300);
+  });
+}
 
 console.log(`\n${n} passed`);

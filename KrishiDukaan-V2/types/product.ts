@@ -147,4 +147,22 @@ export type MarketplaceProduct = {
    * `linkedProductId` points at any of those docs. Falls back to `[id]`.
    */
   mergedProductIds?: string[];
+
+  /**
+   * Shared product-identity group id, assigned by the admin "Product Identity"
+   * view (/admin/product-identity) to explicitly mark two or more product docs
+   * as the SAME real product. Its value is the authoritative doc's own id, so a
+   * group is `products where canonicalId == <authoritativeId>`.
+   *
+   * IMPORTANT: this is INERT metadata for now — the marketplace card pipeline
+   * still groups by NAME and does NOT read this field. It becomes the grouping
+   * key only in the separately-approved catalogId migration (Stage 3). It is
+   * NOT the same thing as the `catalogId` on productReviews / order items, which
+   * there means the product doc id. Never used to auto-link by name.
+   */
+  canonicalId?: string;
+  /** When the canonicalId link was set (Firestore Timestamp). */
+  canonicalLinkedAt?: unknown;
+  /** Admin uid that set the canonicalId link. */
+  canonicalLinkedBy?: string;
 };
