@@ -47,6 +47,50 @@ export function trackingDraftError(d: TrackingDraft): string | null {
   return null;
 }
 
+/**
+ * Couriers / shipping platforms offered in the dispatch modal, purely as a UI
+ * convenience: picking one pre-fills the (still fully editable) Tracking Link so
+ * the seller doesn't type the courier's domain by hand. This is NOT a courier
+ * API integration and nothing here is sent to the courier — the value is not
+ * persisted or sent to the server; only the resulting URL matters.
+ *
+ * `urlTemplate` is the courier's public web tracking link:
+ *   • `{id}` placeholder  → the tracking ID is substituted in (deep link).
+ *   • no `{id}`           → the courier has no reliable public GET deep link, so
+ *                           we link to its tracking PAGE and the customer pastes
+ *                           the ID (which the WhatsApp message also carries).
+ *   • undefined ("Other") → the seller pastes the complete URL themselves.
+ *
+ * These are convenience defaults; the Tracking Link field stays editable, so if
+ * a courier changes its URL scheme the seller can still correct it inline.
+ */
+export const COURIERS = [
+  { value: "shiprocket", label: "Shiprocket", urlTemplate: "https://shiprocket.co/tracking/{id}" },
+  { value: "delhivery", label: "Delhivery", urlTemplate: "https://www.delhivery.com/track/package/{id}" },
+  { value: "indiapost", label: "India Post", urlTemplate: "https://www.indiapost.gov.in/_layouts/15/dop.portal.tracking/trackconsignment.aspx" },
+  { value: "bluedart", label: "Blue Dart", urlTemplate: "https://www.bluedart.com/web/guest/trackdartresult?trackFor=0&trackNo={id}" },
+  { value: "dtdc", label: "DTDC", urlTemplate: "https://www.dtdc.in/tracking" },
+  { value: "xpressbees", label: "XpressBees", urlTemplate: "https://www.xpressbees.com/shipment/tracking?awbNo={id}" },
+  { value: "ecomexpress", label: "Ecom Express", urlTemplate: "https://ecomexpress.in/tracking/?awb_field={id}" },
+  { value: "other", label: "Other", urlTemplate: undefined as string | undefined },
+] as const;
+
+export type CourierValue = (typeof COURIERS)[number]["value"];
+
+/**
+ * Build the tracking URL for a courier + tracking ID. Returns "" when the
+ * courier is "Other"/unknown, or when a `{id}` template has no ID yet (so the
+ * field stays blank rather than showing a dangling link). A no-`{id}` template
+ * (courier tracking page) is returned as-is regardless of the ID.
+ */
+export function buildTrackingUrl(courier: CourierValue, id: string): string {
+  const template = COURIERS.find((c) => c.value === courier)?.urlTemplate;
+  if (!template) return "";
+  if (!template.includes("{id}")) return template;
+  const trimmed = id.trim();
+  return trimmed ? template.replace("{id}", encodeURIComponent(trimmed)) : "";
+}
+
 /** Client-side mirror of the server's URL check (server remains authoritative). */
 export function isValidTrackingUrl(raw: string | undefined | null): boolean {
   if (!raw || !raw.trim()) return false;

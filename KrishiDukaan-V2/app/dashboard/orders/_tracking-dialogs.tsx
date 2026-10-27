@@ -5,8 +5,10 @@ import { Truck, X, Link2, Send, AlertCircle, CheckCircle2 } from "lucide-react";
 import { updateOrderStatus } from "../../firebase";
 import type { OrderDoc } from "../../../types/order";
 import {
+  COURIERS,
   MAX_TRACKING_SENDS,
   TRACKING_ID_TYPES,
+  buildTrackingUrl,
   callTrackingApi,
   emptyTrackingDraft,
   isTrackingSendEnabled,
@@ -14,6 +16,7 @@ import {
   newRequestId,
   trackingDraftError,
   trackingSendsRemaining,
+  type CourierValue,
   type TrackingDraft,
 } from "./_tracking";
 
@@ -32,9 +35,18 @@ const fieldInput = "mt-1.5 w-full rounded-xl border border-outline-variant/50 px
 
 /**
  * The shipment-tracking fields shared by the dispatch and resend modals:
- * tracking link, identifier type (with a custom label when "Other"), and the
- * identifier itself. State lives in the parent `TrackingDraft` so each dialog
- * owns its own submit/validation; this component only renders + reports edits.
+ * courier (a convenience that auto-fills the link), tracking link, identifier
+ * type (with a custom label when "Other"), and the identifier itself. The saved
+ * fields live in the parent `TrackingDraft`; the courier choice and whether the
+ * link was hand-edited are UI-only state kept here (never persisted).
+ *
+ * Auto-fill rules, designed to never clobber a user's own edit:
+ *   • Pick a courier → the link is rebuilt from its format + current ID (and the
+ *     "hand-edited" flag resets, since this is a fresh intent).
+ *   • Change the Tracking ID → the link is rebuilt only while a supported
+ *     courier is selected AND the user has not hand-edited the link.
+ *   • Type in the link → marks it hand-edited; ID changes stop touching it until
+ *     a courier is picked again.
  */
 function TrackingFields({
   draft,
@@ -45,21 +57,66 @@ function TrackingFields({
   onChange: (next: TrackingDraft) => void;
   disabled: boolean;
 }) {
+  // Courier defaults to "Other" so a pre-filled link (resend flow) is preserved;
+  // a link already present counts as hand-edited for the same reason.
+  const [courier, setCourier] = useState<CourierValue>("other");
+  const [urlEdited, setUrlEdited] = useState(() => draft.url.trim().length > 0);
   const urlTouchedInvalid = draft.url.length > 0 && !isValidTrackingUrl(draft.url);
+  const isOtherCourier = courier === "other";
+
+  const onCourierChange = (next: CourierValue) => {
+    setCourier(next);
+    if (next === "other") {
+      // Let the seller paste a complete URL; don't overwrite what's there.
+      setUrlEdited(true);
+      return;
+    }
+    setUrlEdited(false);
+    onChange({ ...draft, url: buildTrackingUrl(next, draft.id) });
+  };
+
+  const onIdChange = (id: string) => {
+    const next = { ...draft, id };
+    if (!isOtherCourier && !urlEdited) next.url = buildTrackingUrl(courier, id);
+    onChange(next);
+  };
+
+  const onUrlChange = (url: string) => {
+    setUrlEdited(true);
+    onChange({ ...draft, url });
+  };
+
   return (
     <div className="space-y-4">
+      <label className="block">
+        <span className={fieldLabel}>Courier / Platform</span>
+        <select
+          value={courier}
+          onChange={(e) => onCourierChange(e.target.value as CourierValue)}
+          disabled={disabled}
+          className={fieldInput}
+        >
+          {COURIERS.map((c) => (
+            <option key={c.value} value={c.value}>{c.label}</option>
+          ))}
+        </select>
+      </label>
+
       <label className="block">
         <span className={fieldLabel}>Tracking Link</span>
         <input
           type="url"
           inputMode="url"
           value={draft.url}
-          onChange={(e) => onChange({ ...draft, url: e.target.value })}
+          onChange={(e) => onUrlChange(e.target.value)}
           placeholder="https://example.com/track/123456"
           disabled={disabled}
           className={fieldInput}
         />
         {urlTouchedInvalid && <span className="mt-1 block text-xs text-red-600">Enter a valid http(s) URL.</span>}
+        {!isOtherCourier && (
+          <span className="mt-1 block text-[11px] text-on-surface-variant">Auto-filled from the courier — edit it if needed.</span>
+        )}
       </label>
 
       <label className="block">
@@ -95,7 +152,7 @@ function TrackingFields({
         <input
           type="text"
           value={draft.id}
-          onChange={(e) => onChange({ ...draft, id: e.target.value })}
+          onChange={(e) => onIdChange(e.target.value)}
           placeholder="Enter tracking ID"
           disabled={disabled}
           className={fieldInput}
