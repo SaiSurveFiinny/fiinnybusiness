@@ -1,9 +1,51 @@
 "use client";
 
 import { auth } from "../../firebase";
-import { MAX_TRACKING_SENDS, type OrderDoc } from "../../../types/order";
+import {
+  MAX_TRACKING_SENDS,
+  TRACKING_ID_TYPES,
+  trackingIdTypeLabel,
+  type OrderDoc,
+  type TrackingIdType,
+} from "../../../types/order";
 
-export { MAX_TRACKING_SENDS };
+export { MAX_TRACKING_SENDS, TRACKING_ID_TYPES, trackingIdTypeLabel };
+export type { TrackingIdType };
+
+/**
+ * The editable shipment-tracking fields collected in the dispatch / tracking
+ * modals. `customLabel` is only meaningful when `idType === "other"`.
+ */
+export type TrackingDraft = {
+  url: string;
+  idType: TrackingIdType;
+  customLabel: string;
+  id: string;
+};
+
+/** A blank draft, pre-filled from an order's saved tracking when present. */
+export function emptyTrackingDraft(order?: Pick<OrderDoc, "tracking">): TrackingDraft {
+  const t = order?.tracking;
+  return {
+    url: t?.url ?? "",
+    idType: t?.idType ?? "awb",
+    customLabel: t?.idType === "other" ? t?.idTypeLabel ?? "" : "",
+    id: t?.id ?? "",
+  };
+}
+
+/**
+ * Client-side mirror of the server's send-time checks (the server stays
+ * authoritative). Returns the first validation message, or null when the draft
+ * is ready to send. Trimming matches the server so the UI never shows "valid"
+ * for whitespace-only input.
+ */
+export function trackingDraftError(d: TrackingDraft): string | null {
+  if (!isValidTrackingUrl(d.url)) return "Enter a valid http(s) tracking link.";
+  if (d.idType === "other" && !d.customLabel.trim()) return "Enter a label for the custom tracking ID type.";
+  if (!d.id.trim()) return "Enter the tracking ID.";
+  return null;
+}
 
 /** Client-side mirror of the server's URL check (server remains authoritative). */
 export function isValidTrackingUrl(raw: string | undefined | null): boolean {
@@ -48,6 +90,10 @@ export type TrackingApiResult = {
 export async function callTrackingApi(args: {
   orderId: string;
   url?: string;
+  idType?: TrackingIdType;
+  /** Custom label, sent only when idType === "other". */
+  idLabel?: string;
+  id?: string;
   send: boolean;
   requestId: string;
 }): Promise<TrackingApiResult> {
