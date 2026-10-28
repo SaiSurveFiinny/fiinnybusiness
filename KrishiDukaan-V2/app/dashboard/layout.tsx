@@ -29,6 +29,27 @@ const ADMIN_VIEW_KEY = 'kd_admin_view_uid';
 // the profile-completion guard below.
 const UPGRADE_PATH = '/dashboard/upgrade';
 
+/**
+ * Authoritative seller access check. Asks the server (which verifies the ID
+ * token and reads the active, unexpired `subscriptions` records / assigned
+ * seats) instead of trusting the denormalized `isPaid` flag — so an EXPIRED
+ * subscription correctly reads as no-access. Fails CLOSED: any error confines
+ * the seller to the upgrade page, where they can still buy/renew a plan.
+ */
+async function checkSellerAccess(): Promise<boolean> {
+  const current = auth.currentUser;
+  if (!current) return false;
+  try {
+    const token = await current.getIdToken();
+    const res = await fetch('/api/seller/access', {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    return res.status === 200;
+  } catch {
+    return false;
+  }
+}
+
 export default function DashboardLayout({
   children,
 }: Readonly<{
@@ -154,7 +175,6 @@ export default function DashboardLayout({
       }
 
       // ── Normal user ───────────────────────────────────────────────────────
-      const isPaid = profile?.isPaid;
       applyCompletion(profile);
       setEffectiveUser({
         uid: user.uid,
@@ -169,28 +189,31 @@ export default function DashboardLayout({
 
       const isSeller = role === 'retailer' || role === 'manufacturer';
 
-      if (profile && isSeller && isPaid) {
-        setSellerNeedsUpgrade(false);
-        setLoading(false);
-      } else if (isSeller) {
-        // Unpaid retailer or manufacturer.
-        //
-        // P5: The dashboard only observes access state — invite acceptance and backfill
-        // are handled exclusively by the signup/invite flow. grantAccessIfManufacturerLinked
-        // is a lightweight read-only check that writes isPaid:true when the invite was
-        // accepted but the flag hasn't propagated yet (race between backfill and redirect).
-        // It applies to retailers only; a manufacturer is never granted via an invite link.
-        const linked = role === 'retailer'
-          ? await grantAccessIfManufacturerLinked(user.uid).catch(() => false)
-          : false;
+      if (isSeller) {
+        // Invite acceptance/backfill is owned by the signup/invite flow;
+        // grantAccessIfManufacturerLinked is a lightweight read-only check that
+        // writes isPaid:true when an invite was accepted but the flag hasn't
+        // propagated yet (race between backfill and redirect). Retailers only —
+        // a manufacturer is never granted via an invite link. Kept purely for
+        // that backfill side effect; the access decision below is the server's.
+        if (role === 'retailer') {
+          await grantAccessIfManufacturerLinked(user.uid).catch(() => false);
+        }
 
-        // Access is decided REACTIVELY by the effect below, not here: an unpaid,
-        // non-linked seller is confined to /dashboard/upgrade (where they buy a
+        // Authoritative access — asked of the server, which checks active,
+        // unexpired subscription records (and assigned seats) behind a verified
+        // token, NOT the denormalized isPaid flag. This is what makes an EXPIRED
+        // seller land on the upgrade page instead of the dashboard, and it
+        // enforces access on direct-URL/refresh (not just a client redirect).
+        //
+        // Access is applied REACTIVELY by the effect below, not here: a seller
+        // without access is confined to /dashboard/upgrade (where they buy a
         // plan) rather than bounced to the homepage. We still render the shell
         // (setLoading(false)) so the redirect effect — which keys off the live
         // pathname — can run; deciding it inline here would leave them stuck on
         // the spinner, since this guard never re-runs on client navigation.
-        setSellerNeedsUpgrade(!linked);
+        const active = await checkSellerAccess();
+        setSellerNeedsUpgrade(!active);
         setLoading(false);
       } else {
         // Non-seller roles (farmer / customer / etc.) keep their existing restriction.

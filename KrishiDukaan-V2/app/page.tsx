@@ -914,10 +914,15 @@ export default function App() {
       productCount: profile.productCount || 0
     });
 
-    // Arrived from a sales referral link: straight to checkout, whatever the
-    // role — an already-paid seller gets the buy-more page instead.
+    const role = profile.role;
+    const isSeller = role === 'retailer' || role === 'manufacturer';
+
+    // Arrived from a sales referral link: straight to checkout. A seller goes
+    // to the dedicated upgrade route (which also honours the pending referral);
+    // a customer goes to the in-app subscription checkout (paying upgrades them
+    // to retailer).
     if (readPendingReferral()) {
-      if ((profile.role === 'retailer' || profile.role === 'manufacturer') && isPaid) {
+      if (isSeller) {
         window.location.href = '/dashboard/upgrade';
       } else {
         navigate('subscription', { replace: true });
@@ -925,17 +930,26 @@ export default function App() {
       return;
     }
 
-    if (profile.role === 'influencer') {
-      // Send influencers to their dashboard. The influencer area gates on an
-      // active subscription: an unsubscribed influencer is redirected from the
-      // dashboard to the paywall (/influencer/subscribe), while their profile
-      // stays reachable unpaid.
+    if (role === 'influencer') {
+      // Influencer area gates on an active subscription server-side: an
+      // unsubscribed/expired influencer is redirected from the dashboard to the
+      // paywall (/influencer/subscribe); an active one lands on their dashboard.
       window.location.href = '/influencer/dashboard';
-    } else if ((profile.role === 'retailer' || profile.role === 'manufacturer') && !isPaid) {
-      navigate('subscription', { replace: true });
-    } else if ((profile.role === 'retailer' || profile.role === 'manufacturer') && isPaid) {
+    } else if (isSeller) {
+      // Whether a seller sees the dashboard or the /dashboard/upgrade paywall is
+      // decided by the dashboard guard, which reads the AUTHORITATIVE (server)
+      // subscription state — not the isPaid snapshot here. Routing every seller
+      // through /dashboard keeps login, refresh, and direct-URL access
+      // consistent, and an expired/unsubscribed seller is forwarded to the
+      // upgrade page by that guard.
       window.location.href = '/dashboard';
+    } else if (role === 'admin' || role === 'team') {
+      // Admin / limited-access team accounts — their portal, not the homepage.
+      window.location.href = '/admin';
+    } else if (role === 'salesExecutive') {
+      window.location.href = '/sales';
     } else {
+      // Customer / consumer.
       navigate('home', { replace: true });
     }
   };
