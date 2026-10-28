@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { ICONS } from "../constants";
-import { Tractor, Store, Factory, CheckCircle2, Phone } from "lucide-react";
+import { Tractor, Store, Factory, Megaphone, CheckCircle2, Phone } from "lucide-react";
 import { motion } from "framer-motion";
 import {
   signInWithPhoneNumber,
@@ -23,7 +23,7 @@ interface SignupViewProps {
   onNavigateToLogin: () => void;
   onSuccess: (user: any, profile: any) => void;
   /** Preselected role — "retailer" when arriving from a sales referral link. */
-  defaultRole?: "customer" | "retailer" | "manufacturer";
+  defaultRole?: "customer" | "retailer" | "manufacturer" | "influencer";
 }
 
 export default function SignupView({
@@ -38,7 +38,7 @@ export default function SignupView({
 
   // Shared state
   const [name, setName] = useState("");
-  const [role, setRole] = useState<"customer" | "retailer" | "manufacturer">(defaultRole ?? "customer");
+  const [role, setRole] = useState<"customer" | "retailer" | "manufacturer" | "influencer">(defaultRole ?? "customer");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [inviteDetails, setInviteDetails] = useState<SignupInviteDetails | null>(null);
@@ -240,11 +240,12 @@ export default function SignupView({
           ariaLabel="Role selection help"
         />
       </div>
-      <div className="grid grid-cols-3 gap-3">
+      <div className="grid grid-cols-2 gap-3">
         {([
           { value: "customer" as const, icon: Tractor, label: "Farmer", sub: "Buy products online", activeBg: "bg-green-600", helperKey: "signupRoleFarmer" as const },
           { value: "retailer" as const, icon: Store, label: "Retailer", sub: "Run an agri shop", activeBg: "bg-blue-600", helperKey: "signupRoleRetailer" as const },
           { value: "manufacturer" as const, icon: Factory, label: "Manufacturer", sub: "Supply & distribute", activeBg: "bg-orange-600", helperKey: "signupRoleManufacturer" as const },
+          { value: "influencer" as const, icon: Megaphone, label: "Influencer", sub: "Create & collaborate", activeBg: "bg-purple-600", helperKey: "signupRoleInfluencer" as const },
         ]).map(({ value, icon: Icon, label, sub, activeBg, helperKey }) => {
           const active = role === value;
           return (

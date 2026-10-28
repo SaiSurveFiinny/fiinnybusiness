@@ -15,6 +15,21 @@ function isTeamWithWhatsappAccess(data: Record<string, unknown> | undefined): bo
   return Array.isArray(sections) && sections.includes("whatsapp");
 }
 
+/**
+ * True when an error is a Google Application Default Credentials reauth/expiry
+ * failure (`invalid_rapt` / `invalid_grant` / `reauth`). In dev this is almost
+ * always expired `gcloud` ADC rather than a code bug, and it surfaces as a
+ * misleading 403 — so we detect it to print an actionable hint.
+ */
+function isCredentialError(err: unknown): boolean {
+  const msg = err instanceof Error ? err.message : String(err);
+  return /invalid_rapt|invalid_grant|reauth|Getting metadata from plugin failed/i.test(msg);
+}
+
+/** Dev-only remediation hint for an expired-ADC credential failure. */
+const ADC_REAUTH_HINT =
+  "Firebase Admin credentials failed. Run `gcloud auth application-default login`, then restart the dev server (Ctrl+C → `npm run dev`). To stop relying on gcloud ADC, set FIREBASE_CLIENT_EMAIL + FIREBASE_PRIVATE_KEY in .env.local.";
+
 async function verifyAdminUser(idToken: string): Promise<string | null> {
   try {
     const decoded = await getAdminAuth().verifyIdToken(idToken);
@@ -46,6 +61,12 @@ async function verifyAdminUser(idToken: string): Promise<string | null> {
     return null;
   } catch (err) {
     console.error("[WA Send] verifyAdminUser failed:", err instanceof Error ? err.message : String(err));
+    // An ADC/credential failure is infra, not "not an admin" — rethrow so the
+    // handler can answer 503 with a hint rather than a misleading 403.
+    if (isCredentialError(err)) {
+      console.error(`\n[WA Send] ⚠️  ${ADC_REAUTH_HINT}\n`);
+      throw err;
+    }
     return null;
   }
 }
@@ -56,7 +77,22 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  const adminUid = await verifyAdminUser(authHeader.slice(7));
+  let adminUid: string | null;
+  try {
+    adminUid = await verifyAdminUser(authHeader.slice(7));
+  } catch (err) {
+    // Credential/ADC failure (e.g. expired gcloud ADC in dev). Answer 503 — not
+    // 403 — so the failure is diagnosable, and include the hint in dev.
+    return NextResponse.json(
+      {
+        error: "Authentication service is unavailable.",
+        ...(process.env.NODE_ENV !== "production"
+          ? { detail: err instanceof Error ? err.message : String(err), hint: ADC_REAUTH_HINT }
+          : {}),
+      },
+      { status: 503 },
+    );
+  }
   if (!adminUid) {
     return NextResponse.json({ error: "Forbidden — admin only" }, { status: 403 });
   }

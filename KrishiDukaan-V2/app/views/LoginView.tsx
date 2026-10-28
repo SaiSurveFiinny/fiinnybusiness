@@ -7,7 +7,7 @@ import {
   type ConfirmationResult,
   type User,
 } from 'firebase/auth';
-import { Tractor, Store, Factory, CheckCircle2 } from 'lucide-react';
+import { Tractor, Store, Factory, Megaphone, CheckCircle2 } from 'lucide-react';
 import { auth, getUserProfile, saveUserProfile } from '../firebase';
 import { useI18n } from '../i18n/I18nContext';
 import { doc, getDoc, serverTimestamp, setDoc, updateDoc } from 'firebase/firestore';
@@ -43,7 +43,7 @@ export default function LoginView({ onBack, onSuccess }: LoginViewProps) {
 
   // Onboarding fields (new users only)
   const [name, setName] = useState('');
-  const [role, setRole] = useState<'customer' | 'retailer' | 'manufacturer'>('customer');
+  const [role, setRole] = useState<'customer' | 'retailer' | 'manufacturer' | 'influencer'>('customer');
 
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -218,11 +218,12 @@ export default function LoginView({ onBack, onSuccess }: LoginViewProps) {
   const rolePicker = (
     <div className="mb-2">
       <p className="mb-3 ml-1 text-xs font-black uppercase tracking-widest text-on-surface-variant">I am a…</p>
-      <div className="grid grid-cols-3 gap-3">
+      <div className="grid grid-cols-2 gap-3">
         {([
           { value: 'customer' as const, icon: Tractor, label: 'Farmer', sub: 'Buy products online', activeBg: 'bg-green-600' },
           { value: 'retailer' as const, icon: Store, label: 'Retailer', sub: 'Run an agri shop', activeBg: 'bg-blue-600' },
           { value: 'manufacturer' as const, icon: Factory, label: 'Manufacturer', sub: 'Supply & distribute', activeBg: 'bg-orange-600' },
+          { value: 'influencer' as const, icon: Megaphone, label: 'Influencer', sub: 'Create & collaborate', activeBg: 'bg-purple-600' },
         ]).map(({ value, icon: Icon, label, sub, activeBg }) => {
           const active = role === value;
           return (

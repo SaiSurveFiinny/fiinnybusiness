@@ -2167,7 +2167,7 @@ export async function fetchAllUsers(): Promise<any[]> {
 }
 
 /** One page of the users list, newest first — for admin "browse mode" instead of a full collection scan. */
-export type UserRoleFilter = 'all' | 'retailer' | 'manufacturer' | 'admin' | 'customer';
+export type UserRoleFilter = 'all' | 'retailer' | 'manufacturer' | 'admin' | 'customer' | 'influencer';
 
 /**
  * One page of users, optionally narrowed to a role by Firestore itself.
@@ -2191,7 +2191,7 @@ export async function fetchUsersPage(
   // Applied by Firestore too: sign-up date bounds and "paid users only".
   extra: { fromMs?: number | null; toMs?: number | null; paidOnly?: boolean } = {},
 ): Promise<{ users: any[]; lastDoc: QueryDocumentSnapshot<DocumentData> | null; hasMore: boolean }> {
-  const serverFilterable = role === 'retailer' || role === 'manufacturer' || role === 'admin';
+  const serverFilterable = role === 'retailer' || role === 'manufacturer' || role === 'admin' || role === 'influencer';
 
   const constraints = [
     ...(serverFilterable ? [where('role', '==', role)] : []),
@@ -2220,25 +2220,27 @@ export async function fetchUsersPage(
 
 /** Cheap server-side aggregate counts for the role chips — avoids pulling every user doc just to count them. */
 export async function fetchUserRoleCounts(): Promise<{
-  all: number; retailer: number; manufacturer: number; admin: number; customer: number;
+  all: number; retailer: number; manufacturer: number; admin: number; customer: number; influencer: number;
 }> {
   const usersCol = collection(db, 'users');
-  const [all, retailer, manufacturer, admin] = await Promise.all([
+  const [all, retailer, manufacturer, admin, influencer] = await Promise.all([
     getCountFromServer(usersCol),
     getCountFromServer(query(usersCol, where('role', '==', 'retailer'))),
     getCountFromServer(query(usersCol, where('role', '==', 'manufacturer'))),
     getCountFromServer(query(usersCol, where('role', '==', 'admin'))),
+    getCountFromServer(query(usersCol, where('role', '==', 'influencer'))),
   ]);
   const allCount = all.data().count;
   const retailerCount = retailer.data().count;
   const manufacturerCount = manufacturer.data().count;
   const adminCount = admin.data().count;
+  const influencerCount = influencer.data().count;
   // "Customer" has no dedicated role value (missing role field OR role === 'customer'),
   // which Firestore can't count directly — derive it as the remainder. This slightly
   // over-counts if internal-staff roles (team/salesExecutive) exist, an accepted
   // approximation since those accounts are few and the chip is informational.
-  const customerCount = Math.max(0, allCount - retailerCount - manufacturerCount - adminCount);
-  return { all: allCount, retailer: retailerCount, manufacturer: manufacturerCount, admin: adminCount, customer: customerCount };
+  const customerCount = Math.max(0, allCount - retailerCount - manufacturerCount - adminCount - influencerCount);
+  return { all: allCount, retailer: retailerCount, manufacturer: manufacturerCount, admin: adminCount, customer: customerCount, influencer: influencerCount };
 }
 
 /** Splits an array into chunks of at most `size` — Firestore 'in' queries cap at 30 values. */

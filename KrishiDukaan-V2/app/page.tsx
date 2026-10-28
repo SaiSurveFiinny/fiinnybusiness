@@ -51,7 +51,7 @@ import { GuidedTour, TourStep } from '../components/helpers';
 import { useI18n } from './i18n/I18nContext';
 
 type View = 'home' | 'market' | 'hub' | 'product' | 'map' | 'about' | 'profile' | 'orders' | 'login' | 'signup' | 'subscription' | 'cart' | 'brand' | 'become-retailer' | 'help';
-type UserRole = 'customer' | 'retailer' | 'manufacturer' | 'admin';
+type UserRole = 'customer' | 'retailer' | 'manufacturer' | 'admin' | 'influencer';
 type UserProfile = {
   name: string;
   phone: string;
@@ -160,9 +160,11 @@ export default function App() {
   const [userRole, setUserRole] = useState<UserRole>('customer');
   const [userProfile, setUserProfile] = useState<UserProfile>({ name: '', phone: '', email: '', isPaid: false });
   // Views below (ProfileView, SubscriptionView, Footer) only accept the
-  // consumer-facing roles; map 'admin' to 'customer' for them.
+  // consumer-facing roles; map 'admin' and 'influencer' to 'customer' for them
+  // (influencers browse the store as ordinary buyers — their creator surface
+  // lives at /influencer, not in these consumer views).
   const consumerRole: 'customer' | 'retailer' | 'manufacturer' =
-    userRole === 'admin' ? 'customer' : userRole;
+    (userRole === 'admin' || userRole === 'influencer') ? 'customer' : userRole;
   
   const [allProducts, setAllProducts] = useState<MarketplaceProduct[]>([]);
   // Bounded product slice powering Home's rails only. Home no longer reads the
@@ -923,7 +925,13 @@ export default function App() {
       return;
     }
 
-    if ((profile.role === 'retailer' || profile.role === 'manufacturer') && !isPaid) {
+    if (profile.role === 'influencer') {
+      // Send influencers to their dashboard. The influencer area gates on an
+      // active subscription: an unsubscribed influencer is redirected from the
+      // dashboard to the paywall (/influencer/subscribe), while their profile
+      // stays reachable unpaid.
+      window.location.href = '/influencer/dashboard';
+    } else if ((profile.role === 'retailer' || profile.role === 'manufacturer') && !isPaid) {
       navigate('subscription', { replace: true });
     } else if ((profile.role === 'retailer' || profile.role === 'manufacturer') && isPaid) {
       window.location.href = '/dashboard';

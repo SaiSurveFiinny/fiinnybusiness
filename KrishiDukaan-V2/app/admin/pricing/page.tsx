@@ -20,6 +20,13 @@
 import { useCallback, useEffect, useState } from "react";
 import { auth } from "../../firebase";
 import { DEFAULT_DURATIONS, tierOf, type DurationPrice } from "../../lib/pricing";
+import {
+  DEFAULT_INFLUENCER_PLANS,
+  INFLUENCER_PERIODS,
+  influencerPerMonth,
+  periodLabel,
+  type InfluencerPlan,
+} from "../../lib/influencer-pricing";
 import PromotionsTab from "./_promotions";
 
 /** A ladder-unique id for a newly added Standard row (standard-2, -3, …). */
@@ -76,7 +83,7 @@ const EMPTY_FORM: PromoForm = {
   active: true,
 };
 
-type TabKey = "pricing" | "promos" | "promotions";
+type TabKey = "pricing" | "influencer" | "promos" | "promotions";
 
 // ─── Usage / history shapes (read-only, from the new additive endpoints) ──────
 
@@ -149,6 +156,13 @@ export default function AdminPricingPage() {
   const [saving, setSaving] = useState(false);
   const [msg, setMsg] = useState<{ kind: "ok" | "err"; text: string } | null>(null);
 
+  // Influencer plans — a SEPARATE document (settings/influencerPricing) so these
+  // can never be edited into the retailer ladder above.
+  const [infPlans, setInfPlans] = useState<InfluencerPlan[]>(DEFAULT_INFLUENCER_PLANS);
+  const [infUsingDefaults, setInfUsingDefaults] = useState(false);
+  const [infSaving, setInfSaving] = useState(false);
+  const [infMsg, setInfMsg] = useState<{ kind: "ok" | "err"; text: string } | null>(null);
+
   const [promos, setPromos] = useState<PromoRow[]>([]);
   const [promoForm, setPromoForm] = useState<PromoForm>(EMPTY_FORM);
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -172,14 +186,20 @@ export default function AdminPricingPage() {
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const [pRes, cRes] = await Promise.all([
+      const [pRes, iRes, cRes] = await Promise.all([
         authedFetch("/api/admin/pricing"),
+        authedFetch("/api/admin/influencer-pricing"),
         authedFetch("/api/admin/promo-codes"),
       ]);
       if (pRes.ok) {
         const d = await pRes.json();
         setRows(d.durations ?? DEFAULT_DURATIONS);
         setUsingDefaults(Boolean(d.usingDefaults));
+      }
+      if (iRes.ok) {
+        const d = await iRes.json();
+        setInfPlans(d.plans ?? DEFAULT_INFLUENCER_PLANS);
+        setInfUsingDefaults(Boolean(d.usingDefaults));
       }
       if (cRes.ok) {
         setPromos((await cRes.json()).codes ?? []);
@@ -239,6 +259,50 @@ export default function AdminPricingPage() {
       setMsg({ kind: "err", text: "Save failed. Check your connection." });
     } finally {
       setSaving(false);
+    }
+  };
+
+  // Always present all four periods as editable rows, backfilling any the
+  // stored document omits so an admin can enable a plan that isn't there yet.
+  const infRows: InfluencerPlan[] = INFLUENCER_PERIODS.map(
+    (m) => infPlans.find((p) => p.months === m) ?? { months: m, price: 0, enabled: false },
+  );
+
+  const setInfRow = (months: number, patch: Partial<InfluencerPlan>) =>
+    setInfPlans(() =>
+      INFLUENCER_PERIODS.map((m) => {
+        const base = infPlans.find((p) => p.months === m) ?? { months: m, price: 0, enabled: false };
+        return m === months ? { ...base, ...patch } : base;
+      }),
+    );
+
+  const saveInfluencerPricing = async () => {
+    setInfSaving(true);
+    setInfMsg(null);
+    try {
+      const res = await authedFetch("/api/admin/influencer-pricing", {
+        method: "PUT",
+        body: JSON.stringify({
+          plans: infRows.map((p) => ({
+            months: p.months,
+            price: Math.max(0, Math.round(Number(p.price) || 0)),
+            enabled: Boolean(p.enabled),
+            ...(p.badge ? { badge: p.badge } : {}),
+          })),
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setInfMsg({ kind: "err", text: data.error ?? "Save failed." });
+      } else {
+        setInfPlans(data.plans);
+        setInfUsingDefaults(false);
+        setInfMsg({ kind: "ok", text: "Saved. New influencer checkouts will use these prices." });
+      }
+    } catch {
+      setInfMsg({ kind: "err", text: "Save failed. Check your connection." });
+    } finally {
+      setInfSaving(false);
     }
   };
 
@@ -402,6 +466,7 @@ export default function AdminPricingPage() {
       <div className="flex items-center gap-2 border-b border-surface-container">
         {([
           { key: "pricing", label: "Subscription Pricing" },
+          { key: "influencer", label: "Influencer Plans" },
           { key: "promos", label: "Promo Codes" },
           { key: "promotions", label: "Promotions" },
         ] as { key: TabKey; label: string }[]).map((t) => (
@@ -666,6 +731,77 @@ export default function AdminPricingPage() {
               {saving ? "Saving…" : "Save pricing"}
             </button>
             {msg ? banner(msg) : null}
+          </div>
+        </section>
+      )}
+
+      {/* ── Influencer Plans tab ── */}
+      {tab === "influencer" && (
+        <section className="pt-8">
+          <h1 className="text-xl font-black text-on-surface">Influencer subscription plans</h1>
+          <p className="mt-1.5 text-sm text-on-surface-variant">
+            What influencers pay at checkout. These prices are stored separately from the
+            seller/retailer ladder (<code>settings/influencerPricing</code>) and apply only to
+            influencer accounts. Disabled plans are hidden from influencers and refused by the
+            server. Past subscriptions keep the price they were bought at.
+          </p>
+
+          {infUsingDefaults ? (
+            <div className="mt-4 rounded-xl bg-amber-50 px-4 py-2.5 text-sm font-semibold text-amber-800">
+              No saved influencer pricing yet — showing the built-in defaults. Save to make them live.
+            </div>
+          ) : null}
+
+          <div className="mt-6 grid grid-cols-1 gap-3 sm:grid-cols-2">
+            {infRows.map((p) => (
+              <div
+                key={p.months}
+                className={`rounded-2xl border p-4 ${p.enabled ? "border-outline-variant/40 bg-surface-container-lowest" : "border-outline-variant/20 bg-surface-container-low/40"}`}
+              >
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-black uppercase tracking-wider text-on-surface-variant">
+                    {periodLabel(p.months)}
+                  </span>
+                  <label className="flex cursor-pointer items-center gap-2 text-xs font-bold text-on-surface">
+                    <input
+                      type="checkbox"
+                      checked={p.enabled}
+                      onChange={(e) => setInfRow(p.months, { enabled: e.target.checked })}
+                    />
+                    {p.enabled ? "Enabled" : "Disabled"}
+                  </label>
+                </div>
+                <div className="mt-3 flex items-center gap-2">
+                  <span className="text-sm font-bold text-on-surface-variant">₹</span>
+                  <input
+                    type="text"
+                    inputMode="numeric"
+                    value={p.price ? String(p.price) : ""}
+                    onChange={(e) => {
+                      const digits = e.target.value.replace(/\D/g, "");
+                      setInfRow(p.months, { price: digits ? parseInt(digits, 10) : 0 });
+                    }}
+                    placeholder="0"
+                    className="w-32 rounded-xl border border-outline-variant/40 bg-white px-3 py-2 text-sm text-on-surface outline-none ring-primary/30 focus:ring-2"
+                  />
+                  <span className="text-xs text-on-surface-variant">
+                    for {p.months} month{p.months !== 1 ? "s" : ""}
+                    {p.price ? ` · ₹${influencerPerMonth(p).toLocaleString("en-IN")}/mo` : ""}
+                  </span>
+                </div>
+              </div>
+            ))}
+          </div>
+
+          <div className="mt-6 flex flex-wrap items-center gap-3">
+            <button
+              onClick={saveInfluencerPricing}
+              disabled={infSaving}
+              className="rounded-xl bg-primary px-6 py-2.5 text-sm font-bold text-white disabled:opacity-60"
+            >
+              {infSaving ? "Saving…" : "Save influencer pricing"}
+            </button>
+            {infMsg ? banner(infMsg) : null}
           </div>
         </section>
       )}

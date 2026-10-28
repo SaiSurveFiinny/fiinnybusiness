@@ -1,3 +1,11 @@
+# ⚠️  NOT THE ACTIVE DEPLOY PATH (as of 2026-10-28).
+# Production deploys via Firebase Hosting web frameworks (see firebase.json
+# `frameworksBackend`), which runs the Next.js SSR on a Cloud Run service named
+# `ssr<site>` and IGNORES this file. The `secret:` bindings below therefore do
+# NOT take effect — do not rely on them to supply env vars to production.
+# Runtime env for the web-frameworks SSR comes from `.env` (not `.env*.local`,
+# which is never deployed). If/when prod migrates to App Hosting, this file
+# becomes authoritative again; until then keep secrets in `.env`.
 runConfig:
   concurrency: 80
   cpu: 1
