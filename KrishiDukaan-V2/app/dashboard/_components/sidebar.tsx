@@ -8,6 +8,7 @@ import {
   BarChart3,
   Building2,
   CreditCard,
+  Handshake,
   Landmark,
   LayoutDashboard,
   Lock,
@@ -124,6 +125,15 @@ export function Sidebar({ mobileOpen, onMobileOpenChange }: SidebarProps) {
     ? { href: "/dashboard/company", labelKey: "sideCompanyPage", icon: Building2 }
     : null;
 
+  // Influencer collaboration discovery — shown to both manufacturers and
+  // retailers. Access to the page itself is already paid-gated by the dashboard
+  // layout; the list API additionally enforces the caller's role server-side.
+  const collaborationNavItem: NavItem = {
+    href: "/dashboard/collaboration",
+    labelKey: "sideCollaboration",
+    icon: Handshake,
+  };
+
   const nav: NavItem[] = (() => {
     const base: NavItem[] = [...baseNav];
     if (role === "manufacturer") {
@@ -134,12 +144,14 @@ export function Sidebar({ mobileOpen, onMobileOpenChange }: SidebarProps) {
         ...base.slice(3),
       ];
       if (companyPageNavItem) items.splice(items.length - 1, 0, companyPageNavItem);
+      items.splice(items.length - 1, 0, collaborationNavItem);
       return items;
     }
     if (role === "retailer") {
       const items: NavItem[] = [...base.slice(0, 3), subscriptionNavKey, ...base.slice(3)];
       // The retailer's own brand page sits where manufacturers see Company Page.
       items.splice(items.length - 1, 0, { href: "/dashboard/brand-page", labelKey: "sideBrandPage", icon: Store });
+      items.splice(items.length - 1, 0, collaborationNavItem);
       return items;
     }
     const items: NavItem[] = [...base];

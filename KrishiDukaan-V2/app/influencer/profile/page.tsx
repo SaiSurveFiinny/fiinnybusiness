@@ -8,6 +8,7 @@ import { Youtube, Instagram, Facebook, Camera, Loader2, CheckCircle2, Sparkles, 
 import { auth, storage, getUserProfile } from '../../firebase';
 import { compressImage, imageUploadMetadata } from '../../utils/compressImage';
 import { useInfluencerSession } from '../_context/influencer-context';
+import { INDIAN_STATES } from '../../dashboard/_types/delivery-settings';
 import {
   readInfluencerSubscriptionStatus,
   type InfluencerSubscriptionStatus,
@@ -254,7 +255,12 @@ export default function InfluencerProfilePage() {
       <section className="rounded-2xl border border-surface-container bg-white p-5">
         <h2 className="mb-4 text-sm font-black uppercase tracking-wider text-on-surface-variant">Location & reach</h2>
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-          <Field label="State"><input className={inputCls} value={form.location.state} onChange={(e) => patchLocation({ state: e.target.value })} /></Field>
+          <Field label="State">
+            <select className={inputCls} value={form.location.state} onChange={(e) => patchLocation({ state: e.target.value })}>
+              <option value="">Select a state…</option>
+              {INDIAN_STATES.map((s) => <option key={s} value={s}>{s}</option>)}
+            </select>
+          </Field>
           <Field label="District"><input className={inputCls} value={form.location.district} onChange={(e) => patchLocation({ district: e.target.value })} /></Field>
           <Field label="City"><input className={inputCls} value={form.location.city} onChange={(e) => patchLocation({ city: e.target.value })} /></Field>
           <Field label="Working area"><input className={inputCls} value={form.location.workingArea} onChange={(e) => patchLocation({ workingArea: e.target.value })} placeholder="e.g. Western Maharashtra" /></Field>
