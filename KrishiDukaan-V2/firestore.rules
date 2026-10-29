@@ -247,7 +247,7 @@ service cloud.firestore {
       allow create: if isAdmin()
                        || (isAuthed()
                        && myPhone() == phone
-                       && request.resource.data.role in ['customer', 'consumer', 'retailer', 'manufacturer', 'influencer']);
+                       && request.resource.data.role in ['customer', 'consumer', 'retailer', 'manufacturer']);
       allow update: if isAdmin() || (isAuthed() && (
           request.auth.uid == phone ||
           myPhone() == phone ||
@@ -291,30 +291,6 @@ service cloud.firestore {
                        || (staffActsFor(phone, 'products')
                            && request.resource.data.get('role', '') == resource.data.get('role', '')
                            && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['phone', 'role', 'shopName', 'updatedAt']));
-      allow delete: if isAdmin();
-    }
-
-    // ─── influencerProfiles/{phone} ──────────────────────────────────────────
-    // Public-facing creator profile — document ID = owner's normalized phone,
-    // the same identity key as users/{phone} and profiles/{phone}. Mirrors the
-    // profiles/{phone} ownership model: public read, owner create/update own,
-    // admin manage. No credentials or private auth data live here (see
-    // influencer-profile-firestore.ts); follower counts and charges are
-    // self-reported and carry selfReported:true.
-    //
-    // Ownership is strict: an influencer may only write the doc whose id is
-    // THEIR phone (myPhone() == phone). Admins (and team members granted the
-    // "users" section) may manage any influencer. Influencers are NOT granted
-    // any admin/retailer/manufacturer surface — those rules key off myRole()
-    // and are unaffected by this block.
-    match /influencerProfiles/{phone} {
-      allow read: if true;
-      allow create: if isAdmin()
-                       || (isAuthed() && myPhone() == phone
-                           && myRole() == 'influencer');
-      allow update: if isAdmin()
-                       || (isAuthed() && myPhone() == phone
-                           && myRole() == 'influencer');
       allow delete: if isAdmin();
     }
 
@@ -438,7 +414,7 @@ service cloud.firestore {
       // admin Promotions API (Admin SDK, which bypasses these rules), so a
       // seller cannot forge one to self-grant promotional seats.
       allow create: if isAuthed()
-        && request.resource.data.ownerType in ['retailer', 'manufacturer', 'influencer']
+        && request.resource.data.ownerType in ['retailer', 'manufacturer']
         && (
           isAdmin() ||
           (

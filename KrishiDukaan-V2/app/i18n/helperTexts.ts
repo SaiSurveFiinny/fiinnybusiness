@@ -1081,14 +1081,6 @@ export const HELPER_TEXTS = {
       hi: 'अपने उत्पादों की आपूर्ति और वितरण करें — विक्रेता नेटवर्क बनाएँ और इन्वेंट्री असाइन करें।',
     },
   },
-  signupRoleInfluencer: {
-    title: { en: 'Influencer', mr: 'इन्फ्लुएन्सर', hi: 'इन्फ्लुएंसर' },
-    body: {
-      en: 'Create agri content and collaborate with brands — set up a creator profile with your platforms and reach.',
-      mr: 'कृषी कंटेंट तयार करा आणि ब्रँड्ससोबत सहकार्य करा — तुमचे प्लॅटफॉर्म आणि पोहोच दर्शवणारे क्रिएटर प्रोफाइल तयार करा.',
-      hi: 'कृषि कंटेंट बनाएँ और ब्रांड्स के साथ सहयोग करें — अपने प्लेटफ़ॉर्म और पहुँच के साथ क्रिएटर प्रोफ़ाइल बनाएँ।',
-    },
-  },
   signupMobile: {
     title: { en: 'Mobile number', mr: 'मोबाइल नंबर', hi: 'मोबाइल नंबर' },
     body: {

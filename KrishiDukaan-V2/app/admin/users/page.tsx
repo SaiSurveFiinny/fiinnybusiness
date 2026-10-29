@@ -55,7 +55,6 @@ const ROLE_BADGE: Record<string, string> = {
   manufacturer: "bg-blue-100 text-blue-700 border border-blue-200",
   retailer: "bg-green-100 text-green-700 border border-green-200",
   customer: "bg-gray-100 text-gray-600 border border-gray-200",
-  influencer: "bg-purple-100 text-purple-700 border border-purple-200",
 };
 
 export default function AdminUsersPage() {
@@ -70,7 +69,7 @@ export default function AdminUsersPage() {
   const [lastDoc, setLastDoc] = useState<any>(null);
   const [hasMore, setHasMore] = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);
-  const [roleCounts, setRoleCounts] = useState({ all: 0, retailer: 0, manufacturer: 0, admin: 0, customer: 0, influencer: 0 });
+  const [roleCounts, setRoleCounts] = useState({ all: 0, retailer: 0, manufacturer: 0, admin: 0, customer: 0 });
 
   // Full mode — the complete users/subscriptions collections, pulled from the shared
   // admin cache (app/admin/_lib/admin-data) the moment search/role-filter/advanced-filter/
@@ -608,30 +607,6 @@ export default function AdminUsersPage() {
         });
       }
 
-      // influencerProfiles/{phone} — the creator's editable profile. Seeded with
-      // the account name as the display name; the influencer fills in the rest
-      // from /influencer/profile. Structured empty fields mirror the schema in
-      // influencer-profile-firestore.ts so the editor loads without guards.
-      if (role === "influencer") {
-        await setDoc(doc(db, "influencerProfiles", normalizedPhone), {
-          phone: normalizedPhone,
-          uid: null,
-          displayName: name.trim(),
-          photoUrl: null,
-          bio: "",
-          contentCategory: "",
-          languages: [],
-          location: { state: createForm.state || "", district: "", city: createForm.city || "", workingArea: "" },
-          socials: {},
-          collaboration: { charge: null, currency: "INR" },
-          isActive: true,
-          selfReported: true,
-          preCreatedByAdmin: callerUid,
-          createdAt: now,
-          updatedAt: now,
-        });
-      }
-
       // Create subscription record for active sellers — mirrors updateSubscriptionStatus logic
       if (isPaid && (role === "retailer" || role === "manufacturer")) {
         const startDate = new Date();
@@ -728,7 +703,7 @@ export default function AdminUsersPage() {
       )}
 
       <div className="flex gap-2 overflow-x-auto pb-1 scrollbar-hide">
-        {(["all", "retailer", "manufacturer", "customer", "influencer", "admin"] as const).map(role => (
+        {(["all", "retailer", "manufacturer", "customer", "admin"] as const).map(role => (
           <button key={role} onClick={() => setFilterRole(role)}
             className={`px-3 sm:px-4 py-1.5 rounded-full text-[11px] sm:text-xs font-bold transition-all whitespace-nowrap shrink-0 ${filterRole === role ? "bg-primary text-white shadow-sm" : "bg-surface-container text-on-surface-variant hover:bg-surface-container-high"}`}>
             {role === "all" ? "All" : role.charAt(0).toUpperCase() + role.slice(1)} ({counts[role as keyof typeof counts]})
@@ -1144,7 +1119,6 @@ export default function AdminUsersPage() {
                   <option value="customer">Customer (Regular User)</option>
                   <option value="retailer">Retailer</option>
                   <option value="manufacturer">Manufacturer</option>
-                  <option value="influencer">Influencer</option>
                   <option value="salesExecutive">Sales Executive (Field Team)</option>
                   <option value="admin">Admin</option>
                 </select>
@@ -1288,8 +1262,7 @@ export default function AdminUsersPage() {
                     </div>
                   )}
 
-                  {/* ── Subscription Setup (not applicable to influencers in Phase 1) ── */}
-                  {createForm.role !== "influencer" && (
+                  {/* ── Subscription Setup ── */}
                   <div>
                     <SectionLabel>Subscription Setup</SectionLabel>
                     <div className="space-y-4">
@@ -1358,7 +1331,6 @@ export default function AdminUsersPage() {
                       )}
                     </div>
                   </div>
-                  )}
                 </>
               )}
             </div>

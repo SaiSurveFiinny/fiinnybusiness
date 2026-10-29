@@ -1,7 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getAdminDb, getAdminAuth } from "../../../lib/firebase-admin";
 import { FieldValue } from "firebase-admin/firestore";
-import { formatWaApiError } from "../../../lib/wa/provider";
 
 const GRAPH_API_VERSION = "v20.0";
 const MAX_FILE_BYTES = 20 * 1024 * 1024; // 20 MB
@@ -129,7 +128,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
 
     if (!uploadRes.ok) {
       return NextResponse.json(
-        { error: "Media upload to WhatsApp failed", detail: formatWaApiError(uploadRes.status, uploadRaw) },
+        { error: "Media upload to WhatsApp failed", detail: uploadRaw.slice(0, 300) },
         { status: 502 }
       );
     }
@@ -176,7 +175,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
 
     if (!sendRes.ok) {
       return NextResponse.json(
-        { error: "Document send failed", detail: formatWaApiError(sendRes.status, sendRaw) },
+        { error: "Document send failed", detail: sendRaw.slice(0, 300) },
         { status: 502 }
       );
     }

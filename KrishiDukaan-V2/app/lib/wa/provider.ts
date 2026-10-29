@@ -60,30 +60,6 @@ export function buildTemplateBody(to: string, templateName: string, languageCode
   };
 }
 
-/**
- * Turn Meta's Graph error response into a single human-readable line for the
- * UI, e.g. `WhatsApp error 131047: Re-engagement message (more than 24 hours…)`.
- * Falls back to the raw text when the body isn't the expected error shape.
- */
-export function formatWaApiError(httpStatus: number, rawText: string): string {
-  try {
-    const parsed = JSON.parse(rawText) as {
-      error?: { message?: string; code?: number; error_data?: { details?: string } };
-    };
-    const e = parsed.error;
-    if (e && (e.message || e.code)) {
-      const code = e.code != null ? `WhatsApp error ${e.code}` : `WhatsApp error (HTTP ${httpStatus})`;
-      const details = e.error_data?.details && e.error_data.details !== e.message
-        ? ` — ${e.error_data.details}`
-        : "";
-      return `${code}: ${e.message ?? "unknown error"}${details}`;
-    }
-  } catch {
-    /* not JSON — fall through to raw */
-  }
-  return `WhatsApp API error (HTTP ${httpStatus}): ${rawText.slice(0, 300)}`;
-}
-
 async function graphPost(
   phoneNumberId: string,
   accessToken: string,
@@ -113,7 +89,7 @@ async function graphPost(
   console.log(`[WA:${tag}] Response ${res.status} ${res.statusText}:\n` + rawText);
 
   if (!res.ok) {
-    throw new Error(formatWaApiError(res.status, rawText));
+    throw new Error(`WhatsApp API error (${res.status}): ${rawText.slice(0, 300)}`);
   }
 
   const data = JSON.parse(rawText) as {

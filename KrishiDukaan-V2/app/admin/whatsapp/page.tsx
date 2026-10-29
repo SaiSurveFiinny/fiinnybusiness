@@ -604,11 +604,8 @@ export default function WhatsAppInboxPage() {
         body: JSON.stringify({ phone: selectedPhone, text }),
       });
       if (!res.ok) {
-        const err = (await res.json().catch(() => ({}))) as { error?: string; detail?: string };
-        const base = err.error ?? `HTTP ${res.status}`;
-        // Surface the exact WhatsApp/Meta reason (e.g. "WhatsApp error 131047: …")
-        // instead of just the generic headline, so the operator can act on it.
-        throw new Error(err.detail ? `${base}: ${err.detail}` : base);
+        const err = await res.json().catch(() => ({ error: `HTTP ${res.status}` }));
+        throw new Error((err as { error?: string }).error ?? `HTTP ${res.status}`);
       }
     } catch (err) {
       setDraftText(text); // restore on failure
@@ -649,11 +646,8 @@ export default function WhatsAppInboxPage() {
       });
 
       if (!res.ok) {
-        const err = (await res.json().catch(() => ({}))) as { error?: string; detail?: string };
-        const base = err.error ?? `HTTP ${res.status}`;
-        // Surface the exact WhatsApp/Meta reason (e.g. "WhatsApp error 131047: …")
-        // instead of just the generic headline, so the operator can act on it.
-        throw new Error(err.detail ? `${base}: ${err.detail}` : base);
+        const err = await res.json().catch(() => ({ error: `HTTP ${res.status}` }));
+        throw new Error((err as { error?: string }).error ?? `HTTP ${res.status}`);
       }
     } catch (err) {
       setPendingFile(file); // restore file on failure
