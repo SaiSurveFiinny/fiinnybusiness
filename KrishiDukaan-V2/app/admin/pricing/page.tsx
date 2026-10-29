@@ -27,10 +27,6 @@ import {
   periodLabel,
   type InfluencerPlan,
 } from "../../lib/influencer-pricing";
-import {
-  DEFAULT_COLLABORATION_PRICING,
-  type CollaborationPricing,
-} from "../../lib/collaboration-pricing";
 import PromotionsTab from "./_promotions";
 
 /** A ladder-unique id for a newly added Standard row (standard-2, -3, …). */
@@ -87,7 +83,7 @@ const EMPTY_FORM: PromoForm = {
   active: true,
 };
 
-type TabKey = "pricing" | "influencer" | "collaboration" | "promos" | "promotions";
+type TabKey = "pricing" | "influencer" | "promos" | "promotions";
 
 // ─── Usage / history shapes (read-only, from the new additive endpoints) ──────
 
@@ -167,13 +163,6 @@ export default function AdminPricingPage() {
   const [infSaving, setInfSaving] = useState(false);
   const [infMsg, setInfMsg] = useState<{ kind: "ok" | "err"; text: string } | null>(null);
 
-  // Collaboration pricing — a THIRD separate document (settings/collaborationPricing).
-  // Prices businesses pay to book an influencer; never the influencer's own quote.
-  const [collab, setCollab] = useState<CollaborationPricing>(DEFAULT_COLLABORATION_PRICING);
-  const [collabUsingDefaults, setCollabUsingDefaults] = useState(false);
-  const [collabSaving, setCollabSaving] = useState(false);
-  const [collabMsg, setCollabMsg] = useState<{ kind: "ok" | "err"; text: string } | null>(null);
-
   const [promos, setPromos] = useState<PromoRow[]>([]);
   const [promoForm, setPromoForm] = useState<PromoForm>(EMPTY_FORM);
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -197,10 +186,9 @@ export default function AdminPricingPage() {
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const [pRes, iRes, collabRes, cRes] = await Promise.all([
+      const [pRes, iRes, cRes] = await Promise.all([
         authedFetch("/api/admin/pricing"),
         authedFetch("/api/admin/influencer-pricing"),
-        authedFetch("/api/admin/collaboration-pricing"),
         authedFetch("/api/admin/promo-codes"),
       ]);
       if (pRes.ok) {
@@ -212,11 +200,6 @@ export default function AdminPricingPage() {
         const d = await iRes.json();
         setInfPlans(d.plans ?? DEFAULT_INFLUENCER_PLANS);
         setInfUsingDefaults(Boolean(d.usingDefaults));
-      }
-      if (collabRes.ok) {
-        const d = await collabRes.json();
-        setCollab(d.pricing ?? DEFAULT_COLLABORATION_PRICING);
-        setCollabUsingDefaults(Boolean(d.usingDefaults));
       }
       if (cRes.ok) {
         setPromos((await cRes.json()).codes ?? []);
@@ -320,96 +303,6 @@ export default function AdminPricingPage() {
       setInfMsg({ kind: "err", text: "Save failed. Check your connection." });
     } finally {
       setInfSaving(false);
-    }
-  };
-
-  // ── Collaboration pricing editors ──
-  const setCollabPrice = (tierId: string, typeId: string, value: string) => {
-    const digits = value.replace(/\D/g, "");
-    setCollab((c) => ({
-      ...c,
-      prices: {
-        ...c.prices,
-        [tierId]: {
-          ...(c.prices[tierId] ?? {}),
-          [typeId]: digits === "" ? null : parseInt(digits, 10),
-        },
-      },
-    }));
-  };
-
-  // Edit a tier's band/label. `min`/`max` accept digits only; a blank `max`
-  // means open-ended (null) — allowed for the last tier so creators above every
-  // numbered band still get a price instead of "custom quotation".
-  const setCollabTierField = (
-    tierId: string,
-    field: "label" | "minFollowers" | "maxFollowers",
-    value: string,
-  ) => {
-    setCollab((c) => ({
-      ...c,
-      tiers: c.tiers.map((t) => {
-        if (t.id !== tierId) return t;
-        if (field === "label") return { ...t, label: value };
-        const digits = value.replace(/\D/g, "");
-        if (field === "minFollowers") return { ...t, minFollowers: digits === "" ? 0 : parseInt(digits, 10) };
-        return { ...t, maxFollowers: digits === "" ? null : parseInt(digits, 10) };
-      }),
-    }));
-  };
-
-  // Append a new tier starting just above the current highest band, open-ended
-  // by default (maxFollowers:null) — the "100k+" tier the spec left for config.
-  const addCollabTier = () => {
-    setCollab((c) => {
-      const existing = new Set(c.tiers.map((t) => t.id));
-      let n = c.tiers.length + 1;
-      let id = `tier_${n}`;
-      while (existing.has(id)) id = `tier_${++n}`;
-      const highestMax = c.tiers.reduce(
-        (m, t) => (t.maxFollowers == null ? Math.max(m, t.minFollowers) : Math.max(m, t.maxFollowers)),
-        0,
-      );
-      const min = highestMax > 0 ? highestMax + 1 : 0;
-      return {
-        ...c,
-        tiers: [
-          ...c.tiers,
-          { id, label: `${min.toLocaleString("en-IN")}+ followers`, minFollowers: min, maxFollowers: null },
-        ],
-        prices: { ...c.prices, [id]: {} },
-      };
-    });
-  };
-
-  const removeCollabTier = (tierId: string) => {
-    setCollab((c) => {
-      const prices = { ...c.prices };
-      delete prices[tierId];
-      return { ...c, tiers: c.tiers.filter((t) => t.id !== tierId), prices };
-    });
-  };
-
-  const saveCollaborationPricing = async () => {
-    setCollabSaving(true);
-    setCollabMsg(null);
-    try {
-      const res = await authedFetch("/api/admin/collaboration-pricing", {
-        method: "PUT",
-        body: JSON.stringify(collab),
-      });
-      const data = await res.json();
-      if (!res.ok) {
-        setCollabMsg({ kind: "err", text: data.error ?? "Save failed." });
-      } else {
-        setCollab(data.pricing);
-        setCollabUsingDefaults(false);
-        setCollabMsg({ kind: "ok", text: "Saved. Collaboration pages now show these prices." });
-      }
-    } catch {
-      setCollabMsg({ kind: "err", text: "Save failed. Check your connection." });
-    } finally {
-      setCollabSaving(false);
     }
   };
 
@@ -574,7 +467,6 @@ export default function AdminPricingPage() {
         {([
           { key: "pricing", label: "Subscription Pricing" },
           { key: "influencer", label: "Influencer Plans" },
-          { key: "collaboration", label: "Collaboration Pricing" },
           { key: "promos", label: "Promo Codes" },
           { key: "promotions", label: "Promotions" },
         ] as { key: TabKey; label: string }[]).map((t) => (
@@ -910,129 +802,6 @@ export default function AdminPricingPage() {
               {infSaving ? "Saving…" : "Save influencer pricing"}
             </button>
             {infMsg ? banner(infMsg) : null}
-          </div>
-        </section>
-      )}
-
-      {/* ── Collaboration Pricing tab ── */}
-      {tab === "collaboration" && (
-        <section className="pt-8">
-          <h1 className="text-xl font-black text-on-surface">Collaboration pricing</h1>
-          <p className="mt-1.5 max-w-3xl text-sm text-on-surface-variant">
-            The business-facing price a manufacturer or retailer sees when booking an influencer
-            collaboration, by follower tier and collaboration type. These are KrishiDukan&apos;s
-            prices — they are NOT the influencer&apos;s own quotation, which stays private. Stored in{" "}
-            <code>settings/collaborationPricing</code> and applied identically to the manufacturer and
-            retailer collaboration pages. Leave a cell blank when a type is not offered in that tier.
-            Add a tier and leave its <em>Max</em> blank (open-ended) to price creators above
-            100,000 — otherwise creators above the highest tier show &quot;custom quotation&quot;.
-          </p>
-
-          {collabUsingDefaults ? (
-            <div className="mt-4 rounded-xl bg-amber-50 px-4 py-2.5 text-sm font-semibold text-amber-800">
-              No saved collaboration pricing yet — showing the built-in defaults. Save to make them live.
-            </div>
-          ) : null}
-
-          <div className="mt-6 overflow-x-auto rounded-2xl border border-outline-variant/40">
-            <table className="w-full min-w-[520px] border-collapse text-sm">
-              <thead>
-                <tr className="bg-surface-container-low/60">
-                  <th className="px-4 py-3 text-left text-xs font-black uppercase tracking-wider text-on-surface-variant">
-                    Follower tier
-                  </th>
-                  {collab.types.map((ty) => (
-                    <th
-                      key={ty.id}
-                      className="px-4 py-3 text-left text-xs font-black uppercase tracking-wider text-on-surface-variant"
-                    >
-                      {ty.label}
-                      {ty.description ? (
-                        <span className="block text-[10px] font-semibold normal-case text-on-surface-variant/70">
-                          {ty.description}
-                        </span>
-                      ) : null}
-                    </th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {collab.tiers.map((tier) => (
-                  <tr key={tier.id} className="border-t border-outline-variant/30">
-                    <td className="px-4 py-3 align-top">
-                      <input
-                        type="text"
-                        value={tier.label}
-                        onChange={(e) => setCollabTierField(tier.id, "label", e.target.value)}
-                        placeholder="Tier label"
-                        className="w-44 rounded-xl border border-outline-variant/40 bg-white px-3 py-2 text-sm font-bold text-on-surface outline-none ring-primary/30 focus:ring-2"
-                      />
-                      <div className="mt-2 flex items-center gap-1.5">
-                        <input
-                          type="text"
-                          inputMode="numeric"
-                          value={tier.minFollowers ? String(tier.minFollowers) : ""}
-                          onChange={(e) => setCollabTierField(tier.id, "minFollowers", e.target.value)}
-                          placeholder="Min"
-                          className="w-20 rounded-lg border border-outline-variant/40 bg-white px-2 py-1.5 text-xs text-on-surface outline-none ring-primary/30 focus:ring-2"
-                        />
-                        <span className="text-xs text-on-surface-variant">–</span>
-                        <input
-                          type="text"
-                          inputMode="numeric"
-                          value={tier.maxFollowers == null ? "" : String(tier.maxFollowers)}
-                          onChange={(e) => setCollabTierField(tier.id, "maxFollowers", e.target.value)}
-                          placeholder="∞ (open)"
-                          className="w-20 rounded-lg border border-outline-variant/40 bg-white px-2 py-1.5 text-xs text-on-surface outline-none ring-primary/30 focus:ring-2"
-                        />
-                      </div>
-                      <button
-                        onClick={() => removeCollabTier(tier.id)}
-                        className="mt-2 text-[11px] font-bold text-red-600 hover:underline"
-                      >
-                        Remove tier
-                      </button>
-                    </td>
-                    {collab.types.map((ty) => {
-                      const val = collab.prices[tier.id]?.[ty.id];
-                      return (
-                        <td key={ty.id} className="px-4 py-3 align-top">
-                          <div className="flex items-center gap-1.5">
-                            <span className="text-sm font-bold text-on-surface-variant">₹</span>
-                            <input
-                              type="text"
-                              inputMode="numeric"
-                              value={typeof val === "number" ? String(val) : ""}
-                              onChange={(e) => setCollabPrice(tier.id, ty.id, e.target.value)}
-                              placeholder="—"
-                              className="w-28 rounded-xl border border-outline-variant/40 bg-white px-3 py-2 text-sm text-on-surface outline-none ring-primary/30 focus:ring-2"
-                            />
-                          </div>
-                        </td>
-                      );
-                    })}
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-
-          <button
-            onClick={addCollabTier}
-            className="mt-4 rounded-xl border border-dashed border-outline-variant/60 px-4 py-2 text-sm font-bold text-primary hover:bg-primary/5"
-          >
-            + Add follower tier
-          </button>
-
-          <div className="mt-6 flex flex-wrap items-center gap-3">
-            <button
-              onClick={saveCollaborationPricing}
-              disabled={collabSaving}
-              className="rounded-xl bg-primary px-6 py-2.5 text-sm font-bold text-white disabled:opacity-60"
-            >
-              {collabSaving ? "Saving…" : "Save collaboration pricing"}
-            </button>
-            {collabMsg ? banner(collabMsg) : null}
           </div>
         </section>
       )}
