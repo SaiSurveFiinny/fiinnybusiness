@@ -16,6 +16,7 @@ import '../../../core/utils/order_status_label.dart';
 import '../../../core/utils/currency_utils.dart';
 import '../../../core/widgets/error_view.dart';
 import '../providers/orders_provider.dart';
+import '../../../core/services/analytics_service.dart';
 
 class OrderDetailScreen extends ConsumerWidget {
   final String orderId;
@@ -296,6 +297,7 @@ class OrderDetailScreen extends ConsumerWidget {
                   const SizedBox(height: 16),
                   _CancelOrderButton(
                     orderId: order.id,
+                    paymentId: order.payment?.razorpayPaymentId,
                     onCancelled: () =>
                         ref.invalidate(orderDetailProvider(orderId)),
                   ),
@@ -344,7 +346,9 @@ class OrderDetailScreen extends ConsumerWidget {
 class _CancelOrderButton extends StatefulWidget {
   final String orderId;
   final VoidCallback onCancelled;
-  const _CancelOrderButton({required this.orderId, required this.onCancelled});
+  /// The Razorpay payment id: GA4 refund's transaction_id (same as purchase).
+  final String? paymentId;
+  const _CancelOrderButton({required this.orderId, required this.onCancelled, this.paymentId});
 
   @override
   State<_CancelOrderButton> createState() => _CancelOrderButtonState();
@@ -408,6 +412,14 @@ class _CancelOrderButtonState extends State<_CancelOrderButton> {
         throw Exception(body['error'] ?? 'Could not cancel the order.');
       }
       widget.onCancelled();
+      // GA4 refund, only when the server actually refunded the payment.
+      if (body['refunded'] == true) {
+        AnalyticsService.instance.logRefund(
+          transactionId: widget.paymentId ?? '',
+          amount: (body['refundAmount'] as num?)?.toDouble() ?? 0,
+          orderId: widget.orderId,
+        );
+      }
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(

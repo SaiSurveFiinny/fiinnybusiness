@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import type { ReactNode } from "react";
 import Link from "next/link";
 import { doc, getDoc } from "firebase/firestore/lite";
 import { PLAY_STORE_URL } from "../lib/store-links";
@@ -75,6 +76,34 @@ const SITE_URL =
  * returned to this page after login, so one link serves both.
  */
 const UPGRADE_URL = "/dashboard/upgrade";
+
+/** The page's one sign-up action. Yellow so it outranks every price and image
+ *  around it; dark-green text keeps it readable (well above 4.5:1). */
+const PRIMARY_CTA =
+  "inline-flex items-center justify-center gap-2 rounded-full bg-yellow-400 font-black text-primary ring-2 ring-yellow-500/40 transition-colors hover:bg-yellow-300";
+
+/** Wraps a picture or price card so tapping it starts sign-up, exactly like
+ *  the Start Selling button. /dashboard/upgrade sends logged-out visitors to
+ *  the login screen and takes logged-in sellers straight to checkout. */
+function SignupLink({
+  label,
+  className = "",
+  children,
+}: {
+  label: string;
+  className?: string;
+  children: ReactNode;
+}) {
+  return (
+    <Link
+      href={UPGRADE_URL}
+      aria-label={label}
+      className={`block cursor-pointer transition-transform hover:-translate-y-0.5 ${className}`}
+    >
+      {children}
+    </Link>
+  );
+}
 
 export async function generateMetadata(): Promise<Metadata> {
   const [plans, fees] = await Promise.all([loadPlans(), loadPublicFeeRates()]);
@@ -525,8 +554,13 @@ export default async function SellPage() {
                 them on their phones.
               </p>
 
+              {/* Both price cards are quiet (light) and clickable, so the yellow
+                  Start Selling button below is the one thing the eye lands on. */}
               <div className="mt-7 grid max-w-xl grid-cols-2 gap-3">
-                <div className="flex items-center gap-2 rounded-3xl bg-lime-100 px-4 py-4 sm:px-5">
+                <SignupLink
+                  label={`Start selling at ₹${entry.price} per product per ${periodOf(entry.months)}`}
+                  className="flex items-center gap-2 rounded-3xl bg-lime-100 px-4 py-4 hover:ring-2 hover:ring-primary/30 sm:px-5"
+                >
                   <span className="text-[2rem] font-black text-primary sm:text-5xl">
                     ₹{entry.price}
                   </span>
@@ -534,24 +568,27 @@ export default async function SellPage() {
                     / product
                     <br />/ {periodOf(entry.months)}
                   </span>
-                </div>
-                <div className="rounded-3xl bg-primary px-4 py-4 text-white sm:px-5">
-                  <p className="text-xs font-bold sm:text-sm">
+                </SignupLink>
+                <SignupLink
+                  label={`Start selling: ${SEAT_STEP} products for ₹${starterMonthly} a month`}
+                  className="rounded-3xl bg-white px-4 py-4 ring-2 ring-primary/15 hover:ring-primary/40 sm:px-5"
+                >
+                  <p className="text-xs font-bold text-on-surface-variant sm:text-sm">
                     {SEAT_STEP} products for just
                   </p>
-                  <p className="mt-0.5 whitespace-nowrap">
-                    <span className="text-[2rem] font-black text-yellow-300 sm:text-5xl">
+                  <p className="mt-0.5 whitespace-nowrap text-primary">
+                    <span className="text-[2rem] font-black sm:text-5xl">
                       ₹{starterMonthly}
                     </span>
                     <span className="text-xs font-bold sm:text-sm"> / month</span>
                   </p>
-                </div>
+                </SignupLink>
               </div>
 
-              <div className="mt-7 flex flex-wrap items-center gap-3">
+              <div className="mt-7 flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-center">
                 <Link
                   href={UPGRADE_URL}
-                  className="inline-flex items-center gap-2 rounded-full bg-primary px-8 py-4 text-base font-black text-white shadow-lg shadow-primary/20 transition-opacity hover:opacity-90"
+                  className={`${PRIMARY_CTA} w-full px-10 py-5 text-lg shadow-xl shadow-yellow-500/40 sm:w-auto`}
                 >
                   Start Selling Now <ArrowRight className="h-5 w-5" aria-hidden />
                 </Link>
@@ -559,7 +596,7 @@ export default async function SellPage() {
                   href={PLAY_STORE_URL}
                   target="_blank"
                   rel="noopener noreferrer"
-                  className="inline-flex items-center gap-2 rounded-full border border-surface-container bg-white px-6 py-4 text-sm font-bold text-on-surface transition-colors hover:border-primary"
+                  className="inline-flex w-full items-center justify-center gap-2 rounded-full border border-surface-container bg-white px-6 py-4 text-sm font-bold text-on-surface transition-colors hover:border-primary sm:w-auto"
                 >
                   <Smartphone className="h-4 w-4" aria-hidden /> Get the seller app
                 </a>
@@ -578,25 +615,27 @@ export default async function SellPage() {
                 aria-hidden
                 className="absolute -left-4 top-8 h-[85%] w-[90%] rounded-[2.5rem] bg-green-600/15"
               />
-              {/* eslint-disable-next-line @next/next/no-img-element */}
-              <img
-                src="/images/sell/hero-shopkeeper.webp"
-                alt="Smiling agri-input shopkeeper in a green apron standing in front of shelves of pesticide and fertilizer"
-                width={509}
-                height={555}
-                fetchPriority="high"
-                className="relative w-full rounded-[2.5rem] object-cover shadow-xl"
-              />
-              <div className="absolute -bottom-5 left-4 flex items-center gap-3 rounded-2xl bg-white px-4 py-3 shadow-lg ring-1 ring-black/5 sm:left-8">
-                <span className="flex h-9 w-9 items-center justify-center rounded-full bg-lime-100 text-primary">
-                  <Search className="h-4 w-4" aria-hidden />
-                </span>
-                <span className="text-xs font-bold leading-tight text-on-surface">
-                  Farmers nearby
-                  <br />
-                  <span className="text-on-surface-variant">can find your shop</span>
-                </span>
-              </div>
+              <SignupLink label="Start selling on KrishiDukan" className="relative">
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img
+                  src="/images/sell/hero-shopkeeper.webp"
+                  alt="Smiling agri-input shopkeeper in a green apron standing in front of shelves of pesticide and fertilizer"
+                  width={509}
+                  height={555}
+                  fetchPriority="high"
+                  className="relative w-full rounded-[2.5rem] object-cover shadow-xl"
+                />
+                <div className="absolute -bottom-5 left-4 flex items-center gap-3 rounded-2xl bg-white px-4 py-3 shadow-lg ring-1 ring-black/5 sm:left-8">
+                  <span className="flex h-9 w-9 items-center justify-center rounded-full bg-lime-100 text-primary">
+                    <Search className="h-4 w-4" aria-hidden />
+                  </span>
+                  <span className="text-xs font-bold leading-tight text-on-surface">
+                    Farmers nearby
+                    <br />
+                    <span className="text-on-surface-variant">can find your shop</span>
+                  </span>
+                </div>
+              </SignupLink>
             </div>
           </div>
         </div>
@@ -610,9 +649,14 @@ export default async function SellPage() {
             { Icon: Package, label: "Product catalogue" },
             { Icon: Users, label: "Get discovered by farmers" },
           ].map(({ Icon, label }) => (
-            <li key={label} className="flex items-center gap-3 sm:justify-center sm:px-4">
-              <Icon className="h-8 w-8 flex-shrink-0 text-green-700" aria-hidden />
-              <span className="text-base font-black text-on-surface">{label}</span>
+            <li key={label} className="sm:px-4">
+              <Link
+                href={UPGRADE_URL}
+                className="flex items-center gap-3 hover:text-primary sm:justify-center"
+              >
+                <Icon className="h-8 w-8 flex-shrink-0 text-green-700" aria-hidden />
+                <span className="text-base font-black text-on-surface">{label}</span>
+              </Link>
             </li>
           ))}
         </ul>
@@ -789,15 +833,17 @@ export default async function SellPage() {
 
         {/* "Farmers search before they buy" poster. */}
         <section className="mt-24 grid items-center gap-8 md:grid-cols-2">
-          {/* eslint-disable-next-line @next/next/no-img-element */}
-          <img
-            src="/images/sell/farmer-searching.webp"
-            alt="Farmer in a turban standing in his field, searching on his smartphone"
-            width={575}
-            height={450}
-            loading="lazy"
-            className="w-full rounded-[2rem] object-cover shadow-lg"
-          />
+          <SignupLink label="Start selling on KrishiDukan">
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img
+              src="/images/sell/farmer-searching.webp"
+              alt="Farmer in a turban standing in his field, searching on his smartphone"
+              width={575}
+              height={450}
+              loading="lazy"
+              className="w-full rounded-[2rem] object-cover shadow-lg"
+            />
+          </SignupLink>
           <div>
             <h2 className="text-3xl font-black leading-tight tracking-tight text-primary sm:text-4xl">
               Farmers search before they buy.
@@ -839,28 +885,32 @@ export default async function SellPage() {
               and you reply when it suits you.
             </p>
           </div>
-          {/* eslint-disable-next-line @next/next/no-img-element */}
-          <img
-            src="/images/sell/never-closes.webp"
-            alt="Left: an agri shop with its shutter closed at 9 pm. Right: the shopkeeper at home at 9:30 pm, reading a farmer's message asking if DAP 50 kg is in stock"
-            width={1254}
-            height={603}
-            loading="lazy"
-            className="mt-8 w-full rounded-[2rem] object-cover shadow-lg"
-          />
+          <SignupLink label="Start selling on KrishiDukan" className="mt-8">
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img
+              src="/images/sell/never-closes.webp"
+              alt="Left: an agri shop with its shutter closed at 9 pm. Right: the shopkeeper at home at 9:30 pm, reading a farmer's message asking if DAP 50 kg is in stock"
+              width={1254}
+              height={603}
+              loading="lazy"
+              className="w-full rounded-[2rem] object-cover shadow-lg"
+            />
+          </SignupLink>
         </section>
 
         {/* "Farmers message you directly" + "Share your shop link" posters. */}
         <section className="mt-24 grid items-center gap-10 md:grid-cols-[0.8fr_1.2fr]">
-          {/* eslint-disable-next-line @next/next/no-img-element */}
-          <img
-            src="/images/sell/whatsapp-enquiries.webp"
-            alt="Phone screen showing enquiries from farmers: price of Coragen 150 ml, availability of hybrid cotton seed, and delivery to a village"
-            width={420}
-            height={635}
-            loading="lazy"
-            className="mx-auto w-full max-w-xs"
-          />
+          <SignupLink label="Start selling on KrishiDukan" className="mx-auto w-full max-w-xs">
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img
+              src="/images/sell/whatsapp-enquiries.webp"
+              alt="Phone screen showing enquiries from farmers: price of Coragen 150 ml, availability of hybrid cotton seed, and delivery to a village"
+              width={420}
+              height={635}
+              loading="lazy"
+              className="w-full"
+            />
+          </SignupLink>
           <div>
             <span className="inline-flex h-11 w-11 items-center justify-center rounded-full bg-lime-100 text-primary">
               <MessageCircle className="h-5 w-5" aria-hidden />
@@ -878,15 +928,17 @@ export default async function SellPage() {
 
         <section className="mt-24 grid items-center gap-10 md:grid-cols-[1.2fr_0.8fr]">
           <figure>
-            {/* eslint-disable-next-line @next/next/no-img-element */}
-            <img
-              src="/images/sell/shop-on-devices.webp"
-              alt="A seller's KrishiDukan shop page shown on a laptop and a phone, with shop name, location, product count and products"
-              width={902}
-              height={460}
-              loading="lazy"
-              className="w-full"
-            />
+            <SignupLink label="Start selling on KrishiDukan">
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img
+                src="/images/sell/shop-on-devices.webp"
+                alt="A seller's KrishiDukan shop page shown on a laptop and a phone, with shop name, location, product count and products"
+                width={902}
+                height={460}
+                loading="lazy"
+                className="w-full"
+              />
+            </SignupLink>
             <figcaption className="mt-2 text-center text-[11px] text-on-surface-variant">
               Illustration. Your page shows your own shop name, details and products.
             </figcaption>
@@ -935,7 +987,7 @@ export default async function SellPage() {
           <div className="mt-8 text-center">
             <Link
               href={UPGRADE_URL}
-              className="inline-flex items-center gap-2 rounded-full bg-primary px-8 py-4 text-base font-black text-white transition-opacity hover:opacity-90"
+              className={`${PRIMARY_CTA} px-8 py-4 text-base shadow-lg shadow-yellow-500/30`}
             >
               Start Now <ArrowRight className="h-5 w-5" aria-hidden />
             </Link>
@@ -1277,7 +1329,7 @@ export default async function SellPage() {
           </p>
           <Link
             href={UPGRADE_URL}
-            className="mt-7 inline-flex items-center gap-2 rounded-full bg-white px-8 py-4 text-base font-black text-primary transition-opacity hover:opacity-90"
+            className={`${PRIMARY_CTA} mt-7 px-8 py-4 text-base`}
           >
             Start Selling Now <ArrowRight className="h-5 w-5" aria-hidden />
           </Link>
@@ -1297,15 +1349,20 @@ export default async function SellPage() {
             .
           </p>
           </div>
-          {/* eslint-disable-next-line @next/next/no-img-element */}
-          <img
-            src="/images/sell/first-product.webp"
-            alt="A 500 ml pesticide bottle next to a phone showing the same product listed on KrishiDukan with Enquire Now and WhatsApp enquiry buttons"
-            width={500}
-            height={650}
-            loading="lazy"
-            className="mx-auto hidden w-full max-w-xs rounded-[1.5rem] md:block"
-          />
+          <SignupLink
+            label="Start selling on KrishiDukan"
+            className="mx-auto hidden w-full max-w-xs md:block"
+          >
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img
+              src="/images/sell/first-product.webp"
+              alt="A 500 ml pesticide bottle next to a phone showing the same product listed on KrishiDukan with Enquire Now and WhatsApp enquiry buttons"
+              width={500}
+              height={650}
+              loading="lazy"
+              className="w-full rounded-[1.5rem]"
+            />
+          </SignupLink>
         </section>
 
         {/* /sell is SSR and does not render the SPA footer, so these are the
