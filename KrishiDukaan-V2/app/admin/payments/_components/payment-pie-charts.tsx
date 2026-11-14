@@ -1,93 +1,83 @@
 "use client";
 
 import { useMemo } from "react";
-import type { Attempt } from "../_lib/payments";
-import { bucketOf, type Bucket } from "../_lib/payments";
+import { CATEGORY_LABEL, type PaymentRow, type Category } from "../_lib/payments";
 
 /**
- * Two payment pie (donut) charts, drawn with plain SVG — the project ships no
- * charting library, and the existing analytics charts are hand-rolled SVG too.
+ * Two payment pie (donut) charts, hand-drawn in SVG. Both read the SAME unified
+ * rows, so they always agree with the table and CSV. Every row is counted once
+ * (categories are mutually exclusive), so there is no double-counting.
  *
- * Both charts read the SAME already-filtered dataset passed in, so they always
- * agree with the table and the CSV. Each attempt is one slice contribution and
- * is counted once (bucketOf is exhaustive and mutually exclusive), so there is
- * no double-counting.
- *
- * The two charts differ on purpose, and their titles say how:
- *   1. Status Distribution — ALL attempts, including checkouts still in flight
- *      ("In process"). Answers "where is every attempt right now?".
- *   2. Outcome Breakdown — RESOLVED attempts only (drops "In process").
- *      Answers "of the checkouts that finished, how did they end?".
+ * Chart 1 — Category distribution: the full normalized breakdown.
+ * Chart 2 — Business outcome: Collected (successful) vs Refunded vs Lost
+ *   (abandoned + failed), the simplified money view.
  */
 
-const COLORS: Record<Bucket, string> = {
-  paid: "#16a34a", // green-600
-  failed: "#dc2626", // red-600
-  abandoned: "#d97706", // amber-600
-  pending: "#64748b", // slate-500
+const COLORS: Record<string, string> = {
+  successful: "#16a34a",
+  abandoned: "#d97706",
+  failed: "#dc2626",
+  refunded: "#9333ea",
+  pending: "#64748b",
+  unresolved: "#ea580c",
+  lost: "#dc2626",
 };
 
-type Slice = { bucket: Bucket; label: string; count: number };
+type Slice = { key: string; label: string; count: number };
 
-export function PaymentPieCharts({ rows, now }: { rows: Attempt[]; now: number }) {
+export function PaymentPieCharts({ rows }: { rows: PaymentRow[] }) {
   const counts = useMemo(() => {
-    const c: Record<Bucket, number> = { paid: 0, failed: 0, abandoned: 0, pending: 0 };
-    for (const a of rows) c[bucketOf(a, now)] += 1;
+    const c: Record<Category, number> = {
+      successful: 0,
+      abandoned: 0,
+      failed: 0,
+      refunded: 0,
+      pending: 0,
+      unresolved: 0,
+    };
+    for (const r of rows) c[r.category] += 1;
     return c;
-  }, [rows, now]);
+  }, [rows]);
 
-  const statusSlices: Slice[] = [
-    { bucket: "paid", label: "Successful", count: counts.paid },
-    { bucket: "failed", label: "Failed", count: counts.failed },
-    { bucket: "abandoned", label: "Abandoned", count: counts.abandoned },
-    { bucket: "pending", label: "In process", count: counts.pending },
-  ];
+  const distribution: Slice[] = [
+    { key: "successful", label: CATEGORY_LABEL.successful, count: counts.successful },
+    { key: "abandoned", label: CATEGORY_LABEL.abandoned, count: counts.abandoned },
+    { key: "failed", label: CATEGORY_LABEL.failed, count: counts.failed },
+    { key: "refunded", label: CATEGORY_LABEL.refunded, count: counts.refunded },
+    { key: "pending", label: CATEGORY_LABEL.pending, count: counts.pending },
+    { key: "unresolved", label: CATEGORY_LABEL.unresolved, count: counts.unresolved },
+  ].filter((s) => s.count > 0);
 
-  const outcomeSlices: Slice[] = [
-    { bucket: "paid", label: "Successful", count: counts.paid },
-    { bucket: "failed", label: "Failed", count: counts.failed },
-    { bucket: "abandoned", label: "Abandoned", count: counts.abandoned },
-  ];
+  const outcome: Slice[] = [
+    { key: "successful", label: "Collected", count: counts.successful },
+    { key: "refunded", label: "Refunded", count: counts.refunded },
+    { key: "lost", label: "Lost (abandoned + failed)", count: counts.abandoned + counts.failed },
+  ].filter((s) => s.count > 0);
 
   return (
     <div className="grid gap-4 md:grid-cols-2">
       <Donut
-        title="Payment status distribution"
-        subtitle="Every payment attempt, including checkouts still in progress."
-        slices={statusSlices}
+        title="Category distribution"
+        subtitle="Every payment by its normalized category."
+        slices={distribution}
       />
       <Donut
-        title="Payment outcome breakdown"
-        subtitle="Resolved attempts only — in-progress checkouts are excluded."
-        slices={outcomeSlices}
+        title="Business outcome"
+        subtitle="Money collected vs refunded vs never collected (abandoned + failed)."
+        slices={outcome}
       />
     </div>
   );
 }
 
-function Donut({
-  title,
-  subtitle,
-  slices,
-}: {
-  title: string;
-  subtitle: string;
-  slices: Slice[];
-}) {
+function Donut({ title, subtitle, slices }: { title: string; subtitle: string; slices: Slice[] }) {
   const total = slices.reduce((s, x) => s + x.count, 0);
-
-  // Geometry: a stroked circle whose dasharray paints each slice in turn.
   const R = 60;
   const C = 2 * Math.PI * R;
   let offset = 0;
   const arcs = slices.map((s) => {
     const frac = total > 0 ? s.count / total : 0;
-    const arc = {
-      bucket: s.bucket,
-      dash: frac * C,
-      gap: C - frac * C,
-      rotation: (offset / C) * 360,
-    };
+    const arc = { key: s.key, dash: frac * C, gap: C - frac * C, rotation: (offset / C) * 360 };
     offset += frac * C;
     return arc;
   });
@@ -104,12 +94,12 @@ function Donut({
             {total > 0 &&
               arcs.map((a) => (
                 <circle
-                  key={a.bucket}
+                  key={a.key}
                   cx="75"
                   cy="75"
                   r={R}
                   fill="none"
-                  stroke={COLORS[a.bucket]}
+                  stroke={COLORS[a.key]}
                   strokeWidth="18"
                   strokeDasharray={`${a.dash} ${a.gap}`}
                   strokeDashoffset={0}
@@ -119,9 +109,7 @@ function Donut({
           </svg>
           <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center">
             <span className="text-xl font-extrabold text-on-surface">{total}</span>
-            <span className="text-[10px] font-semibold uppercase tracking-wide text-outline">
-              attempts
-            </span>
+            <span className="text-[10px] font-semibold uppercase tracking-wide text-outline">payments</span>
           </div>
         </div>
 
@@ -129,11 +117,8 @@ function Donut({
           {slices.map((s) => {
             const p = total > 0 ? (s.count / total) * 100 : 0;
             return (
-              <li key={s.bucket} className="flex items-center gap-2 text-sm">
-                <span
-                  className="h-3 w-3 shrink-0 rounded-sm"
-                  style={{ backgroundColor: COLORS[s.bucket] }}
-                />
+              <li key={s.key} className="flex items-center gap-2 text-sm">
+                <span className="h-3 w-3 shrink-0 rounded-sm" style={{ backgroundColor: COLORS[s.key] }} />
                 <span className="flex-1 truncate text-on-surface-variant">{s.label}</span>
                 <span className="font-bold text-on-surface">{s.count}</span>
                 <span className="w-12 text-right text-xs text-outline">{p.toFixed(1)}%</span>
@@ -144,9 +129,7 @@ function Donut({
       </div>
 
       {total === 0 && (
-        <p className="mt-2 text-center text-xs text-outline">
-          No payment attempts in the selected range.
-        </p>
+        <p className="mt-2 text-center text-xs text-outline">No payments in the selected range.</p>
       )}
     </div>
   );

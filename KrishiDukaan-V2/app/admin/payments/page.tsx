@@ -12,22 +12,16 @@ import {
   X,
 } from "lucide-react";
 import { auth } from "../../firebase";
+import { DateRangePicker, useDateRange } from "../_components/analytics/ui";
 import {
-  DateRangePicker,
-  useDateRange,
-} from "../_components/analytics/ui";
-import {
-  attemptsToCsv,
-  bucketOf,
-  BUCKET_LABEL,
   downloadCsv,
-  fetchAttemptsInRange,
+  fetchPaymentRows,
   money,
-  nameOf,
-  phoneOf,
-  platformOf,
-  type Attempt,
-  type Bucket,
+  paymentsToCsv,
+  CATEGORY_LABEL,
+  PLATFORM_LABEL,
+  type PaymentRow,
+  type Category,
   type Platform,
 } from "./_lib/payments";
 import { PaymentsTable } from "./_components/payments-table";
@@ -37,19 +31,21 @@ import { PaymentPieCharts } from "./_components/payment-pie-charts";
 /**
  * Admin → Payments.
  *
- * Shows every payment ATTEMPT (not just the successful ones), so a lost sale is
- * visible with the detail needed to act on it: who the buyer was, how to reach
- * them, which products at what price, and what Razorpay said went wrong.
+ * Unified view of two sources, correlated at read time by Razorpay order id:
+ *   razorpayPayments — gateway truth (one doc per payment id).
+ *   paymentAttempts  — app checkout sessions (one doc per order id).
  *
- * The whole page works off ONE date-bounded fetch of `paymentAttempts`
- * (fetchAttemptsInRange). Table, pie charts and CSV all read that same set, so
- * they can never disagree. The categorisation (failed / abandoned / in-process
- * / successful) is the shared bucketOf rule in _lib/payments.ts — "successful"
- * is Razorpay-confirmed money only, and "abandoned" is the app's own
- * 30-minutes-at-'created' rule, never simply "any failed Razorpay payment".
+ * Categories (mutually exclusive, deduped): Successful, Abandoned (gateway
+ * timeouts + app-only closed/cancelled checkouts), Failed (genuine gateway
+ * failures only), Refunded, Pending, Unresolved (app-paid with no gateway
+ * payment — flagged, never guessed). See _lib/payments.ts for the decision table.
  */
 
 const PAGE_SIZE = 25;
+
+type Tab = "all" | Category;
+const TABS: Tab[] = ["all", "successful", "abandoned", "failed", "refunded", "pending", "unresolved"];
+const TAB_LABEL: Record<Tab, string> = { all: "All", ...CATEGORY_LABEL };
 
 const PLATFORM_OPTIONS: { value: Platform | "all"; label: string }[] = [
   { value: "all", label: "All platforms" },
@@ -63,19 +59,16 @@ export default function AdminPaymentsPage() {
   const dr = useDateRange("30d");
   const { from, to } = dr.range;
 
-  const [attempts, setAttempts] = useState<Attempt[]>([]);
+  const [rows, setRows] = useState<PaymentRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  // Single clock for the whole loaded set, so the 30-minute abandoned/pending
-  // split is identical across table, charts and CSV. Bumped on every reload.
-  const [now, setNow] = useState(() => Date.now());
 
-  const [tab, setTab] = useState<Bucket>("failed");
+  const [tab, setTab] = useState<Tab>("all");
   const [platform, setPlatform] = useState<Platform | "all">("all");
   const [search, setSearch] = useState("");
   const [page, setPage] = useState(0);
   const [showAnalytics, setShowAnalytics] = useState(false);
-  const [selected, setSelected] = useState<Attempt | null>(null);
+  const [selected, setSelected] = useState<PaymentRow | null>(null);
 
   const [syncing, setSyncing] = useState(false);
   const [syncResult, setSyncResult] = useState<string | null>(null);
@@ -84,65 +77,63 @@ export default function AdminPaymentsPage() {
     setLoading(true);
     setError(null);
     try {
-      const rows = await fetchAttemptsInRange(from, to);
-      setAttempts(rows);
-      setNow(Date.now());
+      setRows(await fetchPaymentRows(from, to));
     } catch (e) {
       setError(
         e instanceof Error
           ? e.message
-          : "Could not load payments. Check the Firestore rules for paymentAttempts.",
+          : "Could not load payments. Check the Firestore rules for razorpayPayments.",
       );
     } finally {
       setLoading(false);
     }
   };
 
-  // Refetch whenever the date range changes.
   useEffect(() => {
     void reload();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [from.getTime(), to.getTime()]);
 
-  // Reset pagination when the working view changes.
   useEffect(() => setPage(0), [tab, platform, search]);
 
-  // Everything in range after the platform + text filters — but NOT the status
-  // tab. Charts and the summary read this so they always show the full
-  // distribution; only the table and CSV narrow further by tab.
+  // Range rows after platform + text filters, but NOT the tab — charts and the
+  // summary read this so they always show the full distribution.
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
-    return attempts.filter((a) => {
-      if (platform !== "all" && platformOf(a) !== platform) return false;
+    return rows.filter((r) => {
+      if (platform !== "all" && r.platform !== platform) return false;
       if (!q) return true;
       return (
-        (phoneOf(a) ?? "").toLowerCase().includes(q) ||
-        nameOf(a).toLowerCase().includes(q) ||
-        a.razorpayOrderId.toLowerCase().includes(q) ||
-        (a.razorpayPaymentId ?? "").toLowerCase().includes(q) ||
-        a.items.some((i) => i.name.toLowerCase().includes(q))
+        (r.phone ?? "").toLowerCase().includes(q) ||
+        r.name.toLowerCase().includes(q) ||
+        (r.paymentId ?? "").toLowerCase().includes(q) ||
+        (r.orderId ?? "").toLowerCase().includes(q) ||
+        r.product.toLowerCase().includes(q)
       );
     });
-  }, [attempts, platform, search]);
+  }, [rows, platform, search]);
 
   const counts = useMemo(() => {
-    const c: Record<Bucket, number> = { failed: 0, abandoned: 0, pending: 0, paid: 0 };
-    for (const a of filtered) c[bucketOf(a, now)] += 1;
+    const c: Record<Category, number> = {
+      successful: 0,
+      abandoned: 0,
+      failed: 0,
+      refunded: 0,
+      pending: 0,
+      unresolved: 0,
+    };
+    for (const r of filtered) c[r.category] += 1;
     return c;
-  }, [filtered, now]);
+  }, [filtered]);
 
-  const lostValue = useMemo(
-    () =>
-      filtered
-        .filter((a) => bucketOf(a, now) === "failed")
-        .reduce((s, a) => s + a.amount, 0),
-    [filtered, now],
+  const refundedValue = useMemo(
+    () => filtered.reduce((s, r) => s + (r.payment?.amountRefunded ?? 0), 0),
+    [filtered],
   );
 
-  // The tab's records (full, unpaginated) — what the CSV exports.
   const tabRows = useMemo(
-    () => filtered.filter((a) => bucketOf(a, now) === tab),
-    [filtered, now, tab],
+    () => (tab === "all" ? filtered : filtered.filter((r) => r.category === tab)),
+    [filtered, tab],
   );
 
   const pageRows = useMemo(
@@ -152,14 +143,13 @@ export default function AdminPaymentsPage() {
   const pageCount = Math.max(1, Math.ceil(tabRows.length / PAGE_SIZE));
 
   const exportCsv = () => {
-    const csv = attemptsToCsv(tabRows, now);
+    const csv = paymentsToCsv(tabRows);
     const day = new Date().toISOString().slice(0, 10);
     downloadCsv(`krishi-dukan-payments-${day}.csv`, csv);
   };
 
-  // Pulls failed payments straight from Razorpay — catches failures the client
-  // never reported (killed app, dropped connection, old app version). Unchanged
-  // behaviour from before; just reloads the range when done.
+  // Mirror Razorpay's payment records into `razorpayPayments` (all statuses),
+  // then reload. Idempotent server-side (keyed by payment id).
   const syncFromRazorpay = async () => {
     setSyncing(true);
     setSyncResult(null);
@@ -173,7 +163,7 @@ export default function AdminPaymentsPage() {
       let guard = 0;
       while (hasMore && guard < 50) {
         guard++;
-        const res = await fetch("/api/admin/sync-razorpay-failures", {
+        const res = await fetch("/api/admin/sync-razorpay-payments", {
           method: "POST",
           headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
           body: JSON.stringify({ skip }),
@@ -186,7 +176,7 @@ export default function AdminPaymentsPage() {
         hasMore = Boolean(data.hasMore);
       }
       setSyncResult(
-        `Scanned ${totalScanned} Razorpay payment${totalScanned === 1 ? "" : "s"}, added/updated ${totalWritten} failed record${totalWritten === 1 ? "" : "s"}.`,
+        `Scanned ${totalScanned} Razorpay payment${totalScanned === 1 ? "" : "s"}, mirrored ${totalWritten}.`,
       );
       await reload();
     } catch (e) {
@@ -203,7 +193,7 @@ export default function AdminPaymentsPage() {
         <div>
           <h1 className="text-xl font-bold text-on-surface">Payments</h1>
           <p className="text-sm text-on-surface-variant">
-            Every payment attempt in the selected range — successful, failed, abandoned and in progress.
+            Every Razorpay payment in the selected range — captured, failed, abandoned and refunded.
           </p>
         </div>
         <div className="flex items-center gap-2">
@@ -219,7 +209,7 @@ export default function AdminPaymentsPage() {
           <button
             onClick={syncFromRazorpay}
             disabled={syncing}
-            title="Pull failed payments directly from Razorpay — catches failures the app never reported."
+            title="Mirror Razorpay's payment records into the dashboard (all statuses)."
             className="flex items-center gap-2 rounded-lg bg-primary px-3 py-2 text-sm font-semibold text-white transition hover:opacity-90 disabled:opacity-50"
           >
             <Download className={`h-4 w-4 ${syncing ? "animate-pulse" : ""}`} />
@@ -248,11 +238,11 @@ export default function AdminPaymentsPage() {
 
       {/* Summary */}
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-5">
-        <SummaryCard label="Failed" value={String(counts.failed)} tone="error" />
+        <SummaryCard label="Successful" value={String(counts.successful)} tone="ok" />
         <SummaryCard label="Abandoned" value={String(counts.abandoned)} tone="warn" />
-        <SummaryCard label="In progress" value={String(counts.pending)} tone="warn" />
-        <SummaryCard label="Successful" value={String(counts.paid)} tone="ok" />
-        <SummaryCard label="Value not collected" value={money(lostValue)} tone="error" />
+        <SummaryCard label="Failed" value={String(counts.failed)} tone="error" />
+        <SummaryCard label="Refunded" value={`${counts.refunded} · ${money(refundedValue)}`} tone="warn" />
+        <SummaryCard label="Total" value={String(filtered.length)} tone="neutral" />
       </div>
 
       {/* Analytics (collapsible) */}
@@ -265,14 +255,14 @@ export default function AdminPaymentsPage() {
             <BarChart3 className="h-4 w-4 text-primary" />
             Payment analytics
             <span className="text-xs font-normal text-on-surface-variant">
-              ({filtered.length} attempt{filtered.length === 1 ? "" : "s"} in view)
+              ({filtered.length} payment{filtered.length === 1 ? "" : "s"} in view)
             </span>
           </span>
           <ChevronDown className={`h-4 w-4 text-outline transition-transform ${showAnalytics ? "rotate-180" : ""}`} />
         </button>
         {showAnalytics && (
           <div className="border-t border-outline/15 p-4">
-            <PaymentPieCharts rows={filtered} now={now} />
+            <PaymentPieCharts rows={filtered} />
           </div>
         )}
       </div>
@@ -285,8 +275,8 @@ export default function AdminPaymentsPage() {
       )}
 
       {/* Tabs */}
-      <div className="flex gap-4 border-b border-outline/20">
-        {(["failed", "abandoned", "pending", "paid"] as Bucket[]).map((t) => (
+      <div className="flex flex-wrap gap-4 border-b border-outline/20">
+        {TABS.map((t) => (
           <button
             key={t}
             onClick={() => setTab(t)}
@@ -296,9 +286,9 @@ export default function AdminPaymentsPage() {
                 : "text-on-surface-variant hover:text-on-surface"
             }`}
           >
-            {BUCKET_LABEL[t]}
+            {TAB_LABEL[t]}
             <span className="rounded-full bg-surface-container px-1.5 py-0.5 text-[11px] font-bold">
-              {counts[t]}
+              {t === "all" ? filtered.length : counts[t]}
             </span>
           </button>
         ))}
@@ -342,12 +332,12 @@ export default function AdminPaymentsPage() {
       ) : tabRows.length === 0 ? (
         <p className="py-16 text-center text-sm text-on-surface-variant">
           {search || platform !== "all"
-            ? `No ${BUCKET_LABEL[tab].toLowerCase()} payments match the current filters.`
-            : `No ${BUCKET_LABEL[tab].toLowerCase()} payments in this range.`}
+            ? `No ${TAB_LABEL[tab].toLowerCase()} payments match the current filters.`
+            : `No ${TAB_LABEL[tab].toLowerCase()} payments in this range.`}
         </p>
       ) : (
         <>
-          <PaymentsTable rows={pageRows} now={now} onView={setSelected} />
+          <PaymentsTable rows={pageRows} onView={setSelected} />
           <div className="flex items-center justify-between text-sm text-on-surface-variant">
             <span>
               Showing {page * PAGE_SIZE + 1}–{Math.min((page + 1) * PAGE_SIZE, tabRows.length)} of{" "}
@@ -376,9 +366,7 @@ export default function AdminPaymentsPage() {
         </>
       )}
 
-      {selected && (
-        <PaymentDetailsModal attempt={selected} now={now} onClose={() => setSelected(null)} />
-      )}
+      {selected && <PaymentDetailsModal row={selected} onClose={() => setSelected(null)} />}
     </div>
   );
 }
@@ -390,10 +378,16 @@ function SummaryCard({
 }: {
   label: string;
   value: string;
-  tone: "error" | "warn" | "ok";
+  tone: "error" | "warn" | "ok" | "neutral";
 }) {
   const toneClass =
-    tone === "error" ? "text-red-600" : tone === "warn" ? "text-amber-600" : "text-green-700";
+    tone === "error"
+      ? "text-red-600"
+      : tone === "warn"
+        ? "text-amber-600"
+        : tone === "ok"
+          ? "text-green-700"
+          : "text-on-surface";
   return (
     <div className="rounded-xl border border-outline/15 bg-white p-4">
       <p className={`text-2xl font-extrabold ${toneClass}`}>{value}</p>

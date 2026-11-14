@@ -1,5 +1,12 @@
+import type { Firestore } from 'firebase-admin/firestore';
 import { getAdminDb } from './firebase-admin';
 import type { RazorpayRefundEntity } from './refund-sync';
+import { type PaymentStatus, type PaymentBucket, classifyPayment, isTimeoutFailure } from './payments-shared';
+
+// Re-exported so existing server/script imports keep resolving from here, while
+// the single source of truth lives in the client-safe payments-shared module.
+export { classifyPayment, isTimeoutFailure };
+export type { PaymentStatus, PaymentBucket };
 
 /**
  * `razorpayPayments` — our mirror of Razorpay's own payment records.
@@ -24,9 +31,6 @@ import type { RazorpayRefundEntity } from './refund-sync';
  * and is joined in at read time on `orderId`. Written exclusively server-side
  * (webhook + admin backfill); the matching Firestore rule denies client writes.
  */
-
-/** Razorpay payment lifecycle, as the gateway reports it. */
-export type PaymentStatus = 'created' | 'authorized' | 'captured' | 'refunded' | 'failed';
 
 export type PaymentDoc = {
   paymentId: string;
@@ -137,9 +141,11 @@ export async function upsertPaymentFromEntity(
   e: RazorpayPaymentEntity,
   source: PaymentDoc['source'],
   opts: { capturedAt?: Date } = {},
+  // Injectable so a one-off backfill can target a DIFFERENT project (UAT) than
+  // the app default (production) — the upsert logic stays identical.
+  db: Firestore = getAdminDb(),
 ): Promise<void> {
   if (!e.id) return;
-  const db = getAdminDb();
   const ref = db.collection('razorpayPayments').doc(e.id);
 
   await db.runTransaction(async (tx) => {
@@ -176,10 +182,12 @@ export async function upsertPaymentFromEntity(
  * amount and moves the payment to `refunded`. Idempotent — reprocessing the
  * same refund can only re-assert the same (or larger) refunded amount.
  */
-export async function applyRefundToPayment(refund: RazorpayRefundEntity): Promise<void> {
+export async function applyRefundToPayment(
+  refund: RazorpayRefundEntity,
+  db: Firestore = getAdminDb(),
+): Promise<void> {
   const paymentId = refund.payment_id;
   if (!paymentId) return;
-  const db = getAdminDb();
   const ref = db.collection('razorpayPayments').doc(paymentId);
 
   await db.runTransaction(async (tx) => {
@@ -199,26 +207,3 @@ export async function applyRefundToPayment(refund: RazorpayRefundEntity): Promis
   });
 }
 
-// ─── Classification (shared by the dashboard) ───────────────────────────────────
-
-/** The mutually-exclusive bucket a payment falls in. `authorized` and `created`
- *  share the "created" (unresolved) bucket — an authorized-but-uncaptured
- *  payment is deliberately NOT counted as captured. */
-export type PaymentBucket = 'captured' | 'refunded' | 'failed' | 'created';
-
-export function classifyPayment(p: Pick<PaymentDoc, 'status' | 'amountRefunded'>): PaymentBucket {
-  if ((p.amountRefunded ?? 0) > 0 || p.status === 'refunded') return 'refunded';
-  if (p.status === 'captured') return 'captured';
-  if (p.status === 'failed') return 'failed';
-  return 'created';
-}
-
-/** A failed payment that timed out — the business "Abandoned" view, a strict
- *  sub-set of Failed (never its own payment attempt). */
-export function isTimeoutFailure(
-  p: Pick<PaymentDoc, 'status' | 'errorReason' | 'errorDescription' | 'errorCode'>,
-): boolean {
-  if (p.status !== 'failed') return false;
-  const txt = `${p.errorReason ?? ''} ${p.errorDescription ?? ''} ${p.errorCode ?? ''}`.toLowerCase();
-  return txt.includes('timed_out') || txt.includes('timeout') || txt.includes('timed out');
-}
