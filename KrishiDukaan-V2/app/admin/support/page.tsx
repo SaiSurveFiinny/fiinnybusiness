@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import Link from "next/link";
 import {
   HeadphonesIcon,
   Send,
@@ -133,9 +134,19 @@ function ConversationView({
           {conv.userName ? conv.userName[0].toUpperCase() : <User className="h-4 w-4" />}
         </div>
         <div className="flex-1 min-w-0">
-          <p className="text-sm font-bold text-on-surface truncate">
-            {conv.userName || "Unknown user"}
-          </p>
+          {conv.userId ? (
+            <Link
+              href={`/admin/customer-history/${encodeURIComponent(conv.userId)}`}
+              onClick={(e) => e.stopPropagation()}
+              className="text-sm font-bold text-primary hover:underline truncate block"
+            >
+              {conv.userName || "Unknown user"}
+            </Link>
+          ) : (
+            <p className="text-sm font-bold text-on-surface truncate">
+              {conv.userName || "Unknown user"}
+            </p>
+          )}
           {conv.userEmail && (
             <p className="text-xs text-on-surface-variant truncate">
               {conv.userEmail}
@@ -330,9 +341,19 @@ export default function AdminSupportPage() {
               {/* Info */}
               <div className="flex-1 min-w-0">
                 <div className="flex items-center gap-2">
-                  <p className="text-sm font-bold text-on-surface truncate">
-                    {conv.userName || "Unknown user"}
-                  </p>
+                  {conv.userId ? (
+                    <Link
+                      href={`/admin/customer-history/${encodeURIComponent(conv.userId)}`}
+                      onClick={(e) => e.stopPropagation()}
+                      className="text-sm font-bold text-primary hover:underline truncate"
+                    >
+                      {conv.userName || "Unknown user"}
+                    </Link>
+                  ) : (
+                    <p className="text-sm font-bold text-on-surface truncate">
+                      {conv.userName || "Unknown user"}
+                    </p>
+                  )}
                   {conv.unreadByAdmin > 0 && (
                     <span className="flex h-4 min-w-[16px] items-center justify-center rounded-full bg-primary px-1 text-[9px] font-black text-white">
                       {conv.unreadByAdmin > 99 ? "99+" : conv.unreadByAdmin}

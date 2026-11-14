@@ -1,16 +1,14 @@
 "use client";
 
-import { useMemo } from "react";
-import { CATEGORY_LABEL, type PaymentRow, type Category } from "../_lib/payments";
+import { CATEGORY_LABEL, type Category } from "../_lib/payments";
 
 /**
- * Two payment pie (donut) charts, hand-drawn in SVG. Both read the SAME unified
- * rows, so they always agree with the table and CSV. Every row is counted once
- * (categories are mutually exclusive), so there is no double-counting.
+ * Two SVG donut charts driven by the server-computed category counts (not by
+ * the loaded rows), so they reflect the full filtered distribution even though
+ * the table only holds one page.
  *
- * Chart 1 — Category distribution: the full normalized breakdown.
- * Chart 2 — Business outcome: Collected (successful) vs Refunded vs Lost
- *   (abandoned + failed), the simplified money view.
+ * Chart 1 — Category distribution (full normalized breakdown).
+ * Chart 2 — Business outcome: Collected / Refunded / Lost (abandoned + failed).
  */
 
 const COLORS: Record<string, string> = {
@@ -25,28 +23,12 @@ const COLORS: Record<string, string> = {
 
 type Slice = { key: string; label: string; count: number };
 
-export function PaymentPieCharts({ rows }: { rows: PaymentRow[] }) {
-  const counts = useMemo(() => {
-    const c: Record<Category, number> = {
-      successful: 0,
-      abandoned: 0,
-      failed: 0,
-      refunded: 0,
-      pending: 0,
-      unresolved: 0,
-    };
-    for (const r of rows) c[r.category] += 1;
-    return c;
-  }, [rows]);
-
-  const distribution: Slice[] = [
-    { key: "successful", label: CATEGORY_LABEL.successful, count: counts.successful },
-    { key: "abandoned", label: CATEGORY_LABEL.abandoned, count: counts.abandoned },
-    { key: "failed", label: CATEGORY_LABEL.failed, count: counts.failed },
-    { key: "refunded", label: CATEGORY_LABEL.refunded, count: counts.refunded },
-    { key: "pending", label: CATEGORY_LABEL.pending, count: counts.pending },
-    { key: "unresolved", label: CATEGORY_LABEL.unresolved, count: counts.unresolved },
-  ].filter((s) => s.count > 0);
+export function PaymentPieCharts({ counts }: { counts: Record<Category, number> }) {
+  const distribution: Slice[] = (
+    ["successful", "abandoned", "failed", "refunded", "pending", "unresolved"] as Category[]
+  )
+    .map((k) => ({ key: k, label: CATEGORY_LABEL[k], count: counts[k] }))
+    .filter((s) => s.count > 0);
 
   const outcome: Slice[] = [
     { key: "successful", label: "Collected", count: counts.successful },
@@ -56,11 +38,7 @@ export function PaymentPieCharts({ rows }: { rows: PaymentRow[] }) {
 
   return (
     <div className="grid gap-4 md:grid-cols-2">
-      <Donut
-        title="Category distribution"
-        subtitle="Every payment by its normalized category."
-        slices={distribution}
-      />
+      <Donut title="Category distribution" subtitle="Every payment by its normalized category." slices={distribution} />
       <Donut
         title="Business outcome"
         subtitle="Money collected vs refunded vs never collected (abandoned + failed)."
@@ -128,9 +106,7 @@ function Donut({ title, subtitle, slices }: { title: string; subtitle: string; s
         </ul>
       </div>
 
-      {total === 0 && (
-        <p className="mt-2 text-center text-xs text-outline">No payments in the selected range.</p>
-      )}
+      {total === 0 && <p className="mt-2 text-center text-xs text-outline">No payments in the selected range.</p>}
     </div>
   );
 }

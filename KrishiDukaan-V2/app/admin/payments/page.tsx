@@ -1,155 +1,153 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import {
-  AlertTriangle,
-  BarChart3,
-  ChevronDown,
-  Download,
-  FileSpreadsheet,
-  RefreshCw,
-  Search,
-  X,
-} from "lucide-react";
+import { AlertTriangle, BarChart3, ChevronDown, Download, FileSpreadsheet, RefreshCw, Search, X } from "lucide-react";
 import { auth } from "../../firebase";
-import { DateRangePicker, useDateRange } from "../_components/analytics/ui";
+import { rangeForPreset, type RangePreset } from "../_components/analytics/ui";
 import {
   downloadCsv,
-  fetchPaymentRows,
+  fetchPaymentsPage,
   money,
   paymentsToCsv,
   CATEGORY_LABEL,
-  PLATFORM_LABEL,
-  type PaymentRow,
+  EMPTY_PAYMENT_FILTERS,
   type Category,
-  type Platform,
+  type PaymentFilters,
+  type PaymentRow,
+  type PaymentsPage,
 } from "./_lib/payments";
 import { PaymentsTable } from "./_components/payments-table";
 import { PaymentDetailsModal } from "./_components/payment-details-modal";
 import { PaymentPieCharts } from "./_components/payment-pie-charts";
+import { PaymentFilterChips } from "./_components/payment-filter-chips";
 
 /**
- * Admin → Payments.
- *
- * Unified view of two sources, correlated at read time by Razorpay order id:
- *   razorpayPayments — gateway truth (one doc per payment id).
- *   paymentAttempts  — app checkout sessions (one doc per order id).
- *
- * Categories (mutually exclusive, deduped): Successful, Abandoned (gateway
- * timeouts + app-only closed/cancelled checkouts), Failed (genuine gateway
- * failures only), Refunded, Pending, Unresolved (app-paid with no gateway
- * payment — flagged, never guessed). See _lib/payments.ts for the decision table.
+ * Admin → Payments. Unified razorpayPayments + paymentAttempts, fetched/merged/
+ * aggregated server-side. The date window (preset chips + the Date column's
+ * custom range) bounds the server fetch; the other per-column filters and the
+ * free-text search are applied server-side too, so everything spans ALL records
+ * while only a page is sent to the browser.
  */
 
 const PAGE_SIZE = 25;
+
+const PRESETS: { key: RangePreset; label: string }[] = [
+  { key: "7d", label: "Last 7 days" },
+  { key: "30d", label: "Last 30 days" },
+  { key: "90d", label: "Last 90 days" },
+  { key: "mtd", label: "This month" },
+  { key: "ytd", label: "This year" },
+  { key: "all", label: "All time" },
+];
 
 type Tab = "all" | Category;
 const TABS: Tab[] = ["all", "successful", "abandoned", "failed", "refunded", "pending", "unresolved"];
 const TAB_LABEL: Record<Tab, string> = { all: "All", ...CATEGORY_LABEL };
 
-const PLATFORM_OPTIONS: { value: Platform | "all"; label: string }[] = [
-  { value: "all", label: "All platforms" },
-  { value: "app", label: "App" },
-  { value: "web", label: "Web" },
-  { value: "razorpay", label: "Razorpay (synced)" },
-  { value: "unknown", label: "Unknown" },
-];
+const EMPTY: PaymentsPage = {
+  counts: { successful: 0, abandoned: 0, failed: 0, refunded: 0, pending: 0, unresolved: 0 },
+  refundedValue: 0,
+  total: 0,
+  tabTotal: 0,
+  rows: [],
+};
 
 export default function AdminPaymentsPage() {
-  const dr = useDateRange("30d");
-  const { from, to } = dr.range;
+  // Date window: preset chips + a custom range entered via the Date column filter.
+  const [datePreset, setDatePreset] = useState<RangePreset>("30d");
+  const [dFrom, setDFrom] = useState<number | null>(null);
+  const [dTo, setDTo] = useState<number | null>(null);
+  const win = useMemo(() => {
+    if (datePreset === "all") return { fromMs: 0, toMs: Date.now() };
+    if (datePreset === "custom") return { fromMs: dFrom ?? 0, toMs: dTo ?? Date.now() };
+    const r = rangeForPreset(datePreset);
+    return { fromMs: r.from.getTime(), toMs: r.to.getTime() };
+  }, [datePreset, dFrom, dTo]);
 
-  const [rows, setRows] = useState<PaymentRow[]>([]);
+  const [filters, setFilters] = useState<PaymentFilters>(EMPTY_PAYMENT_FILTERS);
+  const filterKey = useMemo(() => JSON.stringify(filters), [filters]);
+
+  const [data, setData] = useState<PaymentsPage>(EMPTY);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
   const [tab, setTab] = useState<Tab>("all");
-  const [platform, setPlatform] = useState<Platform | "all">("all");
   const [search, setSearch] = useState("");
+  const [debouncedSearch, setDebouncedSearch] = useState("");
   const [page, setPage] = useState(0);
   const [showAnalytics, setShowAnalytics] = useState(false);
   const [selected, setSelected] = useState<PaymentRow | null>(null);
 
   const [syncing, setSyncing] = useState(false);
   const [syncResult, setSyncResult] = useState<string | null>(null);
+  const [exporting, setExporting] = useState(false);
 
-  const reload = async () => {
+  useEffect(() => {
+    const t = setTimeout(() => setDebouncedSearch(search.trim()), 300);
+    return () => clearTimeout(t);
+  }, [search]);
+
+  useEffect(() => setPage(0), [win.fromMs, win.toMs, tab, debouncedSearch, filterKey]);
+
+  const load = async () => {
     setLoading(true);
     setError(null);
     try {
-      setRows(await fetchPaymentRows(from, to));
-    } catch (e) {
-      setError(
-        e instanceof Error
-          ? e.message
-          : "Could not load payments. Check the Firestore rules for razorpayPayments.",
+      setData(
+        await fetchPaymentsPage({
+          from: new Date(win.fromMs),
+          to: new Date(win.toMs),
+          q: debouncedSearch,
+          filters,
+          category: tab,
+          page,
+          pageSize: PAGE_SIZE,
+        }),
       );
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Could not load payments.");
+      setData(EMPTY);
     } finally {
       setLoading(false);
     }
   };
 
   useEffect(() => {
-    void reload();
+    void load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [from.getTime(), to.getTime()]);
+  }, [win.fromMs, win.toMs, tab, debouncedSearch, filterKey, page]);
 
-  useEffect(() => setPage(0), [tab, platform, search]);
+  const { counts, refundedValue, total, tabTotal, rows } = data;
+  const pageCount = Math.max(1, Math.ceil(tabTotal / PAGE_SIZE));
 
-  // Range rows after platform + text filters, but NOT the tab — charts and the
-  // summary read this so they always show the full distribution.
-  const filtered = useMemo(() => {
-    const q = search.trim().toLowerCase();
-    return rows.filter((r) => {
-      if (platform !== "all" && r.platform !== platform) return false;
-      if (!q) return true;
-      return (
-        (r.phone ?? "").toLowerCase().includes(q) ||
-        r.name.toLowerCase().includes(q) ||
-        (r.paymentId ?? "").toLowerCase().includes(q) ||
-        (r.orderId ?? "").toLowerCase().includes(q) ||
-        r.product.toLowerCase().includes(q)
-      );
-    });
-  }, [rows, platform, search]);
-
-  const counts = useMemo(() => {
-    const c: Record<Category, number> = {
-      successful: 0,
-      abandoned: 0,
-      failed: 0,
-      refunded: 0,
-      pending: 0,
-      unresolved: 0,
-    };
-    for (const r of filtered) c[r.category] += 1;
-    return c;
-  }, [filtered]);
-
-  const refundedValue = useMemo(
-    () => filtered.reduce((s, r) => s + (r.payment?.amountRefunded ?? 0), 0),
-    [filtered],
-  );
-
-  const tabRows = useMemo(
-    () => (tab === "all" ? filtered : filtered.filter((r) => r.category === tab)),
-    [filtered, tab],
-  );
-
-  const pageRows = useMemo(
-    () => tabRows.slice(page * PAGE_SIZE, page * PAGE_SIZE + PAGE_SIZE),
-    [tabRows, page],
-  );
-  const pageCount = Math.max(1, Math.ceil(tabRows.length / PAGE_SIZE));
-
-  const exportCsv = () => {
-    const csv = paymentsToCsv(tabRows);
-    const day = new Date().toISOString().slice(0, 10);
-    downloadCsv(`krishi-dukan-payments-${day}.csv`, csv);
+  const clearAll = () => {
+    setFilters(EMPTY_PAYMENT_FILTERS);
+    setSearch("");
+    setDatePreset("30d");
+    setDFrom(null);
+    setDTo(null);
   };
 
-  // Mirror Razorpay's payment records into `razorpayPayments` (all statuses),
-  // then reload. Idempotent server-side (keyed by payment id).
+  const exportCsv = async () => {
+    setExporting(true);
+    try {
+      const full = await fetchPaymentsPage({
+        from: new Date(win.fromMs),
+        to: new Date(win.toMs),
+        q: debouncedSearch,
+        filters,
+        category: tab,
+        all: true,
+      });
+      const day = new Date().toISOString().slice(0, 10);
+      downloadCsv(`krishi-dukan-payments-${day}.csv`, paymentsToCsv(full.rows));
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Export failed.");
+    } finally {
+      setExporting(false);
+    }
+  };
+
   const syncFromRazorpay = async () => {
     setSyncing(true);
     setSyncResult(null);
@@ -168,23 +166,28 @@ export default function AdminPaymentsPage() {
           headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
           body: JSON.stringify({ skip }),
         });
-        const data = await res.json();
-        if (!res.ok) throw new Error(data?.error ?? "Sync failed");
-        totalScanned += data.scanned ?? 0;
-        totalWritten += data.written ?? 0;
-        skip = data.nextSkip ?? skip;
-        hasMore = Boolean(data.hasMore);
+        const d = await res.json();
+        if (!res.ok) throw new Error(d?.error ?? "Sync failed");
+        totalScanned += d.scanned ?? 0;
+        totalWritten += d.written ?? 0;
+        skip = d.nextSkip ?? skip;
+        hasMore = Boolean(d.hasMore);
       }
-      setSyncResult(
-        `Scanned ${totalScanned} Razorpay payment${totalScanned === 1 ? "" : "s"}, mirrored ${totalWritten}.`,
-      );
-      await reload();
+      setSyncResult(`Scanned ${totalScanned} Razorpay payment${totalScanned === 1 ? "" : "s"}, mirrored ${totalWritten}.`);
+      await load();
     } catch (e) {
       setSyncResult(e instanceof Error ? `Sync failed: ${e.message}` : "Sync failed.");
     } finally {
       setSyncing(false);
     }
   };
+
+  const chipCls = (active: boolean) =>
+    `rounded-xl border px-3 py-1.5 text-xs font-bold transition-colors ${
+      active
+        ? "border-primary bg-primary/10 text-primary"
+        : "border-outline/40 bg-surface-container-low text-on-surface hover:bg-surface-container"
+    }`;
 
   return (
     <div className="space-y-5">
@@ -193,18 +196,18 @@ export default function AdminPaymentsPage() {
         <div>
           <h1 className="text-xl font-bold text-on-surface">Payments</h1>
           <p className="text-sm text-on-surface-variant">
-            Every Razorpay payment in the selected range — captured, failed, abandoned and refunded.
+            Unified Razorpay payments + app checkouts — successful, abandoned, failed and refunded.
           </p>
         </div>
         <div className="flex items-center gap-2">
           <button
             onClick={exportCsv}
-            disabled={tabRows.length === 0}
+            disabled={exporting || tabTotal === 0}
             title="Export every record in the current tab, range and filters — not just this page."
             className="flex items-center gap-2 rounded-lg border border-outline/30 px-3 py-2 text-sm font-semibold text-on-surface-variant transition hover:bg-surface-container disabled:opacity-50"
           >
             <FileSpreadsheet className="h-4 w-4" />
-            Export CSV
+            {exporting ? "Exporting…" : "Export CSV"}
           </button>
           <button
             onClick={syncFromRazorpay}
@@ -216,7 +219,7 @@ export default function AdminPaymentsPage() {
             {syncing ? "Syncing…" : "Sync from Razorpay"}
           </button>
           <button
-            onClick={reload}
+            onClick={load}
             disabled={loading}
             className="flex items-center gap-2 rounded-lg border border-outline/30 px-3 py-2 text-sm font-semibold text-on-surface-variant transition hover:bg-surface-container disabled:opacity-50"
           >
@@ -233,8 +236,15 @@ export default function AdminPaymentsPage() {
         </div>
       )}
 
-      {/* Date range */}
-      <DateRangePicker {...dr} />
+      {/* Date range presets (custom range is entered via the Date column filter) */}
+      <div className="flex flex-wrap items-center gap-2">
+        {PRESETS.map((p) => (
+          <button key={p.key} type="button" onClick={() => setDatePreset(p.key)} className={chipCls(datePreset === p.key)}>
+            {p.label}
+          </button>
+        ))}
+        {datePreset === "custom" && <span className={chipCls(true)}>Custom range</span>}
+      </div>
 
       {/* Summary */}
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-5">
@@ -242,27 +252,24 @@ export default function AdminPaymentsPage() {
         <SummaryCard label="Abandoned" value={String(counts.abandoned)} tone="warn" />
         <SummaryCard label="Failed" value={String(counts.failed)} tone="error" />
         <SummaryCard label="Refunded" value={`${counts.refunded} · ${money(refundedValue)}`} tone="warn" />
-        <SummaryCard label="Total" value={String(filtered.length)} tone="neutral" />
+        <SummaryCard label="Total" value={String(total)} tone="neutral" />
       </div>
 
-      {/* Analytics (collapsible) */}
+      {/* Analytics */}
       <div className="rounded-2xl border border-outline/15 bg-surface-container/20">
-        <button
-          onClick={() => setShowAnalytics((v) => !v)}
-          className="flex w-full items-center justify-between gap-3 px-4 py-3 text-left"
-        >
+        <button onClick={() => setShowAnalytics((v) => !v)} className="flex w-full items-center justify-between gap-3 px-4 py-3 text-left">
           <span className="flex items-center gap-2 text-sm font-semibold text-on-surface">
             <BarChart3 className="h-4 w-4 text-primary" />
             Payment analytics
             <span className="text-xs font-normal text-on-surface-variant">
-              ({filtered.length} payment{filtered.length === 1 ? "" : "s"} in view)
+              ({total} payment{total === 1 ? "" : "s"} in view)
             </span>
           </span>
           <ChevronDown className={`h-4 w-4 text-outline transition-transform ${showAnalytics ? "rotate-180" : ""}`} />
         </button>
         {showAnalytics && (
           <div className="border-t border-outline/15 p-4">
-            <PaymentPieCharts rows={filtered} />
+            <PaymentPieCharts counts={counts} />
           </div>
         )}
       </div>
@@ -274,29 +281,27 @@ export default function AdminPaymentsPage() {
         </div>
       )}
 
-      {/* Tabs */}
+      {/* Tabs (status) */}
       <div className="flex flex-wrap gap-4 border-b border-outline/20">
         {TABS.map((t) => (
           <button
             key={t}
             onClick={() => setTab(t)}
             className={`flex items-center gap-1.5 px-1 pb-2 text-sm font-semibold ${
-              tab === t
-                ? "border-b-2 border-primary text-primary"
-                : "text-on-surface-variant hover:text-on-surface"
+              tab === t ? "border-b-2 border-primary text-primary" : "text-on-surface-variant hover:text-on-surface"
             }`}
           >
             {TAB_LABEL[t]}
             <span className="rounded-full bg-surface-container px-1.5 py-0.5 text-[11px] font-bold">
-              {t === "all" ? filtered.length : counts[t]}
+              {t === "all" ? total : counts[t]}
             </span>
           </button>
         ))}
       </div>
 
-      {/* Filters */}
-      <div className="flex flex-wrap items-center gap-2">
-        <div className="relative min-w-[16rem] flex-1">
+      {/* Search + active column-filter chips */}
+      <div className="space-y-2">
+        <div className="relative max-w-md">
           <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-outline" />
           <input
             value={search}
@@ -305,43 +310,45 @@ export default function AdminPaymentsPage() {
             className="w-full rounded-lg border border-outline/30 py-2 pl-9 pr-9 text-sm focus:border-primary focus:outline-none"
           />
           {search && (
-            <button
-              onClick={() => setSearch("")}
-              className="absolute right-3 top-1/2 -translate-y-1/2 text-outline hover:text-on-surface"
-            >
+            <button onClick={() => setSearch("")} className="absolute right-3 top-1/2 -translate-y-1/2 text-outline hover:text-on-surface">
               <X className="h-4 w-4" />
             </button>
           )}
         </div>
-        <select
-          value={platform}
-          onChange={(e) => setPlatform(e.target.value as Platform | "all")}
-          className="rounded-lg border border-outline/30 px-3 py-2 text-sm focus:border-primary focus:outline-none"
-        >
-          {PLATFORM_OPTIONS.map((o) => (
-            <option key={o.value} value={o.value}>
-              {o.label}
-            </option>
-          ))}
-        </select>
+        <PaymentFilterChips filters={filters} onChange={setFilters} onClearAll={clearAll} />
       </div>
 
       {/* Table */}
       {loading ? (
         <p className="py-16 text-center text-sm text-on-surface-variant">Loading…</p>
-      ) : tabRows.length === 0 ? (
+      ) : tabTotal === 0 ? (
         <p className="py-16 text-center text-sm text-on-surface-variant">
-          {search || platform !== "all"
-            ? `No ${TAB_LABEL[tab].toLowerCase()} payments match the current filters.`
-            : `No ${TAB_LABEL[tab].toLowerCase()} payments in this range.`}
+          No {TAB_LABEL[tab].toLowerCase()} payments match the current filters.
         </p>
       ) : (
         <>
-          <PaymentsTable rows={pageRows} onView={setSelected} />
+          <PaymentsTable
+            rows={rows}
+            onView={setSelected}
+            filters={filters}
+            onFilters={setFilters}
+            dateFrom={datePreset === "custom" ? dFrom : null}
+            dateTo={datePreset === "custom" ? dTo : null}
+            dateActive={datePreset === "custom"}
+            onDateChange={({ fromMs, toMs }) => {
+              setDFrom(fromMs);
+              setDTo(toMs);
+              setDatePreset("custom");
+            }}
+            onDateClear={() => {
+              setDatePreset("30d");
+              setDFrom(null);
+              setDTo(null);
+            }}
+          />
           <div className="flex items-center justify-between text-sm text-on-surface-variant">
             <span>
-              Showing {page * PAGE_SIZE + 1}–{Math.min((page + 1) * PAGE_SIZE, tabRows.length)} of{" "}
-              {tabRows.length}
+              Showing {page * PAGE_SIZE + 1}–{Math.min((page + 1) * PAGE_SIZE, tabTotal)} of {tabTotal}
             </span>
             <div className="flex items-center gap-2">
               <button
@@ -371,23 +378,9 @@ export default function AdminPaymentsPage() {
   );
 }
 
-function SummaryCard({
-  label,
-  value,
-  tone,
-}: {
-  label: string;
-  value: string;
-  tone: "error" | "warn" | "ok" | "neutral";
-}) {
+function SummaryCard({ label, value, tone }: { label: string; value: string; tone: "error" | "warn" | "ok" | "neutral" }) {
   const toneClass =
-    tone === "error"
-      ? "text-red-600"
-      : tone === "warn"
-        ? "text-amber-600"
-        : tone === "ok"
-          ? "text-green-700"
-          : "text-on-surface";
+    tone === "error" ? "text-red-600" : tone === "warn" ? "text-amber-600" : tone === "ok" ? "text-green-700" : "text-on-surface";
   return (
     <div className="rounded-xl border border-outline/15 bg-white p-4">
       <p className={`text-2xl font-extrabold ${toneClass}`}>{value}</p>

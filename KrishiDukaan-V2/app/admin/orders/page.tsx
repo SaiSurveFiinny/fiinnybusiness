@@ -744,11 +744,11 @@ export default function AdminOrdersPage() {
   const [exporting, setExporting] = useState(false);
   const [mobileFiltersOpen, setMobileFiltersOpen] = useState(false);
 
-  // Analytics panel — lazily reads the full server-matched set ONCE per query
-  // (date + status + seller type) the first time it is expanded, then
-  // re-aggregates purely in memory as the client-side column filters change, so
-  // flipping a product/amount/payment filter costs no extra Firestore reads.
-  const [analyticsOpen, setAnalyticsOpen] = useState(false);
+  // Analytics panel — reads the full server-matched set once per query change
+  // (date + status + seller type), then re-aggregates in memory as client-side
+  // column filters change — no extra Firestore reads for filter flips.
+  // Starts open so data loads on mount (the panel is always visible).
+  const [analyticsOpen, setAnalyticsOpen] = useState(true);
   const [analyticsRaw, setAnalyticsRaw] = useState<OrderDoc[] | null>(null);
   const [analyticsLoading, setAnalyticsLoading] = useState(false);
   const [analyticsError, setAnalyticsError] = useState<string | null>(null);
