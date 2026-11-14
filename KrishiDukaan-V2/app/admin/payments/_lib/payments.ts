@@ -38,6 +38,7 @@ export {
 
 export type PaymentsPage = {
   counts: Record<Category, number>;
+  amounts: Record<Category, number>;
   refundedValue: number;
   total: number;
   tabTotal: number;

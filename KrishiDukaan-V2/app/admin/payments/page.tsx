@@ -46,6 +46,7 @@ const TAB_LABEL: Record<Tab, string> = { all: "All", ...CATEGORY_LABEL };
 
 const EMPTY: PaymentsPage = {
   counts: { successful: 0, abandoned: 0, failed: 0, refunded: 0, pending: 0, unresolved: 0 },
+  amounts: { successful: 0, abandoned: 0, failed: 0, refunded: 0, pending: 0, unresolved: 0 },
   refundedValue: 0,
   total: 0,
   tabTotal: 0,
@@ -117,7 +118,7 @@ export default function AdminPaymentsPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [win.fromMs, win.toMs, tab, debouncedSearch, filterKey, page]);
 
-  const { counts, refundedValue, total, tabTotal, rows } = data;
+  const { counts, amounts, refundedValue, total, tabTotal, rows } = data;
   const pageCount = Math.max(1, Math.ceil(tabTotal / PAGE_SIZE));
 
   const clearAll = () => {
@@ -269,7 +270,7 @@ export default function AdminPaymentsPage() {
         </button>
         {showAnalytics && (
           <div className="border-t border-outline/15 p-4">
-            <PaymentPieCharts counts={counts} />
+            <PaymentPieCharts counts={counts} amounts={amounts} />
           </div>
         )}
       </div>

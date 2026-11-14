@@ -748,7 +748,7 @@ export default function AdminOrdersPage() {
   // (date + status + seller type), then re-aggregates in memory as client-side
   // column filters change — no extra Firestore reads for filter flips.
   // Starts open so data loads on mount (the panel is always visible).
-  const [analyticsOpen, setAnalyticsOpen] = useState(true);
+  const [analyticsOpen, setAnalyticsOpen] = useState(false);
   const [analyticsRaw, setAnalyticsRaw] = useState<OrderDoc[] | null>(null);
   const [analyticsLoading, setAnalyticsLoading] = useState(false);
   const [analyticsError, setAnalyticsError] = useState<string | null>(null);

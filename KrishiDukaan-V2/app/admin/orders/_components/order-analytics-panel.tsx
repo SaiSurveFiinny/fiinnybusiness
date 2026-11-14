@@ -10,14 +10,14 @@
  * Both sections read from the same filtered order set, so the numbers
  * always reconcile with the orders table on the page.
  *
- * Data is loaded by the parent (analyticsOpen = true from mount) so this
- * component only handles rendering.
+ * The panel is collapsed by default; expanding it notifies the parent via
+ * onOpenChange, which gates the analytics fetch so data loads only on demand.
  */
 
 import { useEffect, useMemo, useState } from "react";
 import {
   BarChart3, Loader2, ShoppingBag, Wallet, Undo2, TrendingUp,
-  AlertTriangle, ArrowDownUp, Store, Factory, Ban, Shuffle,
+  AlertTriangle, ArrowDownUp, Store, Factory, Ban, Shuffle, ChevronDown,
 } from "lucide-react";
 import type { OrderDoc } from "../../../../types/order";
 import {
@@ -63,7 +63,7 @@ function SummaryTile({ icon: Icon, label, value, tone = "default" }: {
 // ── Main component ─────────────────────────────────────────────────────────────
 
 export function OrderAnalyticsPanel({
-  orders, loading, error, complete, onSelectSeller, onOpenChange: _onOpenChange,
+  orders, loading, error, complete, onSelectSeller, onOpenChange,
 }: {
   orders: OrderDoc[];
   loading: boolean;
@@ -71,11 +71,16 @@ export function OrderAnalyticsPanel({
   /** True when `orders` is the full server-matched filtered set. */
   complete: boolean;
   onSelectSeller: (sellerKey: string) => void;
-  /** Kept for interface compatibility; ignored — the panel is always visible. */
+  /** Notifies the parent when the panel is expanded/collapsed, so it can gate the analytics fetch. */
   onOpenChange?: (open: boolean) => void;
 }) {
+  // Collapsed by default — the parent only loads analytics data once this opens.
+  const [open, setOpen] = useState(false);
   const [activeTab, setActiveTab] = useState<TabKey>("summary");
   const [sortBy, setSortBy] = useState<RetailerSortKey>("received");
+
+  // Keep the parent's fetch gate in sync with the open state.
+  useEffect(() => { onOpenChange?.(open); }, [open, onOpenChange]);
 
   // Sync tab state with URL hash on mount and browser back/forward.
   useEffect(() => {
@@ -113,9 +118,29 @@ export function OrderAnalyticsPanel({
   return (
     <div className="rounded-2xl border border-outline-variant/30 bg-surface-container-lowest overflow-hidden">
 
+      {/* ── Collapse header (always visible) ──────────────────────────────────── */}
+      <button
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        aria-expanded={open}
+        className="flex w-full items-center gap-2 px-4 py-3 text-left transition-colors hover:bg-surface-container-low/60"
+      >
+        <BarChart3 className="h-4 w-4 shrink-0 text-primary" />
+        <span className="text-sm font-bold text-on-surface">Order Analytics</span>
+        {open && !loading && (
+          <span className="text-[11px] text-on-surface-variant whitespace-nowrap">
+            · {num(summary.totalOrders)} orders{complete ? "" : " (partial)"}
+          </span>
+        )}
+        <ChevronDown
+          className={`ml-auto h-4 w-4 shrink-0 text-on-surface-variant transition-transform ${open ? "rotate-180" : ""}`}
+        />
+      </button>
+
+      {open && (
+      <>
       {/* ── Tab bar ─────────────────────────────────────────────────────────── */}
-      <div className="flex items-center gap-0 border-b border-outline-variant/20 px-1">
-        <BarChart3 className="ml-3 mr-2 h-4 w-4 shrink-0 text-primary" />
+      <div className="flex items-center gap-0 border-y border-outline-variant/20 px-1">
         {TABS.map((tab) => (
           <button
             key={tab.key}
@@ -133,11 +158,6 @@ export function OrderAnalyticsPanel({
             )}
           </button>
         ))}
-        {!loading && (
-          <span className="ml-auto mr-4 text-[11px] text-on-surface-variant whitespace-nowrap">
-            {num(summary.totalOrders)} orders{complete ? "" : " (partial)"}
-          </span>
-        )}
       </div>
 
       {/* ── Content area ────────────────────────────────────────────────────── */}
@@ -300,6 +320,8 @@ export function OrderAnalyticsPanel({
           </>
         )}
       </div>
+      </>
+      )}
     </div>
   );
 }

@@ -92,9 +92,11 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
     const filtered = rows.filter((r) => rowMatches(r, q) && matchesPaymentFilters(r, filters));
 
     const counts = emptyCounts();
+    const amounts = emptyCounts();
     let refundedValue = 0;
     for (const r of filtered) {
       counts[r.category] += 1;
+      amounts[r.category] += r.amount ?? 0;
       refundedValue += r.payment?.amountRefunded ?? 0;
     }
 
@@ -107,6 +109,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
 
     return NextResponse.json({
       counts,
+      amounts,
       refundedValue,
       total: filtered.length,
       tabTotal: tabRows.length,
