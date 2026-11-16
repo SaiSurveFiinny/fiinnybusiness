@@ -33,6 +33,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
   let body: {
     sellerPhone?: string;
     razorpayPaymentId?: string;
+    razorpayPaymentIds?: string[];
     offline?: { method?: string; idempotencyKey?: string };
     customer?: {
       id?: string;
@@ -53,7 +54,19 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
   }
 
   const sellerPhone = String(body.sellerPhone ?? '').trim();
-  const razorpayPaymentId = String(body.razorpayPaymentId ?? '').trim();
+  // Accept either the array (1–N payments) or the single scalar (back-compat).
+  const razorpayPaymentIds = Array.from(
+    new Set(
+      (body.razorpayPaymentIds?.length
+        ? body.razorpayPaymentIds
+        : body.razorpayPaymentId
+        ? [body.razorpayPaymentId]
+        : []
+      )
+        .map((s) => String(s ?? '').trim())
+        .filter(Boolean),
+    ),
+  );
   const customer = body.customer;
   const items = Array.isArray(body.items) ? body.items : [];
 
@@ -65,7 +78,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
   if (!sellerPhone) return NextResponse.json({ error: 'A retailer is required.' }, { status: 400 });
   if (!customer?.id) return NextResponse.json({ error: 'A customer is required.' }, { status: 400 });
   if (items.length === 0) return NextResponse.json({ error: 'At least one product is required.' }, { status: 400 });
-  if (!isOffline && !razorpayPaymentId) {
+  if (!isOffline && razorpayPaymentIds.length === 0) {
     return NextResponse.json({ error: 'A payment is required.' }, { status: 400 });
   }
   if (isOffline && !['cash', 'upi', 'other'].includes(offlineMethod)) {
@@ -84,7 +97,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
       sellerPhone,
       ...(isOffline
         ? { offline: { method: offlineMethod as 'cash' | 'upi' | 'other', idempotencyKey: offlineKey } }
-        : { razorpayPaymentId, allowUnverifiedOverride: body.allowUnverifiedOverride === true }),
+        : { razorpayPaymentIds, allowUnverifiedOverride: body.allowUnverifiedOverride === true }),
       deliveryOverride,
       customer: {
         id: String(customer.id),

@@ -262,6 +262,20 @@ export type PaymentStatus = "pending" | "paid" | "failed" | "refunded";
 export type PaymentInfo = {
   razorpayOrderId: string;
   razorpayPaymentId?: string;
+  /** All linked Razorpay payment ids when ONE order was paid by several captured
+   *  payments (admin manual order, split payment). The scalar `razorpayPaymentId`
+   *  stays the primary/first id for single-payment back-compat. */
+  razorpayPaymentIds?: string[];
+  /** Per-payment transaction detail for a multi-payment order. */
+  razorpayPayments?: {
+    razorpayPaymentId: string;
+    razorpayOrderId?: string | null;
+    amount: number;
+    method?: string | null;
+    contact?: string | null;
+    email?: string | null;
+    createdAt?: number | null;
+  }[];
   razorpaySignature?: string;
   status: PaymentStatus;
   amount: number; // in INR

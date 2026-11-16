@@ -241,7 +241,14 @@ export function buildInvoiceHtml(order: OrderDoc, seller?: InvoiceSellerInfo): s
   }
 
   // ── Invoice-details column (right) ───────────────────────────────────────────
-  const paymentTxnId = order.payment?.razorpayPaymentId ?? order.payment?.razorpayOrderId;
+  // A manual order can be backed by several captured payments; show every linked id
+  // so the invoice reflects the full split, falling back to the single-payment field.
+  const linkedPaymentIds = order.payment?.razorpayPaymentIds?.length
+    ? order.payment.razorpayPaymentIds
+    : order.payment?.razorpayPaymentId
+    ? [order.payment.razorpayPaymentId]
+    : [];
+  const paymentTxnId = linkedPaymentIds.length ? linkedPaymentIds.join(", ") : order.payment?.razorpayOrderId;
   const modeOfPayment = paymentModeLabel(order.payment);
   const orderNo = `#${order.id.slice(0, 10).toUpperCase()}`;
   const invoiceDate = formatDate(order.createdAt);

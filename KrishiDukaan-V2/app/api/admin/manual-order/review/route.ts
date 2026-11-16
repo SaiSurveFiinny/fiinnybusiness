@@ -3,6 +3,7 @@ import { requireSection } from '../../../../lib/admin-auth';
 import {
   priceManualOrder,
   verifyPaymentForManualOrder,
+  verifyManualOrderPayments,
   type ManualOrderItemInput,
 } from '../../../../lib/manual-order';
 
@@ -32,6 +33,9 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     customerId?: string;
     customerDeliveryState?: string;
     razorpayPaymentId?: string;
+    /** 1–N payments backing this order; their combined amount must equal the total.
+     *  Takes precedence over the single razorpayPaymentId. */
+    razorpayPaymentIds?: string[];
     /** Admin delivery override (₹). Omit/null to use the calculated charge. */
     deliveryCharge?: number | null;
     /** Preview the admin-override path (payment trusted without Razorpay/ledger). */
@@ -53,17 +57,41 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
       body.deliveryCharge != null && Number.isFinite(body.deliveryCharge) ? Number(body.deliveryCharge) : null;
     const pricing = await priceManualOrder(sellerPhone, items, body.customerDeliveryState ?? null, deliveryOverride);
 
+    // Normalize the selected payment id(s). The array is preferred; the scalar is a
+    // single-payment alias kept for older callers.
+    const paymentIds = Array.from(
+      new Set(
+        (body.razorpayPaymentIds?.length
+          ? body.razorpayPaymentIds
+          : body.razorpayPaymentId
+          ? [body.razorpayPaymentId]
+          : []
+        )
+          .map((s) => String(s ?? '').trim())
+          .filter(Boolean),
+      ),
+    );
+
+    // `verification` (single) is retained for back-compat with the admin-override
+    // preview; `multiVerification` is the combined 1–N result the wizard reads.
     let verification = null;
-    if (body.razorpayPaymentId) {
+    let multiVerification = null;
+    if (paymentIds.length === 1 && body.allowUnverifiedOverride) {
       verification = await verifyPaymentForManualOrder({
-        razorpayPaymentId: body.razorpayPaymentId.trim(),
+        razorpayPaymentId: paymentIds[0],
         customerId: body.customerId ?? null,
         expectedTotalRupees: pricing.grandTotal,
-        allowUnverifiedOverride: body.allowUnverifiedOverride === true,
+        allowUnverifiedOverride: true,
+      });
+    } else if (paymentIds.length > 0) {
+      multiVerification = await verifyManualOrderPayments({
+        razorpayPaymentIds: paymentIds,
+        customerId: body.customerId ?? null,
+        expectedTotalRupees: pricing.grandTotal,
       });
     }
 
-    return NextResponse.json({ pricing, verification });
+    return NextResponse.json({ pricing, verification, multiVerification });
   } catch (e) {
     console.error('[manual-order/review] failed:', e);
     return NextResponse.json({ error: 'Could not price the order.' }, { status: 500 });
