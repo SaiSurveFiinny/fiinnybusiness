@@ -57,6 +57,8 @@ export default async function ShopLinkPage({ params }: PageProps) {
     const products = await getRetailerBrandProducts(phone);
     return <RetailerBrandView data={data} products={products} />;
   }
-  const path = await storePathForPhone(phone);
+  // getAllStores throws when it has never had a good read; the map view is a
+  // working destination for a share link either way.
+  const path = await storePathForPhone(phone).catch(() => null);
   redirect(path ?? `/?view=map&store=${encodeURIComponent(phone)}`);
 }
