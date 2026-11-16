@@ -70,11 +70,15 @@ export function matchesOrderFilters(o: OrderDoc, f: OrderFilters): boolean {
   if (f.statuses.length > 0 && !f.statuses.includes(o.status)) return false;
   // Seller type
   if (f.sellerType !== "all" && o.sellerType !== f.sellerType) return false;
-  // Specific sellers (OR) — match either the id key or the display name
+  // Specific sellers (OR) — match the id key, display name, or sellerPhone.
+  // sellerPhone is the stable identifier across web (UID sellerId) and mobile
+  // (phone sellerId) orders for the same retailer; check it as a secondary path
+  // so clicking a retailer row in the analytics breakdown filters correctly.
   if (f.sellers.length > 0) {
     const key = sellerKeyOf(o);
     const nameKey = (o.sellerName || "").toLowerCase();
-    if (!f.sellers.some((s) => s === key || s.toLowerCase() === nameKey)) return false;
+    const phone = o.sellerPhone || "";
+    if (!f.sellers.some((s) => s === key || s.toLowerCase() === nameKey || (phone && s === phone))) return false;
   }
   // Products (OR) — any line item's name matches a selected product
   if (f.products.length > 0) {

@@ -377,8 +377,13 @@ function buildInvoicePDF(order: OrderDoc, seller?: InvoiceSellerInfo): jsPDF {
   }
 
   // ── Transaction / totals detail block (left column) ───────────────────────
+  // Multi-payment manual orders carry every linked id; show them all.
   const paymentTxnId =
-    order.payment?.razorpayPaymentId ?? order.payment?.razorpayOrderId ?? "—";
+    (order.payment?.razorpayPaymentIds?.length
+      ? order.payment.razorpayPaymentIds.join(", ")
+      : order.payment?.razorpayPaymentId) ??
+    order.payment?.razorpayOrderId ??
+    "—";
   const modeOfPayment = paymentModeLabel(order.payment);
   const dateTime = (() => {
     try {

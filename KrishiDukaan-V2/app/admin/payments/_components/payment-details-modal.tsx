@@ -2,71 +2,40 @@
 
 import Link from "next/link";
 import { Phone, X, ExternalLink, Package } from "lucide-react";
-import {
-  bucketOf,
-  BUCKET_LABEL,
-  money,
-  nameOf,
-  phoneOf,
-  platformOf,
-  PLATFORM_LABEL,
-  reasonOf,
-  type Attempt,
-  type Bucket,
-} from "../_lib/payments";
+import { money, CATEGORY_LABEL, PLATFORM_LABEL, type PaymentRow } from "../_lib/payments";
+import { CATEGORY_BADGE } from "./payments-table";
 
 /**
- * Full inspection of a single payment attempt. Shows every field the spec asks
- * for; where a value is genuinely not stored (payment method on a paid row,
- * captured timestamp, refund amount) it says so rather than inventing one.
- *
- * The customer name links to the existing Users screen, deep-linked by phone —
- * no new customer-profile page is introduced.
+ * Full inspection of one unified row. For a gateway row, status/amount/refund
+ * come from the Razorpay mirror; for an app-only row they come from the
+ * checkout attempt. Either way we show the normalized category AND both raw
+ * statuses + the source, so the classification is fully auditable.
  */
 
-const BADGE: Record<Bucket, string> = {
-  failed: "bg-red-50 text-red-700",
-  abandoned: "bg-amber-50 text-amber-700",
-  pending: "bg-slate-100 text-slate-600",
-  paid: "bg-green-50 text-green-700",
-};
-
-export function PaymentDetailsModal({
-  attempt: a,
-  now,
-  onClose,
-}: {
-  attempt: Attempt;
-  now: number;
-  onClose: () => void;
-}) {
-  const bucket = bucketOf(a, now);
-  const phone = phoneOf(a);
-  const customerHref = phone ? `/admin/users?q=${encodeURIComponent(phone)}` : null;
+export function PaymentDetailsModal({ row, onClose }: { row: PaymentRow; onClose: () => void }) {
+  const { payment: p, attempt: a, category } = row;
+  const customerHref = row.phone ? `/admin/users?q=${encodeURIComponent(row.phone)}` : null;
 
   return (
     <div
       className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-black/40 p-4"
       onClick={onClose}
     >
-      <div
-        className="my-8 w-full max-w-2xl rounded-2xl bg-white shadow-xl"
-        onClick={(e) => e.stopPropagation()}
-      >
+      <div className="my-8 w-full max-w-2xl rounded-2xl bg-white shadow-xl" onClick={(e) => e.stopPropagation()}>
         {/* Header */}
         <div className="flex items-start justify-between gap-3 border-b border-outline/15 p-5">
           <div className="min-w-0">
             <div className="flex flex-wrap items-center gap-2">
               <h2 className="text-lg font-bold text-on-surface">Payment details</h2>
-              <span className={`rounded-full px-2 py-0.5 text-[11px] font-bold ${BADGE[bucket]}`}>
-                {BUCKET_LABEL[bucket]}
+              <span className={`rounded-full px-2 py-0.5 text-[11px] font-bold ${CATEGORY_BADGE[category]}`}>
+                {CATEGORY_LABEL[category]}
               </span>
               <span className="rounded-full bg-surface-container px-2 py-0.5 text-[11px] font-semibold text-on-surface-variant">
-                {PLATFORM_LABEL[platformOf(a)]}
+                {PLATFORM_LABEL[row.platform]}
               </span>
             </div>
             <p className="mt-0.5 text-sm text-on-surface-variant">
-              {a.createdAt ? a.createdAt.toLocaleString("en-IN") : "—"}
+              {row.createdAt ? row.createdAt.toLocaleString("en-IN") : "—"}
             </p>
           </div>
           <button
@@ -78,149 +47,163 @@ export function PaymentDetailsModal({
         </div>
 
         <div className="space-y-5 p-5">
+          {/* Classification (auditability) */}
+          <div className="rounded-xl bg-surface-container/40 p-4">
+            <SectionLabel>Classification</SectionLabel>
+            <div className="grid gap-x-8 gap-y-2 sm:grid-cols-2">
+              <Field label="Normalized category">{CATEGORY_LABEL[category]}</Field>
+              <Field label="Source">{row.source === "razorpay" ? "Razorpay payment" : "App checkout (no gateway payment)"}</Field>
+              <Field label="Razorpay status">{row.rawGatewayStatus || <span className="text-outline">— (no gateway payment)</span>}</Field>
+              <Field label="App status">{row.rawAppStatus || <span className="text-outline">—</span>}</Field>
+            </div>
+            {row.category === "abandoned" && row.source === "app" && (
+              <p className="mt-2 text-xs text-on-surface-variant">
+                Marked “{row.rawAppStatus}” by the app, but Razorpay has no payment for this order — so it is an abandoned checkout, not a failure.
+              </p>
+            )}
+          </div>
+
           {/* Customer */}
           <Section title="Customer">
             <Field label="Name">
               {customerHref ? (
-                <Link
-                  href={customerHref}
-                  className="inline-flex items-center gap-1 font-semibold text-primary hover:underline"
-                >
-                  {nameOf(a)}
+                <Link href={customerHref} className="inline-flex items-center gap-1 font-semibold text-primary hover:underline">
+                  {row.name}
                   <ExternalLink className="h-3 w-3" />
                 </Link>
               ) : (
-                nameOf(a)
+                row.name
               )}
             </Field>
             <Field label="Phone">
-              {phone ? (
-                <a href={`tel:${phone}`} className="flex items-center gap-1 text-primary hover:underline">
+              {row.phone ? (
+                <a href={`tel:${row.phone}`} className="flex items-center gap-1 text-primary hover:underline">
                   <Phone className="h-3 w-3" />
-                  {phone}
+                  {row.phone}
                 </a>
               ) : (
                 "—"
               )}
             </Field>
             <Field label="Customer ID">
-              <code className="break-all text-xs">{a.userId || "—"}</code>
+              <code className="break-all text-xs">{p?.userId || a?.userId || "—"}</code>
             </Field>
-            <Field label="Account type">
-              {/* Not stored on the attempt; would need a per-row user lookup. */}
-              <span className="text-outline">Not recorded on payment</span>
-            </Field>
-            {a.razorpayEmail && <Field label="Email">{a.razorpayEmail}</Field>}
+            {p?.email && <Field label="Email">{p.email}</Field>}
           </Section>
 
-          {/* Products */}
-          {a.kind === "subscription" ? (
+          {/* Products (from the attempt) */}
+          {a && a.kind === "subscription" ? (
             <Section title="Subscription">
               <Field label="Seats">{a.seatCount ?? "—"}</Field>
-              <Field label="Duration">
-                {a.durationMonths != null ? `${a.durationMonths} month(s)` : "—"}
-              </Field>
+              <Field label="Duration">{a.durationMonths != null ? `${a.durationMonths} month(s)` : "—"}</Field>
             </Section>
-          ) : (
+          ) : a && a.items.length > 0 ? (
             <div>
               <SectionLabel>
                 <Package className="h-3.5 w-3.5" /> Products
               </SectionLabel>
-              {a.items.length > 0 ? (
-                <div className="overflow-x-auto rounded-xl border border-outline/15">
-                  <table className="w-full min-w-[32rem] text-sm">
-                    <thead className="bg-surface-container/50 text-left text-xs text-on-surface-variant">
-                      <tr>
-                        <th className="px-3 py-2 font-semibold">Product</th>
-                        <th className="px-3 py-2 font-semibold">Product ID</th>
-                        <th className="px-3 py-2 font-semibold">Qty</th>
-                        <th className="px-3 py-2 font-semibold">Price</th>
-                        <th className="px-3 py-2 font-semibold">Total</th>
+              <div className="overflow-x-auto rounded-xl border border-outline/15">
+                <table className="w-full min-w-[32rem] text-sm">
+                  <thead className="bg-surface-container/50 text-left text-xs text-on-surface-variant">
+                    <tr>
+                      <th className="px-3 py-2 font-semibold">Product</th>
+                      <th className="px-3 py-2 font-semibold">Product ID</th>
+                      <th className="px-3 py-2 font-semibold">Qty</th>
+                      <th className="px-3 py-2 font-semibold">Price</th>
+                      <th className="px-3 py-2 font-semibold">Total</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {a.items.map((i, idx) => (
+                      <tr key={idx} className="border-t border-outline/10">
+                        <td className="px-3 py-2">{i.name}</td>
+                        <td className="px-3 py-2">
+                          <code className="text-xs text-outline">{i.productId || "—"}</code>
+                        </td>
+                        <td className="px-3 py-2">{i.qty}</td>
+                        <td className="px-3 py-2">{money(i.unitPrice)}</td>
+                        <td className="px-3 py-2">{money(i.lineTotal)}</td>
                       </tr>
-                    </thead>
-                    <tbody>
-                      {a.items.map((i, idx) => (
-                        <tr key={idx} className="border-t border-outline/10">
-                          <td className="px-3 py-2">{i.name}</td>
-                          <td className="px-3 py-2">
-                            <code className="text-xs text-outline">{i.productId || "—"}</code>
-                          </td>
-                          <td className="px-3 py-2">{i.qty}</td>
-                          <td className="px-3 py-2">{money(i.unitPrice)}</td>
-                          <td className="px-3 py-2">{money(i.lineTotal)}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              ) : (
-                <p className="text-sm text-outline">
-                  No line items recorded (common on Razorpay-synced failures — the
-                  gateway does not know the basket).
-                </p>
-              )}
+                    ))}
+                  </tbody>
+                </table>
+              </div>
             </div>
+          ) : (
+            <Section title="Products">
+              <Field label="Basket">
+                <span className="text-outline">No matching checkout record for this order.</span>
+              </Field>
+            </Section>
           )}
 
           {/* Amounts */}
           <Section title="Amounts">
-            {a.subtotal != null && <Field label="Subtotal">{money(a.subtotal)}</Field>}
-            {a.deliveryCharge != null && (
-              <Field label="Delivery charges">{money(a.deliveryCharge)}</Field>
-            )}
-            {a.gstAdded != null && <Field label="GST">{money(a.gstAdded)}</Field>}
+            {a?.subtotal != null && <Field label="Subtotal">{money(a.subtotal)}</Field>}
+            {a?.deliveryCharge != null && <Field label="Delivery charges">{money(a.deliveryCharge)}</Field>}
+            {a?.gstAdded != null && <Field label="GST">{money(a.gstAdded)}</Field>}
             <Field label="Total amount">
-              <span className="font-bold">{money(a.amount)}</span>
+              <span className="font-bold">{money(row.amount)}</span>
             </Field>
+            {p && p.amountRefunded > 0 && <Field label="Refunded">{money(p.amountRefunded)}</Field>}
           </Section>
 
-          {/* Payment */}
+          {/* Payment (gateway) */}
           <Section title="Payment">
             <Field label="Payment ID">
-              <code className="break-all text-xs">{a.razorpayPaymentId || "—"}</code>
+              <code className="break-all text-xs">{row.paymentId || <span className="text-outline">— (no gateway payment)</span>}</code>
             </Field>
             <Field label="Razorpay order ID">
-              <code className="break-all text-xs">{a.razorpayOrderId}</code>
+              <code className="break-all text-xs">{row.orderId || "—"}</code>
             </Field>
-            <Field label="Status">{BUCKET_LABEL[bucket]}</Field>
-            <Field label="Method">{a.method || <span className="text-outline">Not recorded</span>}</Field>
-            <Field label="Created">{a.createdAt ? a.createdAt.toLocaleString("en-IN") : "—"}</Field>
+            <Field label="Method">{p?.method || <span className="text-outline">—</span>}</Field>
             <Field label="Captured">
-              {a.paidAt ? (
-                a.paidAt.toLocaleString("en-IN")
-              ) : (
-                <span className="text-outline">—</span>
-              )}
-            </Field>
-            <Field label="Refunded amount">
-              {/* Refunds are not tracked on payment attempts today. */}
-              <span className="text-outline">Not tracked</span>
+              {p?.capturedAt ? p.capturedAt.toLocaleString("en-IN") : <span className="text-outline">—</span>}
             </Field>
           </Section>
 
-          {/* Failure */}
-          {bucket !== "paid" && (
-            <div className="rounded-xl bg-red-50 p-4">
-              <SectionLabel tone="error">Failure / status detail</SectionLabel>
-              <div className="grid gap-x-8 gap-y-2 sm:grid-cols-2">
-                <Field label="Reason">{reasonOf(a, bucket)}</Field>
-                <Field label="Error code">{a.error?.code || "—"}</Field>
-                <Field label="Error description">{a.error?.description || "—"}</Field>
-                <Field label="Error source">{a.error?.source || "—"}</Field>
-                <Field label="Error step">{a.error?.step || "—"}</Field>
-                <Field label="Error reason">{a.error?.reason || "—"}</Field>
+          {/* Refunds */}
+          {p && p.refunds.length > 0 && (
+            <div>
+              <SectionLabel>Refunds</SectionLabel>
+              <div className="overflow-x-auto rounded-xl border border-outline/15">
+                <table className="w-full text-sm">
+                  <thead className="bg-surface-container/50 text-left text-xs text-on-surface-variant">
+                    <tr>
+                      <th className="px-3 py-2 font-semibold">Refund ID</th>
+                      <th className="px-3 py-2 font-semibold">Amount</th>
+                      <th className="px-3 py-2 font-semibold">Status</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {p.refunds.map((rf) => (
+                      <tr key={rf.id} className="border-t border-outline/10">
+                        <td className="px-3 py-2"><code className="text-xs">{rf.id}</code></td>
+                        <td className="px-3 py-2">{money(rf.amount)}</td>
+                        <td className="px-3 py-2">{rf.status || "—"}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
               </div>
             </div>
           )}
 
-          {/* Platform */}
-          <Section title="Platform">
-            <Field label="Origin">{PLATFORM_LABEL[platformOf(a)]}</Field>
-            <Field label="App / browser detail">
-              {/* The client only tags web vs mobile; no OS / UA is stored. */}
-              <span className="text-outline">Not recorded</span>
-            </Field>
-          </Section>
+          {/* Failure / abandonment detail */}
+          {(category === "failed" || category === "abandoned") && (
+            <div className="rounded-xl bg-red-50 p-4">
+              <SectionLabel tone="error">{category === "failed" ? "Failure detail" : "Abandonment detail"}</SectionLabel>
+              <div className="grid gap-x-8 gap-y-2 sm:grid-cols-2">
+                <Field label="Reason">{row.reason}</Field>
+                {p && <Field label="Error code">{p.errorCode || "—"}</Field>}
+                {p && <Field label="Error description">{p.errorDescription || "—"}</Field>}
+                {p && <Field label="Error source">{p.errorSource || "—"}</Field>}
+                {p && <Field label="Error step">{p.errorStep || "—"}</Field>}
+                {p && <Field label="Error reason">{p.errorReason || "—"}</Field>}
+                {!p && a?.error && <Field label="App error">{a.error.description || a.error.reason || "—"}</Field>}
+              </div>
+            </div>
+          )}
         </div>
       </div>
     </div>
@@ -236,13 +219,7 @@ function Section({ title, children }: { title: string; children: React.ReactNode
   );
 }
 
-function SectionLabel({
-  children,
-  tone,
-}: {
-  children: React.ReactNode;
-  tone?: "error";
-}) {
+function SectionLabel({ children, tone }: { children: React.ReactNode; tone?: "error" }) {
   return (
     <p
       className={`mb-2 flex items-center gap-1.5 text-xs font-bold uppercase tracking-wide ${

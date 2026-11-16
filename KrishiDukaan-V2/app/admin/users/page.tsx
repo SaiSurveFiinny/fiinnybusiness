@@ -5,7 +5,7 @@ import {
   Pencil, Search, ShieldCheck, Users, AlertTriangle, X,
   ChevronUp, ChevronDown, UserPlus, Loader2,
   SlidersHorizontal, Calendar, RotateCcw, LayoutDashboard,
-  Bell, Download,
+  Download, FileSpreadsheet,
 } from "lucide-react";
 import {
   promoteToAdmin,
@@ -13,7 +13,6 @@ import {
 } from "../../firebase";
 import { AdminUserEditPanel } from "../_components/admin-user-edit-panel";
 import { CreateUserModal } from "../_components/create-user-modal";
-import { PendingSignupPanel } from "../_components/pending-signup-panel";
 import { RefreshButton } from "../_components/refresh-button";
 import { useAdminAuth } from "../_context/admin-auth-context";
 import {
@@ -64,7 +63,6 @@ export default function AdminUsersPage() {
 
   // Advanced filters
   const [showAdvanced, setShowAdvanced] = useState(false);
-  const [showPendingSignups, setShowPendingSignups] = useState(false);
   const [filterActive, setFilterActive] = useState<"all" | "active" | "inactive">("all");
   const [filterDateFrom, setFilterDateFrom] = useState("");
   const [filterDateTo, setFilterDateTo] = useState("");
@@ -196,6 +194,26 @@ export default function AdminUsersPage() {
       setExportResult({ ok: false, text: "Export failed. Please try again." });
     } finally {
       setExporting(false);
+    }
+  };
+
+  // Export Users (CSV) — confirmation dialog, then a one-time read of every user.
+  const [showExportConfirm, setShowExportConfirm] = useState(false);
+  const [exportingUsers, setExportingUsers] = useState(false);
+  const handleExportUsers = async () => {
+    if (exportingUsers) return;
+    setExportingUsers(true);
+    setExportResult(null);
+    try {
+      const { exportUsersCsv } = await import("../_lib/users-export");
+      const n = await exportUsersCsv();
+      setShowExportConfirm(false);
+      setExportResult({ ok: true, text: `Exported ${n} user${n === 1 ? "" : "s"} to CSV.` });
+    } catch (err) {
+      console.error("[users export]", err);
+      setExportResult({ ok: false, text: "Export failed. Please try again." });
+    } finally {
+      setExportingUsers(false);
     }
   };
 
@@ -399,14 +417,13 @@ export default function AdminUsersPage() {
           </button>
           <button
             type="button"
-            onClick={() => setShowPendingSignups(v => !v)}
-            className={`flex items-center gap-2 rounded-xl px-4 py-2.5 text-sm font-bold transition-all ${
-              showPendingSignups
-                ? "bg-amber-600 text-white"
-                : "bg-amber-50 text-amber-700 border border-amber-200 hover:bg-amber-100"
-            }`}
+            onClick={() => setShowExportConfirm(true)}
+            disabled={exportingUsers}
+            title="Download every user (name, phone, role) as a CSV"
+            className="flex items-center gap-2 rounded-xl border border-outline-variant/40 bg-white px-4 py-2.5 text-sm font-bold text-on-surface hover:bg-surface-container-low disabled:opacity-60"
           >
-            <Bell className="h-4 w-4" /> Pending Signups
+            {exportingUsers ? <Loader2 className="h-4 w-4 animate-spin" /> : <FileSpreadsheet className="h-4 w-4" />}
+            {exportingUsers ? "Exporting…" : "Export Users"}
           </button>
           {isFullAdmin && (
             <button
@@ -423,12 +440,6 @@ export default function AdminUsersPage() {
         <p className={`rounded-xl px-4 py-2.5 text-sm font-semibold ${exportResult.ok ? "bg-green-50 text-green-700" : "bg-red-50 text-red-700"}`}>
           {exportResult.text}
         </p>
-      )}
-
-      {showPendingSignups && (
-        <div className="rounded-2xl border border-amber-200 bg-amber-50/40 p-4">
-          <PendingSignupPanel />
-        </div>
       )}
 
       <div className="flex gap-2 overflow-x-auto pb-1 scrollbar-hide">
@@ -807,6 +818,38 @@ export default function AdminUsersPage() {
           </div>
         )}
       </div>
+      )}
+
+      {/* Export Users — confirmation dialog. */}
+      {showExportConfirm && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+          <div className="w-full max-w-sm rounded-2xl bg-surface-container-lowest p-6 shadow-xl">
+            <div className="flex items-center gap-3 mb-1">
+              <FileSpreadsheet className="h-5 w-5 text-primary" />
+              <h2 className="text-lg font-black text-on-surface">Export Users?</h2>
+            </div>
+            <p className="text-sm text-on-surface-variant mb-5">Do you want to download the users list?</p>
+            <div className="flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setShowExportConfirm(false)}
+                disabled={exportingUsers}
+                className="rounded-xl border border-outline-variant/40 bg-white px-4 py-2.5 text-sm font-bold text-on-surface hover:bg-surface-container-low disabled:opacity-60"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={() => void handleExportUsers()}
+                disabled={exportingUsers}
+                className="flex items-center gap-2 rounded-xl bg-primary px-4 py-2.5 text-sm font-bold text-white hover:opacity-90 disabled:opacity-60"
+              >
+                {exportingUsers ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}
+                {exportingUsers ? "Exporting…" : "Yes, Download"}
+              </button>
+            </div>
+          </div>
+        </div>
       )}
 
       {/* Create User — shared modal (form + creation logic live in the component). */}

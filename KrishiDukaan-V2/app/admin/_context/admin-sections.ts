@@ -11,7 +11,7 @@ export const ADMIN_SECTIONS = [
   "overview", "analytics", "orders", "payments", "users", "subscriptions", "pricing", "products",
   "reels", "discounts", "inventory", "companies", "hubs", "banners", "reports", "messages",
   "whatsapp", "support", "blog", "team", "salesTeam", "referrals", "payouts", "routePayouts", "moderation",
-  "appVersion", "aboutPage",
+  "appVersion", "aboutPage", "enquiries",
 ] as const;
 
 export type AdminSection = (typeof ADMIN_SECTIONS)[number];

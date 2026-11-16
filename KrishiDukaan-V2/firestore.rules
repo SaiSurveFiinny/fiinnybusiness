@@ -576,6 +576,16 @@ service cloud.firestore {
       allow write: if false;
     }
 
+    // ─── razorpayPayments ─────────────────────────────────────────────────────
+    // Mirror of Razorpay's own payment records, one doc per payment id — the
+    // authoritative source of payment STATUS for Admin → Payments. Written only
+    // server-side (webhook + admin backfill); clients can never forge it.
+    // (Distinct from `payments`, which is the subscription-revenue ledger.)
+    match /razorpayPayments/{paymentId} {
+      allow read: if isAdmin();
+      allow write: if false;
+    }
+
       // ─── razorpayPaymentLinks ─────────────────────────────────────────────────
     // Authoritative, order-independent record of a retailer manual-order payment
     // link, keyed by the Razorpay Payment Link id. Written only server-side (link
@@ -623,7 +633,8 @@ service cloud.firestore {
     // order; they may only move their own copy through its follow-up states.
     match /enquiries/{enquiryId} {
       // GET (single doc): resource.data is available — check the phone directly.
-      allow get: if isAdmin() || (isAuthed() && (
+      // Team "enquiries" covers the cross-retailer Admin → Enquiries page.
+      allow get: if isAdmin() || teamHas('enquiries') || (isAuthed() && (
         phoneMatches(resource.data.sellerPhone) ||
         (resource.data.sellerPhones is list &&
           resource.data.sellerPhones.hasAny([myPhone(), myPhone().replace('^[+]91', '')]))
@@ -631,13 +642,16 @@ service cloud.firestore {
       // LIST (query): must be filtered by `sellerPhones array-contains` the
       // caller's own phone. This was `isAuthed()` alone, which let any
       // signed-in user download every enquiry, buyers' names and phones
-      // included. Team "users" covers the admin view-a-seller's-dashboard link.
+      // included. Team "users" covers the admin view-a-seller's-dashboard link;
+      // team "enquiries" covers the cross-retailer Admin → Enquiries page.
       allow list: if isAuthed() && (
-        callerPhoneIn(resource.data.sellerPhones) || isAdmin() || teamHas('users')
+        callerPhoneIn(resource.data.sellerPhones) || isAdmin()
+        || teamHas('enquiries') || teamHas('users')
         || staffShopIn(resource.data.sellerPhones, 'orders')
       );
       allow update: if isAdmin() || (isAuthed()
-        && (phoneMatches(resource.data.sellerPhone) ||
+        && (teamHas('enquiries')
+            || phoneMatches(resource.data.sellerPhone) ||
             (resource.data.sellerPhones is list &&
               resource.data.sellerPhones.hasAny([myPhone(), myPhone().replace('^[+]91', '')]))
             || staffActsFor(resource.data.get('sellerPhone', ''), 'orders'))

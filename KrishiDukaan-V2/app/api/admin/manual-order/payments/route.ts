@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import Razorpay from 'razorpay';
 import { requireSection } from '../../../../lib/admin-auth';
 import { findOrdersForRazorpayOrder } from '../../../../lib/order-recovery';
-import { findPaymentAttemptByPaymentId } from '../../../../lib/manual-order';
+import { findPaymentAttemptByPaymentId, findOrdersForRazorpayPayment } from '../../../../lib/manual-order';
 
 /**
  * GET /api/admin/manual-order/payments
@@ -55,8 +55,16 @@ function isSubscriptionNotes(notes: Record<string, unknown> | null | undefined):
 
 async function annotate(p: Record<string, unknown>): Promise<AnnotatedPayment> {
   const razorpayOrderId = p.order_id ? String(p.order_id) : null;
+  const paymentId = String(p.id ?? '');
   const notes = (p.notes as Record<string, unknown> | null | undefined) ?? null;
-  const linkedOrderIds = razorpayOrderId ? await findOrdersForRazorpayOrder(razorpayOrderId) : [];
+  // Linked when an order exists for this payment's Razorpay ORDER id OR when the
+  // PAYMENT id itself already backs an order (covers multi-payment manual orders,
+  // where a payment is linked via payment.razorpayPaymentIds, not the order id).
+  const [byOrder, byPayment] = await Promise.all([
+    razorpayOrderId ? findOrdersForRazorpayOrder(razorpayOrderId) : Promise.resolve([]),
+    paymentId ? findOrdersForRazorpayPayment(paymentId) : Promise.resolve([]),
+  ]);
+  const linkedOrderIds = Array.from(new Set([...byOrder, ...byPayment]));
   return {
     id: String(p.id ?? ''),
     razorpayOrderId,
@@ -117,7 +125,11 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
         );
       }
       const a = attempt.data;
-      const linkedOrderIds = await findOrdersForRazorpayOrder(attempt.razorpayOrderId);
+      const [byOrder, byPayment] = await Promise.all([
+        findOrdersForRazorpayOrder(attempt.razorpayOrderId),
+        findOrdersForRazorpayPayment(paymentId),
+      ]);
+      const linkedOrderIds = Array.from(new Set([...byOrder, ...byPayment]));
       const annotated: AnnotatedPayment = {
         id: paymentId,
         razorpayOrderId: attempt.razorpayOrderId,

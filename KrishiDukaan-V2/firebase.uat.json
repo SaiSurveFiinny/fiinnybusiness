@@ -23,6 +23,7 @@
       ],
       "frameworksBackend": {
         "region": "us-central1",
+        "memory": "1GiB",
         "runConfig": {
           "concurrency": 20,
           "maxInstances": 1,

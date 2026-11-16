@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { JSX } from "react";
+import Link from "next/link";
 import {
   collection,
   onSnapshot,
@@ -830,9 +831,19 @@ export default function WhatsAppInboxPage() {
                       <div className="min-w-0 flex-1">
                         <div className="flex items-start justify-between gap-1">
                           <div className="min-w-0 flex-1">
-                            <span className="block truncate text-sm font-semibold leading-tight text-on-surface">
-                              {conv.user?.businessName || conv.user?.name || conv.phone}
-                            </span>
+                            {conv.user?.uid ? (
+                              <Link
+                                href={`/admin/customer-history/${encodeURIComponent(conv.user.uid)}`}
+                                onClick={(e) => e.stopPropagation()}
+                                className="block truncate text-sm font-semibold leading-tight text-primary hover:underline"
+                              >
+                                {conv.user.businessName || conv.user.name || conv.phone}
+                              </Link>
+                            ) : (
+                              <span className="block truncate text-sm font-semibold leading-tight text-on-surface">
+                                {conv.user?.businessName || conv.user?.name || conv.phone}
+                              </span>
+                            )}
                             {conv.user?.businessName && conv.user?.name && (
                               <span className="block truncate text-[10px] leading-tight text-on-surface-variant/60">
                                 {conv.user.name}
@@ -926,21 +937,44 @@ export default function WhatsAppInboxPage() {
                       <>
                         {/* Business name — prominent when present */}
                         {business ? (
-                          <p className="truncate text-sm font-bold leading-tight text-on-surface">
-                            {business}
-                          </p>
+                          u?.uid ? (
+                            <Link
+                              href={`/admin/customer-history/${encodeURIComponent(u.uid)}`}
+                              onClick={(e) => e.stopPropagation()}
+                              className="block truncate text-sm font-bold leading-tight text-primary hover:underline"
+                            >
+                              {business}
+                            </Link>
+                          ) : (
+                            <p className="truncate text-sm font-bold leading-tight text-on-surface">
+                              {business}
+                            </p>
+                          )
                         ) : null}
 
                         {/* Personal name — bold when no business, secondary otherwise */}
                         {person ? (
-                          <p className={cn(
-                            "truncate leading-tight",
-                            business
-                              ? "text-xs text-on-surface-variant/80"
-                              : "text-sm font-bold text-on-surface"
-                          )}>
-                            {person}
-                          </p>
+                          (!business && u?.uid) ? (
+                            <Link
+                              href={`/admin/customer-history/${encodeURIComponent(u.uid)}`}
+                              onClick={(e) => e.stopPropagation()}
+                              className={cn(
+                                "block truncate leading-tight text-primary hover:underline",
+                                "text-sm font-bold"
+                              )}
+                            >
+                              {person}
+                            </Link>
+                          ) : (
+                            <p className={cn(
+                              "truncate leading-tight",
+                              business
+                                ? "text-xs text-on-surface-variant/80"
+                                : "text-sm font-bold text-on-surface"
+                            )}>
+                              {person}
+                            </p>
+                          )
                         ) : !business ? (
                           <p className="truncate text-sm font-bold text-on-surface">
                             {selectedConv.phone}

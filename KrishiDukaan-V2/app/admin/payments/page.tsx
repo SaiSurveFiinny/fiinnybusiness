@@ -1,165 +1,154 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import {
-  AlertTriangle,
-  BarChart3,
-  ChevronDown,
-  Download,
-  FileSpreadsheet,
-  RefreshCw,
-  Search,
-  X,
-} from "lucide-react";
+import { AlertTriangle, BarChart3, ChevronDown, Download, FileSpreadsheet, RefreshCw, Search, X } from "lucide-react";
 import { auth } from "../../firebase";
+import { rangeForPreset, type RangePreset } from "../_components/analytics/ui";
 import {
-  DateRangePicker,
-  useDateRange,
-} from "../_components/analytics/ui";
-import {
-  attemptsToCsv,
-  bucketOf,
-  BUCKET_LABEL,
   downloadCsv,
-  fetchAttemptsInRange,
+  fetchPaymentsPage,
   money,
-  nameOf,
-  phoneOf,
-  platformOf,
-  type Attempt,
-  type Bucket,
-  type Platform,
+  paymentsToCsv,
+  CATEGORY_LABEL,
+  EMPTY_PAYMENT_FILTERS,
+  type Category,
+  type PaymentFilters,
+  type PaymentRow,
+  type PaymentsPage,
 } from "./_lib/payments";
 import { PaymentsTable } from "./_components/payments-table";
 import { PaymentDetailsModal } from "./_components/payment-details-modal";
 import { PaymentPieCharts } from "./_components/payment-pie-charts";
+import { PaymentFilterChips } from "./_components/payment-filter-chips";
 
 /**
- * Admin → Payments.
- *
- * Shows every payment ATTEMPT (not just the successful ones), so a lost sale is
- * visible with the detail needed to act on it: who the buyer was, how to reach
- * them, which products at what price, and what Razorpay said went wrong.
- *
- * The whole page works off ONE date-bounded fetch of `paymentAttempts`
- * (fetchAttemptsInRange). Table, pie charts and CSV all read that same set, so
- * they can never disagree. The categorisation (failed / abandoned / in-process
- * / successful) is the shared bucketOf rule in _lib/payments.ts — "successful"
- * is Razorpay-confirmed money only, and "abandoned" is the app's own
- * 30-minutes-at-'created' rule, never simply "any failed Razorpay payment".
+ * Admin → Payments. Unified razorpayPayments + paymentAttempts, fetched/merged/
+ * aggregated server-side. The date window (preset chips + the Date column's
+ * custom range) bounds the server fetch; the other per-column filters and the
+ * free-text search are applied server-side too, so everything spans ALL records
+ * while only a page is sent to the browser.
  */
 
 const PAGE_SIZE = 25;
 
-const PLATFORM_OPTIONS: { value: Platform | "all"; label: string }[] = [
-  { value: "all", label: "All platforms" },
-  { value: "app", label: "App" },
-  { value: "web", label: "Web" },
-  { value: "razorpay", label: "Razorpay (synced)" },
-  { value: "unknown", label: "Unknown" },
+const PRESETS: { key: RangePreset; label: string }[] = [
+  { key: "7d", label: "Last 7 days" },
+  { key: "30d", label: "Last 30 days" },
+  { key: "90d", label: "Last 90 days" },
+  { key: "mtd", label: "This month" },
+  { key: "ytd", label: "This year" },
+  { key: "all", label: "All time" },
 ];
 
-export default function AdminPaymentsPage() {
-  const dr = useDateRange("30d");
-  const { from, to } = dr.range;
+type Tab = "all" | Category;
+const TABS: Tab[] = ["all", "successful", "abandoned", "failed", "refunded", "pending", "unresolved"];
+const TAB_LABEL: Record<Tab, string> = { all: "All", ...CATEGORY_LABEL };
 
-  const [attempts, setAttempts] = useState<Attempt[]>([]);
+const EMPTY: PaymentsPage = {
+  counts: { successful: 0, abandoned: 0, failed: 0, refunded: 0, pending: 0, unresolved: 0 },
+  amounts: { successful: 0, abandoned: 0, failed: 0, refunded: 0, pending: 0, unresolved: 0 },
+  refundedValue: 0,
+  total: 0,
+  tabTotal: 0,
+  rows: [],
+};
+
+export default function AdminPaymentsPage() {
+  // Date window: preset chips + a custom range entered via the Date column filter.
+  const [datePreset, setDatePreset] = useState<RangePreset>("30d");
+  const [dFrom, setDFrom] = useState<number | null>(null);
+  const [dTo, setDTo] = useState<number | null>(null);
+  const win = useMemo(() => {
+    if (datePreset === "all") return { fromMs: 0, toMs: Date.now() };
+    if (datePreset === "custom") return { fromMs: dFrom ?? 0, toMs: dTo ?? Date.now() };
+    const r = rangeForPreset(datePreset);
+    return { fromMs: r.from.getTime(), toMs: r.to.getTime() };
+  }, [datePreset, dFrom, dTo]);
+
+  const [filters, setFilters] = useState<PaymentFilters>(EMPTY_PAYMENT_FILTERS);
+  const filterKey = useMemo(() => JSON.stringify(filters), [filters]);
+
+  const [data, setData] = useState<PaymentsPage>(EMPTY);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  // Single clock for the whole loaded set, so the 30-minute abandoned/pending
-  // split is identical across table, charts and CSV. Bumped on every reload.
-  const [now, setNow] = useState(() => Date.now());
 
-  const [tab, setTab] = useState<Bucket>("failed");
-  const [platform, setPlatform] = useState<Platform | "all">("all");
+  const [tab, setTab] = useState<Tab>("all");
   const [search, setSearch] = useState("");
+  const [debouncedSearch, setDebouncedSearch] = useState("");
   const [page, setPage] = useState(0);
   const [showAnalytics, setShowAnalytics] = useState(false);
-  const [selected, setSelected] = useState<Attempt | null>(null);
+  const [selected, setSelected] = useState<PaymentRow | null>(null);
 
   const [syncing, setSyncing] = useState(false);
   const [syncResult, setSyncResult] = useState<string | null>(null);
+  const [exporting, setExporting] = useState(false);
 
-  const reload = async () => {
+  useEffect(() => {
+    const t = setTimeout(() => setDebouncedSearch(search.trim()), 300);
+    return () => clearTimeout(t);
+  }, [search]);
+
+  useEffect(() => setPage(0), [win.fromMs, win.toMs, tab, debouncedSearch, filterKey]);
+
+  const load = async () => {
     setLoading(true);
     setError(null);
     try {
-      const rows = await fetchAttemptsInRange(from, to);
-      setAttempts(rows);
-      setNow(Date.now());
-    } catch (e) {
-      setError(
-        e instanceof Error
-          ? e.message
-          : "Could not load payments. Check the Firestore rules for paymentAttempts.",
+      setData(
+        await fetchPaymentsPage({
+          from: new Date(win.fromMs),
+          to: new Date(win.toMs),
+          q: debouncedSearch,
+          filters,
+          category: tab,
+          page,
+          pageSize: PAGE_SIZE,
+        }),
       );
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Could not load payments.");
+      setData(EMPTY);
     } finally {
       setLoading(false);
     }
   };
 
-  // Refetch whenever the date range changes.
   useEffect(() => {
-    void reload();
+    void load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [from.getTime(), to.getTime()]);
+  }, [win.fromMs, win.toMs, tab, debouncedSearch, filterKey, page]);
 
-  // Reset pagination when the working view changes.
-  useEffect(() => setPage(0), [tab, platform, search]);
+  const { counts, amounts, refundedValue, total, tabTotal, rows } = data;
+  const pageCount = Math.max(1, Math.ceil(tabTotal / PAGE_SIZE));
 
-  // Everything in range after the platform + text filters — but NOT the status
-  // tab. Charts and the summary read this so they always show the full
-  // distribution; only the table and CSV narrow further by tab.
-  const filtered = useMemo(() => {
-    const q = search.trim().toLowerCase();
-    return attempts.filter((a) => {
-      if (platform !== "all" && platformOf(a) !== platform) return false;
-      if (!q) return true;
-      return (
-        (phoneOf(a) ?? "").toLowerCase().includes(q) ||
-        nameOf(a).toLowerCase().includes(q) ||
-        a.razorpayOrderId.toLowerCase().includes(q) ||
-        (a.razorpayPaymentId ?? "").toLowerCase().includes(q) ||
-        a.items.some((i) => i.name.toLowerCase().includes(q))
-      );
-    });
-  }, [attempts, platform, search]);
-
-  const counts = useMemo(() => {
-    const c: Record<Bucket, number> = { failed: 0, abandoned: 0, pending: 0, paid: 0 };
-    for (const a of filtered) c[bucketOf(a, now)] += 1;
-    return c;
-  }, [filtered, now]);
-
-  const lostValue = useMemo(
-    () =>
-      filtered
-        .filter((a) => bucketOf(a, now) === "failed")
-        .reduce((s, a) => s + a.amount, 0),
-    [filtered, now],
-  );
-
-  // The tab's records (full, unpaginated) — what the CSV exports.
-  const tabRows = useMemo(
-    () => filtered.filter((a) => bucketOf(a, now) === tab),
-    [filtered, now, tab],
-  );
-
-  const pageRows = useMemo(
-    () => tabRows.slice(page * PAGE_SIZE, page * PAGE_SIZE + PAGE_SIZE),
-    [tabRows, page],
-  );
-  const pageCount = Math.max(1, Math.ceil(tabRows.length / PAGE_SIZE));
-
-  const exportCsv = () => {
-    const csv = attemptsToCsv(tabRows, now);
-    const day = new Date().toISOString().slice(0, 10);
-    downloadCsv(`krishi-dukan-payments-${day}.csv`, csv);
+  const clearAll = () => {
+    setFilters(EMPTY_PAYMENT_FILTERS);
+    setSearch("");
+    setDatePreset("30d");
+    setDFrom(null);
+    setDTo(null);
   };
 
-  // Pulls failed payments straight from Razorpay — catches failures the client
-  // never reported (killed app, dropped connection, old app version). Unchanged
-  // behaviour from before; just reloads the range when done.
+  const exportCsv = async () => {
+    setExporting(true);
+    try {
+      const full = await fetchPaymentsPage({
+        from: new Date(win.fromMs),
+        to: new Date(win.toMs),
+        q: debouncedSearch,
+        filters,
+        category: tab,
+        all: true,
+      });
+      const day = new Date().toISOString().slice(0, 10);
+      downloadCsv(`krishi-dukan-payments-${day}.csv`, paymentsToCsv(full.rows));
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Export failed.");
+    } finally {
+      setExporting(false);
+    }
+  };
+
   const syncFromRazorpay = async () => {
     setSyncing(true);
     setSyncResult(null);
@@ -173,28 +162,33 @@ export default function AdminPaymentsPage() {
       let guard = 0;
       while (hasMore && guard < 50) {
         guard++;
-        const res = await fetch("/api/admin/sync-razorpay-failures", {
+        const res = await fetch("/api/admin/sync-razorpay-payments", {
           method: "POST",
           headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
           body: JSON.stringify({ skip }),
         });
-        const data = await res.json();
-        if (!res.ok) throw new Error(data?.error ?? "Sync failed");
-        totalScanned += data.scanned ?? 0;
-        totalWritten += data.written ?? 0;
-        skip = data.nextSkip ?? skip;
-        hasMore = Boolean(data.hasMore);
+        const d = await res.json();
+        if (!res.ok) throw new Error(d?.error ?? "Sync failed");
+        totalScanned += d.scanned ?? 0;
+        totalWritten += d.written ?? 0;
+        skip = d.nextSkip ?? skip;
+        hasMore = Boolean(d.hasMore);
       }
-      setSyncResult(
-        `Scanned ${totalScanned} Razorpay payment${totalScanned === 1 ? "" : "s"}, added/updated ${totalWritten} failed record${totalWritten === 1 ? "" : "s"}.`,
-      );
-      await reload();
+      setSyncResult(`Scanned ${totalScanned} Razorpay payment${totalScanned === 1 ? "" : "s"}, mirrored ${totalWritten}.`);
+      await load();
     } catch (e) {
       setSyncResult(e instanceof Error ? `Sync failed: ${e.message}` : "Sync failed.");
     } finally {
       setSyncing(false);
     }
   };
+
+  const chipCls = (active: boolean) =>
+    `rounded-xl border px-3 py-1.5 text-xs font-bold transition-colors ${
+      active
+        ? "border-primary bg-primary/10 text-primary"
+        : "border-outline/40 bg-surface-container-low text-on-surface hover:bg-surface-container"
+    }`;
 
   return (
     <div className="space-y-5">
@@ -203,30 +197,30 @@ export default function AdminPaymentsPage() {
         <div>
           <h1 className="text-xl font-bold text-on-surface">Payments</h1>
           <p className="text-sm text-on-surface-variant">
-            Every payment attempt in the selected range — successful, failed, abandoned and in progress.
+            Unified Razorpay payments + app checkouts — successful, abandoned, failed and refunded.
           </p>
         </div>
         <div className="flex items-center gap-2">
           <button
             onClick={exportCsv}
-            disabled={tabRows.length === 0}
+            disabled={exporting || tabTotal === 0}
             title="Export every record in the current tab, range and filters — not just this page."
             className="flex items-center gap-2 rounded-lg border border-outline/30 px-3 py-2 text-sm font-semibold text-on-surface-variant transition hover:bg-surface-container disabled:opacity-50"
           >
             <FileSpreadsheet className="h-4 w-4" />
-            Export CSV
+            {exporting ? "Exporting…" : "Export CSV"}
           </button>
           <button
             onClick={syncFromRazorpay}
             disabled={syncing}
-            title="Pull failed payments directly from Razorpay — catches failures the app never reported."
+            title="Mirror Razorpay's payment records into the dashboard (all statuses)."
             className="flex items-center gap-2 rounded-lg bg-primary px-3 py-2 text-sm font-semibold text-white transition hover:opacity-90 disabled:opacity-50"
           >
             <Download className={`h-4 w-4 ${syncing ? "animate-pulse" : ""}`} />
             {syncing ? "Syncing…" : "Sync from Razorpay"}
           </button>
           <button
-            onClick={reload}
+            onClick={load}
             disabled={loading}
             className="flex items-center gap-2 rounded-lg border border-outline/30 px-3 py-2 text-sm font-semibold text-on-surface-variant transition hover:bg-surface-container disabled:opacity-50"
           >
@@ -243,36 +237,40 @@ export default function AdminPaymentsPage() {
         </div>
       )}
 
-      {/* Date range */}
-      <DateRangePicker {...dr} />
+      {/* Date range presets (custom range is entered via the Date column filter) */}
+      <div className="flex flex-wrap items-center gap-2">
+        {PRESETS.map((p) => (
+          <button key={p.key} type="button" onClick={() => setDatePreset(p.key)} className={chipCls(datePreset === p.key)}>
+            {p.label}
+          </button>
+        ))}
+        {datePreset === "custom" && <span className={chipCls(true)}>Custom range</span>}
+      </div>
 
       {/* Summary */}
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-5">
-        <SummaryCard label="Failed" value={String(counts.failed)} tone="error" />
+        <SummaryCard label="Successful" value={String(counts.successful)} tone="ok" />
         <SummaryCard label="Abandoned" value={String(counts.abandoned)} tone="warn" />
-        <SummaryCard label="In progress" value={String(counts.pending)} tone="warn" />
-        <SummaryCard label="Successful" value={String(counts.paid)} tone="ok" />
-        <SummaryCard label="Value not collected" value={money(lostValue)} tone="error" />
+        <SummaryCard label="Failed" value={String(counts.failed)} tone="error" />
+        <SummaryCard label="Refunded" value={`${counts.refunded} · ${money(refundedValue)}`} tone="warn" />
+        <SummaryCard label="Total" value={String(total)} tone="neutral" />
       </div>
 
-      {/* Analytics (collapsible) */}
+      {/* Analytics */}
       <div className="rounded-2xl border border-outline/15 bg-surface-container/20">
-        <button
-          onClick={() => setShowAnalytics((v) => !v)}
-          className="flex w-full items-center justify-between gap-3 px-4 py-3 text-left"
-        >
+        <button onClick={() => setShowAnalytics((v) => !v)} className="flex w-full items-center justify-between gap-3 px-4 py-3 text-left">
           <span className="flex items-center gap-2 text-sm font-semibold text-on-surface">
             <BarChart3 className="h-4 w-4 text-primary" />
             Payment analytics
             <span className="text-xs font-normal text-on-surface-variant">
-              ({filtered.length} attempt{filtered.length === 1 ? "" : "s"} in view)
+              ({total} payment{total === 1 ? "" : "s"} in view)
             </span>
           </span>
           <ChevronDown className={`h-4 w-4 text-outline transition-transform ${showAnalytics ? "rotate-180" : ""}`} />
         </button>
         {showAnalytics && (
           <div className="border-t border-outline/15 p-4">
-            <PaymentPieCharts rows={filtered} now={now} />
+            <PaymentPieCharts counts={counts} amounts={amounts} />
           </div>
         )}
       </div>
@@ -284,29 +282,27 @@ export default function AdminPaymentsPage() {
         </div>
       )}
 
-      {/* Tabs */}
-      <div className="flex gap-4 border-b border-outline/20">
-        {(["failed", "abandoned", "pending", "paid"] as Bucket[]).map((t) => (
+      {/* Tabs (status) */}
+      <div className="flex flex-wrap gap-4 border-b border-outline/20">
+        {TABS.map((t) => (
           <button
             key={t}
             onClick={() => setTab(t)}
             className={`flex items-center gap-1.5 px-1 pb-2 text-sm font-semibold ${
-              tab === t
-                ? "border-b-2 border-primary text-primary"
-                : "text-on-surface-variant hover:text-on-surface"
+              tab === t ? "border-b-2 border-primary text-primary" : "text-on-surface-variant hover:text-on-surface"
             }`}
           >
-            {BUCKET_LABEL[t]}
+            {TAB_LABEL[t]}
             <span className="rounded-full bg-surface-container px-1.5 py-0.5 text-[11px] font-bold">
-              {counts[t]}
+              {t === "all" ? total : counts[t]}
             </span>
           </button>
         ))}
       </div>
 
-      {/* Filters */}
-      <div className="flex flex-wrap items-center gap-2">
-        <div className="relative min-w-[16rem] flex-1">
+      {/* Search + active column-filter chips */}
+      <div className="space-y-2">
+        <div className="relative max-w-md">
           <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-outline" />
           <input
             value={search}
@@ -315,43 +311,45 @@ export default function AdminPaymentsPage() {
             className="w-full rounded-lg border border-outline/30 py-2 pl-9 pr-9 text-sm focus:border-primary focus:outline-none"
           />
           {search && (
-            <button
-              onClick={() => setSearch("")}
-              className="absolute right-3 top-1/2 -translate-y-1/2 text-outline hover:text-on-surface"
-            >
+            <button onClick={() => setSearch("")} className="absolute right-3 top-1/2 -translate-y-1/2 text-outline hover:text-on-surface">
               <X className="h-4 w-4" />
             </button>
           )}
         </div>
-        <select
-          value={platform}
-          onChange={(e) => setPlatform(e.target.value as Platform | "all")}
-          className="rounded-lg border border-outline/30 px-3 py-2 text-sm focus:border-primary focus:outline-none"
-        >
-          {PLATFORM_OPTIONS.map((o) => (
-            <option key={o.value} value={o.value}>
-              {o.label}
-            </option>
-          ))}
-        </select>
+        <PaymentFilterChips filters={filters} onChange={setFilters} onClearAll={clearAll} />
       </div>
 
       {/* Table */}
       {loading ? (
         <p className="py-16 text-center text-sm text-on-surface-variant">Loading…</p>
-      ) : tabRows.length === 0 ? (
+      ) : tabTotal === 0 ? (
         <p className="py-16 text-center text-sm text-on-surface-variant">
-          {search || platform !== "all"
-            ? `No ${BUCKET_LABEL[tab].toLowerCase()} payments match the current filters.`
-            : `No ${BUCKET_LABEL[tab].toLowerCase()} payments in this range.`}
+          No {TAB_LABEL[tab].toLowerCase()} payments match the current filters.
         </p>
       ) : (
         <>
-          <PaymentsTable rows={pageRows} now={now} onView={setSelected} />
+          <PaymentsTable
+            rows={rows}
+            onView={setSelected}
+            filters={filters}
+            onFilters={setFilters}
+            dateFrom={datePreset === "custom" ? dFrom : null}
+            dateTo={datePreset === "custom" ? dTo : null}
+            dateActive={datePreset === "custom"}
+            onDateChange={({ fromMs, toMs }) => {
+              setDFrom(fromMs);
+              setDTo(toMs);
+              setDatePreset("custom");
+            }}
+            onDateClear={() => {
+              setDatePreset("30d");
+              setDFrom(null);
+              setDTo(null);
+            }}
+          />
           <div className="flex items-center justify-between text-sm text-on-surface-variant">
             <span>
-              Showing {page * PAGE_SIZE + 1}–{Math.min((page + 1) * PAGE_SIZE, tabRows.length)} of{" "}
-              {tabRows.length}
+              Showing {page * PAGE_SIZE + 1}–{Math.min((page + 1) * PAGE_SIZE, tabTotal)} of {tabTotal}
             </span>
             <div className="flex items-center gap-2">
               <button
@@ -376,24 +374,14 @@ export default function AdminPaymentsPage() {
         </>
       )}
 
-      {selected && (
-        <PaymentDetailsModal attempt={selected} now={now} onClose={() => setSelected(null)} />
-      )}
+      {selected && <PaymentDetailsModal row={selected} onClose={() => setSelected(null)} />}
     </div>
   );
 }
 
-function SummaryCard({
-  label,
-  value,
-  tone,
-}: {
-  label: string;
-  value: string;
-  tone: "error" | "warn" | "ok";
-}) {
+function SummaryCard({ label, value, tone }: { label: string; value: string; tone: "error" | "warn" | "ok" | "neutral" }) {
   const toneClass =
-    tone === "error" ? "text-red-600" : tone === "warn" ? "text-amber-600" : "text-green-700";
+    tone === "error" ? "text-red-600" : tone === "warn" ? "text-amber-600" : tone === "ok" ? "text-green-700" : "text-on-surface";
   return (
     <div className="rounded-xl border border-outline/15 bg-white p-4">
       <p className={`text-2xl font-extrabold ${toneClass}`}>{value}</p>

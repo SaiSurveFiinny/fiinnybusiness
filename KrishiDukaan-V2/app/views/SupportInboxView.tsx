@@ -15,7 +15,11 @@ interface Props {
   userName?: string;
   userEmail?: string;
   businessName?: string;
-  onBack: () => void;
+  /** Shown as a full-screen view (standalone `support` route) by default. When
+   *  embedded in another page (About / Help) it drops to a bounded, card-shaped
+   *  height and hides the back button. */
+  embedded?: boolean;
+  onBack?: () => void;
 }
 
 function formatTime(ts: any): string {
@@ -34,13 +38,17 @@ function formatTime(ts: any): string {
   }
 }
 
-export default function SupportInboxView({ uid, userName, userEmail, businessName, onBack }: Props) {
+export default function SupportInboxView({ uid, userName, userEmail, businessName, embedded = false, onBack }: Props) {
   const [messages, setMessages] = useState<SupportMessage[]>([]);
   const [loading, setLoading] = useState(true);
   const [text, setText] = useState("");
   const [sending, setSending] = useState(false);
   const [sendError, setSendError] = useState("");
-  const bottomRef = useRef<HTMLDivElement>(null);
+  // The scrollable message list. We scroll THIS container to the newest message,
+  // never the element into view via `scrollIntoView` — the latter also scrolls
+  // every scrollable ancestor (including the window), which yanked the whole
+  // About/Help page down to the embedded inbox on load.
+  const listRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     setLoading(true);
@@ -60,7 +68,8 @@ export default function SupportInboxView({ uid, userName, userEmail, businessNam
   }, [uid]);
 
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+    const el = listRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
   }, [messages]);
 
   const handleSend = async () => {
@@ -92,17 +101,25 @@ export default function SupportInboxView({ uid, userName, userEmail, businessNam
   };
 
   return (
-    <div className="flex flex-col h-[calc(100vh-128px)] bg-surface-container-lowest">
+    <div
+      className={
+        embedded
+          ? "flex flex-col h-[600px] max-h-[75vh] overflow-hidden rounded-3xl border border-outline-variant/30 bg-surface-container-lowest shadow-xl"
+          : "flex flex-col h-[calc(100vh-128px)] bg-surface-container-lowest"
+      }
+    >
       {/* Header */}
       <div className="flex items-center gap-3 border-b border-outline-variant/30 bg-white px-4 py-3 sticky top-0 z-10">
-        <button
-          type="button"
-          onClick={onBack}
-          className="rounded-lg p-1.5 text-on-surface-variant hover:bg-surface-container transition-colors"
-          aria-label="Back"
-        >
-          <ArrowLeft className="h-5 w-5" />
-        </button>
+        {onBack && (
+          <button
+            type="button"
+            onClick={onBack}
+            className="rounded-lg p-1.5 text-on-surface-variant hover:bg-surface-container transition-colors"
+            aria-label="Back"
+          >
+            <ArrowLeft className="h-5 w-5" />
+          </button>
+        )}
         <div className="flex h-9 w-9 items-center justify-center rounded-full bg-primary/10">
           <HeadphonesIcon className="h-5 w-5 text-primary" />
         </div>
@@ -113,7 +130,7 @@ export default function SupportInboxView({ uid, userName, userEmail, businessNam
       </div>
 
       {/* Messages */}
-      <div className="flex-1 overflow-y-auto px-4 py-4 space-y-3">
+      <div ref={listRef} className="flex-1 overflow-y-auto px-4 py-4 space-y-3">
         {loading ? (
           <div className="flex h-full items-center justify-center">
             <Loader2 className="h-6 w-6 animate-spin text-primary" />
@@ -160,7 +177,6 @@ export default function SupportInboxView({ uid, userName, userEmail, businessNam
             );
           })
         )}
-        <div ref={bottomRef} />
       </div>
 
       {sendError && (

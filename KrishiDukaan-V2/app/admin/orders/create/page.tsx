@@ -59,7 +59,16 @@ type PaymentRow = {
   buyerUserId: string | null; isSubscription: boolean; alreadyLinked: boolean; linkedOrderIds: string[]; note: string | null;
   fromInternal?: boolean;
 };
-type PaymentSummary = { mode: "razorpay" | "offline"; status: string; amount: number; method: string | null; razorpayPaymentId: string | null };
+// Combined verification of the 1–N payments backing one order (server mirror of
+// ManualMultiPaymentVerification). `payments` carries the per-payment detail.
+type MultiVerification = {
+  ok: boolean; blocking: string[]; warnings: string[];
+  payments: Verification[];
+  combinedAmountPaise: number | null; combinedAmountRupees: number | null;
+  expectedTotalRupees: number | null; orderId: string | null;
+};
+type LinkedPaymentDetail = { razorpayPaymentId: string; razorpayOrderId: string | null; amount: number; method: string | null; contact: string | null; email: string | null; createdAt: number | null };
+type PaymentSummary = { mode: "razorpay" | "offline"; status: string; amount: number; method: string | null; razorpayPaymentId: string | null; razorpayPaymentIds: string[]; payments: LinkedPaymentDetail[] };
 type CreateResult = { ok: true; orderId: string; alreadyExisted: boolean; status: string; grandTotal: number; payment: PaymentSummary; invoice: { ok: boolean; generated?: boolean; pending?: boolean; invoiceNumber?: string; error?: string } };
 
 type OfflineMethod = "cash" | "upi" | "other";
@@ -260,9 +269,13 @@ export default function CreateManualOrderPage() {
   const ymd = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
   const [payFrom, setPayFrom] = useState(() => { const d = new Date(); d.setDate(d.getDate() - 1); return ymd(d); });
   const [payTo, setPayTo] = useState(() => ymd(new Date()));
-  const [selectedPaymentId, setSelectedPaymentId] = useState<string | null>(null);
-  const [verification, setVerification] = useState<Verification | null>(null);
+  // The 1–N captured payments the admin has selected to back this order. Their
+  // combined amount must equal the order total; each is verified individually and
+  // the combined result lives in `multiVerification`.
+  const [selectedPayments, setSelectedPayments] = useState<PaymentRow[]>([]);
+  const [multiVerification, setMultiVerification] = useState<MultiVerification | null>(null);
   const [verifyBusy, setVerifyBusy] = useState(false);
+  const selectedPaymentIds = selectedPayments.map((p) => p.id);
   // Offline payment collected by the retailer (cash/UPI/other). Mutually exclusive
   // with a linked Razorpay payment. `key` is a one-time idempotency token so a
   // retry/double-submit returns the same order instead of creating a second one.
@@ -291,21 +304,23 @@ export default function CreateManualOrderPage() {
   const itemsPayload = () => cart.map((l) => ({ productId: l.productId, copyId: l.copyId, qty: l.qty, variantUnit: l.variantUnit || undefined }));
 
   // Re-price whenever the Review or Payment step is active and the cart changes.
-  const review = useCallback(async (razorpayPaymentId?: string) => {
+  // When payment ids are supplied, the server also returns the combined
+  // verification for that exact set of payments against the re-priced total.
+  const review = useCallback(async (razorpayPaymentIds?: string[]) => {
     if (!retailer || cart.length === 0) return;
     setPricingBusy(true);
     setError(null);
     try {
-      const r = await apiPost<{ pricing: Pricing; verification: Verification | null }>("/api/admin/manual-order/review", {
+      const r = await apiPost<{ pricing: Pricing; multiVerification: MultiVerification | null }>("/api/admin/manual-order/review", {
         sellerPhone: retailer.phone,
         items: itemsPayload(),
         customerId: customer?.id,
         customerDeliveryState: (custAddr.state || customer?.state) ?? undefined,
         deliveryCharge: deliveryOverride,
-        razorpayPaymentId,
+        razorpayPaymentIds,
       });
       setPricing(r.pricing);
-      if (razorpayPaymentId) setVerification(r.verification);
+      if (razorpayPaymentIds) setMultiVerification(r.multiVerification);
       return r;
     } catch (e) {
       setError(e instanceof Error ? e.message : "Could not price the order.");
@@ -340,7 +355,8 @@ export default function CreateManualOrderPage() {
     try {
       const r = await apiGet<{ payment: PaymentRow }>(`/api/admin/manual-order/payments?paymentId=${encodeURIComponent(id)}`);
       setPayments((prev) => [r.payment, ...prev.filter((p) => p.id !== r.payment.id)]);
-      await selectPayment(r.payment.id);
+      setPaymentIdInput("");
+      await addPayment(r.payment);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Payment not found.");
     } finally {
@@ -348,30 +364,57 @@ export default function CreateManualOrderPage() {
     }
   };
 
-  const selectPayment = async (paymentId: string) => {
-    setOfflinePay(null); // Razorpay and offline are mutually exclusive.
-    setSelectedPaymentId(paymentId);
+  // Re-verify the given set of selected payments against the current order total.
+  const verifySelection = async (rows: PaymentRow[]) => {
+    if (rows.length === 0) { setMultiVerification(null); return; }
     setVerifyBusy(true);
-    setVerification(null);
     try {
-      await review(paymentId);
+      await review(rows.map((p) => p.id));
     } finally {
       setVerifyBusy(false);
     }
   };
 
+  // Toggle a payment in/out of the selection. Razorpay and offline are mutually
+  // exclusive, so selecting a payment clears any offline record. A payment that is
+  // already linked / a subscription can't be added (guarded by the caller too).
+  const togglePayment = async (row: PaymentRow) => {
+    setOfflinePay(null);
+    const already = selectedPayments.some((p) => p.id === row.id);
+    const next = already
+      ? selectedPayments.filter((p) => p.id !== row.id)
+      : [...selectedPayments, row];
+    setSelectedPayments(next);
+    await verifySelection(next);
+  };
+
+  // Add a payment (from the manual-id lookup) to the selection if not present.
+  const addPayment = async (row: PaymentRow) => {
+    if (selectedPayments.some((p) => p.id === row.id)) return;
+    setOfflinePay(null);
+    const next = [...selectedPayments, row];
+    setSelectedPayments(next);
+    await verifySelection(next);
+  };
+
+  const removePayment = async (paymentId: string) => {
+    const next = selectedPayments.filter((p) => p.id !== paymentId);
+    setSelectedPayments(next);
+    await verifySelection(next);
+  };
+
   const create = async () => {
-    if (!customer || !retailer || !(selectedPaymentId || offlinePay)) return;
+    if (!customer || !retailer || !(selectedPaymentIds.length > 0 || offlinePay)) return;
     setCreating(true);
     setError(null);
     try {
       const r = await apiPost<CreateResult>("/api/admin/manual-order", {
         sellerPhone: retailer.phone,
-        // Exactly one payment path: an offline retailer-collected payment, or a
-        // linked/verified Razorpay payment.
+        // Exactly one payment path: an offline retailer-collected payment, or the
+        // set of verified Razorpay payments backing this order.
         ...(offlinePay
           ? { offline: { method: offlinePay.method, idempotencyKey: offlinePay.key } }
-          : { razorpayPaymentId: selectedPaymentId }),
+          : { razorpayPaymentIds: selectedPaymentIds }),
         customer: {
           id: customer.id, name: customer.name, phone: customer.phone,
           email: customer.email,
@@ -399,17 +442,17 @@ export default function CreateManualOrderPage() {
       return [...prev, { productId: p.productId, copyId: p.copyId, name: p.name, qty: 1, variantUnit: defaultVariant, variants: p.variants, price: p.price }];
     });
     setPricing(null);
-    setVerification(null);
+    setMultiVerification(null);
   };
   const updateLine = (copyId: string, patch: Partial<CartLine>) => {
     setCart((prev) => prev.map((l) => (l.copyId === copyId ? { ...l, ...patch } : l)));
     setPricing(null);
-    setVerification(null);
+    setMultiVerification(null);
   };
   const removeLine = (copyId: string) => {
     setCart((prev) => prev.filter((l) => l.copyId !== copyId));
     setPricing(null);
-    setVerification(null);
+    setMultiVerification(null);
   };
 
   // Delivery can be overridden by the admin. Subtotal and GST don't depend on it,
@@ -423,8 +466,8 @@ export default function CreateManualOrderPage() {
   // old total must be re-confirmed — drop the Razorpay selection AND any offline
   // record when the override changes.
   useEffect(() => {
-    setSelectedPaymentId(null);
-    setVerification(null);
+    setSelectedPayments([]);
+    setMultiVerification(null);
     setOfflinePay(null);
   }, [deliveryOverride]);
 
@@ -437,8 +480,8 @@ export default function CreateManualOrderPage() {
 
   // Record the retailer-collected offline payment, clearing any Razorpay selection.
   const recordOffline = () => {
-    setSelectedPaymentId(null);
-    setVerification(null);
+    setSelectedPayments([]);
+    setMultiVerification(null);
     setOfflinePay({ method: offlineMethod, key: (crypto as Crypto).randomUUID() });
   };
   const clearOffline = () => setOfflinePay(null);
@@ -466,7 +509,7 @@ export default function CreateManualOrderPage() {
       } : c);
       setEditingAddr(false);
       setAddrMsg({ ok: true, text: "Delivery address saved to the customer's record." });
-      await review(selectedPaymentId ?? undefined);
+      await review(selectedPaymentIds.length > 0 ? selectedPaymentIds : undefined);
     } catch (e) {
       setAddrMsg({ ok: false, text: e instanceof Error ? e.message : "Could not save address." });
     } finally {
@@ -474,10 +517,11 @@ export default function CreateManualOrderPage() {
     }
   };
 
-  // A payment is "linked" when either a Razorpay payment is verified OK, or an
-  // offline retailer-collected payment has been recorded.
+  // A payment is "linked" when either the selected Razorpay payment(s) verify OK as
+  // a set (combined amount matches), or an offline payment has been recorded.
   const canLink = Boolean(
-    customer && retailer && cart.length > 0 && ((selectedPaymentId && verification?.ok) || offlinePay),
+    customer && retailer && cart.length > 0 &&
+      ((selectedPaymentIds.length > 0 && multiVerification?.ok) || offlinePay),
   );
   const canCreate = Boolean(canLink && !editingAddr && !creating);
 
@@ -656,7 +700,7 @@ export default function CreateManualOrderPage() {
           <div className="space-y-5">
             <div>
               <h2 className="text-base sm:text-lg font-black text-on-surface">Payment for this order</h2>
-              <p className="text-sm text-on-surface-variant">Choose how this order was paid. Pick one of the three options below.</p>
+              <p className="text-sm text-on-surface-variant">Choose how this order was paid. You can link one Razorpay payment, split it across several, or record an offline payment.</p>
             </div>
             {pricing && (
               <div className="rounded-xl border border-primary/30 bg-primary/5 px-4 py-3">
@@ -665,12 +709,31 @@ export default function CreateManualOrderPage() {
                 <p className="text-xs text-on-surface-variant mt-0.5">
                   subtotal {inr(pricing.subtotal)}{pricing.totalGstAdded > 0 ? ` + GST ${inr(pricing.totalGstAdded)}` : ""} + delivery {inr(effectiveDelivery)}
                 </p>
+                {!offlinePay && selectedPayments.length > 0 && (() => {
+                  const combined = round2(selectedPayments.reduce((s, p) => s + p.amount, 0));
+                  const diff = round2(combined - effectiveTotal);
+                  return (
+                    <div className="mt-2 border-t border-primary/20 pt-2 flex flex-wrap items-center justify-between gap-2 text-sm">
+                      <span className="text-on-surface-variant">
+                        {selectedPayments.length} payment{selectedPayments.length > 1 ? "s" : ""} selected · combined{" "}
+                        <span className="font-black text-on-surface">{inr(combined)}</span>
+                      </span>
+                      {diff === 0 ? (
+                        <span className="inline-flex items-center gap-1 font-bold text-green-700"><CheckCircle2 className="h-4 w-4" /> Matches total</span>
+                      ) : (
+                        <span className="font-bold text-red-700">
+                          {diff > 0 ? "Over" : "Short"} by {inr(Math.abs(diff))}
+                        </span>
+                      )}
+                    </div>
+                  );
+                })()}
               </div>
             )}
 
             {/* ── Option 1 (primary): browse recent captured Razorpay payments ── */}
             <OptionCard n={1} title="Browse recent captured payments"
-              desc="Pick an online payment the customer made through Razorpay. This is the usual choice." icon={CreditCard}>
+              desc="Tick the online payment(s) the customer made through Razorpay. Select several to split one order across multiple payments — their combined amount must equal the order total." icon={CreditCard}>
               <div className="flex flex-wrap items-end gap-3">
                 <label className="flex flex-col text-xs font-bold text-on-surface-variant">
                   From
@@ -692,25 +755,29 @@ export default function CreateManualOrderPage() {
                 <div className="divide-y divide-outline-variant/15 rounded-xl border border-outline-variant/30 bg-white max-h-80 overflow-y-auto">
                   {payments.map((p) => {
                     const blocked = p.alreadyLinked || p.isSubscription;
-                    const sel = !offlinePay && selectedPaymentId === p.id;
+                    const sel = !offlinePay && selectedPaymentIds.includes(p.id);
                     return (
                       <button key={p.id} type="button" disabled={blocked}
-                        onClick={() => void selectPayment(p.id)}
+                        onClick={() => void togglePayment(p)}
                         className={`w-full px-3 py-2.5 text-left transition-colors ${sel ? "bg-primary/10" : "hover:bg-surface-container-low"} ${blocked ? "opacity-50 cursor-not-allowed" : ""}`}>
-                        <div className="flex items-center justify-between gap-2">
-                          <div className="min-w-0">
-                            <p className="font-mono text-sm font-bold text-on-surface">{p.id}</p>
-                            <p className="text-xs text-on-surface-variant">
-                              {p.contact ?? "—"} · {p.method ?? "—"} · {p.createdAt ? new Date(p.createdAt * 1000).toLocaleDateString("en-IN") : "—"}
-                              {p.fromInternal ? " · via internal ledger" : ""}
-                            </p>
-                            {p.note && <p className="text-xs text-on-surface-variant/80">{p.note}</p>}
-                          </div>
-                          <div className="text-right shrink-0">
-                            <p className="font-black text-base text-on-surface">{inr(p.amount)}</p>
-                            {p.isSubscription && <p className="text-[11px] font-bold text-amber-700">subscription</p>}
-                            {p.alreadyLinked && <p className="text-[11px] font-bold text-red-700">linked → {p.linkedOrderIds.join(", ") || "order"}</p>}
-                            {sel && !blocked && <Check className="ml-auto h-5 w-5 text-primary" />}
+                        <div className="flex items-center gap-2.5">
+                          <span className={`flex h-5 w-5 shrink-0 items-center justify-center rounded border ${sel ? "border-primary bg-primary text-white" : "border-outline-variant/60 bg-white"}`}>
+                            {sel && <Check className="h-3.5 w-3.5" />}
+                          </span>
+                          <div className="flex items-center justify-between gap-2 min-w-0 flex-1">
+                            <div className="min-w-0">
+                              <p className="font-mono text-sm font-bold text-on-surface">{p.id}</p>
+                              <p className="text-xs text-on-surface-variant">
+                                {p.contact ?? "—"} · {p.method ?? "—"} · {p.createdAt ? new Date(p.createdAt * 1000).toLocaleDateString("en-IN") : "—"}
+                                {p.fromInternal ? " · via internal ledger" : ""}
+                              </p>
+                              {p.note && <p className="text-xs text-on-surface-variant/80">{p.note}</p>}
+                            </div>
+                            <div className="text-right shrink-0">
+                              <p className="font-black text-base text-on-surface">{inr(p.amount)}</p>
+                              {p.isSubscription && <p className="text-[11px] font-bold text-amber-700">subscription</p>}
+                              {p.alreadyLinked && <p className="text-[11px] font-bold text-red-700">linked → {p.linkedOrderIds.join(", ") || "order"}</p>}
+                            </div>
                           </div>
                         </div>
                       </button>
@@ -723,8 +790,8 @@ export default function CreateManualOrderPage() {
             </OptionCard>
 
             {/* ── Option 2: paste a Razorpay payment ID not in the list ── */}
-            <OptionCard n={2} title="Enter Payment ID manually"
-              desc="Paste a Razorpay Payment ID that isn't in the list. It's verified directly with Razorpay before linking." icon={Search}>
+            <OptionCard n={2} title="Add a Payment ID manually"
+              desc="Paste a Razorpay Payment ID that isn't in the list to add it to the selection. It's verified directly with Razorpay before linking." icon={Search}>
               <div className="flex flex-wrap items-center gap-2">
                 <div className="relative flex-1 min-w-[220px]">
                   <CreditCard className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-on-surface-variant" />
@@ -738,10 +805,10 @@ export default function CreateManualOrderPage() {
                 </div>
                 <button type="button" onClick={() => void lookupPaymentId()} disabled={paymentsBusy || !paymentIdInput.trim()}
                   className="inline-flex items-center gap-1.5 rounded-lg bg-primary px-4 py-2.5 text-sm font-bold text-white hover:bg-primary/90 disabled:opacity-40">
-                  {paymentsBusy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Search className="h-4 w-4" />} Verify &amp; link
+                  {paymentsBusy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Search className="h-4 w-4" />} Verify &amp; add
                 </button>
               </div>
-              <p className="text-sm text-on-surface-variant">Only a payment that Razorpay confirms as successful, and whose amount matches the order total, can be linked.</p>
+              <p className="text-sm text-on-surface-variant">Only payments that Razorpay confirms as successful (captured, INR, same customer) can be linked, and the combined amount must equal the order total.</p>
             </OptionCard>
 
             {/* ── Option 3: offline payment collected by the retailer ── */}
@@ -776,15 +843,39 @@ export default function CreateManualOrderPage() {
               </div>
             ) : (
               <>
+                {/* Selected payments — each with id, amount, date, customer info. */}
+                {selectedPayments.length > 0 && (
+                  <div className="rounded-xl border border-outline-variant/30 bg-white divide-y divide-outline-variant/10">
+                    {selectedPayments.map((p) => (
+                      <div key={p.id} className="flex items-center justify-between gap-2 px-3 py-2">
+                        <div className="min-w-0">
+                          <p className="font-mono text-sm font-bold text-on-surface break-all">{p.id}</p>
+                          <p className="text-xs text-on-surface-variant">
+                            {p.contact ?? "—"} · {p.method ?? "—"} · {p.createdAt ? new Date(p.createdAt * 1000).toLocaleDateString("en-IN") : "—"}
+                          </p>
+                        </div>
+                        <div className="flex items-center gap-3 shrink-0">
+                          <span className="font-black text-on-surface">{inr(p.amount)}</span>
+                          <button type="button" onClick={() => void removePayment(p.id)} className="rounded-lg p-1.5 text-red-600 hover:bg-red-50" title="Remove payment">
+                            <X className="h-4 w-4" />
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
                 {verifyBusy && <div className="flex items-center gap-2 text-sm text-on-surface-variant"><Loader2 className="h-4 w-4 animate-spin" /> Verifying against Razorpay…</div>}
-                {verification && !verifyBusy && (
+                {multiVerification && !verifyBusy && (
                   <div className="space-y-2">
-                    {verification.ok
-                      ? <Banner tone="ok">Payment verified{verification.verifiedVia === "internal_record" ? " via internal ledger" : ""} and matches the order total.</Banner>
-                      : <Banner tone="error"><p className="font-bold mb-1">Cannot use this payment:</p><ul className="list-disc pl-4 space-y-0.5">{verification.blocking.map((b, i) => <li key={i}>{b}</li>)}</ul></Banner>}
-                    {verification.ok && <PaymentDetails v={verification} />}
-                    {verification.warnings.length > 0 && (
-                      <Banner tone="warn"><ul className="list-disc pl-4 space-y-0.5">{verification.warnings.map((w, i) => <li key={i}>{w}</li>)}</ul></Banner>
+                    {multiVerification.ok
+                      ? <Banner tone="ok">
+                          {selectedPayments.length > 1
+                            ? `All ${selectedPayments.length} payments verified — combined ${inr(multiVerification.combinedAmountRupees ?? 0)} matches the order total.`
+                            : "Payment verified and matches the order total."}
+                        </Banner>
+                      : <Banner tone="error"><p className="font-bold mb-1">Cannot use {selectedPayments.length > 1 ? "these payments" : "this payment"}:</p><ul className="list-disc pl-4 space-y-0.5">{multiVerification.blocking.map((b, i) => <li key={i}>{b}</li>)}</ul></Banner>}
+                    {multiVerification.warnings.length > 0 && (
+                      <Banner tone="warn"><ul className="list-disc pl-4 space-y-0.5">{multiVerification.warnings.map((w, i) => <li key={i}>{w}</li>)}</ul></Banner>
                     )}
                   </div>
                 )}
@@ -854,12 +945,25 @@ export default function CreateManualOrderPage() {
                     ))}
                   </div>
                 </div>
-              ) : verification?.ok ? (
+              ) : multiVerification?.ok && selectedPayments.length > 0 ? (
                 <div className="space-y-1.5">
                   <span className="inline-flex items-center gap-1.5 rounded-full bg-green-100 px-2.5 py-1 text-xs font-black text-green-800">
-                    <CreditCard className="h-3.5 w-3.5" /> Razorpay — verified
+                    <CreditCard className="h-3.5 w-3.5" /> Razorpay — {selectedPayments.length > 1 ? `${selectedPayments.length} payments verified` : "verified"}
                   </span>
-                  <PaymentDetails v={verification} />
+                  <div className="rounded-lg border border-outline-variant/30 bg-surface-container-lowest divide-y divide-outline-variant/10">
+                    {selectedPayments.map((p) => (
+                      <div key={p.id} className="flex items-center justify-between gap-3 px-3 py-1.5 text-xs">
+                        <span className="font-mono text-on-surface-variant break-all">{p.id}</span>
+                        <span className="text-on-surface font-semibold text-right shrink-0">{inr(p.amount)}</span>
+                      </div>
+                    ))}
+                    {selectedPayments.length > 1 && (
+                      <div className="flex items-center justify-between gap-3 px-3 py-1.5 text-xs bg-green-50">
+                        <span className="text-on-surface-variant font-bold">Combined</span>
+                        <span className="text-on-surface font-black text-right">{inr(multiVerification.combinedAmountRupees ?? effectiveTotal)}</span>
+                      </div>
+                    )}
+                  </div>
                 </div>
               ) : (
                 <Banner tone="warn">No payment linked. Go back and choose one.</Banner>
@@ -884,10 +988,22 @@ export default function CreateManualOrderPage() {
                   <Store className="h-3.5 w-3.5" /> Retailer-collected (offline) · {result.payment.method ?? "—"} · {inr(result.payment.amount)}
                 </span>
               ) : (
-                <span className="inline-flex items-center gap-1.5 rounded-full bg-green-100 px-2.5 py-1 text-xs font-black text-green-800">
-                  <CreditCard className="h-3.5 w-3.5" /> Razorpay · {result.payment.method ?? "—"} · {inr(result.payment.amount)}
-                  {result.payment.razorpayPaymentId ? ` · ${result.payment.razorpayPaymentId}` : ""}
-                </span>
+                <div className="space-y-1.5">
+                  <span className="inline-flex items-center gap-1.5 rounded-full bg-green-100 px-2.5 py-1 text-xs font-black text-green-800">
+                    <CreditCard className="h-3.5 w-3.5" /> Razorpay · {result.payment.method ?? "—"} · {inr(result.payment.amount)}
+                    {(result.payment.razorpayPaymentIds?.length ?? 0) > 1 ? ` · ${result.payment.razorpayPaymentIds.length} payments` : ""}
+                  </span>
+                  {(result.payment.payments?.length ?? 0) > 0 && (
+                    <div className="rounded-lg border border-outline-variant/30 bg-surface-container-lowest divide-y divide-outline-variant/10">
+                      {result.payment.payments.map((p) => (
+                        <div key={p.razorpayPaymentId} className="flex items-center justify-between gap-3 px-3 py-1.5 text-xs">
+                          <span className="font-mono text-on-surface-variant break-all">{p.razorpayPaymentId}</span>
+                          <span className="text-on-surface font-semibold text-right shrink-0">{inr(p.amount)}</span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
               )}
             </div>
             {result.invoice.ok && result.invoice.pending
@@ -1012,27 +1128,6 @@ function OptionCard({
         </div>
       </div>
       <div className="space-y-3">{children}</div>
-    </div>
-  );
-}
-
-/** Verified-payment details card (id, status, amount, method, date). */
-function PaymentDetails({ v }: { v: Verification }) {
-  const rows: [string, React.ReactNode][] = [
-    ["Payment ID", <span key="id" className="font-mono">{v.razorpayPaymentId}</span>],
-    ["Status", <span key="st" className="font-bold capitalize">{v.status ?? "—"}</span>],
-    ["Amount", v.amountRupees != null ? inr(v.amountRupees) : "—"],
-    ["Method", v.method ?? "—"],
-    ["Date", v.createdAt ? new Date(v.createdAt * 1000).toLocaleString("en-IN") : "—"],
-  ];
-  return (
-    <div className="rounded-lg border border-outline-variant/30 bg-surface-container-lowest divide-y divide-outline-variant/10">
-      {rows.map(([k, val]) => (
-        <div key={k} className="flex items-center justify-between gap-3 px-3 py-1.5 text-xs">
-          <span className="text-on-surface-variant">{k}</span>
-          <span className="text-on-surface text-right break-all">{val}</span>
-        </div>
-      ))}
     </div>
   );
 }

@@ -6,15 +6,13 @@
 'use client';
 
 import { useEffect, useMemo, useRef, useState, useCallback } from 'react';
-import { motion, AnimatePresence } from 'framer-motion';
-import { Loader2 } from 'lucide-react';
+import { motion } from 'framer-motion';
 import { useRouter } from 'next/navigation';
 import { ICONS } from '../constants';
 import { useI18n } from '../i18n/I18nContext';
 import { HELP_SECTIONS, HelpBlock, HelpSection } from './helpContent';
 import { getHelpEnrichment, HelpEnrichment } from './helpMedia';
 import { ScreenshotGallery, SectionActions } from './helpComponents';
-import { saveContactMessage } from '../firebase';
 
 /** The translator function shape returned by useI18n().t — derived so it stays in sync. */
 type TFn = ReturnType<typeof useI18n>['t'];
@@ -48,43 +46,11 @@ export default function HelpView({ onNavigate, user, userRole }: HelpViewProps) 
   const onOpenRoute = useCallback((route: string) => router.push(route), [router]);
   const [query, setQuery] = useState('');
 
-  // Complaint / message modal state
-  const [showComplaint, setShowComplaint] = useState(false);
-  const [cName, setCName] = useState('');
-  const [cEmail, setCEmail] = useState('');
-  const [cPhone, setCPhone] = useState('');
-  const [cSubject, setCSubject] = useState('Complaint');
-  const [cMessage, setCMessage] = useState('');
-  const [cStatus, setCStatus] = useState<'idle' | 'sending' | 'success' | 'error'>('idle');
-  const [cError, setCError] = useState('');
+  // "Contact Support" opens the dedicated Support Inbox page (?view=support)
+  // rather than scrolling to the embedded section — so the URL and view update
+  // and the page never auto-jumps the user down on load.
+  const openSupport = useCallback(() => onNavigate?.('support'), [onNavigate]);
 
-  // Pre-fill user info when modal opens
-  useEffect(() => {
-    if (!showComplaint) return;
-    const u = user as any;
-    if (u?.displayName) setCName(u.displayName);
-    if (u?.email) setCEmail(u.email);
-    if (u?.phoneNumber) setCPhone(u.phoneNumber);
-  }, [showComplaint, user]);
-
-  const handleComplaintSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!cMessage.trim()) { setCStatus('error'); setCError('Please write your message.'); return; }
-    setCStatus('sending');
-    setCError('');
-    try {
-      await saveContactMessage(cName || 'Anonymous', cEmail || 'not provided', cMessage, {
-        phone:   cPhone || undefined,
-        subject: cSubject,
-        role:    userRole || undefined,
-      });
-      setCStatus('success');
-      setCMessage('');
-    } catch {
-      setCStatus('error');
-      setCError('Failed to send. Please try again.');
-    }
-  };
   const [activeId, setActiveId] = useState<string>(HELP_SECTIONS[0]?.id ?? '');
   const [showTop, setShowTop] = useState(false);
   // Track which sections are open. Default: all open for a documentation read-through.
@@ -210,147 +176,16 @@ export default function HelpView({ onNavigate, user, userRole }: HelpViewProps) 
               </div>
               <button
                 type="button"
-                onClick={() => { setShowComplaint(true); setCStatus('idle'); }}
+                onClick={openSupport}
                 className="inline-flex items-center gap-2 rounded-xl bg-white/15 hover:bg-white/25 transition-colors border border-white/20 px-4 py-2 text-sm font-bold text-white"
               >
                 <ICONS.Chat className="w-4 h-4" />
-                Send Complaint / Message
+                Contact Support
               </button>
             </div>
           </motion.div>
         </div>
       </section>
-
-      {/* Complaint / Message Modal */}
-      <AnimatePresence>
-        {showComplaint && (
-          <motion.div
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4 backdrop-blur-sm"
-            onClick={(e) => { if (e.target === e.currentTarget) setShowComplaint(false); }}
-          >
-            <motion.div
-              initial={{ opacity: 0, scale: 0.95, y: 16 }}
-              animate={{ opacity: 1, scale: 1, y: 0 }}
-              exit={{ opacity: 0, scale: 0.95, y: 16 }}
-              transition={{ duration: 0.2 }}
-              className="w-full max-w-md rounded-3xl bg-white p-6 shadow-2xl"
-            >
-              <div className="flex items-center justify-between mb-5">
-                <div>
-                  <h2 className="text-lg font-bold text-on-surface">Send Message / Complaint</h2>
-                  <p className="text-xs text-on-surface-variant mt-0.5">Your info is auto-filled. We'll get back to you soon.</p>
-                </div>
-                <button
-                  type="button"
-                  onClick={() => setShowComplaint(false)}
-                  className="rounded-xl p-2 text-on-surface-variant hover:bg-surface-container transition-colors"
-                >
-                  <ICONS.X className="w-4 h-4" />
-                </button>
-              </div>
-
-              {cStatus === 'success' ? (
-                <div className="flex flex-col items-center gap-3 py-6 text-center">
-                  <div className="w-14 h-14 rounded-full bg-emerald-100 flex items-center justify-center">
-                    <ICONS.Check className="w-7 h-7 text-emerald-600" />
-                  </div>
-                  <p className="font-bold text-on-surface text-lg">Message Sent!</p>
-                  <p className="text-sm text-on-surface-variant">We've received your message and will respond shortly.</p>
-                  <button
-                    type="button"
-                    onClick={() => setShowComplaint(false)}
-                    className="mt-2 rounded-xl bg-primary px-5 py-2.5 text-sm font-bold text-white hover:opacity-90"
-                  >
-                    Done
-                  </button>
-                </div>
-              ) : (
-                <form onSubmit={handleComplaintSubmit} className="flex flex-col gap-3">
-                  <div className="grid grid-cols-2 gap-3">
-                    <label className="flex flex-col gap-1 text-xs font-semibold text-on-surface">
-                      Name
-                      <input
-                        type="text"
-                        value={cName}
-                        onChange={(e) => setCName(e.target.value)}
-                        placeholder="Your name"
-                        className="rounded-xl border border-outline-variant/40 bg-surface-container-low px-3 py-2 text-sm text-on-surface outline-none ring-primary/30 focus:ring-2 font-normal"
-                      />
-                    </label>
-                    <label className="flex flex-col gap-1 text-xs font-semibold text-on-surface">
-                      Phone
-                      <input
-                        type="tel"
-                        value={cPhone}
-                        onChange={(e) => setCPhone(e.target.value)}
-                        placeholder="+91 …"
-                        className="rounded-xl border border-outline-variant/40 bg-surface-container-low px-3 py-2 text-sm text-on-surface outline-none ring-primary/30 focus:ring-2 font-normal"
-                      />
-                    </label>
-                  </div>
-
-                  <label className="flex flex-col gap-1 text-xs font-semibold text-on-surface">
-                    Email
-                    <input
-                      type="email"
-                      value={cEmail}
-                      onChange={(e) => setCEmail(e.target.value)}
-                      placeholder="your@email.com"
-                      className="rounded-xl border border-outline-variant/40 bg-surface-container-low px-3 py-2 text-sm text-on-surface outline-none ring-primary/30 focus:ring-2 font-normal"
-                    />
-                  </label>
-
-                  <label className="flex flex-col gap-1 text-xs font-semibold text-on-surface">
-                    Type
-                    <select
-                      value={cSubject}
-                      onChange={(e) => setCSubject(e.target.value)}
-                      className="rounded-xl border border-outline-variant/40 bg-surface-container-low px-3 py-2 text-sm text-on-surface outline-none ring-primary/30 focus:ring-2 font-normal"
-                    >
-                      <option>Complaint</option>
-                      <option>Feedback</option>
-                      <option>General Inquiry</option>
-                      <option>Technical Issue</option>
-                      <option>Billing</option>
-                    </select>
-                  </label>
-
-                  <label className="flex flex-col gap-1 text-xs font-semibold text-on-surface">
-                    Message <span className="text-red-500">*</span>
-                    <textarea
-                      required
-                      rows={4}
-                      value={cMessage}
-                      onChange={(e) => setCMessage(e.target.value)}
-                      placeholder="Describe your complaint or message in detail…"
-                      className="rounded-xl border border-outline-variant/40 bg-surface-container-low px-3 py-2 text-sm text-on-surface outline-none ring-primary/30 focus:ring-2 resize-none font-normal"
-                    />
-                  </label>
-
-                  {cStatus === 'error' && (
-                    <p className="text-xs text-red-600 bg-red-50 border border-red-100 rounded-xl px-3 py-2">{cError}</p>
-                  )}
-
-                  <button
-                    type="submit"
-                    disabled={cStatus === 'sending'}
-                    className="w-full rounded-xl bg-primary py-2.5 text-sm font-bold text-white hover:opacity-90 transition-opacity disabled:opacity-60 flex items-center justify-center gap-2"
-                  >
-                    {cStatus === 'sending' ? (
-                      <><Loader2 className="w-4 h-4 animate-spin" /> Sending…</>
-                    ) : (
-                      <><ICONS.ArrowRight className="w-4 h-4" /> Send Message</>
-                    )}
-                  </button>
-                </form>
-              )}
-            </motion.div>
-          </motion.div>
-        )}
-      </AnimatePresence>
 
       {/* Body */}
       <div className="px-4 md:px-10 max-w-7xl mx-auto w-full py-8 md:py-12">
@@ -480,7 +315,7 @@ export default function HelpView({ onNavigate, user, userRole }: HelpViewProps) 
                     <ICONS.Home className="w-4 h-4" /> {t('helpGoHome')}
                   </button>
                   <button
-                    onClick={() => onNavigate?.('about')}
+                    onClick={openSupport}
                     className="inline-flex items-center gap-2 bg-white text-primary hover:bg-white/90 transition-colors text-sm font-bold px-4 py-2.5 rounded-xl"
                   >
                     <ICONS.Chat className="w-4 h-4" /> {t('helpContactSupport')}

@@ -4742,6 +4742,8 @@ export interface WaResolvedUser {
   businessName: string;
   // "consumer" (mobile app) is normalised to "customer" before this reaches the UI
   role: "retailer" | "manufacturer" | "salesExecutive" | "admin" | "customer" | "farmer" | "unknown";
+  /** Firebase Auth UID — present when the users doc has a uid field. Used for customer-history links. */
+  uid?: string;
 }
 
 export interface WaConvMeta {
@@ -4824,6 +4826,7 @@ export async function resolveWaUserByPhone(phone: string): Promise<WaResolvedUse
         name: d.name || d.ownerName || d.fullName || "",
         businessName: d.shopName || d.businessName || "",
         role: normalizeWaRole(rawRole),
+        uid: d.uid || undefined,
       };
       return result;
     }
@@ -4837,6 +4840,7 @@ export async function resolveWaUserByPhone(phone: string): Promise<WaResolvedUse
         name: d.name || d.ownerName || "",
         businessName: d.shopName || d.businessName || "",
         role: "retailer",
+        uid: d.uid || undefined,
       };
       return result;
     }
@@ -4850,6 +4854,7 @@ export async function resolveWaUserByPhone(phone: string): Promise<WaResolvedUse
         name: d.name || d.ownerName || "",
         businessName: d.businessName || d.shopName || "",
         role: "manufacturer",
+        uid: d.uid || undefined,
       };
       return result;
     }

@@ -16,7 +16,7 @@
  */
 
 import { useEffect, useMemo, useState } from "react";
-import { useParams } from "next/navigation";
+import { useParams, useRouter } from "next/navigation";
 import Link from "next/link";
 import {
   ArrowLeft, User, Phone, MapPin, Hash, ShieldCheck, Package,
@@ -85,6 +85,7 @@ function StatTile({ icon: Icon, label, value }: { icon: any; label: string; valu
 export default function CustomerHistoryPage() {
   const params = useParams<{ customerId: string }>();
   const customerId = decodeURIComponent(String(params?.customerId ?? ""));
+  const router = useRouter();
 
   const [customer, setCustomer] = useState<AdminUser | null>(null);
   const [orders, setOrders] = useState<OrderDoc[]>([]);
@@ -145,12 +146,13 @@ export default function CustomerHistoryPage() {
 
   return (
     <div className="space-y-5">
-      <Link
-        href="/admin/orders"
+      <button
+        type="button"
+        onClick={() => router.back()}
         className="inline-flex items-center gap-1.5 text-sm font-semibold text-on-surface-variant hover:text-primary"
       >
-        <ArrowLeft className="h-4 w-4" /> Back to Orders
-      </Link>
+        <ArrowLeft className="h-4 w-4" /> Back
+      </button>
 
       {error && (
         <div className="flex items-start gap-3 rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800">
