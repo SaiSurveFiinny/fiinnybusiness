@@ -1290,7 +1290,7 @@ export default async function SellPage() {
         </section>
 
         {/* FAQ */}
-        <section className="mt-20">
+        <section id="faq" className="mt-20 scroll-mt-24">
           <h2 className="text-2xl font-black text-on-surface text-center mb-8">
             Frequently asked questions
           </h2>

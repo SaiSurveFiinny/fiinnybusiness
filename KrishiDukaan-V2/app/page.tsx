@@ -199,6 +199,11 @@ export default function App() {
   const [user, setUser] = useState<any>(null);
   const [userRole, setUserRole] = useState<UserRole>('customer');
   const [userProfile, setUserProfile] = useState<UserProfile>({ name: '', phone: '', email: '', isPaid: false });
+  // Where to send the user back to after a login they were forced into (e.g.
+  // the Support Inbox on About/Help gated behind auth). A ref — not state — so
+  // it survives the login round-trip without triggering a re-render, and is
+  // honoured once in handleAuthSuccess then cleared.
+  const postLoginViewRef = useRef<View | null>(null);
   // Views below (ProfileView, SubscriptionView, Footer) only accept the
   // consumer-facing roles; map 'admin' to 'customer' for them.
   const consumerRole: 'customer' | 'retailer' | 'manufacturer' =
@@ -950,6 +955,13 @@ export default function App() {
     return () => { cancelled = true; };
   }, []);
 
+  // Send the user to login, remembering the page to return them to once they
+  // succeed. Used by the auth-gated Support Inbox embedded on About/Help.
+  const requestLogin = useCallback((returnView: View) => {
+    postLoginViewRef.current = returnView;
+    navigate('login');
+  }, [navigate]);
+
   const handleAuthSuccess = (firebaseUser: any, profile: any) => {
     setUser(firebaseUser);
     setUserRole(profile.role);
@@ -963,6 +975,17 @@ export default function App() {
       totalSeats: profile.totalSeats || 0,
       productCount: profile.productCount || 0
     });
+
+    // Forced to log in from an auth-gated page (e.g. Support Inbox on
+    // About/Help): return them to exactly that page so the inbox opens in
+    // place. Takes precedence over the default role routing below, but not over
+    // a pending sales referral (checkout intent wins).
+    const returnView = postLoginViewRef.current;
+    postLoginViewRef.current = null;
+    if (returnView && !readPendingReferral()) {
+      navigate(returnView, { replace: true });
+      return;
+    }
 
     // Arrived from a sales referral link: straight to checkout, whatever the
     // role — an already-paid seller gets the buy-more page instead.
@@ -2314,6 +2337,7 @@ export default function App() {
             userName={userProfile.name || undefined}
             userEmail={userProfile.email || undefined}
             onNavigate={(view) => navigate(view as View)}
+            onRequireLogin={() => requestLogin('about')}
           />
         );
       case 'support':
@@ -2330,7 +2354,13 @@ export default function App() {
           />
         );
       case 'help':
-        return <HelpView onNavigate={(view) => navigate(view as View)} user={user} userRole={userRole} />;
+        return (
+          <HelpView
+            onNavigate={(view) => navigate(view as View)}
+            user={user}
+            userRole={userRole}
+          />
+        );
       default:
         return (
           <HomeView

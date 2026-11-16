@@ -3,26 +3,25 @@ import Link from 'next/link';
 import { ICONS } from '../constants';
 import { motion } from 'framer-motion';
 import { useI18n } from '../i18n/I18nContext';
-import { fetchAboutContent, sendSupportMessage } from '../firebase';
+import { fetchAboutContent } from '../firebase';
 import type { AboutPageContent } from '../firebase';
 import { AboutPartnersSection, AboutPresenceSection } from '../components/AboutNetworkSections';
 import { PLAY_STORE_URL, APP_STORE_URL, androidLive, iosLive } from '../lib/store-links';
 import { COMPANY } from '../lib/legal-constants';
-import { LogIn, HeadphonesIcon } from 'lucide-react';
+import SupportInboxSection from './SupportInboxSection';
 
 interface Props {
   user?: any | null;
   userName?: string;
   userEmail?: string;
   onNavigate?: (view: string) => void;
+  /** Sends the visitor to login and returns them to this page (for the
+   *  auth-gated Support Inbox below). */
+  onRequireLogin?: () => void;
 }
 
-export default function AboutView({ user, userName, userEmail, onNavigate }: Props) {
+export default function AboutView({ user, userName, userEmail, onNavigate, onRequireLogin }: Props) {
   const { t } = useI18n();
-  const [name, setName] = useState('');
-  const [message, setMessage] = useState('');
-  const [status, setStatus] = useState<'idle' | 'sending' | 'success' | 'error'>('idle');
-  const [errorMessage, setErrorMessage] = useState('');
   // Admin > About page (siteContent/about). Optional enhancement: both
   // blocks stay hidden until it loads, and if it fails the page is unchanged.
   const [content, setContent] = useState<AboutPageContent | null>(null);
@@ -35,40 +34,11 @@ export default function AboutView({ user, userName, userEmail, onNavigate }: Pro
     return () => { cancelled = true; };
   }, []);
 
-  // Pre-fill name from profile when user loads
-  useEffect(() => {
-    if (userName) setName(userName);
-  }, [userName]);
-
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!user) return;
-    if (!name.trim() || !message.trim()) {
-      setStatus('error');
-      setErrorMessage('Please fill in all fields.');
-      return;
-    }
-    setStatus('sending');
-    setErrorMessage('');
-    try {
-      await sendSupportMessage(user.uid, user.uid, 'user', message, {
-        userName: name.trim(),
-        userEmail: userEmail || undefined,
-      });
-      setStatus('success');
-      setMessage('');
-    } catch (error) {
-      console.error('[about] sendSupportMessage error:', error);
-      setStatus('error');
-      setErrorMessage(error instanceof Error ? error.message : 'Something went wrong.');
-    }
-  };
-
   const stats = [
-    { value: '2,800+', label: t('aboutStatUsers') },
-    { value: '275+', label: t('aboutStatRetailers') },
+    { value: '4,600+', label: t('aboutStatUsers') },
+    { value: '770+', label: t('aboutStatRetailers') },
     { value: '35+', label: t('aboutStatManufacturers') },
-    { value: '145+', label: t('aboutStatProducts') }
+    { value: '200+', label: t('aboutStatProducts') }
   ];
 
   const values = [
@@ -312,107 +282,15 @@ export default function AboutView({ user, userName, userEmail, onNavigate }: Pro
               </div>
             </div>
 
-            {/* Message form — auth-gated */}
-            <div className="bg-white rounded-3xl p-8 shadow-2xl">
-              <h3 className="text-xl font-bold text-on-surface mb-2">{t('aboutContactFormTitle')}</h3>
-
-              {!user ? (
-                /* Unauthenticated state */
-                <div className="flex flex-col items-center gap-5 py-6 text-center">
-                  <div className="rounded-full bg-primary/5 p-4">
-                    <HeadphonesIcon className="h-8 w-8 text-primary/60" />
-                  </div>
-                  <div>
-                    <p className="font-semibold text-on-surface mb-1">Log in to contact support</p>
-                    <p className="text-sm text-on-surface-variant">
-                      Please sign in to send a message. Your conversation will be saved so you can follow up anytime.
-                    </p>
-                  </div>
-                  <button
-                    type="button"
-                    onClick={() => onNavigate?.('login')}
-                    className="flex items-center gap-2 bg-primary text-white font-bold px-6 py-3 rounded-xl hover:bg-primary/90 transition-colors"
-                  >
-                    <LogIn className="w-4 h-4" /> Log in to continue
-                  </button>
-                </div>
-              ) : status === 'success' ? (
-                /* Success state */
-                <div className="flex flex-col items-center gap-4 py-6 text-center">
-                  <div className="rounded-full bg-emerald-50 p-4">
-                    <ICONS.Trust className="h-8 w-8 text-emerald-600" />
-                  </div>
-                  <div>
-                    <p className="font-bold text-emerald-700 mb-1">Message sent successfully!</p>
-                    <p className="text-sm text-on-surface-variant">
-                      You can continue the conversation from your Profile → Support Inbox.
-                    </p>
-                  </div>
-                  <div className="flex gap-3">
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setStatus('idle');
-                        setMessage('');
-                      }}
-                      className="text-sm font-semibold text-on-surface-variant border border-outline-variant px-4 py-2 rounded-xl hover:bg-surface-container transition-colors"
-                    >
-                      Send another
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => onNavigate?.('support')}
-                      className="text-sm font-bold text-white bg-primary px-4 py-2 rounded-xl hover:bg-primary/90 transition-colors flex items-center gap-1.5"
-                    >
-                      <HeadphonesIcon className="w-3.5 h-3.5" /> Open Support Inbox
-                    </button>
-                  </div>
-                </div>
-              ) : (
-                /* Authenticated form */
-                <form onSubmit={handleSubmit} className="flex flex-col gap-4 mt-4">
-                  <div>
-                    <label className="block text-xs font-semibold text-on-surface-variant mb-1">Your name</label>
-                    <input
-                      type="text"
-                      required
-                      disabled={status === 'sending'}
-                      placeholder="Your name"
-                      value={name}
-                      onChange={(e) => setName(e.target.value)}
-                      className="w-full px-4 py-3 rounded-xl bg-surface-container-low border border-outline-variant text-sm focus:outline-none focus:border-primary focus:ring-1 focus:ring-primary disabled:opacity-50"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-xs font-semibold text-on-surface-variant mb-1">Message</label>
-                    <textarea
-                      required
-                      disabled={status === 'sending'}
-                      placeholder={t('aboutContactMessagePlaceholder')}
-                      rows={4}
-                      value={message}
-                      onChange={(e) => setMessage(e.target.value)}
-                      className="w-full px-4 py-3 rounded-xl bg-surface-container-low border border-outline-variant text-sm focus:outline-none focus:border-primary focus:ring-1 focus:ring-primary resize-none disabled:opacity-50"
-                    />
-                  </div>
-
-                  {status === 'error' && (
-                    <div className="text-sm font-medium text-red-600 bg-red-50 border border-red-100 rounded-xl p-3">
-                      {errorMessage || t('aboutContactError')}
-                    </div>
-                  )}
-
-                  <button
-                    type="submit"
-                    disabled={status === 'sending'}
-                    className="w-full bg-primary text-white font-bold py-3 rounded-xl hover:bg-primary/90 transition-colors flex items-center justify-center gap-2 disabled:opacity-50 cursor-pointer"
-                  >
-                    <ICONS.ArrowRight className="w-4 h-4" />
-                    {status === 'sending' ? t('aboutContactSending') : t('aboutContactSendLabel')}
-                  </button>
-                </form>
-              )}
-            </div>
+            {/* Support Inbox — auth-gated. Replaces the old one-off message
+                form with the same inbox used by Profile → Support, so the
+                conversation lives in one place. */}
+            <SupportInboxSection
+              user={user}
+              userName={userName}
+              userEmail={userEmail}
+              onRequireLogin={() => (onRequireLogin ? onRequireLogin() : onNavigate?.('login'))}
+            />
           </div>
         </div>
       </section>
