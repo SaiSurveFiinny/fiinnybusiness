@@ -32,6 +32,7 @@ import {
 } from "firebase/firestore/lite";
 import { getClientDb } from "../firebase-client-server";
 import { STORE_DIRECTORY, sourcesFromDirectory } from "../store-directory";
+import { staleWhileErrorCache } from "./stale-cache";
 import { buildProductSlug, filterServableProductIds } from "./products-server";
 
 export interface SeoStore {
@@ -236,7 +237,23 @@ function readGeo(data: Record<string, unknown>) {
   };
 }
 
-let _cache: SeoStore[] | null = null;
+/**
+ * How long one server instance trusts its store list before reading again.
+ *
+ * WHY THERE IS AN EXPIRY AT ALL
+ * -----------------------------
+ * This used to be a module-level array that was filled once and never
+ * refreshed, and a failed read returned []. Both turned into cached 404s:
+ *  - A shop added after an instance started was invisible to that instance for
+ *    its whole life, so its new town page rendered notFound(). The CDN and the
+ *    ISR cache then kept that 404 even though the sitemap (rendered elsewhere)
+ *    listed the URL. /stores/maharashtra/pandharwadi was stuck like this.
+ *  - One failed Firestore read made EVERY state/city/store page notFound() at
+ *    once, and each of those 404s was cached for an hour.
+ * Instances used to restart several times an hour (the SSR OOM), which hid the
+ * first problem. Since next-prepare-once.js they live for hours.
+ */
+const STORES_TTL_MS = 10 * 60 * 1000;
 
 /**
  * Every seller that can legitimately have a public page.
@@ -245,9 +262,26 @@ let _cache: SeoStore[] | null = null;
  * state. Generating a city page for a district where no real retailer trades is
  * a doorway page — it risks a manual action and helps nobody. No location, no
  * page.
+ *
+ * NEVER returns [] because a read failed. If the read fails it falls back to
+ * the last good list. With no good list yet it THROWS. A thrown render gives a
+ * 5xx that is not cached (and ISR keeps serving the previous good page). An
+ * empty list would give notFound(), which is cached. Callers that must not
+ * fail (the sitemap) catch it themselves.
+ *
+ * A failed read is not rare: sourcesFromDirectory throws whenever the Cloud
+ * Function is mid-rebuild of storeDirectory (chunks with mixed buildIds).
  */
-export async function getAllStores(): Promise<SeoStore[]> {
-  if (_cache) return _cache;
+export const getAllStores: () => Promise<SeoStore[]> = staleWhileErrorCache(
+  loadAllStores,
+  STORES_TTL_MS,
+  {
+    onStaleServe: (err) =>
+      console.warn("[stores-server] store refresh failed; serving last good list:", err),
+  },
+);
+
+async function loadAllStores(): Promise<SeoStore[]> {
   try {
     const db = getClientDb();
     // The four source collections, from the 1–2 storeDirectory docs Cloud
@@ -358,7 +392,7 @@ export async function getAllStores(): Promise<SeoStore[]> {
       }
     }
 
-    _cache = Array.from(byKey.values())
+    return Array.from(byKey.values())
       // The hard constraint: no real location, no page. The slug checks are not
       // redundant with the truthiness checks — a value in a script slugifyGeo
       // strips (Devanagari, say) is truthy but slugs to "", which would emit a
@@ -376,11 +410,9 @@ export async function getAllStores(): Promise<SeoStore[]> {
         updatedAtMs: s.updatedAtMs,
       }))
       .sort((a, b) => a.name.localeCompare(b.name));
-
-    return _cache;
   } catch (err) {
     console.warn("[stores-server] getAllStores failed:", err);
-    return [];
+    throw err;
   }
 }
 
