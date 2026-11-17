@@ -231,6 +231,10 @@ export default function App() {
   /** True once a signed-in user has been observed, so the auth listener can tell a
    *  real sign-out from the null it emits on every logged-out cold load. */
   const hadUserRef = useRef(false);
+  /** True once an in-app navigation has pushed a history entry this session, so a
+   *  back button can safely call window.history.back() and know the previous entry
+   *  belongs to this app (vs. a direct deep-link load, which only replaceState's). */
+  const hasInAppHistoryRef = useRef(false);
   const [checkoutLoading, setCheckoutLoading] = useState(false);
   const [checkoutMessage, setCheckoutMessage] = useState<string | null>(null);
   const [storePickerProduct, setStorePickerProduct] = useState<MarketplaceProduct | null>(null);
@@ -451,6 +455,8 @@ export default function App() {
           window.history.replaceState(null, '', nextUrl);
         } else {
           window.history.pushState(null, '', nextUrl);
+          // A real history entry now exists for this app, so back() can be trusted.
+          hasInAppHistoryRef.current = true;
         }
         // Always scroll to top when navigating
         window.scrollTo({ top: 0, behavior: 'instant' });
@@ -2350,7 +2356,13 @@ export default function App() {
             uid={user.uid}
             userName={userProfile.name || undefined}
             userEmail={userProfile.email || undefined}
-            onBack={() => navigate('profile')}
+            onBack={() => {
+              // Support is reached from About, Help, Profile, the footer, etc.,
+              // so return to wherever the user actually came from. Fall back to
+              // home only when opened directly (no in-app history to pop).
+              if (hasInAppHistoryRef.current) window.history.back();
+              else navigate('home', { replace: true });
+            }}
           />
         );
       case 'help':
