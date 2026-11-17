@@ -107,7 +107,7 @@ export async function fetchRetailerPublicProfile(
     const retailerDoc = byE164.docs[0] ?? byDigits.docs[0];
     if (retailerDoc) {
       const r = retailerDoc.data();
-      const legacyShopName = String(r.shopName ?? r.ownerName ?? "").trim();
+      const legacyShopName = String(r.businessName ?? r.shopName ?? r.ownerName ?? r.name ?? "").trim();
       if (legacyShopName) {
         return {
           phone,
