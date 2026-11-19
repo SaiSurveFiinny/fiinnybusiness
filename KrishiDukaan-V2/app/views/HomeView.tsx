@@ -282,7 +282,7 @@ export default function HomeView({
     { id: 'Bio Pesticides', label: t('catBioStimulants'), imgUrl: 'https://images.unsplash.com/photo-1530836369250-ef72a3f5cda8?auto=format&fit=crop&w=120&h=120&q=80', color: 'from-teal-50 to-cyan-100' },
     { id: 'Sprayers',     label: t('catSprayers'),     imgUrl: 'https://images.unsplash.com/photo-1622383563227-04401ab4e5ea?auto=format&fit=crop&w=120&h=120&q=80', color: 'from-sky-50 to-blue-100' },
     { id: 'Seeds',        label: t('catSeeds'),        imgUrl: 'https://images.unsplash.com/photo-1558618666-fcd25c85cd64?auto=format&fit=crop&w=120&h=120&q=80', color: 'from-yellow-50 to-amber-100' },
-    { id: 'Tools',        label: t('catTools'),        imgUrl: 'https://images.unsplash.com/photo-1601584115197-04ecc0da31d7?auto=format&fit=crop&w=120&h=120&q=80', color: 'from-slate-50 to-gray-100' },
+    { id: 'Insecticides', label: t('catInsecticides'), imgUrl: 'https://images.unsplash.com/photo-1574943320219-553eb213f72d?auto=format&fit=crop&w=120&h=120&q=80', color: 'from-slate-50 to-gray-100' },
     { id: 'all',          label: t('catViewAll'),      imgUrl: 'https://images.unsplash.com/photo-1488459716781-31db52582fe9?auto=format&fit=crop&w=120&h=120&q=80', color: 'from-primary/10 to-primary/20' },
   ];
 

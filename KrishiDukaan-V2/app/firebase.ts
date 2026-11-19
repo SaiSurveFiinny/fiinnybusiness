@@ -410,7 +410,8 @@ export async function fetchStores(): Promise<Store[]> {
         id: doc.id,
         retailerId: data.retailerId,
         userId: data.userId,
-        name: data.shopName || data.ownerName || 'Retailer',
+        // Business-identity priority: businessName → shopName → ownerName → name.
+        name: data.businessName || data.shopName || data.ownerName || data.name || 'Retailer',
         ownerName: data.ownerName,
         // Fall back to doc.id: for phone-keyed docs the doc ID is the phone number itself
         phone: data.phone || (/^\+?\d{10,13}$/.test(doc.id) ? doc.id : undefined),
@@ -508,7 +509,7 @@ export async function fetchStores(): Promise<Store[]> {
         return {
           id: doc.id,
           userId: data.uid || undefined,
-          name: data.shopName || data.businessName || data.ownerName || data.name,
+          name: data.businessName || data.shopName || data.ownerName || data.name,
           ownerName: data.ownerName,
           phone: data.phone || (/^\+?\d{10,13}$/.test(doc.id) ? doc.id : undefined),
           logo: data.logo || undefined,
@@ -678,7 +679,12 @@ export async function fetchStoresForSellers(sellers: ProductSellerKey[]): Promis
         id: docId || seller.storeId || seller.storePhone || '',
         retailerId: d.retailerId,
         userId: d.uid || d.userId || undefined,
-        name: d.shopName || d.businessName || d.ownerName || d.name || seller.storeName || 'Retailer',
+        // Business-identity priority: businessName → shopName → ownerName → name.
+        // businessName and shopName are both business-identity fields (the canonical
+        // uid-keyed retailer doc stores its business name ONLY in shopName), so they
+        // rank first. `name` is last because on profiles/users docs it holds the
+        // OWNER's personal name, not the shop. ownerName is never the primary name.
+        name: d.businessName || d.shopName || d.ownerName || d.name || seller.storeName || 'Retailer',
         ownerName: d.ownerName,
         phone,
         logo: d.logo || undefined,
@@ -4227,6 +4233,42 @@ export async function logFailedPayment(
 
 // ─── Admin profile save (phone-keyed — works before first OTP login) ──────────
 
+/** The checkout-written customer delivery-address fields on users/{phone}. */
+export type CustomerDeliveryAddress = { area: string; city: string; district: string; state: string; pincode: string };
+
+/**
+ * Map a customer delivery address onto the exact users/{phone} field keys the
+ * checkout flow persists (app/page.tsx) and the order's `customerAddress` string
+ * is composed from. Single source of truth, reused by adminSaveProfile and
+ * adminSaveCustomerAddress so the two can never drift.
+ */
+export function customerAddressFields(addr: CustomerDeliveryAddress): Record<string, unknown> {
+  return {
+    addressArea:     addr.area.trim()     || null,
+    addressCity:     addr.city.trim()     || null,
+    addressDistrict: addr.district.trim() || null,
+    addressState:    addr.state.trim()    || null,
+    addressPincode:  addr.pincode.trim()  || null,
+  };
+}
+
+/**
+ * Update ONLY a customer's delivery address on users/{phone} — a focused,
+ * side-effect-free write that leaves name/email/role/etc untouched (merge). Used
+ * by the manual-order wizard's final-review address edit. Reuses the same field
+ * schema as adminSaveProfile via customerAddressFields().
+ */
+export async function adminSaveCustomerAddress(
+  phone: string,
+  addr: CustomerDeliveryAddress,
+): Promise<void> {
+  await setDoc(
+    doc(db, "users", phone),
+    { ...customerAddressFields(addr), updatedAt: serverTimestamp() },
+    { merge: true },
+  );
+}
+
 export interface AdminSaveProfileInput {
   businessName: string;
   ownerName: string;
@@ -4291,12 +4333,7 @@ export async function adminSaveProfile(
   } else if (data.customerAddress) {
     // Customers store their delivery address in these checkout-written fields, not
     // the seller-style address/city/state/pincode keys above.
-    const ca = data.customerAddress;
-    userFields.addressArea     = ca.area.trim()     || null;
-    userFields.addressCity     = ca.city.trim()     || null;
-    userFields.addressDistrict = ca.district.trim() || null;
-    userFields.addressState    = ca.state.trim()    || null;
-    userFields.addressPincode  = ca.pincode.trim()  || null;
+    Object.assign(userFields, customerAddressFields(data.customerAddress));
   }
   await setDoc(doc(db, "users", phone), userFields, { merge: true });
 
@@ -4753,6 +4790,8 @@ export interface WaResolvedUser {
   businessName: string;
   // "consumer" (mobile app) is normalised to "customer" before this reaches the UI
   role: "retailer" | "manufacturer" | "salesExecutive" | "admin" | "customer" | "farmer" | "unknown";
+  /** Firebase Auth UID — present when the users doc has a uid field. Used for customer-history links. */
+  uid?: string;
 }
 
 export interface WaConvMeta {
@@ -4835,6 +4874,7 @@ export async function resolveWaUserByPhone(phone: string): Promise<WaResolvedUse
         name: d.name || d.ownerName || d.fullName || "",
         businessName: d.shopName || d.businessName || "",
         role: normalizeWaRole(rawRole),
+        uid: d.uid || undefined,
       };
       return result;
     }
@@ -4848,6 +4888,7 @@ export async function resolveWaUserByPhone(phone: string): Promise<WaResolvedUse
         name: d.name || d.ownerName || "",
         businessName: d.shopName || d.businessName || "",
         role: "retailer",
+        uid: d.uid || undefined,
       };
       return result;
     }
@@ -4861,6 +4902,7 @@ export async function resolveWaUserByPhone(phone: string): Promise<WaResolvedUse
         name: d.name || d.ownerName || "",
         businessName: d.businessName || d.shopName || "",
         role: "manufacturer",
+        uid: d.uid || undefined,
       };
       return result;
     }

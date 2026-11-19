@@ -22,7 +22,6 @@ import {
   Search,
   AlertTriangle,
   Store,
-  Factory,
   Package,
   Download,
   RefreshCw,
@@ -43,118 +42,47 @@ import {
 import { fetchOrderTotals, ordersQuery, searchOrdersDirect, type OrderTotals } from "../_lib/admin-queries";
 import { readAllDocs, usePagedQuery } from "../_lib/use-paged-query";
 import { LoadMore } from "../_components/load-more";
-import { formatCustomerAddress, isInvoiceReady, normalizeOrderItems, orderGrandTotal } from "../../../types/order";
-import type { OrderDoc, OrderStatus, PaymentStatus } from "../../../types/order";
+import { formatCustomerAddress, isInvoiceReady } from "../../../types/order";
+import type { OrderDoc, OrderStatus } from "../../../types/order";
 import { openInvoice } from "../../utils/invoice-generator";
+import {
+  STATUS_META,
+  STATUS_TABS,
+  toMillis,
+  formatDate,
+  formatIso,
+  inr,
+  orderTotal,
+  itemsOf,
+  productSummary,
+  StatusBadge,
+  PaymentBadge,
+  SellerName,
+  CustomerLink,
+} from "../_lib/order-display";
+import { OrderAnalyticsPanel } from "./_components/order-analytics-panel";
+import { FilterChips } from "./_components/filter-chips";
+import {
+  ColumnFilter, MultiSelectFilter, TextFilter, CustomerFilter, AmountFilter, DateFilter,
+} from "./_components/order-column-filters";
+import {
+  EMPTY_FILTERS, matchesOrderFilters, matchesSearch, countActiveGroups,
+  productOptions, sellerOptions, type OrderFilters, type SellerTypeFilter,
+} from "./_lib/order-filters";
+import { PAYMENT_BUCKET_META, capturedAmount, refundedAmount, paymentBucket, type PaymentBucket } from "./_lib/order-analytics";
 
-const STATUS_META: Record<OrderStatus, { label: string; badge: string }> = {
-  placed:           { label: "Placed",           badge: "bg-amber-100 text-amber-700" },
-  accepted:         { label: "Accepted",         badge: "bg-blue-100 text-blue-700" },
-  dispatched:       { label: "Dispatched",       badge: "bg-indigo-100 text-indigo-700" },
-  out_for_delivery: { label: "Out for Delivery", badge: "bg-purple-100 text-purple-700" },
-  delivered:        { label: "Delivered",        badge: "bg-green-100 text-green-700" },
-  rejected:         { label: "Rejected",         badge: "bg-red-100 text-red-700" },
-  cancelled:        { label: "Cancelled",        badge: "bg-red-100 text-red-700" },
-  reassigning:      { label: "Reassigning",      badge: "bg-orange-100 text-orange-700" },
-};
-
-/** Tab order for the status filter — All first, then the lifecycle. */
-const STATUS_TABS: OrderStatus[] = [
-  "placed", "accepted", "dispatched", "out_for_delivery", "delivered", "rejected", "cancelled", "reassigning",
+/** Quick date presets for the compact Filters dropdown. */
+const QUICK_RANGES: Array<{ key: string; label: string; range: () => { from: number | null; to: number | null } }> = [
+  { key: "all",   label: "Any date", range: () => ({ from: null, to: null }) },
+  { key: "today", label: "Today",    range: () => { const s = new Date(); s.setHours(0, 0, 0, 0); return { from: s.getTime(), to: null }; } },
+  { key: "7d",    label: "7 days",   range: () => ({ from: Date.now() - 7 * 86400000, to: null }) },
+  { key: "30d",   label: "30 days",  range: () => ({ from: Date.now() - 30 * 86400000, to: null }) },
 ];
 
-const PAYMENT_META: Record<PaymentStatus, { label: string; badge: string }> = {
-  paid:     { label: "Paid",     badge: "bg-green-100 text-green-700" },
-  pending:  { label: "Pending",  badge: "bg-amber-100 text-amber-700" },
-  failed:   { label: "Failed",   badge: "bg-red-100 text-red-700" },
-  refunded: { label: "Refunded", badge: "bg-gray-200 text-gray-700" },
-};
-
-/** Orders written before Razorpay was wired up carry no `payment` field at all. */
-const NO_PAYMENT_BADGE = "bg-gray-100 text-gray-500";
-
-type StatusFilter = "all" | OrderStatus;
-type SellerFilter = "all" | "retailer" | "manufacturer";
-type DateFilter = "all" | "today" | "7d" | "30d" | "custom";
-
-function toDateInputValue(d: Date): string {
-  const y = d.getFullYear();
-  const m = String(d.getMonth() + 1).padStart(2, "0");
-  const day = String(d.getDate()).padStart(2, "0");
-  return `${y}-${m}-${day}`;
-}
-
-function toMillis(createdAt: unknown): number {
-  return (createdAt as any)?.toMillis?.() ?? 0;
-}
-
-function formatDate(createdAt: unknown): string {
-  const ms = toMillis(createdAt);
-  if (!ms) return "—";
-  return new Date(ms).toLocaleString("en-IN", {
-    day: "numeric", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit",
-  });
-}
-
-function formatIso(iso: unknown): string {
-  const s = String(iso ?? "");
-  const t = Date.parse(s);
-  if (!s || Number.isNaN(t)) return "—";
-  return new Date(t).toLocaleString("en-IN", {
-    day: "numeric", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit",
-  });
-}
-
-function inr(n: number | undefined): string {
-  return `₹${(n ?? 0).toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
-}
-
-/** Both totals and item field names differ web-vs-mobile — see types/order.ts. */
-const orderTotal = orderGrandTotal;
-const itemsOf = (o: OrderDoc) => normalizeOrderItems(o.items as any);
-
-/** A compact one-line product summary for the table: first item + variant,
- *  total units, and "+N more" when the order has several line items. */
-function productSummary(o: OrderDoc): { label: string; more: string; units: number } {
-  const items = itemsOf(o);
-  if (items.length === 0) return { label: "No line items", more: "", units: 0 };
-  const first = items[0]!;
-  const label = `${first.name}${first.variantUnit ? ` · ${first.variantUnit}` : ""}`;
-  return {
-    label,
-    more: items.length > 1 ? `+${items.length - 1} more` : "",
-    units: items.reduce((s, i) => s + i.qty, 0),
-  };
-}
-
-function StatusBadge({ status }: { status: OrderStatus }) {
-  const meta = STATUS_META[status] ?? { label: status, badge: "bg-gray-100 text-gray-600" };
-  return (
-    <span className={`inline-block rounded-full px-2 py-0.5 text-[10px] font-black uppercase tracking-wide ${meta.badge}`}>
-      {meta.label}
-    </span>
-  );
-}
-
-function PaymentBadge({ order }: { order: OrderDoc }) {
-  const pay = order.payment ? PAYMENT_META[order.payment.status] : null;
-  return (
-    <span className={`inline-block rounded-full px-2 py-0.5 text-[10px] font-black uppercase tracking-wide ${pay ? pay.badge : NO_PAYMENT_BADGE}`}>
-      {pay ? pay.label : "No record"}
-    </span>
-  );
-}
-
-function SellerName({ order }: { order: OrderDoc }) {
-  return (
-    <span className="inline-flex items-center gap-1 font-semibold text-on-surface">
-      {order.sellerType === "manufacturer"
-        ? <Factory className="h-3.5 w-3.5 shrink-0 text-blue-600" />
-        : <Store className="h-3.5 w-3.5 shrink-0 text-green-600" />}
-      <span className="truncate">{order.sellerName || order.sellerId || "—"}</span>
-    </span>
-  );
-}
+/** Payment-bucket options for the Payment column multi-select. */
+const PAYMENT_OPTIONS = (Object.keys(PAYMENT_BUCKET_META) as PaymentBucket[]).map((v) => ({
+  value: v, label: PAYMENT_BUCKET_META[v].label,
+}));
 
 /**
  * Admin's general-purpose refund tool — issue a full or partial refund on any
@@ -727,17 +655,9 @@ function OrderDrawer({ order, onClose, onChanged }: { order: OrderDoc; onClose: 
   );
 }
 
-/** Seller-type + date-range filters tucked behind one button to keep the bar
- *  uncluttered. Counts the non-default selections as a badge. */
-function FiltersDropdown({
-  sellerFilter, setSellerFilter, dateFilter, setDateFilter,
-  customFrom, setCustomFrom, customTo, setCustomTo,
-}: {
-  sellerFilter: SellerFilter; setSellerFilter: (v: SellerFilter) => void;
-  dateFilter: DateFilter; setDateFilter: (v: DateFilter) => void;
-  customFrom: string; setCustomFrom: (v: string) => void;
-  customTo: string; setCustomTo: (v: string) => void;
-}) {
+/** Compact Seller-type + quick-date filters behind one button. The per-column
+ *  header popovers cover everything else; this stays for the common shortcuts. */
+function FiltersDropdown({ filters, setFilters }: { filters: OrderFilters; setFilters: (f: OrderFilters) => void }) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
   useEffect(() => {
@@ -749,7 +669,8 @@ function FiltersDropdown({
     return () => { document.removeEventListener("mousedown", onDoc); document.removeEventListener("keydown", onKey); };
   }, [open]);
 
-  const activeCount = (sellerFilter !== "all" ? 1 : 0) + (dateFilter !== "all" ? 1 : 0);
+  const dateActive = filters.fromMs !== null || filters.toMs !== null;
+  const activeCount = (filters.sellerType !== "all" ? 1 : 0) + (dateActive ? 1 : 0);
   const pill = (active: boolean) =>
     `rounded-full px-3 py-1.5 text-xs font-bold transition-colors ${active ? "bg-primary text-white shadow-sm" : "bg-surface-container text-on-surface-variant hover:bg-surface-container-high"}`;
 
@@ -773,40 +694,37 @@ function FiltersDropdown({
             <div>
               <p className={`mb-1.5 ${SECTION_LABEL}`}>Seller type</p>
               <div className="flex flex-wrap gap-1.5">
-                {([["all", "All sellers"], ["retailer", "Retailers"], ["manufacturer", "Manufacturers"]] as [SellerFilter, string][]).map(([k, label]) => (
-                  <button key={k} type="button" onClick={() => setSellerFilter(k)} className={pill(sellerFilter === k)}>{label}</button>
+                {([["all", "All sellers"], ["retailer", "Retailers"], ["manufacturer", "Manufacturers"]] as [SellerTypeFilter, string][]).map(([k, label]) => (
+                  <button key={k} type="button" onClick={() => setFilters({ ...filters, sellerType: k })} className={pill(filters.sellerType === k)}>{label}</button>
                 ))}
               </div>
             </div>
             <div>
-              <p className={`mb-1.5 ${SECTION_LABEL}`}>Date range</p>
+              <p className={`mb-1.5 ${SECTION_LABEL}`}>Quick date range</p>
               <div className="flex flex-wrap gap-1.5">
-                {([["all", "Any date"], ["today", "Today"], ["7d", "7 days"], ["30d", "30 days"], ["custom", "Custom"]] as [DateFilter, string][]).map(([k, label]) => (
-                  <button key={k} type="button" onClick={() => setDateFilter(k)} className={pill(dateFilter === k)}>{label}</button>
-                ))}
+                {QUICK_RANGES.map(({ key, label, range }) => {
+                  const r = range();
+                  const active = key === "all" ? !dateActive : filters.fromMs === r.from && filters.toMs === r.to;
+                  return (
+                    <button key={key} type="button" onClick={() => setFilters({ ...filters, ...r })} className={pill(active)}>{label}</button>
+                  );
+                })}
+              </div>
+              <div className="mt-2">
+                <DateFilter
+                  fromMs={filters.fromMs}
+                  toMs={filters.toMs}
+                  onChange={({ fromMs, toMs }) => setFilters({ ...filters, fromMs, toMs })}
+                />
               </div>
             </div>
-            {dateFilter === "custom" && (
-              <div className="flex flex-wrap items-end gap-3 rounded-xl border border-outline-variant/30 bg-surface-container-low/60 p-3">
-                <label className="flex flex-col text-xs font-semibold text-on-surface-variant">
-                  From
-                  <input type="date" value={customFrom} max={customTo || undefined} onChange={(e) => setCustomFrom(e.target.value)}
-                    className="mt-1 rounded-lg border border-outline-variant/40 bg-surface-container-lowest px-2 py-1 text-sm text-on-surface" />
-                </label>
-                <label className="flex flex-col text-xs font-semibold text-on-surface-variant">
-                  To
-                  <input type="date" value={customTo} min={customFrom || undefined} max={toDateInputValue(new Date())} onChange={(e) => setCustomTo(e.target.value)}
-                    className="mt-1 rounded-lg border border-outline-variant/40 bg-surface-container-lowest px-2 py-1 text-sm text-on-surface" />
-                </label>
-              </div>
-            )}
             {activeCount > 0 && (
               <button
                 type="button"
-                onClick={() => { setSellerFilter("all"); setDateFilter("all"); setCustomFrom(""); setCustomTo(""); }}
+                onClick={() => setFilters({ ...filters, sellerType: "all", fromMs: null, toMs: null })}
                 className="text-xs font-semibold text-primary hover:underline"
               >
-                Clear filters
+                Clear these
               </button>
             )}
           </div>
@@ -819,15 +737,21 @@ function FiltersDropdown({
 export default function AdminOrdersPage() {
   const [error, setError] = useState<string | null>(null);
   const [search, setSearch] = useState("");
-  const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
-  const [sellerFilter, setSellerFilter] = useState<SellerFilter>("all");
-  const [dateFilter, setDateFilter] = useState<DateFilter>("all");
-  const [customFrom, setCustomFrom] = useState("");
-  const [customTo, setCustomTo] = useState("");
+  const [filters, setFilters] = useState<OrderFilters>(EMPTY_FILTERS);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [totals, setTotals] = useState<OrderTotals | null>(null);
   const [directMatches, setDirectMatches] = useState<OrderDoc[]>([]);
   const [exporting, setExporting] = useState(false);
+  const [mobileFiltersOpen, setMobileFiltersOpen] = useState(false);
+
+  // Analytics panel — reads the full server-matched set once per query change
+  // (date + status + seller type), then re-aggregates in memory as client-side
+  // column filters change — no extra Firestore reads for filter flips.
+  // Starts open so data loads on mount (the panel is always visible).
+  const [analyticsOpen, setAnalyticsOpen] = useState(false);
+  const [analyticsRaw, setAnalyticsRaw] = useState<OrderDoc[] | null>(null);
+  const [analyticsLoading, setAnalyticsLoading] = useState(false);
+  const [analyticsError, setAnalyticsError] = useState<string | null>(null);
 
   const loadTotals = () => {
     fetchOrderTotals(Object.keys(STATUS_META))
@@ -845,34 +769,13 @@ export default function AdminOrdersPage() {
   useEffect(loadTotals, []);
 
   const counts = totals ?? { total: 0, paid: 0, unpaid: 0, revenue: 0, gross: 0, byStatus: {} as Record<string, number>, lostValue: 0 };
-  // Bounds derived once per render of the filter, not per order.
-  const dateBounds = useMemo((): { from: number | null; to: number | null } => {
-    const now = Date.now();
-    switch (dateFilter) {
-      case "today": {
-        const start = new Date();
-        start.setHours(0, 0, 0, 0);
-        return { from: start.getTime(), to: null };
-      }
-      case "7d":
-        return { from: now - 7 * 24 * 60 * 60 * 1000, to: null };
-      case "30d":
-        return { from: now - 30 * 24 * 60 * 60 * 1000, to: null };
-      case "custom":
-        return {
-          from: customFrom ? new Date(`${customFrom}T00:00:00`).getTime() : null,
-          to: customTo ? new Date(`${customTo}T23:59:59.999`).getTime() : null,
-        };
-      default:
-        return { from: null, to: null };
-    }
-  }, [dateFilter, customFrom, customTo]);
 
-  // Status, seller type and dates run in the query, newest first, 50 at a time;
-  // the free-text search narrows the loaded rows.
+  // Only the status list, seller type and createdAt range run in the Firestore
+  // query (existing composite indexes cover them); every other column filter is
+  // narrowed by matchesOrderFilters on the loaded rows / full export set.
   const base = useMemo(
-    () => ordersQuery({ status: statusFilter, sellerType: sellerFilter, fromMs: dateBounds.from, toMs: dateBounds.to }),
-    [statusFilter, sellerFilter, dateBounds],
+    () => ordersQuery({ statuses: filters.statuses, sellerType: filters.sellerType, fromMs: filters.fromMs, toMs: filters.toMs }),
+    [filters.statuses, filters.sellerType, filters.fromMs, filters.toMs],
   );
   const paged = usePagedQuery(base, (d) => ({ id: d.id, ...(d.data() as Omit<OrderDoc, "id">) }) as OrderDoc);
   const orders = paged.rows;
@@ -896,49 +799,27 @@ export default function AdminOrdersPage() {
     return () => { cancelled = true; clearTimeout(t); };
   }, [search]);
 
-  const matchesFilters = (o: OrderDoc, q: string) => {
-    if (statusFilter !== "all" && o.status !== statusFilter) return false;
-    if (sellerFilter !== "all" && o.sellerType !== sellerFilter) return false;
-    if (dateBounds.from !== null || dateBounds.to !== null) {
-      const ms = toMillis(o.createdAt);
-      if (dateBounds.from !== null && ms < dateBounds.from) return false;
-      if (dateBounds.to !== null && ms > dateBounds.to) return false;
-    }
-    if (!q) return true;
-    // Searched haystack deliberately includes Razorpay IDs and product names —
-    // the two things an admin has in hand when reconciling a payout.
-    const haystack = [
-      o.id,
-      o.invoiceNumber,
-      o.customerName,
-      o.customerPhone,
-      formatCustomerAddress(o.customerAddress),
-      o.sellerName,
-      o.sellerId,
-      o.sellerPhone,
-      o.payment?.razorpayPaymentId,
-      o.payment?.razorpayOrderId,
-      ...itemsOf(o).map((i) => i.name),
-      ...itemsOf(o).map((i) => i.productId),
-    ]
-      .filter(Boolean)
-      .join(" ")
-      .toLowerCase();
-    return haystack.includes(q);
-  };
+  // Product/Seller option lists for the column popovers, derived from whatever
+  // rows we already hold (loaded pages, or the fuller analytics set once it is
+  // loaded) — no extra reads.
+  const optionSource = analyticsRaw ?? orders;
+  const productOpts = useMemo(() => productOptions(optionSource), [optionSource]);
+  const sellerOpts = useMemo(() => sellerOptions(optionSource), [optionSource]);
+  const sellerLabelFor = useMemo(() => {
+    const m = new Map(sellerOpts.map((s) => [s.key, s.label] as const));
+    return (key: string) => m.get(key) ?? key;
+  }, [sellerOpts]);
 
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
     const byId = new Map<string, OrderDoc>();
-    // Direct lookups ignore the date filter (legacy orders may have no date).
-    for (const o of directMatches) {
-      if (statusFilter !== "all" && o.status !== statusFilter) continue;
-      if (sellerFilter !== "all" && o.sellerType !== sellerFilter) continue;
-      byId.set(o.id, o);
-    }
-    for (const o of orders) if (matchesFilters(o, q)) byId.set(o.id, o);
+    // Direct lookups ignore the date bounds (legacy orders may have no date) but
+    // still honour the other structured filters.
+    const noDate = { ...filters, fromMs: null, toMs: null };
+    for (const o of directMatches) if (matchesOrderFilters(o, noDate)) byId.set(o.id, o);
+    for (const o of orders) if (matchesOrderFilters(o, filters) && matchesSearch(o, q)) byId.set(o.id, o);
     return Array.from(byId.values()).sort((a, b) => toMillis(b.createdAt) - toMillis(a.createdAt));
-  }, [orders, directMatches, search, statusFilter, sellerFilter, dateBounds]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [orders, directMatches, search, filters]);
 
   // Keep the drawer pointed at the freshest copy of its order after a reload.
   const selectedOrder = useMemo(
@@ -946,14 +827,52 @@ export default function AdminOrdersPage() {
     [selectedId, filtered],
   );
 
-  // Export reads every order matching the filters (not only the loaded pages).
+  // Reads EVERY order matching the current query + predicate (not just the
+  // loaded pages). Shared by the CSV export and the analytics panel so the two
+  // can never disagree about the matching set.
+  const fetchAllFiltered = async (): Promise<OrderDoc[]> => {
+    const q = search.trim().toLowerCase();
+    const docs = await readAllDocs(base);
+    return docs
+      .map((d) => ({ id: d.id, ...(d.data() as Omit<OrderDoc, "id">) }) as OrderDoc)
+      .filter((o) => matchesOrderFilters(o, filters) && matchesSearch(o, q));
+  };
+
+  // Read the server-matched set once per query while the panel is open. Only the
+  // Firestore-side inputs (base) trigger a re-read; client column filters
+  // re-aggregate in memory below.
+  useEffect(() => {
+    if (!analyticsOpen) return;
+    let cancelled = false;
+    setAnalyticsRaw(null); setAnalyticsLoading(true); setAnalyticsError(null);
+    readAllDocs(base)
+      .then((docs) => {
+        if (cancelled) return;
+        setAnalyticsRaw(docs.map((d) => ({ id: d.id, ...(d.data() as Omit<OrderDoc, "id">) }) as OrderDoc));
+      })
+      .catch((e) => { if (!cancelled) setAnalyticsError(e instanceof Error ? e.message : "Failed to load analytics."); })
+      .finally(() => { if (!cancelled) setAnalyticsLoading(false); });
+    return () => { cancelled = true; };
+  }, [analyticsOpen, base]);
+
+  // The analytics dataset = the server-matched set narrowed by the client-side
+  // column filters + search, recomputed in memory (no reads).
+  const analyticsRows = useMemo(() => {
+    if (analyticsRaw === null) return null;
+    const q = search.trim().toLowerCase();
+    return analyticsRaw.filter((o) => matchesOrderFilters(o, filters) && matchesSearch(o, q));
+  }, [analyticsRaw, filters, search]);
+
+  const activeGroups = countActiveGroups(filters);
+  const clearAll = () => { setFilters(EMPTY_FILTERS); setSearch(""); };
+  const patch = (p: Partial<OrderFilters>) => setFilters((f) => ({ ...f, ...p }));
+
+  // Export reads every order matching the current filters (not only loaded pages).
   const exportCsv = async () => {
     setExporting(true);
     let all: OrderDoc[];
     try {
-      const q = search.trim().toLowerCase();
-      const docs = await readAllDocs(base);
-      all = docs.map((d) => ({ id: d.id, ...(d.data() as Omit<OrderDoc, "id">) }) as OrderDoc).filter((o) => matchesFilters(o, q));
+      all = await fetchAllFiltered();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Export failed.");
       setExporting(false);
@@ -963,7 +882,8 @@ export default function AdminOrdersPage() {
     const header = [
       "Order ID", "Invoice", "Date", "Customer", "Customer Phone", "Store / Seller",
       "Seller Type", "Products", "Qty", "Subtotal", "GST", "Delivery", "Grand Total",
-      "Order Status", "Payment Status", "Razorpay Payment ID", "Razorpay Order ID",
+      "Order Status", "Payment Status", "Payment Bucket", "Captured", "Refunded", "Net Captured",
+      "Razorpay Payment ID", "Razorpay Order ID",
     ];
     const esc = (v: unknown) => `"${String(v ?? "").replace(/"/g, '""')}"`;
     const rows = all.map((o) => [
@@ -982,6 +902,10 @@ export default function AdminOrdersPage() {
       orderTotal(o),
       o.status,
       o.payment?.status ?? "none",
+      PAYMENT_BUCKET_META[paymentBucket(o)].label,
+      capturedAmount(o),
+      refundedAmount(o),
+      capturedAmount(o) - refundedAmount(o),
       o.payment?.razorpayPaymentId ?? "",
       o.payment?.razorpayOrderId ?? "",
     ].map(esc).join(","));
@@ -1063,6 +987,16 @@ export default function AdminOrdersPage() {
         </div>
       )}
 
+      {/* ── Collapsible analytics (default collapsed), above the table ─────── */}
+      <OrderAnalyticsPanel
+        orders={analyticsRows ?? filtered}
+        loading={analyticsLoading}
+        error={analyticsError}
+        complete={analyticsRows !== null}
+        onOpenChange={setAnalyticsOpen}
+        onSelectSeller={(key) => patch({ sellers: [key] })}
+      />
+
       {/* ── Search + status tabs + filters dropdown ────────────────────────── */}
       <div className="rounded-2xl border border-outline-variant/30 bg-surface-container-lowest p-3 sm:p-4 space-y-3">
         <div className="relative">
@@ -1090,31 +1024,42 @@ export default function AdminOrdersPage() {
           <div className="flex flex-wrap gap-1.5">
             {([["all", "All Orders", counts.total] as const,
               ...STATUS_TABS.map((s) => [s, STATUS_META[s].label, counts.byStatus[s] ?? 0] as const)])
-              .map(([key, label, count]) => (
-                <button
-                  key={key}
-                  type="button"
-                  onClick={() => setStatusFilter(key as StatusFilter)}
-                  className={`rounded-full px-3 py-1.5 text-xs font-bold transition-colors ${
-                    statusFilter === key
-                      ? "bg-primary text-white shadow-sm"
-                      : "bg-surface-container text-on-surface-variant hover:bg-surface-container-high"
-                  }`}
-                >
-                  {label}
-                  <span className={statusFilter === key ? "opacity-80" : "opacity-60"}> ({count})</span>
-                </button>
-              ))}
+              .map(([key, label, count]) => {
+                const active = key === "all" ? filters.statuses.length === 0 : (filters.statuses.length === 1 && filters.statuses[0] === key);
+                return (
+                  <button
+                    key={key}
+                    type="button"
+                    onClick={() => patch({ statuses: key === "all" ? [] : [key as OrderStatus] })}
+                    className={`rounded-full px-3 py-1.5 text-xs font-bold transition-colors ${
+                      active ? "bg-primary text-white shadow-sm" : "bg-surface-container text-on-surface-variant hover:bg-surface-container-high"
+                    }`}
+                  >
+                    {label}
+                    <span className={active ? "opacity-80" : "opacity-60"}> ({count})</span>
+                  </button>
+                );
+              })}
           </div>
-          <div className="shrink-0">
-            <FiltersDropdown
-              sellerFilter={sellerFilter} setSellerFilter={setSellerFilter}
-              dateFilter={dateFilter} setDateFilter={setDateFilter}
-              customFrom={customFrom} setCustomFrom={setCustomFrom}
-              customTo={customTo} setCustomTo={setCustomTo}
-            />
+          <div className="flex shrink-0 items-center gap-2">
+            {/* Column popovers cover filtering on desktop; phones use the sheet. */}
+            <button
+              type="button"
+              onClick={() => setMobileFiltersOpen(true)}
+              className={`md:hidden inline-flex items-center gap-1.5 rounded-xl border px-3 py-2 text-xs font-bold transition-colors ${
+                activeGroups > 0 ? "border-primary/40 bg-primary/5 text-primary" : "border-outline-variant/40 bg-surface-container-lowest text-on-surface-variant"
+              }`}
+            >
+              <SlidersHorizontal className="h-3.5 w-3.5" /> Filters
+              {activeGroups > 0 && <span className="rounded-full bg-primary px-1.5 text-[10px] font-black text-white">{activeGroups}</span>}
+            </button>
+            <div className="hidden md:block">
+              <FiltersDropdown filters={filters} setFilters={setFilters} />
+            </div>
           </div>
         </div>
+
+        <FilterChips filters={filters} onChange={setFilters} onClearAll={clearAll} sellerLabel={sellerLabelFor} />
 
         <p className="text-xs text-on-surface-variant">
           Showing <span className="font-bold text-on-surface">{filtered.length}</span>{paged.hasMore ? "+" : ""} of {counts.total} orders
@@ -1132,82 +1077,180 @@ export default function AdminOrdersPage() {
             </p>
           </div>
         ) : (
-          <div className="max-h-[70vh] overflow-auto">
-            <table className="w-full min-w-[960px] border-collapse text-sm">
-              <thead className="sticky top-0 z-10 bg-surface-container-low">
-                <tr className="border-b border-outline-variant/20 text-left text-[10px] font-black uppercase tracking-wider text-on-surface-variant">
-                  <th className="px-4 py-2.5">Order / Invoice</th>
-                  <th className="px-4 py-2.5">Customer</th>
-                  <th className="px-4 py-2.5">Product</th>
-                  <th className="px-4 py-2.5 hidden lg:table-cell">Seller</th>
-                  <th className="px-4 py-2.5 hidden md:table-cell">Date</th>
-                  <th className="px-4 py-2.5 text-right">Total</th>
-                  <th className="px-4 py-2.5 hidden sm:table-cell">Payment</th>
-                  <th className="px-4 py-2.5">Status</th>
-                  <th className="px-4 py-2.5 text-right">Actions</th>
-                </tr>
-              </thead>
-              <tbody>
-                {filtered.map((o) => {
-                  const prod = productSummary(o);
-                  return (
-                    <tr
-                      key={o.id}
-                      onClick={() => setSelectedId(o.id)}
-                      className="cursor-pointer border-b border-outline-variant/10 last:border-0 hover:bg-surface-container-low/70 transition-colors"
-                    >
-                      <td className="px-4 py-3 align-top">
-                        <span className="font-mono text-[11px] font-bold text-primary">
-                          {o.invoiceNumber || o.id.slice(0, 8).toUpperCase()}
-                        </span>
-                        {o.payment?.razorpayPaymentId && (
-                          <p className="mt-0.5 font-mono text-[10px] text-on-surface-variant truncate max-w-[160px]">{o.payment.razorpayPaymentId}</p>
-                        )}
-                      </td>
-                      <td className="px-4 py-3 align-top">
-                        <p className="font-semibold text-on-surface truncate max-w-[160px]">{o.customerName || "—"}</p>
-                        <p className="text-[11px] text-on-surface-variant">{o.customerPhone || "—"}</p>
-                      </td>
-                      <td className="px-4 py-3 align-top">
-                        <p className="font-medium text-on-surface truncate max-w-[220px]">{prod.label}</p>
-                        <p className="text-[11px] text-on-surface-variant">
-                          {prod.units} {prod.units === 1 ? "unit" : "units"}{prod.more ? ` · ${prod.more}` : ""}
-                        </p>
-                      </td>
-                      <td className="px-4 py-3 align-top hidden lg:table-cell">
-                        <span className="block max-w-[180px] truncate text-xs"><SellerName order={o} /></span>
-                      </td>
-                      <td className="px-4 py-3 align-top hidden md:table-cell whitespace-nowrap text-[11px] text-on-surface-variant">
-                        {formatDate(o.createdAt)}
-                      </td>
-                      <td className="px-4 py-3 align-top text-right font-black text-on-surface whitespace-nowrap">{inr(orderTotal(o))}</td>
-                      <td className="px-4 py-3 align-top hidden sm:table-cell"><PaymentBadge order={o} /></td>
-                      <td className="px-4 py-3 align-top"><StatusBadge status={o.status} /></td>
-                      <td className="px-4 py-3 align-top text-right">
-                        <div className="inline-flex items-center gap-1">
-                          <button
-                            type="button"
-                            onClick={(e) => { e.stopPropagation(); setSelectedId(o.id); }}
-                            className="inline-flex items-center gap-1 rounded-lg border border-outline-variant/40 bg-white px-2 py-1 text-[11px] font-bold text-on-surface-variant hover:bg-surface-container"
-                          >
-                            <Eye className="h-3.5 w-3.5" /> View
-                          </button>
-                          <button
-                            type="button"
-                            onClick={(e) => { e.stopPropagation(); openInvoice(o); }}
-                            aria-label="Open invoice"
-                            className="rounded-lg border border-outline-variant/40 bg-white p-1.5 text-primary hover:bg-primary/10"
-                          >
-                            <FileText className="h-3.5 w-3.5" />
-                          </button>
+          <>
+            {/* Desktop table — hidden on phones, where the card list below is shown instead. */}
+            <div className="hidden md:block max-h-[70vh] overflow-auto">
+              <table className="w-full min-w-[960px] border-collapse text-sm">
+                <thead className="sticky top-0 z-20 bg-surface-container-low">
+                  <tr className="border-b border-outline-variant/20 text-left text-[10px] font-black uppercase tracking-wider text-on-surface-variant">
+                    <th className="px-4 py-2.5">
+                      <ColumnFilter label="Date" active={filters.fromMs !== null || filters.toMs !== null} onClear={() => patch({ fromMs: null, toMs: null })}>
+                        <DateFilter fromMs={filters.fromMs} toMs={filters.toMs} onChange={({ fromMs, toMs }) => patch({ fromMs, toMs })} />
+                      </ColumnFilter>
+                    </th>
+                    <th className="px-4 py-2.5">
+                      <ColumnFilter label="Product" active={filters.products.length > 0} onClear={() => patch({ products: [] })}>
+                        <MultiSelectFilter
+                          options={productOpts.map((p) => ({ value: p, label: p }))}
+                          selected={filters.products}
+                          onChange={(v) => patch({ products: v })}
+                          searchPlaceholder="Search products…"
+                        />
+                      </ColumnFilter>
+                    </th>
+                    <th className="px-4 py-2.5 hidden lg:table-cell">
+                      <ColumnFilter label="Seller" active={filters.sellers.length > 0} onClear={() => patch({ sellers: [] })}>
+                        <MultiSelectFilter
+                          options={sellerOpts.map((s) => ({ value: s.key, label: s.label, hint: s.type === "manufacturer" ? "mfr" : undefined }))}
+                          selected={filters.sellers}
+                          onChange={(v) => patch({ sellers: v })}
+                          searchPlaceholder="Search sellers…"
+                        />
+                      </ColumnFilter>
+                    </th>
+                    <th className="px-4 py-2.5">
+                      <ColumnFilter label="Customer" active={!!(filters.customerName.trim() || filters.customerPhone.trim())} onClear={() => patch({ customerName: "", customerPhone: "" })}>
+                        <CustomerFilter
+                          name={filters.customerName} phone={filters.customerPhone}
+                          onName={(v) => patch({ customerName: v })} onPhone={(v) => patch({ customerPhone: v })}
+                        />
+                      </ColumnFilter>
+                    </th>
+                    <th className="px-4 py-2.5 text-right">
+                      <ColumnFilter label="Total" align="right" active={!!(filters.amount.min.trim() || filters.amount.max.trim())} onClear={() => patch({ amount: { op: "range", min: "", max: "" } })}>
+                        <AmountFilter amount={filters.amount} onChange={(a) => patch({ amount: a })} />
+                      </ColumnFilter>
+                    </th>
+                    <th className="px-4 py-2.5 hidden lg:table-cell">
+                      <ColumnFilter label="Payment" active={filters.payments.length > 0} onClear={() => patch({ payments: [] })}>
+                        <MultiSelectFilter searchable={false} options={PAYMENT_OPTIONS} selected={filters.payments} onChange={(v) => patch({ payments: v as PaymentBucket[] })} />
+                      </ColumnFilter>
+                    </th>
+                    <th className="px-4 py-2.5">
+                      <ColumnFilter label="Status" active={filters.statuses.length > 0} onClear={() => patch({ statuses: [] })}>
+                        <MultiSelectFilter
+                          searchable={false}
+                          options={STATUS_TABS.map((s) => ({ value: s, label: STATUS_META[s].label }))}
+                          selected={filters.statuses}
+                          onChange={(v) => patch({ statuses: v as OrderStatus[] })}
+                        />
+                      </ColumnFilter>
+                    </th>
+                    <th className="px-4 py-2.5">
+                      <ColumnFilter label="Order / Invoice" align="right" active={!!(filters.orderId.trim() || filters.invoiceId.trim())} onClear={() => patch({ orderId: "", invoiceId: "" })}>
+                        <div className="space-y-2">
+                          <TextFilter value={filters.orderId} onChange={(v) => patch({ orderId: v })} placeholder="Order ID…" />
+                          <TextFilter value={filters.invoiceId} onChange={(v) => patch({ invoiceId: v })} placeholder="Invoice number…" />
                         </div>
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
+                      </ColumnFilter>
+                    </th>
+                    <th className="px-4 py-2.5 text-right">Actions</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {filtered.map((o) => {
+                    const prod = productSummary(o);
+                    return (
+                      <tr
+                        key={o.id}
+                        onClick={() => setSelectedId(o.id)}
+                        className="cursor-pointer border-b border-outline-variant/10 last:border-0 hover:bg-surface-container-low/70 transition-colors"
+                      >
+                        <td className="px-4 py-3 align-top whitespace-nowrap text-[11px] text-on-surface-variant">
+                          {formatDate(o.createdAt)}
+                        </td>
+                        <td className="px-4 py-3 align-top">
+                          <p className="font-medium text-on-surface truncate max-w-[220px]">{prod.label}</p>
+                          <p className="text-[11px] text-on-surface-variant">
+                            {prod.units} {prod.units === 1 ? "unit" : "units"}{prod.more ? ` · ${prod.more}` : ""}
+                          </p>
+                        </td>
+                        <td className="px-4 py-3 align-top hidden lg:table-cell">
+                          <span className="block max-w-[180px] truncate text-xs"><SellerName order={o} /></span>
+                        </td>
+                        <td className="px-4 py-3 align-top">
+                          <CustomerLink order={o} className="block font-semibold truncate max-w-[160px]" />
+                          <p className="text-[11px] text-on-surface-variant">{o.customerPhone || "—"}</p>
+                        </td>
+                        <td className="px-4 py-3 align-top text-right font-black text-on-surface whitespace-nowrap">{inr(orderTotal(o))}</td>
+                        <td className="px-4 py-3 align-top hidden lg:table-cell"><PaymentBadge order={o} /></td>
+                        <td className="px-4 py-3 align-top"><StatusBadge status={o.status} /></td>
+                        <td className="px-4 py-3 align-top">
+                          <span className="font-mono text-[11px] font-bold text-primary">
+                            {o.invoiceNumber || o.id.slice(0, 8).toUpperCase()}
+                          </span>
+                          {o.payment?.razorpayPaymentId && (
+                            <p className="mt-0.5 font-mono text-[10px] text-on-surface-variant truncate max-w-[160px]">{o.payment.razorpayPaymentId}</p>
+                          )}
+                        </td>
+                        <td className="px-4 py-3 align-top text-right">
+                          <div className="inline-flex items-center gap-1">
+                            <button
+                              type="button"
+                              onClick={(e) => { e.stopPropagation(); setSelectedId(o.id); }}
+                              className="inline-flex items-center gap-1 rounded-lg border border-outline-variant/40 bg-white px-2 py-1 text-[11px] font-bold text-on-surface-variant hover:bg-surface-container"
+                            >
+                              <Eye className="h-3.5 w-3.5" /> View
+                            </button>
+                            <button
+                              type="button"
+                              onClick={(e) => { e.stopPropagation(); openInvoice(o); }}
+                              aria-label="Open invoice"
+                              className="rounded-lg border border-outline-variant/40 bg-white p-1.5 text-primary hover:bg-primary/10"
+                            >
+                              <FileText className="h-3.5 w-3.5" />
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+
+            {/* Mobile cards — compact, tap to open the full order. */}
+            <div className="md:hidden divide-y divide-outline-variant/10">
+              {filtered.map((o) => {
+                const prod = productSummary(o);
+                return (
+                  <div
+                    key={o.id}
+                    onClick={() => setSelectedId(o.id)}
+                    className="cursor-pointer px-4 py-3 active:bg-surface-container-low/70"
+                  >
+                    <div className="flex items-start justify-between gap-2">
+                      <span className="text-[11px] text-on-surface-variant">{formatDate(o.createdAt)}</span>
+                      <StatusBadge status={o.status} />
+                    </div>
+                    <p className="mt-1 font-semibold text-on-surface truncate">{prod.label}</p>
+                    <p className="text-[11px] text-on-surface-variant">
+                      {prod.units} {prod.units === 1 ? "unit" : "units"}{prod.more ? ` · ${prod.more}` : ""}
+                    </p>
+                    <div className="mt-1.5 flex items-center justify-between gap-2">
+                      <div className="min-w-0">
+                        <CustomerLink order={o} className="block text-xs font-semibold truncate" />
+                        <span className="block text-[11px] text-on-surface-variant truncate">
+                          {o.sellerName || o.sellerId || "—"}
+                        </span>
+                      </div>
+                      <div className="flex items-center gap-2 shrink-0">
+                        <span className="font-black text-on-surface whitespace-nowrap">{inr(orderTotal(o))}</span>
+                        <button
+                          type="button"
+                          onClick={(e) => { e.stopPropagation(); openInvoice(o); }}
+                          aria-label="Open invoice"
+                          className="rounded-lg border border-outline-variant/40 bg-white p-1.5 text-primary hover:bg-primary/10"
+                        >
+                          <FileText className="h-3.5 w-3.5" />
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </>
         )}
         <LoadMore hasMore={paged.hasMore} loading={paged.loadingMore} onClick={() => void paged.loadMore()} label="Load older orders" />
       </div>
@@ -1218,6 +1261,77 @@ export default function AdminOrdersPage() {
           onClose={() => setSelectedId(null)}
           onChanged={() => loadOrders()}
         />
+      )}
+
+      {/* ── Mobile filter sheet — the column popovers in one scrollable panel ── */}
+      {mobileFiltersOpen && (
+        <div className="fixed inset-0 z-[80] flex justify-end bg-black/40 md:hidden" role="dialog" aria-modal="true">
+          <button type="button" aria-label="Close filters" className="absolute inset-0 h-full w-full cursor-default" onClick={() => setMobileFiltersOpen(false)} />
+          <div className="relative flex h-full w-full max-w-sm flex-col bg-surface shadow-2xl">
+            <div className="flex items-center justify-between border-b border-outline-variant/30 px-4 py-3">
+              <p className="flex items-center gap-1.5 text-sm font-black text-on-surface">
+                <SlidersHorizontal className="h-4 w-4 text-primary" /> Filters{activeGroups > 0 ? ` (${activeGroups})` : ""}
+              </p>
+              <button type="button" onClick={() => setMobileFiltersOpen(false)} aria-label="Close" className="rounded-lg border border-outline-variant/40 p-2 text-on-surface-variant hover:bg-surface-container">
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+            <div className="flex-1 space-y-4 overflow-y-auto p-4">
+              <div>
+                <p className={`mb-1.5 ${SECTION_LABEL}`}>Date</p>
+                <DateFilter fromMs={filters.fromMs} toMs={filters.toMs} onChange={({ fromMs, toMs }) => patch({ fromMs, toMs })} />
+              </div>
+              <div>
+                <p className={`mb-1.5 ${SECTION_LABEL}`}>Order status</p>
+                <MultiSelectFilter searchable={false} options={STATUS_TABS.map((s) => ({ value: s, label: STATUS_META[s].label }))} selected={filters.statuses} onChange={(v) => patch({ statuses: v as OrderStatus[] })} />
+              </div>
+              <div>
+                <p className={`mb-1.5 ${SECTION_LABEL}`}>Seller type</p>
+                <div className="flex flex-wrap gap-1.5">
+                  {([["all", "All"], ["retailer", "Retailers"], ["manufacturer", "Manufacturers"]] as [SellerTypeFilter, string][]).map(([k, label]) => (
+                    <button key={k} type="button" onClick={() => patch({ sellerType: k })}
+                      className={`rounded-full px-3 py-1.5 text-xs font-bold ${filters.sellerType === k ? "bg-primary text-white" : "bg-surface-container text-on-surface-variant"}`}>{label}</button>
+                  ))}
+                </div>
+              </div>
+              <div>
+                <p className={`mb-1.5 ${SECTION_LABEL}`}>Seller</p>
+                <MultiSelectFilter options={sellerOpts.map((s) => ({ value: s.key, label: s.label, hint: s.type === "manufacturer" ? "mfr" : undefined }))} selected={filters.sellers} onChange={(v) => patch({ sellers: v })} searchPlaceholder="Search sellers…" />
+              </div>
+              <div>
+                <p className={`mb-1.5 ${SECTION_LABEL}`}>Product</p>
+                <MultiSelectFilter options={productOpts.map((p) => ({ value: p, label: p }))} selected={filters.products} onChange={(v) => patch({ products: v })} searchPlaceholder="Search products…" />
+              </div>
+              <div>
+                <p className={`mb-1.5 ${SECTION_LABEL}`}>Customer</p>
+                <CustomerFilter name={filters.customerName} phone={filters.customerPhone} onName={(v) => patch({ customerName: v })} onPhone={(v) => patch({ customerPhone: v })} />
+              </div>
+              <div>
+                <p className={`mb-1.5 ${SECTION_LABEL}`}>Order total</p>
+                <AmountFilter amount={filters.amount} onChange={(a) => patch({ amount: a })} />
+              </div>
+              <div>
+                <p className={`mb-1.5 ${SECTION_LABEL}`}>Payment</p>
+                <MultiSelectFilter searchable={false} options={PAYMENT_OPTIONS} selected={filters.payments} onChange={(v) => patch({ payments: v as PaymentBucket[] })} />
+              </div>
+              <div>
+                <p className={`mb-1.5 ${SECTION_LABEL}`}>Order / Invoice</p>
+                <div className="space-y-2">
+                  <TextFilter value={filters.orderId} onChange={(v) => patch({ orderId: v })} placeholder="Order ID…" />
+                  <TextFilter value={filters.invoiceId} onChange={(v) => patch({ invoiceId: v })} placeholder="Invoice number…" />
+                </div>
+              </div>
+            </div>
+            <div className="flex items-center gap-2 border-t border-outline-variant/30 p-3">
+              <button type="button" onClick={clearAll} className="flex-1 rounded-xl border border-outline-variant/40 py-2.5 text-sm font-bold text-on-surface-variant hover:bg-surface-container">
+                Clear all
+              </button>
+              <button type="button" onClick={() => setMobileFiltersOpen(false)} className="flex-1 rounded-xl bg-primary py-2.5 text-sm font-bold text-white hover:bg-primary/90">
+                Show {filtered.length} result{filtered.length === 1 ? "" : "s"}
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );

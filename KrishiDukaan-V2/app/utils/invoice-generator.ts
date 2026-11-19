@@ -1,6 +1,6 @@
 import jsPDF from "jspdf";
 import autoTable from "jspdf-autotable";
-import { formatCustomerAddress, normalizeOrderItems } from "../../types/order";
+import { formatCustomerAddress, normalizeOrderItems, paymentModeLabel } from "../../types/order";
 import type { OrderDoc } from "../../types/order";
 
 // Brand colours
@@ -377,9 +377,14 @@ function buildInvoicePDF(order: OrderDoc, seller?: InvoiceSellerInfo): jsPDF {
   }
 
   // ── Transaction / totals detail block (left column) ───────────────────────
+  // Multi-payment manual orders carry every linked id; show them all.
   const paymentTxnId =
-    order.payment?.razorpayPaymentId ?? order.payment?.razorpayOrderId ?? "—";
-  const modeOfPayment = order.payment ? "Online (Razorpay)" : "Cash on Delivery";
+    (order.payment?.razorpayPaymentIds?.length
+      ? order.payment.razorpayPaymentIds.join(", ")
+      : order.payment?.razorpayPaymentId) ??
+    order.payment?.razorpayOrderId ??
+    "—";
+  const modeOfPayment = paymentModeLabel(order.payment);
   const dateTime = (() => {
     try {
       const d = (order.createdAt as any)?.toDate?.() ?? new Date(order.createdAt as string);

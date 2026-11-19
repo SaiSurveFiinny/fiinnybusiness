@@ -22,7 +22,15 @@ const nextConfig = {
   },
   experimental: {
     workerThreads: false,
-    cpus: 1
+    cpus: 1,
+    // The invoice PDF is rendered by headless Chromium (app/lib/invoice-pdf.ts),
+    // which ships with NO system fonts, so the bundled Noto fonts must be traced
+    // into the serverless output for every route that can trigger a render.
+    // Without this the PDF renders blank (even Latin + ₹).
+    outputFileTracingIncludes: {
+      "/invoice/[orderId]": ["./app/lib/invoice-fonts/**"],
+      "/api/orders/invoice": ["./app/lib/invoice-fonts/**"],
+    },
   },
   eslint: {
     ignoreDuringBuilds: true,

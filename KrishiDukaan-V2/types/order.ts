@@ -262,6 +262,20 @@ export type PaymentStatus = "pending" | "paid" | "failed" | "refunded";
 export type PaymentInfo = {
   razorpayOrderId: string;
   razorpayPaymentId?: string;
+  /** All linked Razorpay payment ids when ONE order was paid by several captured
+   *  payments (admin manual order, split payment). The scalar `razorpayPaymentId`
+   *  stays the primary/first id for single-payment back-compat. */
+  razorpayPaymentIds?: string[];
+  /** Per-payment transaction detail for a multi-payment order. */
+  razorpayPayments?: {
+    razorpayPaymentId: string;
+    razorpayOrderId?: string | null;
+    amount: number;
+    method?: string | null;
+    contact?: string | null;
+    email?: string | null;
+    createdAt?: number | null;
+  }[];
   razorpaySignature?: string;
   status: PaymentStatus;
   amount: number; // in INR
@@ -299,7 +313,38 @@ export type PaymentInfo = {
   refundArn?: string;
   /** ISO — last time the status was read from Razorpay. */
   refundCheckedAt?: string;
+
+  // ── Payment mode (manual orders) ────────────────────────────────────────
+  /** How the money was taken. 'offline' = collected directly by the retailer
+   *  (cash/UPI/other, via admin manual-order creation); 'razorpay' or absent =
+   *  an online Razorpay payment. */
+  mode?: "razorpay" | "offline";
+  /** Offline-payment method label (e.g. "Cash", "UPI", "other"). */
+  method?: string;
+  /** True for a retailer-collected offline payment. */
+  offline?: boolean;
+  /** Who physically collected an offline payment (e.g. "retailer"). */
+  collectedBy?: string;
+
+  // ── Payment link (retailer manual order, pay-by-link) ───────────────────
+  /** Razorpay Payment Link id (plink_…) generated for a manual order. */
+  paymentLinkId?: string;
+  /** The shareable short URL for that payment link. */
+  paymentLinkUrl?: string;
 };
+
+/**
+ * Label for the invoice "Mode of Payment" line, reflecting how the order was
+ * ACTUALLY paid — never shows "Online (Razorpay)" for a retailer-collected
+ * offline payment. Shared by every invoice renderer (preview, PDF, download).
+ */
+export function paymentModeLabel(payment?: PaymentInfo): string {
+  if (!payment) return "Cash on Delivery";
+  if (payment.mode === "offline" || payment.offline === true || payment.collectedBy === "retailer") {
+    return "Offline (Collected by Retailer)";
+  }
+  return "Online (Razorpay)";
+}
 
 export type InvoiceMetadata = {
   invoiceNumber: string;
@@ -514,6 +559,19 @@ export type OrderDoc = {
   invoice?: InvoiceMetadata;
   deliveryMode: "delivery";
   status: OrderStatus;
+  /**
+   * A retailer manually created this order (dashboard "Create order manually").
+   * Distinguishes it from a customer-placed order in the Orders list.
+   */
+  manualOrder?: boolean;
+  /**
+   * Set while a manual pay-by-link order is created but UNPAID: the order is
+   * visible (status 'accepted', payment 'pending') but its side-effects —
+   * customer/seller WhatsApp and the invoice — are deliberately held until the
+   * Razorpay webhook confirms payment and clears this flag. Server-written only;
+   * no customer-placed order ever carries it.
+   */
+  awaitingPayment?: boolean;
   statusHistory?: StatusHistoryEntry[];
   /** Shipment tracking link + send history. Server-written only. */
   tracking?: OrderTracking;

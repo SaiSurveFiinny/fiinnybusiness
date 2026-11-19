@@ -71,10 +71,13 @@ export const sweepMissingInvoices = onSchedule(
       .limit(300)
       .get();
 
-    // Only accepted (or later) orders have an invoice; placed ones wait.
+    // Only accepted (or later) orders have an invoice; placed ones wait. A retailer
+    // manual pay-by-link order that is still awaiting payment is excluded too — its
+    // invoice is generated only once the Razorpay webhook marks it paid.
     const missing = snap.docs.filter(
       (d) =>
         INVOICE_READY.has(String(d.data().status ?? "")) &&
+        d.data().awaitingPayment !== true &&
         !(d.data().invoice as { storagePath?: string } | undefined)?.storagePath,
     );
     let ok = 0;

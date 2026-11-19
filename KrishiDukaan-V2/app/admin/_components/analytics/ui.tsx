@@ -331,7 +331,7 @@ export function ErrorBanner({ error }: { error: string | null }) {
 
 // ─── Date range control ───────────────────────────────────────────────────────
 
-export type RangePreset = "7d" | "30d" | "90d" | "mtd" | "all" | "custom";
+export type RangePreset = "7d" | "30d" | "90d" | "mtd" | "ytd" | "all" | "custom";
 
 function startOfDay(d: Date): Date {
   return new Date(d.getFullYear(), d.getMonth(), d.getDate(), 0, 0, 0, 0);
@@ -355,12 +355,18 @@ export function rangeForPreset(preset: RangePreset, custom?: { from: string; to:
   if (preset === "mtd") {
     return { from: startOfDay(new Date(now.getFullYear(), now.getMonth(), 1)), to };
   }
+  if (preset === "ytd") {
+    return { from: startOfDay(new Date(now.getFullYear(), 0, 1)), to };
+  }
   const days = preset === "7d" ? 7 : preset === "90d" ? 90 : 30;
   const from = startOfDay(new Date(now.getTime() - (days - 1) * 24 * 60 * 60 * 1000));
   return { from, to };
 }
 
-const PRESET_LABELS: Record<Exclude<RangePreset, "custom" | "all">, string> = {
+// `ytd` is deliberately omitted here so the SHARED picker's button row is
+// unchanged for other analytics tabs; the Payments page renders its own chips
+// (incl. "This year") off the same rangeForPreset resolver.
+const PRESET_LABELS: Record<Exclude<RangePreset, "custom" | "all" | "ytd">, string> = {
   "7d": "7 days",
   "30d": "30 days",
   "90d": "90 days",

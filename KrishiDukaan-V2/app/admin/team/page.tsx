@@ -47,6 +47,7 @@ const SECTION_LABELS: Record<AdminSection, string> = {
   aboutPage: "About page",
   reports: "Reports",
   messages: "Messages",
+  enquiries: "Enquiries",
   whatsapp: "WhatsApp",
   support: "Support inbox",
   blog: "Blog",
@@ -315,7 +316,7 @@ export default function AdminTeamPage() {
     setDeleting(uid);
     try {
       const idToken = await auth.currentUser?.getIdToken();
-      await fetch("/api/admin/delete-user", {
+      const res = await fetch("/api/admin/delete-user", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -323,6 +324,14 @@ export default function AdminTeamPage() {
         },
         body: JSON.stringify({ targetUid: uid }),
       });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        // Partial failures come back 500 with the steps that did succeed — the
+        // delete is idempotent, so the admin can simply retry to finish it.
+        alert(data?.error || "Failed to delete team member. Please try again.");
+      }
+      // Reload regardless so a fully/partially removed member drops out of the
+      // list immediately on success.
       await load(true);
     } finally {
       setDeleting(null);

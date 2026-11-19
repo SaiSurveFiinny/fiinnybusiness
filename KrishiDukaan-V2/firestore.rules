@@ -240,6 +240,11 @@ service cloud.firestore {
         // Team members granted "users" need to list/browse every account to
         // monitor status and send pending-signup reminders.
         teamHas('users') ||
+        // Team members granted "salesTeam" may read ONLY sales-executive
+        // accounts — the Sales Team roster + drill-in. Scoped to that role so
+        // the grant does not expose farmer/retailer personal data; the roster
+        // query filters where('role','in',['salesExecutive']), matching this.
+        ((resource == null || resource.data.role == 'salesExecutive') && teamHas('salesTeam')) ||
         // A shop helper reads the owner's profile; resource == null covers the
         // legacy users/{uid} lookup the web dashboard tries first.
         (isActiveStaff() && (resource == null || isStaffShopId(phone)))
@@ -579,6 +584,33 @@ service cloud.firestore {
       allow write: if false;
     }
 
+    // ─── razorpayPayments ─────────────────────────────────────────────────────
+    // Mirror of Razorpay's own payment records, one doc per payment id — the
+    // authoritative source of payment STATUS for Admin → Payments. Written only
+    // server-side (webhook + admin backfill); clients can never forge it.
+    // (Distinct from `payments`, which is the subscription-revenue ledger.)
+    match /razorpayPayments/{paymentId} {
+      allow read: if isAdmin();
+      allow write: if false;
+    }
+
+      // ─── razorpayPaymentLinks ─────────────────────────────────────────────────
+    // Authoritative, order-independent record of a retailer manual-order payment
+    // link, keyed by the Razorpay Payment Link id. Written only server-side (link
+    // creation + the webhook). A seller reads their own; an admin reads any.
+    match /razorpayPaymentLinks/{linkId} {
+      allow read: if isAdmin() || (isAuthed() && resource.data.sellerPhone == myPhone());
+      allow write: if false;
+    }
+
+    // ─── razorpayWebhookEvents ────────────────────────────────────────────────
+    // Processed-event ledger for webhook idempotency (keyed by Razorpay event id).
+    // Server-only.
+    match /razorpayWebhookEvents/{eventId} {
+      allow read: if isAdmin();
+      allow write: if false;
+    }
+
     // ─── sellerOffers ─────────────────────────────────────────────────────────
     // Reassignment offers: an order another seller rejected, offered to this
     // seller for 24h (app/lib/order-reassignment.ts). Keyed by the seller's
@@ -609,7 +641,8 @@ service cloud.firestore {
     // order; they may only move their own copy through its follow-up states.
     match /enquiries/{enquiryId} {
       // GET (single doc): resource.data is available — check the phone directly.
-      allow get: if isAdmin() || (isAuthed() && (
+      // Team "enquiries" covers the cross-retailer Admin → Enquiries page.
+      allow get: if isAdmin() || teamHas('enquiries') || (isAuthed() && (
         phoneMatches(resource.data.sellerPhone) ||
         (resource.data.sellerPhones is list &&
           resource.data.sellerPhones.hasAny([myPhone(), myPhone().replace('^[+]91', '')]))
@@ -617,13 +650,16 @@ service cloud.firestore {
       // LIST (query): must be filtered by `sellerPhones array-contains` the
       // caller's own phone. This was `isAuthed()` alone, which let any
       // signed-in user download every enquiry, buyers' names and phones
-      // included. Team "users" covers the admin view-a-seller's-dashboard link.
+      // included. Team "users" covers the admin view-a-seller's-dashboard link;
+      // team "enquiries" covers the cross-retailer Admin → Enquiries page.
       allow list: if isAuthed() && (
-        callerPhoneIn(resource.data.sellerPhones) || isAdmin() || teamHas('users')
+        callerPhoneIn(resource.data.sellerPhones) || isAdmin()
+        || teamHas('enquiries') || teamHas('users')
         || staffShopIn(resource.data.sellerPhones, 'orders')
       );
       allow update: if isAdmin() || (isAuthed()
-        && (phoneMatches(resource.data.sellerPhone) ||
+        && (teamHas('enquiries')
+            || phoneMatches(resource.data.sellerPhone) ||
             (resource.data.sellerPhones is list &&
               resource.data.sellerPhones.hasAny([myPhone(), myPhone().replace('^[+]91', '')]))
             || staffActsFor(resource.data.get('sellerPhone', ''), 'orders'))
@@ -1746,7 +1782,9 @@ service cloud.firestore {
       // the Admin Panel "Sales Team" section can show an exec's daily sessions
       // (mirrors the isAdmin() read already granted on dealerVisits & dealers).
       // Read-only: create/update stay exec-owned, so this grants no admin writes.
-      allow read:   if isAdmin()
+      // Team members granted "salesTeam" get the same read scope as admins so
+      // the Admin "Sales Team" drill-in works for them too (writes stay denied).
+      allow read:   if isAdmin() || teamHas('salesTeam')
                        || (isAuthed() && resource.data.salesExecutiveId == request.auth.uid);
       allow create: if isSalesExec()
                        && request.resource.data.salesExecutiveId == request.auth.uid
@@ -1764,7 +1802,7 @@ service cloud.firestore {
     // only update their own records. Soft-delete (active=false) goes through
     // update. Hard-delete is admin-only.
     match /dealers/{dealerId} {
-      allow read:   if isSalesExec() || isAdmin();
+      allow read:   if isSalesExec() || isAdmin() || teamHas('salesTeam');
       allow create: if isSalesExec()
                        && request.resource.data.createdBy == request.auth.uid
                        && request.resource.data.active    == true;
@@ -1783,7 +1821,7 @@ service cloud.firestore {
     // where ANY authenticated user (incl. customers) could read all visit data.
     // Hard-delete is admin-only.
     match /dealerVisits/{visitId} {
-      allow read:   if isAdmin()
+      allow read:   if isAdmin() || teamHas('salesTeam')
                        || (isAuthed() && resource.data.salesExecutiveId == request.auth.uid);
       allow create: if isSalesExec()
                        && request.resource.data.salesExecutiveId == request.auth.uid;
@@ -1803,7 +1841,7 @@ service cloud.firestore {
     // is expected to be able to remove it themselves. Notes are immutable once
     // created (no edit flow), so there is no update rule.
     match /dealerNotes/{noteId} {
-      allow read:   if isAdmin()
+      allow read:   if isAdmin() || teamHas('salesTeam')
                        || (isAuthed() && resource.data.salesExecutiveId == request.auth.uid);
       allow create: if isSalesExec()
                        && request.resource.data.salesExecutiveId == request.auth.uid;

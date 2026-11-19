@@ -359,11 +359,22 @@ export const syncSellerProductToCanonical = onDocumentWritten(
  * doc. The existing syncSellerProductToCanonical trigger then propagates the
  * stock change to the canonical availability[] entry automatically.
  */
-export const decrementStockOnOrder = onDocumentCreated(
+export const decrementStockOnOrder = onDocumentWritten(
   { document: "orders/{orderId}", region: "asia-south1" },
   async (event) => {
-    const data = event.data?.data() as Record<string, unknown> | undefined;
-    if (!data) return;
+    // Fire exactly ONCE, when the order becomes active:
+    //   - a normal order: on creation (no `awaitingPayment`), or
+    //   - a retailer manual pay-by-link order: when the Razorpay webhook clears
+    //     `awaitingPayment` on payment (the order was created unpaid, so stock must
+    //     not be reserved until the money is in).
+    // Any ordinary later update (status changes, etc.) is skipped — stock was
+    // already decremented when the order first became active.
+    const data = event.data?.after?.data() as Record<string, unknown> | undefined;
+    if (!data) return; // deleted
+    if (data.awaitingPayment === true) return; // still unpaid — wait for payment
+    const before = event.data?.before?.data() as Record<string, unknown> | undefined;
+    const becameActive = !before || before.awaitingPayment === true;
+    if (!becameActive) return; // already decremented on an earlier write
 
     const items = Array.isArray(data.items) ? (data.items as Record<string, unknown>[]) : [];
     const sellerPhone = String(data.sellerPhone ?? data.sellerId ?? "");
@@ -703,6 +714,12 @@ export const notifySellerOnOrder = onDocumentCreated(
     const d = event.data?.data() as Record<string, unknown> | undefined;
     if (!d) return;
 
+    // A retailer manual pay-by-link order created UNPAID (awaitingPayment): the
+    // seller made it themselves and it isn't paid yet, so suppress the "new order"
+    // alert. It is released (and the customer confirmed) only once the Razorpay
+    // webhook marks it paid — see app/lib/manual-order-link.ts.
+    if (d.awaitingPayment === true) return;
+
     const orderId   = event.params.orderId;
     const sellerType = String(d.sellerType ?? "unknown");
     const sellerId   = String(d.sellerId   ?? "");
@@ -850,6 +867,12 @@ export const notifyCustomerOnOrderStatus = onDocumentWritten(
     const after = event.data?.after;
     if (!after?.exists) return;
     const d = after.data() as Record<string, unknown>;
+
+    // An unpaid retailer manual pay-by-link order: hold ALL customer notifications
+    // until the Razorpay webhook confirms payment (which clears awaitingPayment and
+    // sends the confirmation itself). Never imply the order is confirmed/paid before
+    // the money is in.
+    if (d.awaitingPayment === true) return;
 
     const status = String(d.status ?? "");
     const before = event.data?.before;

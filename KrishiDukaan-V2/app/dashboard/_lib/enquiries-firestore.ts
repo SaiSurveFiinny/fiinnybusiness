@@ -40,6 +40,11 @@ export interface EnquiryDoc {
   /** Why the sale was lost: the buyer walked away, or the payment failed. */
   reason: "abandoned" | "failed";
   status: EnquiryStatus;
+  /** Shop/owner name of the seller this enquiry was routed to. Written by the
+   *  sweep; null for older docs raised before the name was resolved. */
+  sellerName: string | null;
+  /** The seller's phone (10-digit/`+91` forms live in `sellerPhones`). */
+  sellerPhone: string;
   buyerName: string | null;
   buyerPhone: string;
   items: EnquiryItem[];
@@ -73,6 +78,8 @@ function mapEnquiry(id: string, r: Record<string, unknown>): EnquiryDoc {
       r.status === "contacted" || r.status === "closed"
         ? (r.status as EnquiryStatus)
         : "open",
+    sellerName: r.sellerName ? String(r.sellerName) : null,
+    sellerPhone: String(r.sellerPhone ?? ""),
     buyerName: r.buyerName ? String(r.buyerName) : null,
     buyerPhone: String(r.buyerPhone ?? ""),
     items: items.map((i) => ({

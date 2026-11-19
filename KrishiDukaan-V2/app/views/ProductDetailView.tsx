@@ -191,7 +191,7 @@ function RetailerProfileSection({
 
   if (!profile && products.length === 0) return null;
 
-  const shopName = profile?.shopName || "This Retailer";
+  const shopName = profile?.businessName || profile?.shopName || "This Retailer";
   const locationParts = [profile?.city, profile?.state].filter(Boolean);
 
   return (

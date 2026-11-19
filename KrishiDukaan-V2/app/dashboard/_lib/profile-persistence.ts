@@ -232,7 +232,10 @@ export async function loadProfileState(
 
   return {
     form: {
-      businessName: String(data.shopName ?? data.businessName ?? ""),
+      // businessName field is authoritative; fall back to shopName only when it
+      // is empty. (Some phone-keyed retailer shadow docs store the owner's name
+      // in shopName, so reading shopName first would show the owner, not the shop.)
+      businessName: String(data.businessName ?? data.shopName ?? ""),
       ownerName:    String(data.ownerName ?? prefillName ?? ""),
       phone:        String(data.phone ?? prefillPhone ?? ""),
       secondaryPhone: String(data.secondaryPhone ?? ""),

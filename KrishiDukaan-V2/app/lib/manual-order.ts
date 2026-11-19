@@ -64,6 +64,7 @@ import {
 } from './cart-pricing';
 import type { DeliverySettingsLike } from '../utils/delivery';
 import { parseVariantWeightKg } from '../utils/weight';
+import { phoneVariants } from './manual-order-search';
 
 const razorpay = new Razorpay({
   key_id: process.env.RAZORPAY_KEY_ID!,
@@ -305,6 +306,97 @@ export async function priceManualOrder(
   };
 }
 
+// ── Customer identity & phone matching ────────────────────────────────────────
+//
+// A customer is picked in the wizard by their users/{id} doc. That id is the phone
+// (`+91XXXXXXXXXX`) for OTP buyers, but a Razorpay order's `notes.userId` carries
+// the customer's Firebase Auth UID — a DIFFERENT identifier entirely. Comparing the
+// two directly ("+918669242323" vs "5Zgx5paAF0W8B2j7TIlevvIhqOy2") always failed and
+// wrongly reported the payment as belonging to a different customer. We instead
+// resolve the FULL set of ids that denote this customer (doc id, uid field, and the
+// Auth UID(s) mapped from uidIndex) and keep a normalized phone for format-insensitive
+// fallback matching.
+
+/** Last 10 digits of a phone/number string, or null if fewer than 10 digits. */
+function digits10(raw: string | null | undefined): string | null {
+  if (!raw) return null;
+  const d = String(raw).replace(/\D/g, '');
+  return d.length >= 10 ? d.slice(-10) : null;
+}
+
+export type CustomerIdentity = {
+  /** Every id that legitimately denotes this customer: the users-doc id, any `uid`
+   *  field on the doc, and the Auth UID(s) resolved from uidIndex. A Razorpay
+   *  notes.userId equal to any of these is a confirmed ownership match. */
+  ids: Set<string>;
+  /** Normalized (last-10-digit) customer phone, for format-insensitive matching. */
+  phone10: string | null;
+};
+
+/**
+ * Resolve the complete identity of the selected customer so a payment's buyer id
+ * OR contact phone can be matched regardless of which identifier scheme Razorpay
+ * stamped. Read-only, best-effort — any lookup that fails is simply skipped.
+ */
+export async function resolveCustomerIdentity(customerId: string): Promise<CustomerIdentity> {
+  const db = getAdminDb();
+  const ids = new Set<string>();
+  const add = (v: unknown) => { const s = String(v ?? '').trim(); if (s) ids.add(s); };
+  add(customerId);
+
+  let phone: string | null = null;
+
+  // The customer doc (users/{phone} for OTP buyers, users/{uid} for some legacy
+  // accounts) carries the phone and sometimes an explicit uid field.
+  try {
+    const snap = await db.collection('users').doc(customerId).get();
+    if (snap.exists) {
+      const d = snap.data()!;
+      if (d.phone) phone = String(d.phone);
+      add(d.uid);
+    }
+  } catch { /* ignore */ }
+
+  // customerId may itself be an Auth UID → uidIndex/{uid} = { phone }.
+  try {
+    const idx = await db.collection('uidIndex').doc(customerId).get();
+    if (idx.exists && idx.data()?.phone && !phone) phone = String(idx.data()!.phone);
+  } catch { /* ignore */ }
+
+  // Reverse-map phone → Auth UID(s). uidIndex rows are keyed by the Auth UID and
+  // store { phone } — exactly the UID a Razorpay order's notes.userId carries.
+  const phoneForLookup = phone ?? (digits10(customerId) ? customerId : null);
+  if (phoneForLookup) {
+    for (const variant of phoneVariants(phoneForLookup)) {
+      try {
+        const q = await db.collection('uidIndex').where('phone', '==', variant).limit(5).get();
+        for (const doc of q.docs) add(doc.id); // doc id = Auth UID
+      } catch { /* ignore */ }
+    }
+  }
+
+  return { ids, phone10: digits10(phone ?? customerId) };
+}
+
+/**
+ * Does a payment's buyer id / contact phone denote the selected customer? Matches
+ * on the Auth UID first (authoritative), then falls back to a normalized phone
+ * comparison so a `+91`/spacing/hyphen difference — or a notes.userId that is itself
+ * a phone number — never rejects a genuinely-matching payment.
+ */
+function matchCustomer(
+  identity: CustomerIdentity,
+  notesUserId: string | null,
+  contactPhone: string | null,
+): { ok: boolean; via: 'uid' | 'phone' | 'none' } {
+  if (notesUserId && identity.ids.has(notesUserId)) return { ok: true, via: 'uid' };
+  const notesPhone = digits10(notesUserId);
+  if (notesPhone && identity.phone10 && notesPhone === identity.phone10) return { ok: true, via: 'phone' };
+  const cPhone = digits10(contactPhone);
+  if (cPhone && identity.phone10 && cPhone === identity.phone10) return { ok: true, via: 'phone' };
+  return { ok: false, via: 'none' };
+}
+
 // ── Payment verification ──────────────────────────────────────────────────────
 
 export type ManualPaymentVerification = {
@@ -316,6 +408,8 @@ export type ManualPaymentVerification = {
   status: string | null;
   amountPaise: number | null;
   amountRupees: number | null;
+  /** Payment currency (ISO code) — must be INR to back an order. */
+  currency: string | null;
   method: string | null;
   contact: string | null;
   email: string | null;
@@ -340,15 +434,36 @@ const DETERMINISTIC_ID = (razorpayOrderId: string) => `man_${razorpayOrderId}`;
 /** Deterministic order id for an admin-override order that has no Razorpay order
  *  id — keyed off the payment id so a retry still can't double-create. */
 const manualOrderIdForPayment = (razorpayPaymentId: string) => `man_pay_${razorpayPaymentId}`;
+/** Deterministic order id for an offline (retailer-collected) payment, which has
+ *  NO Razorpay id — keyed off a client idempotency token so a retry/double-submit
+ *  returns the same order rather than creating a second one. */
+const manualOrderIdForOffline = (idempotencyKey: string) => `man_off_${idempotencyKey.replace(/[^a-zA-Z0-9_-]/g, '')}`;
+/** Deterministic order id for an order backed by MULTIPLE Razorpay payments — keyed
+ *  off the sorted payment ids so the same set of payments always maps to the same
+ *  order and a retry can never double-create. */
+const manualOrderIdForPayments = (razorpayPaymentIds: string[]) =>
+  `man_multi_${[...razorpayPaymentIds].sort().join('_').replace(/[^a-zA-Z0-9_-]/g, '')}`;
 
-/** Every order already tied to a Razorpay PAYMENT id, by either payment key. */
-async function findOrdersForRazorpayPayment(razorpayPaymentId: string): Promise<string[]> {
+/** Offline payment methods a retailer may have collected directly. */
+export type OfflinePaymentMethod = 'cash' | 'upi' | 'other';
+export const OFFLINE_METHODS: OfflinePaymentMethod[] = ['cash', 'upi', 'other'];
+const OFFLINE_METHOD_LABEL: Record<OfflinePaymentMethod, string> = {
+  cash: 'Cash', upi: 'UPI', other: 'Other (offline)',
+};
+
+/**
+ * Every order already tied to a Razorpay PAYMENT id. Checks BOTH the scalar
+ * `payment.razorpayPaymentId` (single-payment orders, incl. all legacy orders) and
+ * the `payment.razorpayPaymentIds` array (multi-payment manual orders) so a payment
+ * can never be silently linked to a second order through either shape.
+ */
+export async function findOrdersForRazorpayPayment(razorpayPaymentId: string): Promise<string[]> {
   const db = getAdminDb();
-  const snap = await db
-    .collection('orders')
-    .where('payment.razorpayPaymentId', '==', razorpayPaymentId)
-    .get();
-  return snap.docs.map((d) => d.id);
+  const [byScalar, byArray] = await Promise.all([
+    db.collection('orders').where('payment.razorpayPaymentId', '==', razorpayPaymentId).get(),
+    db.collection('orders').where('payment.razorpayPaymentIds', 'array-contains', razorpayPaymentId).get(),
+  ]);
+  return Array.from(new Set([...byScalar.docs, ...byArray.docs].map((d) => d.id)));
 }
 
 /** A Razorpay order whose notes mark it a subscription purchase, not a cart. */
@@ -391,7 +506,18 @@ export async function findPaymentAttemptByPaymentId(
 export async function verifyPaymentForManualOrder(params: {
   razorpayPaymentId: string;
   customerId?: string | null;
+  /** Pre-resolved customer identity, so a multi-payment check resolves it once and
+   *  shares it across every payment. Resolved from customerId when omitted. */
+  identity?: CustomerIdentity | null;
   expectedTotalRupees?: number | null;
+  /** Skip the per-payment "amount equals the order total" check. Used when this
+   *  payment is one of SEVERAL backing one order — the combined total is checked by
+   *  the caller instead. */
+  skipAmountCheck?: boolean;
+  /** The deterministic id of the order these payment(s) will create. An existing
+   *  order with THIS id is "our own" (a retry), not a foreign link. Computed from
+   *  the single-payment scheme when omitted. */
+  ownOrderId?: string;
   /** Admin escape hatch: when BOTH Razorpay and the internal ledger can't see the
    *  payment, create the order on the admin's word anyway, trusting the pasted id
    *  and the computed order total as the amount. The default (false) hard-blocks an
@@ -409,6 +535,7 @@ export async function verifyPaymentForManualOrder(params: {
     status: null,
     amountPaise: null,
     amountRupees: null,
+    currency: null,
     method: null,
     contact: null,
     email: null,
@@ -418,6 +545,11 @@ export async function verifyPaymentForManualOrder(params: {
     isOwnManualOrder: false,
     verifiedVia: 'razorpay',
   };
+
+  // Resolve who the selected customer is (doc id + Auth UID(s) + phone) so the
+  // payment's buyer id / contact can be matched across identifier schemes.
+  const identity =
+    params.identity ?? (params.customerId ? await resolveCustomerIdentity(params.customerId) : null);
 
   let payment: Record<string, unknown> | null = null;
   try {
@@ -433,6 +565,7 @@ export async function verifyPaymentForManualOrder(params: {
     out.razorpayOrderId = payment.order_id ? String(payment.order_id) : null;
     out.amountPaise = Number(payment.amount ?? 0);
     out.amountRupees = out.amountPaise / 100;
+    out.currency = (payment.currency as string | undefined) ?? null;
     out.method = (payment.method as string | undefined) ?? null;
     out.contact = (payment.contact as string | undefined) ?? null;
     out.email = (payment.email as string | undefined) ?? null;
@@ -444,6 +577,9 @@ export async function verifyPaymentForManualOrder(params: {
     if (!out.razorpayOrderId) {
       out.blocking.push('Payment has no associated Razorpay order id.');
     }
+    if (out.currency && out.currency !== 'INR') {
+      out.blocking.push(`Payment currency is ${out.currency}, not INR — only INR payments can back an order.`);
+    }
 
     // Ownership + subscription guard from the Razorpay order's notes.
     if (out.razorpayOrderId) {
@@ -454,13 +590,18 @@ export async function verifyPaymentForManualOrder(params: {
         if (looksLikeSubscription(notes)) {
           out.blocking.push('This payment is a subscription purchase, not a cart order — it cannot back a product order.');
         }
-        if (params.customerId && out.notesUserId && out.notesUserId !== params.customerId) {
-          out.blocking.push(
-            `Payment belongs to a different customer (Razorpay notes.userId "${out.notesUserId}" ≠ selected customer "${params.customerId}").`,
-          );
-        }
-        if (params.customerId && !out.notesUserId) {
-          out.warnings.push('Razorpay order carries no buyer id in its notes — customer association cannot be confirmed from Razorpay.');
+        if (identity) {
+          const m = matchCustomer(identity, out.notesUserId, out.contact);
+          if (!m.ok) {
+            if (out.notesUserId || out.contact) {
+              out.blocking.push(
+                `Payment does not belong to the selected customer (Razorpay buyer id "${out.notesUserId ?? '—'}", ` +
+                  `contact "${out.contact ?? '—'}" — neither matches the customer's Firebase UID or phone).`,
+              );
+            } else {
+              out.warnings.push('Razorpay order carries no buyer id or contact — customer association could not be confirmed.');
+            }
+          }
         }
       } catch (e) {
         out.warnings.push(`Could not fetch Razorpay order ${out.razorpayOrderId} for ownership/kind check: ${errText(e)}`);
@@ -526,17 +667,24 @@ export async function verifyPaymentForManualOrder(params: {
     if (a.kind === 'subscription') {
       out.blocking.push('This payment is a subscription purchase, not a cart order — it cannot back a product order.');
     }
-    if (params.customerId && out.notesUserId && out.notesUserId !== params.customerId) {
-      out.blocking.push(
-        `Payment belongs to a different customer (internal record userId "${out.notesUserId}" ≠ selected customer "${params.customerId}").`,
-      );
+    if (identity) {
+      const m = matchCustomer(identity, out.notesUserId, out.contact);
+      if (!m.ok && (out.notesUserId || out.contact)) {
+        out.blocking.push(
+          `Payment does not belong to the selected customer (internal record buyer id "${out.notesUserId ?? '—'}", ` +
+            `contact "${out.contact ?? '—'}" — neither matches the customer's Firebase UID or phone).`,
+        );
+      }
     }
     if (out.amountPaise == null) {
       out.warnings.push('The internal record has no stored amount, so the captured amount could not be cross-checked — confirm the order total matches what was actually paid.');
     }
   }
 
-  return finalizeVerification(out, params.razorpayPaymentId, params.expectedTotalRupees ?? null);
+  return finalizeVerification(out, params.razorpayPaymentId, params.expectedTotalRupees ?? null, {
+    skipAmountCheck: params.skipAmountCheck === true,
+    ownOrderId: params.ownOrderId,
+  });
 }
 
 /**
@@ -550,9 +698,12 @@ async function finalizeVerification(
   out: ManualPaymentVerification,
   razorpayPaymentId: string,
   expectedTotalRupees: number | null,
+  opts?: { skipAmountCheck?: boolean; ownOrderId?: string },
 ): Promise<ManualPaymentVerification> {
-  // Amount must equal the computed order total to the paise.
-  if (expectedTotalRupees != null && out.amountPaise != null) {
+  // Amount must equal the computed order total to the paise — UNLESS this payment is
+  // one of several backing the order, in which case the caller checks the combined
+  // total instead.
+  if (!opts?.skipAmountCheck && expectedTotalRupees != null && out.amountPaise != null) {
     const expectedPaise = Math.round(expectedTotalRupees * 100);
     if (out.amountPaise !== expectedPaise) {
       out.blocking.push(
@@ -569,7 +720,9 @@ async function finalizeVerification(
   const byOrder = out.razorpayOrderId ? await findOrdersForRazorpayOrder(out.razorpayOrderId) : [];
   const all = Array.from(new Set([...byOrder, ...byPayment]));
   out.existingOrderIds = all;
-  const ownId = out.razorpayOrderId ? DETERMINISTIC_ID(out.razorpayOrderId) : manualOrderIdForPayment(razorpayPaymentId);
+  const ownId =
+    opts?.ownOrderId ??
+    (out.razorpayOrderId ? DETERMINISTIC_ID(out.razorpayOrderId) : manualOrderIdForPayment(razorpayPaymentId));
   const foreign = all.filter((id) => id !== ownId);
   out.isOwnManualOrder = all.length > 0 && foreign.length === 0;
   if (foreign.length > 0) {
@@ -580,7 +733,140 @@ async function finalizeVerification(
   return out;
 }
 
+// ── Multi-payment verification ────────────────────────────────────────────────
+
+/** Combined verification of the 1–N Razorpay payments backing ONE manual order. */
+export type ManualMultiPaymentVerification = {
+  ok: boolean;
+  blocking: string[];
+  warnings: string[];
+  /** Per-payment detail, in the order the ids were given. */
+  payments: ManualPaymentVerification[];
+  /** Sum of every payment's captured amount (paise), or null if one is unknown. */
+  combinedAmountPaise: number | null;
+  combinedAmountRupees: number | null;
+  expectedTotalRupees: number | null;
+  /** Deterministic id of the order these payments will create (multi only). */
+  orderId: string | null;
+};
+
+/**
+ * Verify that a SET of captured Razorpay payments can together back one manual
+ * order. Each payment is verified individually (captured, INR, right customer, not
+ * already linked, not a subscription) and the COMBINED amount must equal the order
+ * total. Duplicate ids are rejected. Read-only — no Razorpay/Firestore mutation.
+ */
+export async function verifyManualOrderPayments(params: {
+  razorpayPaymentIds: string[];
+  customerId?: string | null;
+  expectedTotalRupees?: number | null;
+}): Promise<ManualMultiPaymentVerification> {
+  const ids = params.razorpayPaymentIds.map((s) => String(s ?? '').trim()).filter(Boolean);
+  const out: ManualMultiPaymentVerification = {
+    ok: false,
+    blocking: [],
+    warnings: [],
+    payments: [],
+    combinedAmountPaise: null,
+    combinedAmountRupees: null,
+    expectedTotalRupees: params.expectedTotalRupees ?? null,
+    orderId: null,
+  };
+
+  if (ids.length === 0) {
+    out.blocking.push('Select at least one payment.');
+    return out;
+  }
+  // No duplicate selection.
+  const seen = new Set<string>();
+  const dupes = new Set<string>();
+  for (const id of ids) {
+    if (seen.has(id)) dupes.add(id);
+    seen.add(id);
+  }
+  if (dupes.size > 0) {
+    out.blocking.push(`The same payment was selected more than once: ${Array.from(dupes).join(', ')}.`);
+    return out;
+  }
+
+  // Resolve the customer once and share it across every payment check.
+  const identity = params.customerId ? await resolveCustomerIdentity(params.customerId) : null;
+
+  // A single payment keeps the existing deterministic-id scheme (back-compat); a
+  // set keys off the sorted ids. Pass the id in so a retry (order already created)
+  // isn't mistaken for a foreign link.
+  const multi = ids.length > 1;
+  const ownOrderId = multi ? manualOrderIdForPayments(ids) : undefined;
+  out.orderId = ownOrderId ?? null;
+
+  let combinedPaise = 0;
+  let anyAmountNull = false;
+  for (const id of ids) {
+    const v = await verifyPaymentForManualOrder({
+      razorpayPaymentId: id,
+      customerId: params.customerId,
+      identity,
+      expectedTotalRupees: params.expectedTotalRupees,
+      skipAmountCheck: true, // the COMBINED amount is checked below
+      ownOrderId,
+    });
+    out.payments.push(v);
+    for (const b of v.blocking) out.blocking.push(`${id}: ${b}`);
+    for (const w of v.warnings) out.warnings.push(`${id}: ${w}`);
+    if (v.amountPaise == null) anyAmountNull = true;
+    else combinedPaise += v.amountPaise;
+  }
+
+  out.combinedAmountPaise = anyAmountNull ? null : combinedPaise;
+  out.combinedAmountRupees = out.combinedAmountPaise != null ? out.combinedAmountPaise / 100 : null;
+
+  // Combined amount must equal the order total to the paise.
+  if (params.expectedTotalRupees != null && out.combinedAmountPaise != null) {
+    const expectedPaise = Math.round(params.expectedTotalRupees * 100);
+    const diff = out.combinedAmountPaise - expectedPaise;
+    if (diff !== 0) {
+      out.blocking.push(
+        `Combined payment ₹${(out.combinedAmountPaise / 100).toFixed(2)} does not match the order total ` +
+          `₹${params.expectedTotalRupees.toFixed(2)} (difference ${diff > 0 ? '+' : '-'}₹${(Math.abs(diff) / 100).toFixed(2)}). ` +
+          `Add or remove a payment, or adjust the order so the two match.`,
+      );
+    }
+  } else if (anyAmountNull) {
+    out.warnings.push('One or more payments had no known captured amount, so the combined total could not be checked automatically.');
+  }
+
+  out.ok = out.blocking.length === 0;
+  return out;
+}
+
 // ── Order creation ──────────────────────────────────────────────────────────
+
+/** One linked Razorpay payment's transaction detail, preserved on the order. */
+export type LinkedPaymentDetail = {
+  razorpayPaymentId: string;
+  razorpayOrderId: string | null;
+  amount: number;
+  method: string | null;
+  contact: string | null;
+  email: string | null;
+  createdAt: number | null;
+};
+
+/** How an order's payment was recorded — surfaced so the review/result screens can
+ *  distinguish a Razorpay-verified payment from a retailer-collected offline one. */
+export type ManualPaymentSummary = {
+  mode: 'razorpay' | 'offline';
+  status: string;
+  /** Combined amount actually taken (sum of all linked payments). */
+  amount: number;
+  method: string | null;
+  /** Primary (first) linked payment id — kept for single-payment back-compat. */
+  razorpayPaymentId: string | null;
+  /** All linked Razorpay payment ids (1 for single, 2–3 for a split payment). */
+  razorpayPaymentIds: string[];
+  /** Per-payment breakdown; empty for an offline payment. */
+  payments: LinkedPaymentDetail[];
+};
 
 export type CreateManualOrderResult =
   | {
@@ -590,6 +876,7 @@ export type CreateManualOrderResult =
       status: string;
       grandTotal: number;
       invoice: InvoiceOutcome;
+      payment: ManualPaymentSummary;
     }
   | { ok: false; status: number; error: string; verification?: ManualPaymentVerification };
 
@@ -605,7 +892,16 @@ export type CreateManualOrderInput = {
   };
   sellerPhone: string;
   items: ManualOrderItemInput[];
-  razorpayPaymentId: string;
+  /** Razorpay payment to verify + link. Omit when recording an offline payment.
+   *  Single-payment back-compat alias for `razorpayPaymentIds`. */
+  razorpayPaymentId?: string;
+  /** 1–N Razorpay payments that TOGETHER back this order; their combined amount
+   *  must equal the order total. Takes precedence over razorpayPaymentId. */
+  razorpayPaymentIds?: string[];
+  /** Offline payment collected by the retailer (cash/UPI/other) — mutually
+   *  exclusive with razorpayPaymentId; NOT a Razorpay payment. Idempotency key is
+   *  client-generated once per attempt so retries don't double-create. */
+  offline?: { method: OfflinePaymentMethod; idempotencyKey: string };
   /** Admin-set delivery charge (₹) for this order; null keeps the calculated one. */
   deliveryOverride?: number | null;
   /** Create even when the payment can't be auto-verified (see
@@ -640,30 +936,116 @@ export async function createManualOrder(input: CreateManualOrderInput): Promise<
     return { ok: false, status: 400, error: 'Order total is zero — check the selected products and prices.' };
   }
 
-  const verification = await verifyPaymentForManualOrder({
-    razorpayPaymentId: input.razorpayPaymentId,
-    customerId: input.customer.id,
-    expectedTotalRupees: pricing.grandTotal,
-    allowUnverifiedOverride: input.allowUnverifiedOverride === true,
-  });
-  if (!verification.ok) {
-    return {
-      ok: false,
-      status: 409,
-      error: `Payment verification failed:\n- ${verification.blocking.join('\n- ')}`,
-      verification,
-    };
-  }
+  // ── Two payment paths ──────────────────────────────────────────────────────
+  //  A) Razorpay: verify the payment against Razorpay for this exact total/customer.
+  //  B) Offline : the retailer collected the money directly (cash/UPI/other); there
+  //     is NO Razorpay payment to verify — we record it as an offline payment.
+  const isOffline = !!input.offline;
+  // Verified Razorpay payment(s) backing this order (empty for offline).
+  let verifications: ManualPaymentVerification[] = [];
+  let unverified = false;
+  let razorpayOrderId: string | null = null; // single-payment only (back-compat)
+  let orderId: string;
+  let offlineMethod: OfflinePaymentMethod | null = null;
 
-  // A verified payment carries its Razorpay order id; an admin-override one has
-  // none, so the order is keyed off the payment id instead. Either way the id is
-  // deterministic, so a retry finds the same order and never double-creates.
-  const unverified = verification.verifiedVia === 'admin_override';
-  const razorpayOrderId = verification.razorpayOrderId;
-  const orderId = razorpayOrderId
-    ? DETERMINISTIC_ID(razorpayOrderId)
-    : manualOrderIdForPayment(input.razorpayPaymentId);
+  // Normalize the payment ids: the array takes precedence, with the scalar as a
+  // single-payment alias. De-duped, trimmed.
+  const paymentIds = Array.from(
+    new Set(
+      (input.razorpayPaymentIds?.length
+        ? input.razorpayPaymentIds
+        : input.razorpayPaymentId
+        ? [input.razorpayPaymentId]
+        : []
+      )
+        .map((s) => String(s ?? '').trim())
+        .filter(Boolean),
+    ),
+  );
+
+  if (isOffline) {
+    offlineMethod = input.offline!.method;
+    if (!OFFLINE_METHODS.includes(offlineMethod)) {
+      return { ok: false, status: 400, error: 'Invalid offline payment method.' };
+    }
+    const key = String(input.offline!.idempotencyKey ?? '').trim();
+    if (!key) {
+      return { ok: false, status: 400, error: 'An idempotency key is required for an offline payment.' };
+    }
+    orderId = manualOrderIdForOffline(key);
+  } else {
+    if (paymentIds.length === 0) {
+      return { ok: false, status: 400, error: 'A payment is required.' };
+    }
+    if (paymentIds.length > 1 && input.allowUnverifiedOverride) {
+      return {
+        ok: false,
+        status: 400,
+        error: 'Unverified override is only available for a single payment. Remove the extra payments, or verify each one.',
+      };
+    }
+
+    if (paymentIds.length === 1 && input.allowUnverifiedOverride) {
+      // Single-payment admin-override path (unchanged): the override is only ever an
+      // option when exactly one payment can't be auto-verified.
+      const v = await verifyPaymentForManualOrder({
+        razorpayPaymentId: paymentIds[0],
+        customerId: input.customer.id,
+        expectedTotalRupees: pricing.grandTotal,
+        allowUnverifiedOverride: true,
+      });
+      if (!v.ok) {
+        return {
+          ok: false,
+          status: 409,
+          error: `Payment verification failed:\n- ${v.blocking.join('\n- ')}`,
+          verification: v,
+        };
+      }
+      verifications = [v];
+      unverified = v.verifiedVia === 'admin_override';
+      razorpayOrderId = v.razorpayOrderId;
+      orderId = razorpayOrderId ? DETERMINISTIC_ID(razorpayOrderId) : manualOrderIdForPayment(paymentIds[0]);
+    } else {
+      // One or several verified payments whose COMBINED amount equals the total.
+      const multi = await verifyManualOrderPayments({
+        razorpayPaymentIds: paymentIds,
+        customerId: input.customer.id,
+        expectedTotalRupees: pricing.grandTotal,
+      });
+      if (!multi.ok) {
+        return {
+          ok: false,
+          status: 409,
+          error: `Payment verification failed:\n- ${multi.blocking.join('\n- ')}`,
+          verification: multi.payments[0],
+        };
+      }
+      verifications = multi.payments;
+      if (paymentIds.length === 1) {
+        razorpayOrderId = verifications[0].razorpayOrderId;
+        orderId = razorpayOrderId ? DETERMINISTIC_ID(razorpayOrderId) : manualOrderIdForPayment(paymentIds[0]);
+      } else {
+        orderId = manualOrderIdForPayments(paymentIds);
+      }
+    }
+  }
   const ref = db.collection('orders').doc(orderId);
+
+  // Per-payment breakdown + combined captured amount, preserved on the order.
+  const paymentDetails: LinkedPaymentDetail[] = verifications.map((v) => ({
+    razorpayPaymentId: v.razorpayPaymentId,
+    razorpayOrderId: v.razorpayOrderId,
+    amount: (v.amountPaise ?? 0) / 100,
+    method: v.method ?? null,
+    contact: v.contact ?? null,
+    email: v.email ?? null,
+    createdAt: v.createdAt ?? null,
+  }));
+  const combinedPaise = verifications.reduce((sum, v) => sum + (v.amountPaise ?? 0), 0);
+  const combinedAmount = combinedPaise > 0 ? combinedPaise / 100 : pricing.grandTotal;
+  const primaryMethod = verifications.length === 1 ? (verifications[0].method ?? null) : 'multiple';
+  const primaryVerifiedVia = verifications.length === 1 ? verifications[0].verifiedVia : 'razorpay';
 
   const seller = await resolveSellerAccount(input.sellerPhone);
   const sellerType = seller?.collection === 'manufacturers' ? 'manufacturer' : 'retailer';
@@ -706,27 +1088,57 @@ export async function createManualOrder(input: CreateManualOrderInput): Promise<
     deliveryMode: 'delivery',
     status: 'placed',
     statusHistory: [{ status: 'placed', at: nowIso }],
-    payment: {
-      ...(razorpayOrderId ? { razorpayOrderId } : {}),
-      razorpayPaymentId: input.razorpayPaymentId,
-      status: 'paid',
-      amount: (verification.amountPaise ?? Math.round(pricing.grandTotal * 100)) / 100,
-      paidAt: nowIso,
-      verifiedVia: verification.verifiedVia,
-      ...(unverified ? { unverified: true } : {}),
-    },
+    // Offline: an explicit retailer-collected payment — NO Razorpay id, flagged so
+    // every reader (orders list, invoice, review/result) can tell the two apart.
+    payment: isOffline
+      ? {
+          mode: 'offline',
+          method: offlineMethod,
+          collectedBy: 'retailer',
+          offline: true,
+          status: 'paid',
+          amount: pricing.grandTotal,
+          paidAt: nowIso,
+        }
+      : {
+          mode: 'razorpay',
+          ...(razorpayOrderId ? { razorpayOrderId } : {}),
+          // Primary id kept as a scalar so every single-payment reader (invoice,
+          // payouts, refunds) keeps working unchanged.
+          razorpayPaymentId: paymentIds[0],
+          // Flat list of ALL linked payment ids — the array-contains dup guard and
+          // the invoice's combined display read this.
+          razorpayPaymentIds: paymentIds,
+          // Full per-payment transaction detail (id, amount, method, date).
+          razorpayPayments: paymentDetails,
+          method: primaryMethod,
+          status: 'paid',
+          amount: combinedAmount,
+          paidAt: nowIso,
+          verifiedVia: primaryVerifiedVia,
+          ...(unverified ? { unverified: true } : {}),
+        },
     // Auditable, following the order-recovery convention: this order did not come
     // through the normal client path — an admin created it manually.
     recovered: {
       by: 'admin_manual_order',
       at: nowIso,
       adminUid: input.adminUid,
-      basis: unverified
+      basis: isOffline
+        ? `admin-selected products + offline payment collected by retailer (${offlineMethod})`
+        : unverified
         ? 'admin-selected products + admin-vouched payment id (UNVERIFIED — not confirmed by Razorpay or the internal ledger)'
+        : paymentIds.length > 1
+        ? `admin-selected products + ${paymentIds.length} verified captured Razorpay payments (split)`
         : 'admin-selected products + verified captured Razorpay payment',
-      verifiedVia: verification.verifiedVia,
-      ...(unverified ? { unverifiedOverride: true } : {}),
-      razorpayPaymentId: input.razorpayPaymentId,
+      ...(isOffline
+        ? { offline: true, offlineMethod }
+        : {
+            verifiedVia: primaryVerifiedVia,
+            ...(unverified ? { unverifiedOverride: true } : {}),
+            razorpayPaymentId: paymentIds[0],
+            razorpayPaymentIds: paymentIds,
+          }),
       ...(pricing.deliveryOverridden
         ? { deliveryOverridden: true, deliveryCalculated: pricing.deliveryCalculated, deliveryCharged: pricing.deliveryCharge }
         : {}),
@@ -751,6 +1163,26 @@ export async function createManualOrder(input: CreateManualOrderInput): Promise<
   // the order, so the admin can retry create to regenerate it without re-paying.
   const invoice = await ensureOrderInvoice(orderId);
 
+  const payment: ManualPaymentSummary = isOffline
+    ? {
+        mode: 'offline',
+        status: 'paid',
+        amount: pricing.grandTotal,
+        method: OFFLINE_METHOD_LABEL[offlineMethod!],
+        razorpayPaymentId: null,
+        razorpayPaymentIds: [],
+        payments: [],
+      }
+    : {
+        mode: 'razorpay',
+        status: 'paid',
+        amount: combinedAmount,
+        method: primaryMethod,
+        razorpayPaymentId: paymentIds[0] ?? null,
+        razorpayPaymentIds: paymentIds,
+        payments: paymentDetails,
+      };
+
   return {
     ok: true,
     orderId,
@@ -758,6 +1190,7 @@ export async function createManualOrder(input: CreateManualOrderInput): Promise<
     status: 'placed',
     grandTotal: pricing.grandTotal,
     invoice,
+    payment,
   };
 }
 

@@ -1,7 +1,8 @@
 runConfig:
   concurrency: 20
   cpu: 1
-  memoryMiB: 512
+  # Chromium (invoice PDF rendering) needs ~1 GB per render; 512 MiB OOM-crashes.
+  memoryMiB: 1024
   minInstances: 0
   maxInstances: 1
 

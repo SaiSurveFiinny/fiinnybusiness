@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useEffect, useState } from "react";
-import {  Box, LayoutDashboard, Layers, Users, X, Mail, MessageSquare, Building2, BarChart3, CreditCard, BookOpen, Tag, Package, MessageCircle, Video, UserCog, ShoppingCart, IndianRupee, Banknote, ReceiptText, ShieldAlert, Contact, GalleryHorizontal, Link2, Search, ChevronDown, Smartphone, Info, SearchCheck , HeadphonesIcon, HelpCircle, Truck  } from "lucide-react";
+import {  Box, LayoutDashboard, Layers, Users, X, Mail, MessageSquare, Building2, BarChart3, CreditCard, BookOpen, Tag, Package, MessageCircle, Video, UserCog, ShoppingCart, IndianRupee, Banknote, ReceiptText, ShieldAlert, Contact, GalleryHorizontal, Link2, Search, ChevronDown, Smartphone, Info, SearchCheck , HeadphonesIcon, HelpCircle, PhoneCall, Truck  } from "lucide-react";
 import { collection, limit, onSnapshot, query, where } from "firebase/firestore";
 import { cn } from "../../dashboard/_lib/cn";
 import { db } from "../../firebase";
@@ -52,6 +52,7 @@ const navGroups: NavGroup[] = [
     items: [
       { href: "/admin/users", label: "Users & roles", icon: Users, sections: ["users"], keywords: "sellers retailers manufacturers farmers" },
       { href: "/admin/sales-team", label: "Sales team", icon: Contact, sections: ["salesTeam"], keywords: "dealers visits" },
+      { href: "/admin/enquiries", label: "Enquiries", icon: PhoneCall, sections: ["enquiries"], keywords: "inquiries abandoned failed payment leads follow up customers lost sales" },
       { href: "/admin/messages", label: "Messages", icon: MessageSquare, sections: ["messages"], keywords: "contact" },
       { href: "/admin/support", label: "Support inbox", icon: HeadphonesIcon, sections: ["support"], keywords: "chat help user messages" },
       { href: "/admin/whatsapp", label: "WhatsApp", icon: MessageCircle, sections: ["whatsapp"], keywords: "inbox templates" },

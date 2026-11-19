@@ -52,20 +52,34 @@ export async function fetchActiveSubscriptions(): Promise<any[]> {
 // ─── Orders ──────────────────────────────────────────────────────────────────
 
 export type OrderQueryFilters = {
-  status?: string;          // "all" or an order status
+  status?: string;          // "all" or an order status (single; back-compat)
+  statuses?: string[];      // multi-status — applied as a single `in` (≤10)
   sellerType?: string;      // "all" | "retailer" | "manufacturer"
   fromMs?: number | null;   // createdAt bounds
   toMs?: number | null;
 };
 
 /**
- * Orders newest first with the filters Firestore can apply. Orders without
- * createdAt can't appear in an ordered query; searchOrdersDirect finds them
- * by id, invoice, Razorpay id or phone.
+ * Orders newest first with the filters Firestore can apply: a createdAt range,
+ * the sellerType, and the status list (one `in`, ≤10 — there are only 8
+ * statuses). These are covered by the existing composite indexes
+ * (status+createdAt, sellerType+createdAt, status+sellerType+createdAt), so no
+ * new index is needed. Every other column filter is narrowed client-side by
+ * matchesOrderFilters — Firestore can't combine them without a composite-index
+ * explosion. Orders without createdAt can't appear in an ordered query;
+ * searchOrdersDirect finds them by id, invoice, Razorpay id or phone.
  */
 export function ordersQuery(f: OrderQueryFilters): Query<DocumentData> {
   const c: QueryConstraint[] = [];
-  if (f.status && f.status !== "all") c.push(where("status", "==", f.status));
+  // Prefer the multi-status `in`; fall back to the single-status equality.
+  const statuses = (f.statuses ?? []).filter((s) => s && s !== "all");
+  if (statuses.length === 1) {
+    c.push(where("status", "==", statuses[0]));
+  } else if (statuses.length > 1 && statuses.length <= 10) {
+    c.push(where("status", "in", statuses));
+  } else if (f.status && f.status !== "all") {
+    c.push(where("status", "==", f.status));
+  }
   if (f.sellerType && f.sellerType !== "all") c.push(where("sellerType", "==", f.sellerType));
   if (f.fromMs != null) c.push(where("createdAt", ">=", Timestamp.fromMillis(f.fromMs)));
   if (f.toMs != null) c.push(where("createdAt", "<=", Timestamp.fromMillis(f.toMs)));
@@ -162,6 +176,40 @@ export async function fetchOrderTotals(statuses: string[]): Promise<OrderTotals>
     byStatus: Object.fromEntries(byStatusList),
     lostValue,
   };
+}
+
+/**
+ * The customer behind an order's `customerId` (the buyer's Auth UID). Resolves
+ * the same way the rest of the app does — uidIndex/{uid} → users/{phone} first
+ * (phone-OTP accounts, the common case), then users/{customerId} directly
+ * (email accounts keyed by uid, and the rare order whose customerId is actually
+ * a phone), and finally a `uid ==` query for older docs with neither mapping.
+ * A few reads; returns null (not throwing) when the customer can't be found so
+ * the page can degrade gracefully.
+ */
+export async function fetchCustomerById(customerId: string): Promise<AdminUser | null> {
+  const id = customerId.trim();
+  if (!id) return null;
+  try {
+    const idx = await getDoc(doc(db, "uidIndex", id));
+    if (idx.exists()) {
+      const phone = String(idx.data().phone ?? "");
+      if (phone) {
+        const byPhone = await getDoc(doc(db, "users", phone));
+        if (byPhone.exists()) return { id: byPhone.id, ...byPhone.data() };
+      }
+    }
+  } catch { /* fall through */ }
+  try {
+    const direct = await getDoc(doc(db, "users", id));
+    if (direct.exists()) return { id: direct.id, ...direct.data() };
+  } catch { /* fall through */ }
+  try {
+    const snap = await getDocs(query(collection(db, "users"), where("uid", "==", id), limit(1)));
+    const d = snap.docs[0];
+    if (d) return { id: d.id, ...d.data() };
+  } catch { /* fall through */ }
+  return null;
 }
 
 // ─── Users ───────────────────────────────────────────────────────────────────

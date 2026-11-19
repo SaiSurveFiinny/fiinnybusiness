@@ -534,7 +534,14 @@ function OrderDetailModal({
 
           {/* Payment */}
           <div className="rounded-xl border border-surface-container p-4 space-y-2 text-sm">
-            <p className="text-[10px] font-black uppercase tracking-widest text-on-surface-variant">Payment</p>
+            <div className="flex items-center justify-between gap-2">
+              <p className="text-[10px] font-black uppercase tracking-widest text-on-surface-variant">Payment</p>
+              {(order as any).manualOrder && (
+                <span className="inline-flex items-center gap-1 rounded-full bg-primary/10 px-2 py-0.5 text-[10px] font-black text-primary">
+                  Manually created
+                </span>
+              )}
+            </div>
             {payment ? (
               <>
                 <div className="flex justify-between"><span className="text-on-surface-variant">Status</span><PaymentBadge payment={payment} /></div>
@@ -543,6 +550,16 @@ function OrderDetailModal({
                 <div className="flex justify-between"><span className="text-on-surface-variant">Razorpay order</span><span className="font-mono text-xs text-on-surface break-all">{payment.razorpayOrderId || "—"}</span></div>
                 <div className="flex justify-between"><span className="text-on-surface-variant">Paid at</span><PaidAtValue order={order} /></div>
                 {!!payment.refundedAmount && <div className="flex justify-between"><span className="text-on-surface-variant">Refunded</span><span className="font-semibold text-on-surface">₹{Number(payment.refundedAmount).toFixed(2)}</span></div>}
+                {payment.status !== "paid" && payment.paymentLinkUrl && (
+                  <div className="flex justify-between gap-2 items-start pt-1">
+                    <span className="text-on-surface-variant shrink-0">Payment link</span>
+                    <span className="flex items-center gap-1.5 min-w-0">
+                      <a href={payment.paymentLinkUrl} target="_blank" rel="noreferrer" className="font-semibold text-primary truncate hover:underline max-w-[150px]">{payment.paymentLinkUrl}</a>
+                      <button type="button" onClick={() => void navigator.clipboard?.writeText(payment.paymentLinkUrl!)}
+                        className="shrink-0 rounded-md border border-outline-variant/40 px-1.5 py-0.5 text-[11px] font-bold text-on-surface-variant hover:bg-surface-container">Copy</button>
+                    </span>
+                  </div>
+                )}
               </>
             ) : (
               <p className="text-xs text-on-surface-variant">No online payment on this order (cash on delivery or payment pending).</p>
@@ -1150,11 +1167,23 @@ export default function OrdersPage() {
 
   return (
     <>
-      <PageHeader
-        title={t('incomingOrdersTitle')}
-        description={t('ordersDesc')}
-        helperKey="dashOrders"
-      />
+      <div className="flex items-start justify-between gap-3">
+        <PageHeader
+          title={t('incomingOrdersTitle')}
+          description={t('ordersDesc')}
+          helperKey="dashOrders"
+        />
+        {uid && sellerType && (
+          <Link
+            href="/dashboard/orders/create"
+            className="mt-1 shrink-0 inline-flex items-center gap-1.5 rounded-xl bg-primary px-3.5 py-2 text-sm font-bold text-white hover:bg-primary/90 whitespace-nowrap"
+          >
+            <IndianRupee className="h-4 w-4" />
+            <span className="hidden sm:inline">Create order manually</span>
+            <span className="sm:hidden">Create</span>
+          </Link>
+        )}
+      </div>
 
       {actionError && (
         <div className="mb-4 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">

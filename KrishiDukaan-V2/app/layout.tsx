@@ -144,6 +144,22 @@ export default function RootLayout({
   return (
     <html lang="en">
       <head>
+        {/* Google tag for the Google Tag Manager container GTM-P38R6MHT, first
+            in <head> as Google asks. It defines window.gtag and sends "js";
+            GoogleAdsTag (below) sees gtag already exists and only adds its
+            config to the same dataLayer, so there is still one gtag. */}
+        <script
+          async
+          src="https://www.googletagmanager.com/gtm.js?id=GTM-P38R6MHT"
+        />
+        <script
+          id="gtm-google-tag-init"
+          dangerouslySetInnerHTML={{
+            __html: `window.dataLayer = window.dataLayer || [];
+function gtag(){dataLayer.push(arguments);}
+gtag('js', new Date());`,
+          }}
+        />
         <link
           rel="preload"
           href="/fonts/plus-jakarta-sans-latin.woff2"

@@ -7,7 +7,19 @@ import {
   recoverOrderFromCapturedPayment,
 } from "../../../lib/order-recovery";
 import { markPayoutsDueFromWebhook } from "../../../lib/payout-sync";
+import {
+  recordPaymentLinkPaid,
+  markPaymentLinkOrderPaid,
+  markPaymentLinkClosed,
+} from "../../../lib/manual-order-link";
+import { getAdminDb } from "../../../lib/firebase-admin";
+import { FieldValue } from "firebase-admin/firestore";
 import { applyRazorpayRefund, type RazorpayRefundEntity } from "../../../lib/refund-sync";
+import {
+  upsertPaymentFromEntity,
+  applyRefundToPayment,
+  type RazorpayPaymentEntity,
+} from "../../../lib/payments-mirror";
 
 /**
  * Razorpay webhook — the server-to-server signal that closes the gaps our
@@ -109,6 +121,28 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
   // The event is logged either way so nothing is silently lost.
   try {
     const eventName = String(event.event ?? "unknown");
+
+    // ── Duplicate-delivery guard (Razorpay re-sends on any non-2xx, and can send
+    //    the same event more than once). Skip an event id we've already fully
+    //    processed; mark it done after a handler below succeeds. The underlying
+    //    reconciliations are idempotent too, so this is defence in depth. ──
+    const eventId = (req.headers.get("x-razorpay-event-id") ?? "").trim();
+    const eventsDb = getAdminDb();
+    if (eventId) {
+      const ev = await eventsDb.collection("razorpayWebhookEvents").doc(eventId).get();
+      if (ev.exists && ev.data()?.status === "done") {
+        return NextResponse.json({ ok: true, duplicate: true, eventId });
+      }
+    }
+    const markEventDone = async () => {
+      if (!eventId) return;
+      await eventsDb
+        .collection("razorpayWebhookEvents")
+        .doc(eventId)
+        .set({ eventId, event: eventName, status: "done", at: FieldValue.serverTimestamp() }, { merge: true })
+        .catch(() => {});
+    };
+
     if (/^transfers?\./.test(eventName) || eventName === "settlement.processed") {
       const marked = await markPayoutsDueFromWebhook(eventName, event.payload);
       return NextResponse.json({ ok: true, marked });
@@ -117,9 +151,90 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
       const refund = ((event.payload as Record<string, unknown> | undefined)?.refund as
         | { entity?: RazorpayRefundEntity }
         | undefined)?.entity;
+      // Keep the order's refund state in step (existing behaviour) AND the
+      // payments mirror's (new) — the latter is what the dashboard reads.
       const orderId = refund ? await applyRazorpayRefund(refund) : null;
+      if (refund) await applyRefundToPayment(refund);
       return NextResponse.json({ ok: true, orderId });
     }
+
+    // `payment.authorized`: a payment authorized but not yet captured. Mirror it
+    // so it shows as an unresolved (Created) payment — NEVER as captured — until
+    // a capture event (or a sync) advances it.
+    if (eventName === "payment.authorized") {
+      const authEntity = ((event.payload as Record<string, unknown> | undefined)?.payment as
+        | { entity?: RazorpayPaymentEntity }
+        | undefined)?.entity;
+      if (authEntity?.id) await upsertPaymentFromEntity(authEntity, "webhook");
+      return NextResponse.json({ ok: true, mirrored: authEntity?.id ?? null });
+    }
+
+    // `payment_link.paid`: a retailer manual pay-by-link order was paid. Keyed by the
+    // Payment Link ID (always present), NOT by an order id in the payload. Updates the
+    // authoritative razorpayPaymentLinks record AND the order. On an unexpected error
+    // we return 500 so Razorpay retries — a transient failure must never leave the
+    // payment permanently pending.
+    if (eventName === "payment_link.paid") {
+      const payload = event.payload as Record<string, unknown> | undefined;
+      const linkEntity = (payload?.payment_link as Record<string, unknown> | undefined)?.entity as
+        | Record<string, unknown>
+        | undefined;
+      const payEntity = (payload?.payment as Record<string, unknown> | undefined)?.entity as
+        | Record<string, unknown>
+        | undefined;
+      const plinkId = String(linkEntity?.id ?? "").trim();
+      if (!plinkId) {
+        return NextResponse.json({ ok: true, skipped: "payment_link.paid without a payment link id" });
+      }
+      try {
+        // Mirror the underlying payment too (admin Payments source of truth).
+        if (payEntity?.id) {
+          await upsertPaymentFromEntity(payEntity as RazorpayPaymentEntity, "webhook", { capturedAt: new Date() });
+        }
+        const notes = (linkEntity?.notes ?? {}) as Record<string, unknown>;
+        const outcome = await recordPaymentLinkPaid({
+          paymentLinkId: plinkId,
+          razorpayPaymentId: payEntity?.id ? String(payEntity.id) : null,
+          razorpayOrderId: payEntity?.order_id
+            ? String(payEntity.order_id)
+            : linkEntity?.order_id
+              ? String(linkEntity.order_id)
+              : null,
+          amountPaise:
+            payEntity?.amount != null
+              ? Number(payEntity.amount)
+              : linkEntity?.amount_paid != null
+                ? Number(linkEntity.amount_paid)
+                : null,
+          referenceId: linkEntity?.reference_id ? String(linkEntity.reference_id) : null,
+          notesOrderId: notes.kdOrderId ? String(notes.kdOrderId) : null,
+        });
+        console.warn(
+          `[razorpay-webhook] payment_link.paid ${plinkId} → record=${outcome.record} order=${outcome.order} (${outcome.orderId ?? "no order"})`,
+        );
+        await markEventDone();
+        return NextResponse.json({ ok: true, ...outcome });
+      } catch (e) {
+        console.error(`[razorpay-webhook] payment_link.paid processing failed for ${plinkId}:`, e);
+        return NextResponse.json({ error: "processing failed, will retry" }, { status: 500 });
+      }
+    }
+
+    // `payment_link.cancelled` / `payment_link.expired`: record it on the link's
+    // authoritative record. The order (if any) is LEFT Accepted/Pending — never
+    // auto-cancelled.
+    if (eventName === "payment_link.cancelled" || eventName === "payment_link.expired") {
+      const linkEntity = ((event.payload as Record<string, unknown> | undefined)?.payment_link as
+        | Record<string, unknown>
+        | undefined)?.entity as Record<string, unknown> | undefined;
+      const plinkId = String(linkEntity?.id ?? "").trim();
+      if (plinkId) {
+        await markPaymentLinkClosed(plinkId, eventName === "payment_link.expired" ? "expired" : "cancelled");
+      }
+      await markEventDone();
+      return NextResponse.json({ ok: true, linkId: plinkId || null, status: eventName });
+    }
+
     if (eventName !== "payment.failed" && eventName !== "payment.captured") {
       return NextResponse.json({ ok: true, ignored: eventName });
     }
@@ -139,6 +254,30 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     if (eventName === "payment.captured") {
       const paymentId = String(paymentEntity.id ?? "");
       const amountPaise = Number(paymentEntity.amount ?? 0);
+
+      // Mirror the capture into `payments` straight away (the dashboard's
+      // source of truth), independent of the order-recovery dance below.
+      await upsertPaymentFromEntity(paymentEntity as RazorpayPaymentEntity, "webhook", {
+        capturedAt: new Date(),
+      });
+
+      // Fallback for a retailer manual pay-by-link order when only `payment.captured`
+      // (not `payment_link.paid`) is configured: Razorpay copies the payment link's
+      // notes onto the payment, so kdOrderId points straight at our order. Reconcile
+      // it here. Idempotent — markPaymentLinkOrderPaid no-ops if already paid.
+      const captureNotes = (paymentEntity.notes ?? {}) as Record<string, unknown>;
+      const kdOrderId = String(captureNotes.kdOrderId ?? "").trim();
+      if (kdOrderId) {
+        const linkOutcome = await markPaymentLinkOrderPaid({
+          orderId: kdOrderId,
+          paymentLinkId: null,
+          razorpayPaymentId: paymentId,
+          razorpayOrderId: orderId,
+          amountPaise,
+        });
+        await markEventDone();
+        return NextResponse.json({ ok: true, ...linkOutcome });
+      }
 
       // Cheap first look, then the grace wait only if needed. The recovery
       // call re-checks for itself before writing, so most captures find the
@@ -196,6 +335,14 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
       },
       { id: orderId, notes },
       "razorpay_webhook",
+    );
+
+    // Mirror the failed payment (with its real error metadata and payment id)
+    // into `payments` — the exact data the mobile-client failure path never
+    // captured, and the reason the old dashboard's failure counts were wrong.
+    await upsertPaymentFromEntity(
+      { ...(paymentEntity as RazorpayPaymentEntity), order_id: orderId, notes },
+      "webhook",
     );
 
     return NextResponse.json({ ok: true });

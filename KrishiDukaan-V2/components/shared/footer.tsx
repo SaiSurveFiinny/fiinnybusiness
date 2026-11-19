@@ -7,18 +7,14 @@ import { PLAY_STORE_URL, APP_STORE_URL, androidLive, iosLive } from '../../app/l
 import { LEGAL_ROUTES, COMPANY } from '../../app/lib/legal-constants';
 
 type FooterProps = {
-  onNavigate?: (view: 'home' | 'market' | 'hub' | 'map' | 'about' | 'become-retailer') => void;
+  onNavigate?: (view: 'home' | 'market' | 'hub' | 'map' | 'about' | 'become-retailer' | 'help' | 'support') => void;
   onCategoryClick?: (categoryId: string) => void;
   userRole?: 'customer' | 'retailer' | 'manufacturer';
   onUpgradeRole?: () => void;
 };
 
-export default function Footer({ onNavigate, onCategoryClick, userRole, onUpgradeRole }: FooterProps) {
+export default function Footer({ onNavigate, onCategoryClick }: FooterProps) {
   const { t } = useI18n();
-
-  const upgradeLabel = userRole === 'retailer' || userRole === 'manufacturer'
-    ? t('footerBecomeManufacturer')
-    : t('footerBecomeRetailer');
 
   const shopLinks: { label: string; cat: string; slug?: string }[] = [
     { label: t('catSeeds'),        cat: 'seeds',        slug: 'seeds' },
@@ -29,12 +25,11 @@ export default function Footer({ onNavigate, onCategoryClick, userRole, onUpgrad
     { label: t('catSprayers'),     cat: 'sprayers',     slug: 'sprayers' },
     { label: t('footerViewAllProducts'), cat: 'all' },
   ];
-  const companyLinks: { label: string; view: 'home' | 'market' | 'hub' | 'map' | 'about' | 'become-retailer' }[] = [
+  const companyLinks: { label: string; view: 'home' | 'market' | 'hub' | 'map' | 'about' | 'become-retailer' | 'help' | 'support' }[] = [
     { label: t('footerAbout'), view: 'about' },
     { label: t('footerStores'), view: 'map' },
     { label: t('footerCropHubs'), view: 'hub' },
-    { label: t('footerContact'), view: 'about' },
-    { label: t('footerFAQs'), view: 'about' },
+    { label: t('help'), view: 'help' },
   ];
   return (
     <footer className="bg-surface-container-low border-t border-surface-container mt-16">
@@ -126,6 +121,14 @@ export default function Footer({ onNavigate, onCategoryClick, userRole, onUpgrad
                   How to use KrishiDukan
                 </Link>
               </li>
+              <li>
+                <Link
+                  href="/sell#faq"
+                  className="text-on-surface-variant hover:text-primary transition-colors font-medium"
+                >
+                  {t('footerFAQs')}
+                </Link>
+              </li>
               {companyLinks.map((l) => (
                 <li key={l.label}>
                   <button
@@ -136,23 +139,6 @@ export default function Footer({ onNavigate, onCategoryClick, userRole, onUpgrad
                   </button>
                 </li>
               ))}
-              <li>
-                {userRole === 'retailer' || userRole === 'manufacturer' ? (
-                  <button
-                    onClick={() => onUpgradeRole?.()}
-                    className="text-on-surface-variant hover:text-primary transition-colors font-medium"
-                  >
-                    {upgradeLabel}
-                  </button>
-                ) : (
-                  <Link
-                    href="/sell"
-                    className="text-on-surface-variant hover:text-primary transition-colors font-medium"
-                  >
-                    {upgradeLabel}
-                  </Link>
-                )}
-              </li>
             </ul>
           </div>
 
@@ -162,9 +148,14 @@ export default function Footer({ onNavigate, onCategoryClick, userRole, onUpgrad
               {t('footerGetInTouch')}
             </h4>
             <div className="space-y-2 text-sm text-on-surface-variant">
-              <p className="font-semibold text-on-surface">Karan Arjun Krushi Seva Kendra</p>
-              <p>Chatrapati Shivaji Nagar, 132 KV</p>
-              <p>Karjat, Ahilyanagar — 414402</p>
+              <button
+                onClick={() => onNavigate?.('support')}
+                className="block font-bold text-primary hover:underline"
+              >
+                {t('footerContact')}
+              </button>
+              <p className="font-semibold text-on-surface">KrishiDukan Pvt Ltd</p>
+              <p>Gurugram, Sector 45 - 122003</p>
               <a href="tel:+918658032751" className="block font-bold text-primary hover:underline">
                 +91 86580 32751
               </a>

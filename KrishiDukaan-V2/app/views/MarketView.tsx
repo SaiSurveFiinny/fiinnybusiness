@@ -477,6 +477,7 @@ export default function MarketView({
     { id: 'Herbicides',   name: t('catHerbicides'),   icon: ICONS.Science },
     { id: 'Bio Pesticides', name: t('catBioStimulants'), icon: ICONS.Science },
     { id: 'Sprayers',     name: t('catSprayers'),     icon: ICONS.Market },
+    { id: 'Insecticides', name: t('catInsecticides'), icon: ICONS.Science },
     { id: 'Tools',        name: t('catTools'),        icon: ICONS.Market },
   ];
 

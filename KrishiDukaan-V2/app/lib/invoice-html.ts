@@ -1,4 +1,9 @@
-import { formatCustomerAddress, normalizeOrderItems } from "../../types/order";
+import {
+  formatCustomerAddress,
+  normalizeOrderItems,
+  paymentModeLabel,
+  trackingIdTypeLabel,
+} from "../../types/order";
 import type { OrderDoc } from "../../types/order";
 import { loadInvoiceFontsBase64 } from "./invoice-fonts";
 
@@ -12,13 +17,20 @@ import { loadInvoiceFontsBase64 } from "./invoice-fonts";
  * and subsets+embeds the bundled Noto fonts, so the PDF reads the same on every
  * device.
  *
- * The LAYOUT, branding, tables, GST handling, totals and amount-in-words are a
- * faithful port of the previous jsPDF invoice — the financial logic below is
- * copied verbatim so invoices reconcile exactly as before. Only the rendering
- * backend and the font coverage changed.
+ * LAYOUT is a GST tax-invoice modelled on the Shiprocket reference: three info
+ * columns (Shipping Address / Sold By / Invoice Details), an items table with
+ * per-line Unit Price, Discount, Taxable Value and GST, a Shipping Charges line,
+ * a Net Total, and an Authorized Signature block.
+ *
+ * The FINANCIAL logic — subtotal, delivery, GST split (added vs. included) and
+ * the grand total — is read from the FINALIZED order and copied verbatim from
+ * the previous builder, so invoices reconcile exactly as before. Only the
+ * rendering backend, the font coverage and the visual layout changed. Fields
+ * the catalog does not store (SKU, HSN, courier name, GST state code, CGST/SGST
+ * split) are intentionally omitted rather than invented.
  */
 
-// Brand colours (same hex values the jsPDF version used).
+// Brand colours.
 const PRIMARY = "#154212";
 const SECONDARY = "#705a4c";
 const LIGHT_BG = "#f8f7f3";
@@ -70,9 +82,9 @@ function amountInWords(amount: number): string {
 function formatDate(createdAt: unknown): string {
   try {
     const d = (createdAt as any)?.toDate?.() ?? new Date(createdAt as string);
-    return d.toLocaleDateString("en-IN", { day: "numeric", month: "long", year: "numeric" });
+    return d.toLocaleDateString("en-IN", { day: "2-digit", month: "2-digit", year: "numeric" });
   } catch {
-    return new Date().toLocaleDateString("en-IN", { day: "numeric", month: "long", year: "numeric" });
+    return new Date().toLocaleDateString("en-IN", { day: "2-digit", month: "2-digit", year: "numeric" });
   }
 }
 
@@ -81,6 +93,7 @@ export interface InvoiceSellerInfo {
   address?: string;
   city?: string;
   state?: string;
+  pincode?: string;
   phone?: string;
   gstin?: string;
 }
@@ -120,6 +133,13 @@ export function buildInvoiceHtml(order: OrderDoc, seller?: InvoiceSellerInfo): s
   const invoiceNum = resolveInvoiceNumber(order);
 
   // ── Items ──────────────────────────────────────────────────────────────────
+  // Per line, straight from the finalized order:
+  //  - net          = customer-facing line value (price x qty).
+  //  - taxAmt       = GST on the line (per-unit gstAmount x qty).
+  //  - taxable      = value excluding GST (net - taxAmt for inclusive lines; net
+  //                   itself for exclusive lines, where GST is added on top).
+  //  - lineTotal    = amount including GST.
+  //  - unitDiscount = originalPrice - price per unit (only when a discount applied).
   const items = normalizeOrderItems(order.items as any);
   const bodyRows = items
     .map((item, i) => {
@@ -127,16 +147,24 @@ export function buildInvoiceHtml(order: OrderDoc, seller?: InvoiceSellerInfo): s
       const applicable = !!(item.gstApplicable && item.gstRate);
       const included = applicable && item.gstIncluded !== false;
       const taxAmt = applicable ? round2((item.gstAmount ?? 0) * item.qty) : 0;
+      const taxable = included ? round2(net - taxAmt) : net;
       const lineTotal = included ? net : round2(net + taxAmt);
+      const unitDiscount =
+        item.originalPrice && item.originalPrice > item.price
+          ? round2(item.originalPrice - item.price)
+          : 0;
       const name = item.variantUnit ? `${item.name} (${item.variantUnit})` : item.name;
+      const gstCell = applicable
+        ? `${formatINR(taxAmt)} | ${item.gstRate}%${included ? "<br><span class=\"sub\">incl.</span>" : ""}`
+        : "—";
       return `<tr>
         <td class="c">${i + 1}</td>
-        <td>${esc(name)}</td>
-        <td class="r">${formatINR(item.price)}</td>
+        <td><div class="pname">${esc(name)}</div></td>
         <td class="c">${item.qty}</td>
-        <td class="r">${formatINR(net)}</td>
-        <td class="c">${applicable ? `${item.gstRate}%${included ? " (incl.)" : ""}` : "—"}</td>
-        <td class="r">${applicable ? formatINR(taxAmt) : "—"}</td>
+        <td class="r">${formatINR(item.price)}</td>
+        <td class="r">${unitDiscount > 0 ? formatINR(unitDiscount) : "0.00"}</td>
+        <td class="r">${formatINR(taxable)}</td>
+        <td class="r">${gstCell}</td>
         <td class="r">${formatINR(lineTotal)}</td>
       </tr>`;
     })
@@ -158,6 +186,8 @@ export function buildInvoiceHtml(order: OrderDoc, seller?: InvoiceSellerInfo): s
 
   const totalGstStored = round2(order.totalGst ?? 0);
   let addedGst = round2(order.totalGstAdded ?? 0);
+  // Legacy orders pre-date `totalGstAdded` and charged GST on top. Infer that case
+  // from the grand total so their invoices stay correct.
   if (order.totalGstAdded === undefined && totalGstStored > 0) {
     const noGstTotal = round2(subtotal + deliveryPaid);
     if ((order.grandTotal ?? noGstTotal) > noGstTotal + 0.01) addedGst = totalGstStored;
@@ -165,31 +195,27 @@ export function buildInvoiceHtml(order: OrderDoc, seller?: InvoiceSellerInfo): s
   const includedGst = round2(totalGstStored - addedGst);
   const grand = order.grandTotal ?? round2(subtotal + deliveryPaid + addedGst);
 
-  // ── Summary rows ─────────────────────────────────────────────────────────────
-  const summaryRows: string[] = [
-    `<div class="srow"><span>Product Subtotal</span><span>${formatINR(subtotal)}</span></div>`,
-  ];
-  if (addedGst > 0) {
-    summaryRows.push(
-      `<div class="srow"><span>GST${rateLabel ? ` (${rateLabel})` : ""}</span><span>+ ${formatINR(addedGst)}</span></div>`,
-    );
-  }
-  if (deliveryFree) {
-    const waived =
-      deliveryWaived > 0
-        ? `<span class="strike">${formatINR(deliveryWaived)}</span> <span class="free">FREE</span>`
-        : `<span class="free">FREE</span>`;
-    summaryRows.push(`<div class="srow"><span>Delivery Charge</span><span>${waived}</span></div>`);
-  } else {
-    summaryRows.push(
-      `<div class="srow"><span>Delivery Charge</span><span>${formatINR(deliveryPaid)}</span></div>`,
-    );
-  }
-  summaryRows.push(
-    `<div class="srow total"><span>Invoice Value</span><span>${formatINR(grand)}</span></div>`,
-  );
+  // ── Shipping charges table row (mirrors the reference invoice) ───────────────
+  const shippingRow = (() => {
+    if (deliveryFree) {
+      const waived =
+        deliveryWaived > 0
+          ? `<span class="strike">${formatINR(deliveryWaived)}</span> <span class="free">FREE</span>`
+          : `<span class="free">FREE</span>`;
+      return `<tr class="shiprow">
+        <td></td><td><div class="pname">Shipping Charges</div></td>
+        <td class="c">—</td><td class="r">—</td><td class="r">0.00</td>
+        <td class="r">${waived}</td><td class="r">0.00 | 0%</td><td class="r">${waived}</td>
+      </tr>`;
+    }
+    return `<tr class="shiprow">
+      <td></td><td><div class="pname">Shipping Charges</div></td>
+      <td class="c">—</td><td class="r">—</td><td class="r">0.00</td>
+      <td class="r">${formatINR(deliveryPaid)}</td><td class="r">0.00 | 0%</td><td class="r">${formatINR(deliveryPaid)}</td>
+    </tr>`;
+  })();
 
-  // ── Notes under the summary ──────────────────────────────────────────────────
+  // ── Notes under the totals ───────────────────────────────────────────────────
   const notes: string[] = [];
   if (includedGst > 0) {
     notes.push(
@@ -214,29 +240,34 @@ export function buildInvoiceHtml(order: OrderDoc, seller?: InvoiceSellerInfo): s
     notes.push(`<div class="note">Est. weight: ${esc(order.totalWeightKg)} kg</div>`);
   }
 
-  // ── Transaction / totals detail block ────────────────────────────────────────
-  const paymentTxnId = order.payment?.razorpayPaymentId ?? order.payment?.razorpayOrderId ?? "—";
-  const modeOfPayment = order.payment ? "Online (Razorpay)" : "Cash on Delivery";
-  const dateTime = (() => {
-    try {
-      const d = (order.createdAt as any)?.toDate?.() ?? new Date(order.createdAt as string);
-      return d.toLocaleString("en-IN", {
-        day: "numeric", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit",
-      });
-    } catch {
-      return formatDate(order.createdAt);
-    }
-  })();
-  const gstNum = order.sellerGstNumber ?? seller?.gstin;
+  // ── Invoice-details column (right) ───────────────────────────────────────────
+  // A manual order can be backed by several captured payments; show every linked id
+  // so the invoice reflects the full split, falling back to the single-payment field.
+  const linkedPaymentIds = order.payment?.razorpayPaymentIds?.length
+    ? order.payment.razorpayPaymentIds
+    : order.payment?.razorpayPaymentId
+    ? [order.payment.razorpayPaymentId]
+    : [];
+  const paymentTxnId = linkedPaymentIds.length ? linkedPaymentIds.join(", ") : order.payment?.razorpayOrderId;
+  const modeOfPayment = paymentModeLabel(order.payment);
+  const orderNo = `#${order.id.slice(0, 10).toUpperCase()}`;
+  const invoiceDate = formatDate(order.createdAt);
+  const status = (order.status ?? "placed").replace(/_/g, " ").toUpperCase();
 
-  const detailRows: [string, string, boolean?][] = [
-    ["Amount in Words", amountInWords(grand)],
-    ["Payment Transaction ID", String(paymentTxnId)],
-    ["Date & Time", dateTime],
-    ["Invoice Value", formatINR(grand), true],
-    ["Product Value", formatINR(subtotal)],
-    ["Mode of Payment", modeOfPayment],
-    ...(gstNum ? ([["Seller GSTIN", String(gstNum)]] as [string, string][]) : []),
+  // Courier / tracking — the catalog stores no courier NAME, only the tracking
+  // identifier + its type (AWB / LR / consignment…). Shown only when present.
+  const tr = order.tracking;
+  const trackingLabel = tr?.id ? trackingIdTypeLabel(tr.idType, tr.idTypeLabel) : "";
+
+  const detailRows: [string, string][] = [
+    ["INVOICE NO.", invoiceNum],
+    ["INVOICE DATE", invoiceDate],
+    ["ORDER NO.", orderNo],
+    ["ORDER DATE", invoiceDate],
+    ["STATUS", status],
+    ...(tr?.id ? ([[trackingLabel.toUpperCase(), tr.id]] as [string, string][]) : []),
+    ["PAYMENT METHOD", modeOfPayment],
+    ...(paymentTxnId ? ([["TRANSACTION ID", String(paymentTxnId)]] as [string, string][]) : []),
   ];
 
   // ── Info boxes ───────────────────────────────────────────────────────────────
@@ -244,9 +275,10 @@ export function buildInvoiceHtml(order: OrderDoc, seller?: InvoiceSellerInfo): s
     seller?.name ?? order.sellerName ?? "Seller",
     seller?.address ?? "",
     [seller?.city, seller?.state].filter(Boolean).join(", "),
+    seller?.pincode ? `PIN: ${seller.pincode}` : "",
     seller?.phone ? `Ph: ${seller.phone}` : "",
     (seller?.gstin ?? order.sellerGstNumber) ? `GSTIN: ${seller?.gstin ?? order.sellerGstNumber}` : "",
-  ].filter(Boolean).slice(0, 5);
+  ].filter(Boolean);
 
   const customerLines = [
     order.customerName,
@@ -257,7 +289,13 @@ export function buildInvoiceHtml(order: OrderDoc, seller?: InvoiceSellerInfo): s
   const infoLines = (lines: string[]) =>
     lines.map((l) => `<div class="iline">${esc(l)}</div>`).join("");
 
-  const status = (order.status ?? "placed").replace(/_/g, " ").toUpperCase();
+  const detailLines = detailRows
+    .map(
+      ([k, v]) =>
+        `<div class="drow"><div class="dk">${esc(k)}</div><div class="dv">${esc(v)}</div></div>`,
+    )
+    .join("");
+
   const genDate = new Date().toLocaleDateString("en-IN");
 
   // ── Document ─────────────────────────────────────────────────────────────────
@@ -268,88 +306,84 @@ ${fontFaceCss()}
 html,body{font-family:'KDNoto',sans-serif;color:${TEXT_DARK};-webkit-print-color-adjust:exact;print-color-adjust:exact;}
 @page{size:A4;margin:0;}
 .page{width:210mm;min-height:297mm;position:relative;padding-bottom:16mm;}
-.pad{padding:0 15mm;}
+.pad{padding:0 14mm;}
 /* Header band */
-.band{background:${PRIMARY};color:#fff;height:28mm;display:flex;align-items:center;justify-content:space-between;padding:0 15mm;}
-.brand{font-size:16pt;font-weight:700;line-height:1;}
-.brand small{display:block;font-size:8pt;font-weight:400;margin-top:2mm;}
+.band{background:${PRIMARY};color:#fff;height:26mm;display:flex;align-items:center;justify-content:space-between;padding:0 14mm;}
+.brand{font-size:15pt;font-weight:700;line-height:1;}
+.brand small{display:block;font-size:7.5pt;font-weight:400;margin-top:1.8mm;opacity:.9;}
 .htitle{text-align:right;}
-.htitle b{font-size:18pt;font-weight:700;}
-.htitle small{display:block;font-size:8pt;font-weight:400;margin-top:2mm;}
-/* Meta row */
-.meta{display:flex;background:${LIGHT_BG};border:0.3mm solid ${BORDER};border-radius:2mm;margin-top:6mm;}
-.meta>div{flex:1;padding:2.5mm 4mm;}
-.meta .k{font-size:7pt;color:${TEXT_GREY};}
-.meta .v{font-size:8.5pt;font-weight:700;margin-top:1mm;}
-/* Info boxes */
-.boxes{display:flex;gap:6mm;margin-top:6mm;}
-.box{flex:1;background:${LIGHT_BG};border:0.3mm solid ${BORDER};border-radius:2mm;overflow:hidden;min-height:38mm;}
-.box .bh{color:#fff;font-size:7pt;font-weight:700;padding:1.6mm 3mm;}
-.box .bb{padding:2.5mm 3mm;font-size:8pt;line-height:1.5;}
+.htitle b{font-size:17pt;font-weight:700;letter-spacing:1px;}
+.htitle small{display:block;font-size:7.5pt;font-weight:400;margin-top:1.8mm;opacity:.9;}
+/* Three info columns */
+.cols{display:flex;gap:4mm;margin-top:7mm;}
+.col{flex:1;border:0.3mm solid ${BORDER};border-radius:2mm;overflow:hidden;}
+.col .ch{background:${LIGHT_BG};color:${PRIMARY};font-size:7pt;font-weight:700;letter-spacing:.4px;padding:1.8mm 3mm;border-bottom:0.3mm solid ${BORDER};}
+.col .cb{padding:2.5mm 3mm;font-size:8pt;line-height:1.55;}
 .iline{word-break:break-word;}
+.drow{display:flex;justify-content:space-between;gap:2mm;padding:0.5mm 0;}
+.drow .dk{color:${TEXT_GREY};font-size:7pt;font-weight:700;flex:none;}
+.drow .dv{text-align:right;word-break:break-word;font-size:7.5pt;}
 /* Items table */
-table{width:100%;border-collapse:collapse;margin-top:8mm;font-size:7.5pt;}
-th{background:${PRIMARY};color:#fff;font-weight:700;padding:2.2mm;border:0.2mm solid ${PRIMARY};text-align:left;}
-td{padding:2.2mm;border:0.2mm solid ${BORDER};vertical-align:top;word-break:break-word;}
+table{width:100%;border-collapse:collapse;margin-top:7mm;font-size:7.5pt;}
+th{background:${PRIMARY};color:#fff;font-weight:700;padding:2mm;border:0.2mm solid ${PRIMARY};text-align:left;font-size:6.8pt;letter-spacing:.2px;}
+td{padding:2mm;border:0.2mm solid ${BORDER};vertical-align:top;word-break:break-word;}
 tbody tr:nth-child(even){background:${LIGHT_BG};}
+tr.shiprow td{background:#fff;color:${TEXT_GREY};}
+.pname{font-weight:700;color:${TEXT_DARK};}
+td .sub,span.sub{font-size:6pt;color:${TEXT_GREY};font-weight:400;}
 td.r,th.r{text-align:right;}
 td.c,th.c{text-align:center;}
-/* Summary */
-.summary{width:75mm;margin-left:auto;margin-top:6mm;}
-.srow{display:flex;justify-content:space-between;background:${LIGHT_BG};padding:1.8mm 3mm;font-size:7.5pt;}
-.srow.total{background:${PRIMARY};color:#fff;font-size:9pt;font-weight:700;padding:2.5mm 3mm;}
 .strike{text-decoration:line-through;color:${TEXT_GREY};}
 .free{color:${PRIMARY};font-weight:700;}
-.srow.total .free{color:#fff;}
-.notes{width:75mm;margin-left:auto;margin-top:2mm;}
-.note{font-size:6.5pt;color:${TEXT_GREY};line-height:1.4;margin-top:0.8mm;}
-.note.accent{font-size:7pt;color:${PRIMARY};}
-/* Detail block */
-.detail{border:0.3mm solid ${BORDER};border-radius:2mm;margin-top:6mm;padding:2mm;}
-.drow{display:flex;font-size:7.5pt;padding:0.8mm 0;}
-.drow .dk{width:42mm;color:${TEXT_GREY};flex:none;}
-.drow .dv{flex:1;}
-.drow.bold .dv{font-weight:700;}
+/* Net total */
+.nettotal{display:flex;justify-content:flex-end;align-items:center;gap:6mm;margin-top:4mm;padding:3mm 4mm;background:${PRIMARY};color:#fff;border-radius:2mm;}
+.nettotal .lbl{font-size:10pt;font-weight:700;letter-spacing:.3px;}
+.nettotal .val{font-size:13pt;font-weight:700;}
+/* Words + notes row */
+.below{display:flex;gap:6mm;margin-top:5mm;}
+.words{flex:1;font-size:7.5pt;}
+.words .k{color:${TEXT_GREY};font-size:7pt;}
+.words .v{font-weight:700;margin-top:0.6mm;}
+.notes{width:72mm;}
+.note{font-size:6.8pt;color:${TEXT_GREY};line-height:1.4;margin-top:0.8mm;}
+.note.accent{font-size:7.2pt;color:${PRIMARY};font-weight:700;}
+.rc{font-size:7pt;color:${TEXT_GREY};margin-top:4mm;}
 /* Footer */
-.footer{position:absolute;bottom:0;left:0;right:0;height:12mm;background:${PRIMARY};color:#fff;font-size:7pt;display:flex;align-items:center;justify-content:space-between;padding:0 15mm;}
+.footer{position:absolute;bottom:0;left:0;right:0;height:11mm;background:${PRIMARY};color:#fff;font-size:7pt;display:flex;align-items:center;justify-content:space-between;padding:0 14mm;}
 </style></head>
 <body>
 <div class="page">
   <div class="band">
     <div class="brand">KrishiDukan<small>Agricultural Marketplace</small></div>
-    <div class="htitle"><b>TAX INVOICE</b><small>${esc(invoiceNum)}</small></div>
+    <div class="htitle"><b>TAX INVOICE</b></div>
   </div>
   <div class="pad">
-    <div class="meta">
-      <div><div class="k">ORDER ID</div><div class="v">#${esc(order.id.slice(0, 8).toUpperCase())}</div></div>
-      <div><div class="k">DATE</div><div class="v">${esc(formatDate(order.createdAt))}</div></div>
-      <div><div class="k">STATUS</div><div class="v">${esc(status)}</div></div>
-    </div>
-
-    <div class="boxes">
-      <div class="box"><div class="bh" style="background:${PRIMARY}">SOLD BY</div><div class="bb">${infoLines(sellerLines)}</div></div>
-      <div class="box"><div class="bh" style="background:${SECONDARY}">BILL TO</div><div class="bb">${infoLines(customerLines)}</div></div>
+    <div class="cols">
+      <div class="col"><div class="ch">SHIPPING ADDRESS</div><div class="cb">${infoLines(customerLines)}</div></div>
+      <div class="col"><div class="ch">SOLD BY</div><div class="cb">${infoLines(sellerLines)}</div></div>
+      <div class="col"><div class="ch">INVOICE DETAILS</div><div class="cb">${detailLines}</div></div>
     </div>
 
     <table>
       <thead><tr>
-        <th class="c">Sr.</th><th>Product</th><th class="r">Unit Price</th><th class="c">Qty</th>
-        <th class="r">Net Amount</th><th class="c">Tax Rate</th><th class="r">Tax Amount</th><th class="r">Total</th>
+        <th class="c">S.No.</th><th>Product Name</th><th class="c">Qty</th>
+        <th class="r">Unit Price</th><th class="r">Discount</th>
+        <th class="r">Taxable Value</th><th class="r">GST (Value&nbsp;|&nbsp;%)</th><th class="r">Total</th>
       </tr></thead>
-      <tbody>${bodyRows}</tbody>
+      <tbody>${bodyRows}${shippingRow}</tbody>
     </table>
 
-    <div class="summary">${summaryRows.join("")}</div>
-    ${notes.length ? `<div class="notes">${notes.join("")}</div>` : ""}
+    <div class="nettotal"><span class="lbl">NET TOTAL</span><span class="val">${formatINR(grand)}</span></div>
 
-    <div class="detail">
-      ${detailRows
-        .map(
-          ([k, v, bold]) =>
-            `<div class="drow${bold ? " bold" : ""}"><div class="dk">${esc(k)}</div><div class="dv">${esc(v)}</div></div>`,
-        )
-        .join("")}
+    <div class="below">
+      <div class="words">
+        <div class="k">Amount in Words</div>
+        <div class="v">${esc(amountInWords(grand))}</div>
+      </div>
+      ${notes.length ? `<div class="notes">${notes.join("")}</div>` : ""}
     </div>
+
+    <div class="rc">Whether tax is payable under reverse charge — No</div>
   </div>
   <div class="footer">
     <span>Generated by KrishiDukan · ${esc(genDate)}</span>

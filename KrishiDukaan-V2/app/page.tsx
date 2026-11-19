@@ -201,6 +201,11 @@ export default function App() {
   const [user, setUser] = useState<any>(null);
   const [userRole, setUserRole] = useState<UserRole>('customer');
   const [userProfile, setUserProfile] = useState<UserProfile>({ name: '', phone: '', email: '', isPaid: false });
+  // Where to send the user back to after a login they were forced into (e.g.
+  // the Support Inbox on About/Help gated behind auth). A ref — not state — so
+  // it survives the login round-trip without triggering a re-render, and is
+  // honoured once in handleAuthSuccess then cleared.
+  const postLoginViewRef = useRef<View | null>(null);
   // Views below (ProfileView, SubscriptionView, Footer) only accept the
   // consumer-facing roles; map 'admin' to 'customer' for them.
   const consumerRole: 'customer' | 'retailer' | 'manufacturer' =
@@ -228,6 +233,10 @@ export default function App() {
   /** True once a signed-in user has been observed, so the auth listener can tell a
    *  real sign-out from the null it emits on every logged-out cold load. */
   const hadUserRef = useRef(false);
+  /** True once an in-app navigation has pushed a history entry this session, so a
+   *  back button can safely call window.history.back() and know the previous entry
+   *  belongs to this app (vs. a direct deep-link load, which only replaceState's). */
+  const hasInAppHistoryRef = useRef(false);
   const [checkoutLoading, setCheckoutLoading] = useState(false);
   const [checkoutMessage, setCheckoutMessage] = useState<string | null>(null);
   const [storePickerProduct, setStorePickerProduct] = useState<MarketplaceProduct | null>(null);
@@ -458,6 +467,8 @@ export default function App() {
           window.history.replaceState(null, '', nextUrl);
         } else {
           window.history.pushState(null, '', nextUrl);
+          // A real history entry now exists for this app, so back() can be trusted.
+          hasInAppHistoryRef.current = true;
         }
         // Always scroll to top when navigating
         window.scrollTo({ top: 0, behavior: 'instant' });
@@ -971,6 +982,13 @@ export default function App() {
     return () => { cancelled = true; };
   }, []);
 
+  // Send the user to login, remembering the page to return them to once they
+  // succeed. Used by the auth-gated Support Inbox embedded on About/Help.
+  const requestLogin = useCallback((returnView: View) => {
+    postLoginViewRef.current = returnView;
+    navigate('login');
+  }, [navigate]);
+
   const handleAuthSuccess = (firebaseUser: any, profile: any) => {
     setUser(firebaseUser);
     setUserRole(profile.role);
@@ -984,6 +1002,17 @@ export default function App() {
       totalSeats: profile.totalSeats || 0,
       productCount: profile.productCount || 0
     });
+
+    // Forced to log in from an auth-gated page (e.g. Support Inbox on
+    // About/Help): return them to exactly that page so the inbox opens in
+    // place. Takes precedence over the default role routing below, but not over
+    // a pending sales referral (checkout intent wins).
+    const returnView = postLoginViewRef.current;
+    postLoginViewRef.current = null;
+    if (returnView && !readPendingReferral()) {
+      navigate(returnView, { replace: true });
+      return;
+    }
 
     // Arrived from a sales referral link: straight to checkout, whatever the
     // role — an already-paid seller gets the buy-more page instead.
@@ -2389,6 +2418,7 @@ export default function App() {
             userName={userProfile.name || undefined}
             userEmail={userProfile.email || undefined}
             onNavigate={(view) => navigate(view as View)}
+            onRequireLogin={() => requestLogin('about')}
           />
         );
       case 'support':
@@ -2401,11 +2431,23 @@ export default function App() {
             uid={user.uid}
             userName={userProfile.name || undefined}
             userEmail={userProfile.email || undefined}
-            onBack={() => navigate('profile')}
+            onBack={() => {
+              // Support is reached from About, Help, Profile, the footer, etc.,
+              // so return to wherever the user actually came from. Fall back to
+              // home only when opened directly (no in-app history to pop).
+              if (hasInAppHistoryRef.current) window.history.back();
+              else navigate('home', { replace: true });
+            }}
           />
         );
       case 'help':
-        return <HelpView onNavigate={(view) => navigate(view as View)} user={user} userRole={userRole} />;
+        return (
+          <HelpView
+            onNavigate={(view) => navigate(view as View)}
+            user={user}
+            userRole={userRole}
+          />
+        );
       default:
         return (
           <HomeView

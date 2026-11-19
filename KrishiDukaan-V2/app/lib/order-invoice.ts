@@ -1,6 +1,7 @@
-import { FieldValue } from "firebase-admin/firestore";
+import { FieldValue, type Firestore } from "firebase-admin/firestore";
 import { getAdminDb, getAdminStorage } from "./firebase-admin";
-import { buildInvoiceBlob } from "../utils/invoice-generator";
+import { renderInvoicePdf } from "./invoice-pdf";
+import type { InvoiceSellerInfo } from "./invoice-html";
 import { isInvoiceReady, type OrderDoc } from "../../types/order";
 
 /**
@@ -9,16 +10,63 @@ import { isInvoiceReady, type OrderDoc } from "../../types/order";
  * The web used to build the invoice inside the customer's browser, right after
  * writing the order — so an order written by the mobile app, or rebuilt by the
  * payment webhook, never got a PDF and its /invoice/{orderId} link (the one in
- * the WhatsApp message) answered "not yet generated". This runs the very same
- * builder (utils/invoice-generator) on the server, so every order, from every
- * client, gets the same invoice, stored where /invoice/[orderId] already looks:
+ * the WhatsApp message) answered "not yet generated". This runs the invoice
+ * builder on the server, so every order, from every client, gets the same
+ * invoice, stored where /invoice/[orderId] already looks:
  *
  *   Storage   invoices/{orderId}/{invoiceNumber}.pdf
  *   Firestore orders/{orderId}.invoice { invoiceNumber, storagePath, generatedAt, version }
  *
+ * The PDF is rendered from HTML by headless Chromium (lib/invoice-pdf.ts), which
+ * shapes Indic scripts correctly — Marathi/Hindi customer & product names and ₹
+ * render properly, which the old jsPDF builder could not do.
+ *
  * Idempotent: an order that already has an invoice is left alone unless `force`
  * is set (used to regenerate after a correction).
  */
+
+/**
+ * Enrich the invoice "Sold By" block with the seller's full address/GSTIN.
+ *
+ * The order document only carries sellerName + sellerGstNumber, but the seller's
+ * address/city/state/pincode live on their retailers/manufacturers doc. Resolve
+ * that doc the same way the web does (sellerPhone → uidIndex → sellerId-as-phone)
+ * so the invoice can print a complete registered address. Best-effort: any miss
+ * degrades to whatever the order itself holds (never throws).
+ */
+async function loadSellerInfo(db: Firestore, order: OrderDoc): Promise<InvoiceSellerInfo | undefined> {
+  const fallback: InvoiceSellerInfo | undefined = order.sellerName
+    ? { name: order.sellerName, gstin: order.sellerGstNumber }
+    : undefined;
+  try {
+    const sellerId = order.sellerId;
+    if (!sellerId) return fallback;
+    let phone: string | null = order.sellerPhone || null;
+    if (!phone) {
+      const idx = await db.collection("uidIndex").doc(sellerId).get();
+      phone = idx.exists ? String(idx.data()?.phone ?? "") || null : null;
+    }
+    if (!phone && /^(\+91)?[6-9]\d{9}$/.test(String(sellerId).replace(/\s/g, ""))) {
+      phone = sellerId;
+    }
+    const col = order.sellerType === "manufacturer" ? "manufacturers" : "retailers";
+    const snap = await db.collection(col).doc(phone || sellerId).get();
+    if (!snap.exists) return fallback;
+    const d = snap.data()!;
+    const gstin = String(d.gstin ?? "").trim() || order.sellerGstNumber || undefined;
+    return {
+      name: d.shopName || d.businessName || d.ownerName || d.name || order.sellerName || "Seller",
+      address: d.address || undefined,
+      city: d.city || undefined,
+      state: d.state || undefined,
+      pincode: d.pincode || undefined,
+      phone: d.phone || phone || order.sellerPhone || undefined,
+      gstin,
+    };
+  } catch {
+    return fallback;
+  }
+}
 export type InvoiceOutcome =
   | { ok: true; generated: boolean; storagePath: string; invoiceNumber: string; pending?: false }
   /** The seller hasn't accepted yet: nothing generated, it will be on accept. */
@@ -48,7 +96,8 @@ export async function ensureOrderInvoice(
 
   try {
     const order = { id: orderId, ...data, invoiceNumber } as unknown as OrderDoc;
-    const bytes = Buffer.from(await buildInvoiceBlob(order).arrayBuffer());
+    const seller = await loadSellerInfo(db, order);
+    const bytes = await renderInvoicePdf(order, seller);
     const storagePath = `invoices/${orderId}/${invoiceNumber}.pdf`;
     await getAdminStorage()
       .bucket()
