@@ -75,6 +75,8 @@ export function mapMarketplaceDoc(
     retailerId: data.retailerId ? String(data.retailerId) : undefined,
     retailerPhone: data.retailerPhone ? String(data.retailerPhone) : undefined,
     ownerId: data.ownerId ? String(data.ownerId) : undefined,
+    // Product-identity group id (admin link). Drives the merge key when present.
+    canonicalId: data.canonicalId ? String(data.canonicalId) : undefined,
     manufacturerId: data.manufacturerId ? String(data.manufacturerId) : undefined,
     manufacturerPhone: data.manufacturerPhone ? String(data.manufacturerPhone) : undefined,
     sellMode: data.sellMode === "offline_store_only" ? "offline_store_only" : "online_delivery",
@@ -144,6 +146,18 @@ function millisOfCreated(v: unknown): number {
   return 0;
 }
 
+/**
+ * The merge/dedup key for a listing: the admin-assigned product-identity group
+ * id when present, else the normalized product name. This is what lets two docs
+ * the admin linked as the SAME real product collapse into one card even when
+ * their names differ — and keeps every unlinked product grouping by name exactly
+ * as before (canonicalId absent → key === nameKey).
+ */
+export function groupKeyOf(p: { canonicalId?: string; name?: string }): string {
+  const canonical = String(p.canonicalId ?? "").trim();
+  return canonical || String(p.name ?? "").toLowerCase().trim();
+}
+
 /** Phones compare on their last 10 digits (+91… vs 10-digit); other ids as-is. */
 function idKey(v: unknown): string {
   const s = String(v ?? "").trim();
@@ -174,9 +188,15 @@ function foreignSellerCount(p: MarketplaceProduct): number {
  * vanished from it.
  */
 function compareCanonical(a: MarketplaceProduct, b: MarketplaceProduct): number {
+  // The admin-chosen authoritative doc (its own id === its canonicalId) is the
+  // identity source for the group, so it supplies the card's name/image/details
+  // and must rank first — ahead of even a manufacturer doc in the group.
+  const authoritative = (p: MarketplaceProduct) =>
+    p.canonicalId && p.canonicalId === p.id ? 0 : 1;
   const tier = (p: MarketplaceProduct) => (p.source === "manufacturer_inventory" ? 0 : 1);
   const byId = a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
-  return tier(a) - tier(b)
+  return authoritative(a) - authoritative(b)
+    || tier(a) - tier(b)
     || foreignSellerCount(b) - foreignSellerCount(a)
     // Between manufacturers keep the old id order, so no card changes hands
     // without a reason; otherwise the original listing beats a newcomer.
@@ -370,14 +390,14 @@ export function mergeMarketplaceProducts(
   // groups keep the order they first appear in, so the output order is unchanged.
   const rawByKey = new Map<string, MarketplaceProduct[]>();
   for (const p of raw) {
-    const k = p.name.toLowerCase().trim();
+    const k = groupKeyOf(p);
     const list = rawByKey.get(k) ?? [];
     list.push(p);
     rawByKey.set(k, list);
   }
   const rankedRaw = Array.from(rawByKey.values()).flatMap((list) => [...list].sort(compareCanonical));
   for (const p of rankedRaw) {
-    const key = p.name.toLowerCase().trim();
+    const key = groupKeyOf(p);
     recordSellerDiscount(key, (p as any).ownerId, p.retailerPhone, p.effectiveDiscountPct ?? 0);
     markOnline(key, p.isOnline === true);
     const ids = idsByKey.get(key) ?? [];
@@ -443,7 +463,7 @@ export function mergeMarketplaceProducts(
   // Merge each retailer copy's price into the canonical product's availability
   for (const copy of retailerCopies) {
     if (!copy.name || !copy.price) continue;
-    const key = copy.name.toLowerCase().trim();
+    const key = groupKeyOf(copy);
 
     const copyStoreId = (copy as any).ownerId || copy.retailerId || "";
     const copyPhone = copy.retailerPhone;

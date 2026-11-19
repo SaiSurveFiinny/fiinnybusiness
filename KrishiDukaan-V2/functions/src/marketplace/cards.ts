@@ -11,16 +11,22 @@ import { nextDiscountBoundary } from "./discount";
 import { buildNameKeywords, buildSearchKeywords } from "./search-keywords";
 
 /**
- * marketplaceCards/{sha1(nameKey)} holds one ready-to-render marketplace card
- * per product name: the merge of every manufacturer/retailer/admin copy of
- * that name, plus search tokens and ranking fields. The storefront and app
+ * marketplaceCards/{sha1(groupKey)} holds one ready-to-render marketplace card
+ * per product IDENTITY: the merge of every manufacturer/retailer/admin copy in
+ * that group, plus search tokens and ranking fields. The storefront and app
  * read ~20 cards per page instead of every raw product doc.
+ *
+ * groupKey = a doc's admin-assigned canonicalId (/admin/product-identity) when
+ * set, else its normalized name. So products the admin explicitly linked as the
+ * SAME real product merge into one card even when their names differ, while
+ * every unlinked product still groups by name exactly as before.
  *
  * marketplaceSearch/{same id} holds the card's search tokens, kept apart so
  * readers that load many cards don't download several KB of tokens per card.
  *
- * cardMembers/{productId} = { nameKey } indexes which products belong to which
- * card, because Firestore cannot query case-insensitively by name.
+ * cardMembers/{productId} = { nameKey, groupKey } indexes which products belong
+ * to which card (keyed by groupKey) and keeps the display name key, because
+ * Firestore cannot query case-insensitively by name.
  *
  * Consistency: a rebuild records the earliest time it read anything
  * (sourceReadTime) and only replaces a card built from an older snapshot.
@@ -56,9 +62,9 @@ const IGNORED_PRODUCT_FIELDS = new Set([
   "impressions", "positionSum", "clicks", "calls", "directionRequests",
   "impressionsByDay", "clicksByDay", "callsByDay", "directionRequestsByDay",
   // Product-identity link metadata (admin /admin/product-identity). canonicalId
-  // is inert for the card merge (grouping is still name-based), so stamping it
-  // must not churn a rebuild.
-  "canonicalId", "canonicalLinkedAt", "canonicalLinkedBy",
+  // is NOW the grouping key, so a change to it MUST rebuild (it moves the doc
+  // between cards) and is deliberately NOT ignored — only the audit metadata is.
+  "canonicalLinkedAt", "canonicalLinkedBy",
 ]);
 
 type Timestamp = admin.firestore.Timestamp;
@@ -71,8 +77,21 @@ export function nameKeyOf(name: unknown): string {
   return String(name ?? "").toLowerCase().trim();
 }
 
-export function cardIdFor(nameKey: string): string {
-  return createHash("sha1").update(nameKey).digest("hex");
+/**
+ * The merge/grouping key for a product doc: its admin-assigned product-identity
+ * group id (canonicalId) when present, else its normalized name. This is the key
+ * cards are built and indexed by — so docs the admin linked as the SAME real
+ * product (even with different names) share one card, and every unlinked product
+ * still groups by name (canonicalId absent → groupKey === nameKey).
+ */
+export function groupKeyOf(data: admin.firestore.DocumentData | null | undefined): string {
+  const canonical = String(data?.canonicalId ?? "").trim();
+  return canonical || nameKeyOf(data?.name);
+}
+
+/** The document id (sha1) of the card for a group key. */
+export function cardIdFor(groupKey: string): string {
+  return createHash("sha1").update(groupKey).digest("hex");
 }
 
 function isNewer(a: Timestamp, b: Timestamp): boolean {
@@ -156,7 +175,7 @@ export function aliasesOf(data: admin.firestore.DocumentData | undefined): strin
 }
 
 export function buildCardData(
-  nameKey: string,
+  groupKey: string,
   docs: RawDoc[],
   reviews: ReviewRow[],
   now: number,
@@ -170,6 +189,11 @@ export function buildCardData(
   );
   const product = merged[0];
   if (!product) return null;
+
+  // The card's display/search key is the canonical product's name (the group may
+  // span differently-named docs linked by canonicalId); `groupKey` is the stable
+  // identity the card is stored and queried under.
+  const nameKey = nameKeyOf(product.name);
 
   const availability = product.availability ?? [];
   const base = product.lowestPrice ?? product.price ?? 0;
@@ -193,6 +217,10 @@ export function buildCardData(
     ...product,
     unit: typeof canonicalUnit === "string" && canonicalUnit ? canonicalUnit : undefined,
     nameKey,
+    // The identity key the card is stored under (canonicalId when linked, else
+    // nameKey). Readers that need stable grouping use this; `nameKey` stays the
+    // display/search name key.
+    groupKey,
     categoryKey,
     sellerCount: new Set(availability.map((a) => a.storePhone || a.storeId).filter(Boolean)).size,
     liveDiscountPct,
@@ -227,9 +255,13 @@ export function buildCardData(
     nameKey,
     categoryKey,
     aliasKeys: aliases,
-    nameKeywords: buildNameKeywords(unique([product.name])),
+    // Every member doc's own name, not just the canonical's — so a product-identity
+    // group that spans different names (e.g. "XYZ" linked with "XYZ Fungicide")
+    // stays findable by each of those names.
+    nameKeywords: buildNameKeywords(unique([product.name, ...active.map((d) => d.data.name)])),
     searchKeywords: buildSearchKeywords({
-      names: unique([product.name, product.fullName, ...active.map((d) => d.data.fullName)]),
+      names: unique([product.name, product.fullName,
+        ...active.map((d) => d.data.name), ...active.map((d) => d.data.fullName)]),
       category: String(product.category ?? ""),
       storeNames: unique([...active.map((d) => d.data.store), ...availability.map((a) => a.storeName)]),
       description: String(product.description ?? ""),
@@ -265,12 +297,12 @@ type WriteOutcome = "written" | "deleted" | "unchanged" | "stale";
  * snapshot is already there.
  */
 async function commitCard(
-  nameKey: string,
+  groupKey: string,
   built: BuiltCard | null,
   version: Timestamp,
   dryRun = false,
 ): Promise<WriteOutcome> {
-  const id = cardIdFor(nameKey);
+  const id = cardIdFor(groupKey);
   const ref = db().collection(CARDS).doc(id);
   const searchRef = db().collection(SEARCH).doc(id);
   const hash = built ? contentHash(built) : null;
@@ -304,11 +336,11 @@ async function commitCard(
   });
 }
 
-/** Rebuilds one card from the current state of its name group. */
-export async function rebuildCard(nameKey: string): Promise<WriteOutcome> {
-  if (!nameKey) return "unchanged";
+/** Rebuilds one card from the current state of its group (canonicalId or name). */
+export async function rebuildCard(groupKey: string): Promise<WriteOutcome> {
+  if (!groupKey) return "unchanged";
   const firestore = db();
-  const members = await firestore.collection(MEMBERS).where("nameKey", "==", nameKey).get();
+  const members = await firestore.collection(MEMBERS).where("groupKey", "==", groupKey).get();
   let version = members.readTime;
 
   const docs: RawDoc[] = [];
@@ -321,22 +353,22 @@ export async function rebuildCard(nameKey: string): Promise<WriteOutcome> {
     }
   }
 
-  const links = await firestore.collection(LINKS).doc(cardIdFor(nameKey)).get();
+  const links = await firestore.collection(LINKS).doc(cardIdFor(groupKey)).get();
   version = earliest(version, links.readTime);
 
   const activeIds = docs.filter((d) => d.data.isActive !== false).map((d) => d.id);
   const reviews = await readReviews(activeIds, version);
-  const card = buildCardData(nameKey, docs, reviews.rows, Date.now(), aliasesOf(links.data()));
-  return commitCard(nameKey, card, reviews.version);
+  const card = buildCardData(groupKey, docs, reviews.rows, Date.now(), aliasesOf(links.data()));
+  return commitCard(groupKey, card, reviews.version);
 }
 
 /** Skips the rebuild when a card built after `changedAt` already exists. */
-async function rebuildUnlessCovered(nameKey: string, changedAt: Timestamp): Promise<void> {
-  const current = await db().collection(CARDS).doc(cardIdFor(nameKey)).get();
+async function rebuildUnlessCovered(groupKey: string, changedAt: Timestamp): Promise<void> {
+  const current = await db().collection(CARDS).doc(cardIdFor(groupKey)).get();
   const builtFrom = current.get("sourceReadTime") as Timestamp | undefined;
   if (builtFrom && isNewer(builtFrom, changedAt)) return;
-  const outcome = await rebuildCard(nameKey);
-  logger.debug("[cards] rebuilt", { nameKey, outcome });
+  const outcome = await rebuildCard(groupKey);
+  logger.debug("[cards] rebuilt", { groupKey, outcome });
 }
 
 const TRANSIENT_GRPC_CODES = new Set([4, 8, 10, 13, 14]);
@@ -372,21 +404,29 @@ export const syncMarketplaceCardOnProductWrite = onDocumentWritten(
       return;
     }
 
-    const oldKey = beforeData ? nameKeyOf(beforeData.name) : "";
-    const newKey = afterData ? nameKeyOf(afterData.name) : "";
+    // Group by canonicalId (admin link) when set, else by name. A change to
+    // either moves the doc between cards, so both the old and new group rebuild.
+    const oldGroup = beforeData ? groupKeyOf(beforeData) : "";
+    const newGroup = afterData ? groupKeyOf(afterData) : "";
+    const oldNameKey = beforeData ? nameKeyOf(beforeData.name) : "";
+    const newNameKey = afterData ? nameKeyOf(afterData.name) : "";
 
     try {
       let changedAt = changeTimeOf(after, event.time);
-      if (oldKey !== newKey || !beforeData || !afterData) {
+      // Keep the product→card index (cardMembers) current: rewrite when the group
+      // OR the display name key changes; delete when the product is gone/keyless.
+      if (oldGroup !== newGroup || oldNameKey !== newNameKey || !beforeData || !afterData) {
         const memberRef = db().collection(MEMBERS).doc(productId);
-        const result = newKey ? await memberRef.set({ nameKey: newKey }) : await memberRef.delete();
+        const result = newGroup
+          ? await memberRef.set({ nameKey: newNameKey, groupKey: newGroup })
+          : await memberRef.delete();
         if (isNewer(result.writeTime, changedAt)) changedAt = result.writeTime;
       }
-      for (const key of Array.from(new Set([oldKey, newKey]))) {
+      for (const key of Array.from(new Set([oldGroup, newGroup]))) {
         if (key) await rebuildUnlessCovered(key, changedAt);
       }
     } catch (err) {
-      handleError(err, { productId, oldKey, newKey });
+      handleError(err, { productId, oldGroup, newGroup });
     }
   },
 );
@@ -408,7 +448,8 @@ export const syncMarketplaceCardOnReviewWrite = onDocumentWritten(
     try {
       for (const catalogId of Array.from(catalogIds)) {
         const member = await db().collection(MEMBERS).doc(catalogId).get();
-        const key = String(member.get("nameKey") ?? "");
+        // groupKey is the card key; fall back to nameKey for not-yet-reindexed members.
+        const key = String(member.get("groupKey") ?? member.get("nameKey") ?? "");
         if (key) await rebuildUnlessCovered(key, changedAt);
       }
     } catch (err) {
@@ -496,15 +537,18 @@ export async function reconcileAllCards(opts: { dryRun?: boolean } = {}): Promis
   const note = (t: Timestamp) => { version = version ? earliest(version, t) : t; };
 
   const groups = new Map<string, RawDoc[]>();
-  const keyById = new Map<string, string>();
+  const groupById = new Map<string, string>();
+  const nameKeyById = new Map<string, string>();
   await readAll(PRODUCTS, (docs, readTime) => {
     note(readTime);
     for (const d of docs) {
-      const key = nameKeyOf(d.get("name"));
+      const data = d.data();
+      const key = groupKeyOf(data);
       if (!key) continue;
-      keyById.set(d.id, key);
+      groupById.set(d.id, key);
+      nameKeyById.set(d.id, nameKeyOf(data.name));
       const group = groups.get(key) ?? [];
-      group.push({ id: d.id, data: d.data() });
+      group.push({ id: d.id, data });
       groups.set(key, group);
     }
   });
@@ -528,28 +572,32 @@ export async function reconcileAllCards(opts: { dryRun?: boolean } = {}): Promis
   });
 
   const report: ReconcileReport = {
-    products: keyById.size, membershipsFixed: 0,
+    products: groupById.size, membershipsFixed: 0,
     cardsWritten: 0, cardsDeleted: 0, cardsUnchanged: 0, cardsStale: 0, searchDocsDeleted: 0, failures: 0,
   };
 
   // Memberships: add missing/wrong ones, remove ones for deleted or nameless products.
-  const memberFixes: Array<{ id: string; key: string | null }> = [];
+  // A member doc carries both groupKey (the card key) and nameKey (display key).
+  const memberFixes: Array<{ id: string; groupKey: string | null }> = [];
   const seenMembers = new Set<string>();
   await readAll(MEMBERS, (docs) => {
     for (const d of docs) {
       seenMembers.add(d.id);
-      const want = keyById.get(d.id) ?? null;
-      if (want !== d.get("nameKey")) memberFixes.push({ id: d.id, key: want });
+      const wantGroup = groupById.get(d.id) ?? null;
+      const wantName = nameKeyById.get(d.id) ?? null;
+      if (wantGroup !== d.get("groupKey") || (wantGroup && wantName !== d.get("nameKey"))) {
+        memberFixes.push({ id: d.id, groupKey: wantGroup });
+      }
     }
   });
-  for (const [id, key] of Array.from(keyById)) if (!seenMembers.has(id)) memberFixes.push({ id, key });
+  for (const [id, key] of Array.from(groupById)) if (!seenMembers.has(id)) memberFixes.push({ id, groupKey: key });
   report.membershipsFixed = memberFixes.length;
   if (!dryRun) {
     for (let i = 0; i < memberFixes.length; i += 400) {
       const batch = firestore.batch();
       for (const fix of memberFixes.slice(i, i + 400)) {
         const ref = firestore.collection(MEMBERS).doc(fix.id);
-        if (fix.key) batch.set(ref, { nameKey: fix.key });
+        if (fix.groupKey) batch.set(ref, { nameKey: nameKeyById.get(fix.id) ?? "", groupKey: fix.groupKey });
         else batch.delete(ref);
       }
       await batch.commit();
@@ -557,9 +605,10 @@ export async function reconcileAllCards(opts: { dryRun?: boolean } = {}): Promis
   }
 
   // Cards: build every group; delete cards whose group no longer exists.
+  // Card key is groupKey (fallback to nameKey for cards built before this change).
   const existingCardKeys = new Map<string, string>();
   await readAll(CARDS, (docs) => {
-    for (const d of docs) existingCardKeys.set(d.id, String(d.get("nameKey") ?? ""));
+    for (const d of docs) existingCardKeys.set(d.id, String(d.get("groupKey") ?? d.get("nameKey") ?? ""));
   });
   const groupCardIds = new Set(Array.from(groups.keys(), cardIdFor));
   const orphanSearchIds: string[] = [];
