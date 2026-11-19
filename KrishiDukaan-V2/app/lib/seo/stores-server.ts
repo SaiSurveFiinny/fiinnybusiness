@@ -61,6 +61,13 @@ export interface StoreProduct {
   image: string;
   price: number;
   slug: string;
+  /**
+   * This shop's OWN product doc id (the copy scanned, not the canonical id).
+   * The retailer brand page links to the marketplace product view by this id so
+   * it opens scoped to this shop as the seller; the public /stores/* SEO pages
+   * ignore it and keep linking to the canonical product page via `slug`.
+   */
+  listingId?: string;
 }
 
 function str(v: unknown, fallback = ""): string {

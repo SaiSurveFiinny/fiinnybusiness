@@ -9,11 +9,18 @@
 
 // ─── Category list ───────────────────────────────────────────────────────────
 
+// Order mirrors `settings/productSchema` (scripts/seed-product-schema.js) exactly
+// so this compile-time fallback and the Firestore source of truth can't drift.
+// Insecticides / Fungicides / Adjuvants are real, already-seeded categories with
+// live products — omitting them here made the edit form fall back to "Other".
 export const PRODUCT_CATEGORIES = [
   "Fertilizers",
   "Pesticides",
+  "Insecticides",
+  "Fungicides",
   "Herbicides",
   "Bio-Stimulants",
+  "Adjuvants",
   "Seeds",
   "Sprayers",
   "Tools",
@@ -21,6 +28,22 @@ export const PRODUCT_CATEGORIES = [
 ] as const;
 
 export type ProductCategory = (typeof PRODUCT_CATEGORIES)[number];
+
+/**
+ * Ordered, curated subset shown as Market filter chips (plus an "all" chip the
+ * view prepends). Not every category gets a chip — this is the single place that
+ * decides which do and in what order. Values are canonical category names, so a
+ * chip's filter value is always `name.toLowerCase()` === a product's categoryKey.
+ */
+export const MARKET_FILTER_CATEGORIES: readonly ProductCategory[] = [
+  "Fertilizers",
+  "Pesticides",
+  "Herbicides",
+  "Insecticides",
+  "Bio-Stimulants",
+  "Seeds",
+  "Tools",
+];
 
 /** Returns true if the value is one of the canonical categories. */
 export function isStandardCategory(value: string): value is ProductCategory {
@@ -40,6 +63,31 @@ export interface CategoryField {
 
 // ─── Per-category field definitions ──────────────────────────────────────────
 
+// Pesticides, Insecticides and Fungicides share the same structured field set
+// (matches PESTICIDE_LIKE in scripts/seed-product-schema.js). Defined once here
+// so the three stay identical.
+const PESTICIDE_FIELDS: CategoryField[] = [
+  { key: "activeIngredient", label: "Active Ingredient",    type: "text",  placeholder: "e.g. Chlorpyrifos 50% EC" },
+  { key: "chemicalGroup",    label: "Chemical Group",       type: "text",  placeholder: "e.g. Organophosphate" },
+  { key: "targetPest",       label: "Target Pest",          type: "text",  placeholder: "e.g. Aphids, Thrips, White Flies" },
+  { key: "modeOfAction",     label: "Mode of Action",       type: "textarea", placeholder: "e.g. Contact and systemic action..." },
+  { key: "dosage",           label: "Recommended Dosage",   type: "text",  placeholder: "e.g. 2 ml / Litre of water" },
+  { key: "waitingPeriod",    label: "Waiting Period",       type: "text",  placeholder: "e.g. 14 days before harvest" },
+  { key: "bestForCrops",     label: "Best For Crops",       type: "chips", placeholder: "e.g. Cotton, Rice, Vegetables" },
+];
+
+// Generic adjuvant/surfactant-style fields — shared by Adjuvants and Other
+// (matches GENERIC_FIELDS in scripts/seed-product-schema.js).
+const GENERIC_FIELDS: CategoryField[] = [
+  { key: "keyFeatures",      label: "Key Features / Product Info", type: "textarea", placeholder: "e.g. Non-ionic surfactant. Improves spreading and sticking of spray solutions..." },
+  { key: "benefits",         label: "Benefits",                    type: "chips",    placeholder: "e.g. Reduces surface tension, Improves coverage, Enhances absorption" },
+  { key: "applicationMethod",label: "Application Method",          type: "text",     placeholder: "e.g. Tank mix with pesticide or herbicide solution" },
+  { key: "dosage",           label: "Recommended Dosage",          type: "text",     placeholder: "e.g. 0.5 ml / Litre of spray solution" },
+  { key: "specifications",   label: "Specifications",              type: "textarea", placeholder: "List key product specifications..." },
+  { key: "application",      label: "Application",                 type: "textarea", placeholder: "Describe how the product is used..." },
+  { key: "additionalNotes",  label: "Additional Notes",            type: "textarea", placeholder: "Any other relevant information..." },
+];
+
 export const CATEGORY_FIELDS: Record<ProductCategory, CategoryField[]> = {
   Fertilizers: [
     { key: "application", label: "Application",          type: "textarea", placeholder: "e.g. Suitable for foliar spray and fertigation..." },
@@ -47,15 +95,9 @@ export const CATEGORY_FIELDS: Record<ProductCategory, CategoryField[]> = {
     { key: "bestForCrops",label: "Best For Crops",       type: "chips",    placeholder: "e.g. Tomatoes, Wheat, Sugarcane" },
   ],
 
-  Pesticides: [
-    { key: "activeIngredient", label: "Active Ingredient",    type: "text",  placeholder: "e.g. Chlorpyrifos 50% EC" },
-    { key: "chemicalGroup",    label: "Chemical Group",       type: "text",  placeholder: "e.g. Organophosphate" },
-    { key: "targetPest",       label: "Target Pest",          type: "text",  placeholder: "e.g. Aphids, Thrips, White Flies" },
-    { key: "modeOfAction",     label: "Mode of Action",       type: "textarea", placeholder: "e.g. Contact and systemic action..." },
-    { key: "dosage",           label: "Recommended Dosage",   type: "text",  placeholder: "e.g. 2 ml / Litre of water" },
-    { key: "waitingPeriod",    label: "Waiting Period",       type: "text",  placeholder: "e.g. 14 days before harvest" },
-    { key: "bestForCrops",     label: "Best For Crops",       type: "chips", placeholder: "e.g. Cotton, Rice, Vegetables" },
-  ],
+  Pesticides: PESTICIDE_FIELDS,
+  Insecticides: PESTICIDE_FIELDS,
+  Fungicides: PESTICIDE_FIELDS,
 
   Herbicides: [
     { key: "activeIngredient",   label: "Active Ingredient",             type: "text",  placeholder: "e.g. Glyphosate 41% SL" },
@@ -74,6 +116,8 @@ export const CATEGORY_FIELDS: Record<ProductCategory, CategoryField[]> = {
     { key: "growthStage",      label: "Growth Stage",        type: "text",     placeholder: "e.g. Vegetative, Flowering" },
     { key: "bestForCrops",     label: "Best For Crops",      type: "chips",    placeholder: "e.g. Tomatoes, Grapes, Paddy" },
   ],
+
+  Adjuvants: GENERIC_FIELDS,
 
   Seeds: [
     { key: "varietyName",     label: "Variety Name",      type: "text", placeholder: "e.g. HYV-123, Pusa Basmati" },
@@ -103,15 +147,7 @@ export const CATEGORY_FIELDS: Record<ProductCategory, CategoryField[]> = {
     { key: "warranty",   label: "Warranty",      type: "text", placeholder: "e.g. 1 year manufacturer warranty" },
   ],
 
-  Other: [
-    { key: "keyFeatures",      label: "Key Features / Product Info", type: "textarea", placeholder: "e.g. Non-ionic surfactant. Improves spreading and sticking of spray solutions..." },
-    { key: "benefits",         label: "Benefits",                    type: "chips",    placeholder: "e.g. Reduces surface tension, Improves coverage, Enhances absorption" },
-    { key: "applicationMethod",label: "Application Method",          type: "text",     placeholder: "e.g. Tank mix with pesticide or herbicide solution" },
-    { key: "dosage",           label: "Recommended Dosage",          type: "text",     placeholder: "e.g. 0.5 ml / Litre of spray solution" },
-    { key: "specifications",   label: "Specifications",              type: "textarea", placeholder: "List key product specifications..." },
-    { key: "application",      label: "Application",                 type: "textarea", placeholder: "Describe how the product is used..." },
-    { key: "additionalNotes",  label: "Additional Notes",            type: "textarea", placeholder: "Any other relevant information..." },
-  ],
+  Other: GENERIC_FIELDS,
 };
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────

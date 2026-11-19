@@ -5,11 +5,18 @@ library;
 
 import '../models/catalog_model.dart';
 
+// Order mirrors `settings/productSchema` and web's PRODUCT_CATEGORIES exactly.
+// Insecticides / Fungicides / Adjuvants are real, already-seeded categories with
+// live products; this is the fallback used only when the Firestore schema is
+// unreadable.
 const List<String> productCategories = [
   'Fertilizers',
   'Pesticides',
+  'Insecticides',
+  'Fungicides',
   'Herbicides',
   'Bio-Stimulants',
+  'Adjuvants',
   'Seeds',
   'Sprayers',
   'Tools',
@@ -27,21 +34,37 @@ class CategoryField {
   const CategoryField(this.key, this.label, this.type);
 }
 
+// Pesticides, Insecticides and Fungicides share one field set; Adjuvants and
+// Other share another. Defined once so they can't drift (mirrors web).
+const List<CategoryField> _pesticideFields = [
+  CategoryField('activeIngredient', 'Active Ingredient', CategoryFieldType.text),
+  CategoryField('chemicalGroup', 'Chemical Group', CategoryFieldType.text),
+  CategoryField('targetPest', 'Target Pest', CategoryFieldType.text),
+  CategoryField('modeOfAction', 'Mode of Action', CategoryFieldType.textarea),
+  CategoryField('dosage', 'Recommended Dosage', CategoryFieldType.text),
+  CategoryField('waitingPeriod', 'Waiting Period', CategoryFieldType.text),
+  CategoryField('bestForCrops', 'Best For Crops', CategoryFieldType.chips),
+];
+
+const List<CategoryField> _genericFields = [
+  CategoryField('keyFeatures', 'Key Features / Product Info', CategoryFieldType.textarea),
+  CategoryField('benefits', 'Benefits', CategoryFieldType.chips),
+  CategoryField('applicationMethod', 'Application Method', CategoryFieldType.text),
+  CategoryField('dosage', 'Recommended Dosage', CategoryFieldType.text),
+  CategoryField('specifications', 'Specifications', CategoryFieldType.textarea),
+  CategoryField('application', 'Application', CategoryFieldType.textarea),
+  CategoryField('additionalNotes', 'Additional Notes', CategoryFieldType.textarea),
+];
+
 const Map<String, List<CategoryField>> categoryFields = {
   'Fertilizers': [
     CategoryField('application', 'Application', CategoryFieldType.textarea),
     CategoryField('dosage', 'Recommended Dosage', CategoryFieldType.text),
     CategoryField('bestForCrops', 'Best For Crops', CategoryFieldType.chips),
   ],
-  'Pesticides': [
-    CategoryField('activeIngredient', 'Active Ingredient', CategoryFieldType.text),
-    CategoryField('chemicalGroup', 'Chemical Group', CategoryFieldType.text),
-    CategoryField('targetPest', 'Target Pest', CategoryFieldType.text),
-    CategoryField('modeOfAction', 'Mode of Action', CategoryFieldType.textarea),
-    CategoryField('dosage', 'Recommended Dosage', CategoryFieldType.text),
-    CategoryField('waitingPeriod', 'Waiting Period', CategoryFieldType.text),
-    CategoryField('bestForCrops', 'Best For Crops', CategoryFieldType.chips),
-  ],
+  'Pesticides': _pesticideFields,
+  'Insecticides': _pesticideFields,
+  'Fungicides': _pesticideFields,
   'Herbicides': [
     CategoryField('activeIngredient', 'Active Ingredient', CategoryFieldType.text),
     CategoryField('targetWeeds', 'Target Weeds', CategoryFieldType.text),
@@ -58,6 +81,7 @@ const Map<String, List<CategoryField>> categoryFields = {
     CategoryField('growthStage', 'Growth Stage', CategoryFieldType.text),
     CategoryField('bestForCrops', 'Best For Crops', CategoryFieldType.chips),
   ],
+  'Adjuvants': _genericFields,
   'Seeds': [
     CategoryField('varietyName', 'Variety Name', CategoryFieldType.text),
     CategoryField('seedType', 'Seed Type', CategoryFieldType.text),
@@ -83,15 +107,7 @@ const Map<String, List<CategoryField>> categoryFields = {
     CategoryField('handleType', 'Handle Type', CategoryFieldType.text),
     CategoryField('warranty', 'Warranty', CategoryFieldType.text),
   ],
-  'Other': [
-    CategoryField('keyFeatures', 'Key Features / Product Info', CategoryFieldType.textarea),
-    CategoryField('benefits', 'Benefits', CategoryFieldType.chips),
-    CategoryField('applicationMethod', 'Application Method', CategoryFieldType.text),
-    CategoryField('dosage', 'Recommended Dosage', CategoryFieldType.text),
-    CategoryField('specifications', 'Specifications', CategoryFieldType.textarea),
-    CategoryField('application', 'Application', CategoryFieldType.textarea),
-    CategoryField('additionalNotes', 'Additional Notes', CategoryFieldType.textarea),
-  ],
+  'Other': _genericFields,
 };
 
 /// Fields stored as a list of strings instead of a plain string.

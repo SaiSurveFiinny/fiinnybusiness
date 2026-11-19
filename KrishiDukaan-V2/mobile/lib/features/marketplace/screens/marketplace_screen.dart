@@ -18,12 +18,16 @@ import '../../../core/widgets/shimmer_product_card.dart';
 import '../data/quick_buy.dart';
 import '../providers/marketplace_provider.dart';
 
+// Chip value === canonical category name, so filtering (which compares
+// case-insensitively against a product's stored `category`) matches reliably.
+// 'Bio Pesticides' was a typo for 'Bio-Stimulants' and matched no product.
+// Order mirrors the web Market filters.
 const _categories = [
-  'Pesticides',
   'Fertilizers',
+  'Pesticides',
   'Herbicides',
-  'Bio Pesticides',
-  'Sprayers',
+  'Insecticides',
+  'Bio-Stimulants',
   'Seeds',
   'Tools',
 ];

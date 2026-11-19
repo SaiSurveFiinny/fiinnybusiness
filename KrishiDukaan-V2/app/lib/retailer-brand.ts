@@ -36,7 +36,7 @@ export type RetailerBrandPage = {
   photos: string[];
   /** Free text, e.g. "Mon–Sat 8am – 8pm". */
   openingHours: string;
-  /** Short chips: "Home delivery", "Soil testing", "Credit for farmers"… */
+  /** Short chips: "Online delivery", "Soil testing", "Credit for farmers"… */
   highlights: string[];
   /** WhatsApp number for the Chat button; blank = the shop phone. */
   whatsapp: string;
@@ -57,7 +57,7 @@ export const EMPTY_RETAILER_BRAND: RetailerBrandPage = {
 
 /** Suggestions offered as one-tap chips in the editor. */
 export const SUGGESTED_HIGHLIGHTS = [
-  "Home delivery",
+  "Online delivery",
   "Genuine products",
   "Expert crop advice",
   "Soil testing",
