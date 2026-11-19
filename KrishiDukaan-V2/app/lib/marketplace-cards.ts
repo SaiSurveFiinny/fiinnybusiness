@@ -11,7 +11,7 @@ export const SEARCH_COLLECTION = "marketplaceSearch";
 // Bookkeeping fields the storefront never renders.
 const INTERNAL_FIELDS = [
   "contentHash", "sourceReadTime", "builtAt", "nextRecomputeAt", "memberIds",
-  "schemaVersion", "listable", "nameKey", "categoryKey", "createdAtMs",
+  "schemaVersion", "listable", "nameKey", "groupKey", "categoryKey", "createdAtMs",
   "liveDiscountPct", "sellerCount", "searchAliases",
 ];
 

@@ -1,0 +1,20 @@
+{
+  "project": "krishidukan-e8315",
+  "mode": "dry-run",
+  "generatedAt": "2026-11-17T08:27:27.889Z",
+  "targetAccounts": [
+    "Arjun Admin",
+    "Sai Influencer Test",
+    "Sai Surve Fiinny",
+    "Kunal Deore Agro Agency",
+    "Karan Tanpure"
+  ],
+  "summary": {
+    "matchedRecords": 5,
+    "affectedOrders": 0,
+    "mixedOrders": 0,
+    "razorpayPaymentsDocs": 0,
+    "paymentAttemptsDocs": 0
+  },
+  "toDelete": []
+}

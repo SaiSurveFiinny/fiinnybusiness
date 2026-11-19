@@ -40,6 +40,36 @@ const SOURCE_OPTIONS = [
   "retailer_inventory_copy",
 ];
 
+type NameSuggestion = { name: string; image: string; category: string };
+
+/**
+ * Typeahead suggestions for the Name search: substring/fuzzy product-name
+ * matches from the server search API (reads marketplaceCards), deduped by name.
+ * Unlike the exact `cardMembers where nameKey ==` lookup the search itself runs,
+ * this lets the admin type a partial name ("ulala") and pick the full one.
+ */
+async function fetchNameSuggestions(q: string, pageSize = 8): Promise<NameSuggestion[]> {
+  const term = q.trim();
+  if (term.length < 2) return [];
+  const res = await fetch(`/api/marketplace/products?suggest=1&pageSize=${pageSize}&search=${encodeURIComponent(term)}`);
+  if (!res.ok) return [];
+  const body = await res.json();
+  const seen = new Set<string>();
+  const out: NameSuggestion[] = [];
+  for (const p of (body.products ?? []) as Array<Record<string, unknown>>) {
+    const name = String(p.name ?? "").trim();
+    const key = name.toLowerCase();
+    if (!name || seen.has(key)) continue;
+    seen.add(key);
+    out.push({
+      name,
+      image: String((Array.isArray(p.images) && p.images[0]) || p.image || ""),
+      category: String(p.category ?? ""),
+    });
+  }
+  return out;
+}
+
 function SourceBadge({ source, isCopy }: { source: string; isCopy: boolean }) {
   return (
     <span
@@ -61,6 +91,10 @@ export default function ProductIdentityPage() {
   const [results, setResults] = useState<IdentityRow[] | null>(null);
   const [searching, setSearching] = useState(false);
   const [searchErr, setSearchErr] = useState<string | null>(null);
+
+  // Name typeahead
+  const [suggestions, setSuggestions] = useState<NameSuggestion[]>([]);
+  const [showSuggest, setShowSuggest] = useState(false);
 
   // Every row the admin has seen (browse + search), so the link modal can render
   // selected docs even after the view changes.
@@ -107,9 +141,23 @@ export default function ProductIdentityPage() {
 
   const rows = results ?? browse.rows;
 
-  // ── Search ────────────────────────────────────────────────────────────────
-  const runSearch = useCallback(async () => {
+  // Debounced name typeahead — only in Name mode, min 2 chars.
+  useEffect(() => {
+    if (mode !== "name") { setSuggestions([]); return; }
     const q = text.trim();
+    if (q.length < 2) { setSuggestions([]); return; }
+    let cancelled = false;
+    const t = setTimeout(async () => {
+      const s = await fetchNameSuggestions(q);
+      if (!cancelled) { setSuggestions(s); setShowSuggest(true); }
+    }, 250);
+    return () => { cancelled = true; clearTimeout(t); };
+  }, [text, mode]);
+
+  // ── Search ────────────────────────────────────────────────────────────────
+  const runSearch = useCallback(async (overrideTerm?: string) => {
+    const q = (overrideTerm ?? text).trim();
+    setShowSuggest(false);
     if (!q) {
       setResults(null);
       setSearchErr(null);
@@ -252,7 +300,8 @@ export default function ProductIdentityPage() {
           <p className="text-sm text-on-surface-variant">
             Individual <code>products</code> documents (not name-merged cards). Link docs that are the same real
             product — it stamps a shared <code>canonicalId</code> and never changes names, variants, prices, stock or
-            ownership. Grouping stays name-based until the catalogId migration is approved.
+            ownership. Linked docs merge into ONE marketplace card (even with different names); their package sizes
+            become variants and every seller shows as a retailer on that card.
           </p>
         </div>
       </div>
@@ -281,6 +330,8 @@ export default function ProductIdentityPage() {
           <input
             value={text}
             onChange={(e) => setText(e.target.value)}
+            onFocus={() => mode === "name" && suggestions.length > 0 && setShowSuggest(true)}
+            onBlur={() => setTimeout(() => setShowSuggest(false), 150)}
             onKeyDown={(e) => e.key === "Enter" && runSearch()}
             placeholder={
               mode === "id"
@@ -289,13 +340,38 @@ export default function ProductIdentityPage() {
                   ? "owner uid or phone"
                   : mode === "source"
                     ? "e.g. retailer_inventory"
-                    : "product name"
+                    : "product name (type to see matches)"
             }
             className="w-full rounded-xl border border-outline-variant bg-white py-2 pl-9 pr-3 text-sm"
           />
+          {mode === "name" && showSuggest && suggestions.length > 0 && (
+            <ul className="absolute z-20 mt-1 max-h-72 w-full overflow-auto rounded-xl border border-outline-variant bg-white py-1 shadow-lg">
+              {suggestions.map((s) => (
+                <li key={s.name}>
+                  <button
+                    type="button"
+                    // onMouseDown (not onClick) so it fires before the input's onBlur hides the list.
+                    onMouseDown={(e) => { e.preventDefault(); setText(s.name); runSearch(s.name); }}
+                    className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm hover:bg-surface-container-high"
+                  >
+                    {s.image ? (
+                      // eslint-disable-next-line @next/next/no-img-element
+                      <img src={s.image} alt="" className="h-7 w-7 shrink-0 rounded object-cover" />
+                    ) : (
+                      <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded bg-surface-container-high text-on-surface-variant">
+                        <ImageIcon className="h-3.5 w-3.5" />
+                      </span>
+                    )}
+                    <span className="min-w-0 flex-1 truncate">{s.name}</span>
+                    {s.category && <span className="shrink-0 text-xs text-on-surface-variant">{s.category}</span>}
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
         </div>
         <button
-          onClick={runSearch}
+          onClick={() => runSearch()}
           disabled={searching}
           className="inline-flex items-center gap-2 rounded-xl bg-primary px-4 py-2 text-sm font-semibold text-on-primary disabled:opacity-50"
         >
@@ -384,7 +460,8 @@ export default function ProductIdentityPage() {
 
             <p className="mb-3 text-sm text-on-surface-variant">
               These {selectedRows.length} documents will share one <code>canonicalId</code> (the authoritative
-              document’s own id). No other field is changed; nothing is deleted.
+              document’s own id) and merge into a single marketplace card — their seller copies are re-pointed too.
+              No other field is changed; nothing is deleted.
             </p>
 
             {(isGroupMerge || selectionHasCopy) && (

@@ -2733,10 +2733,11 @@ export async function adminDeleteProduct(productId: string): Promise<void> {
  * fields + updatedAt. It NEVER changes name, image, variants, price, stock,
  * availability, source or ownership, so no seller-specific listing data can be
  * overwritten, and no doc is deleted or renamed. The marketplace card pipeline
- * does not read canonicalId yet (see types/product.ts), so this changes no
- * storefront behaviour — grouping stays name-based until the separately
- * approved catalogId migration. Linking never happens automatically; it is only
- * ever called from an explicit admin confirmation in /admin/product-identity.
+ * now GROUPS by canonicalId (functions/src/marketplace: groupKeyOf), so the
+ * linked docs — and their seller copies, re-pointed here too — merge into one
+ * storefront card with unioned package-size variants and every seller as a
+ * retailer. Linking never happens automatically; it is only ever called from an
+ * explicit admin confirmation in /admin/product-identity.
  *
  * Idempotent: re-linking the same set to the same canonicalId is a no-op-ish
  * re-stamp. When the selection spans docs that already carry DIFFERENT
@@ -2755,8 +2756,17 @@ export async function adminLinkProductsToCanonical(
   if (!ids.includes(canonicalId)) {
     throw new Error('The authoritative product must be one of the selected products.');
   }
+  // Seller copies of a linked doc (admin_assigned / manufacturer_assigned /
+  // retailer_inventory_copy, tied back by originalProductId / manufacturerProductId)
+  // must share the group's canonicalId too — the marketplace merge now groups by
+  // canonicalId, so a copy left on its name key would split those retailers into a
+  // separate card and vanish from the merged product. New copies inherit it
+  // automatically (they are spread from the source doc at assignment time).
+  const copyIds = await findCopyProductIds(ids);
+  const targetIds = Array.from(new Set([...ids, ...copyIds]));
+
   const batch = writeBatch(db);
-  for (const id of ids) {
+  for (const id of targetIds) {
     batch.set(
       doc(db, 'products', id),
       {
@@ -2769,7 +2779,30 @@ export async function adminLinkProductsToCanonical(
     );
   }
   await batch.commit();
-  return ids.length;
+  return targetIds.length;
+}
+
+/**
+ * Finds every seller-copy product doc rooted at any of `rootIds`, matched by the
+ * two back-reference fields copies carry (originalProductId for admin/retailer
+ * copies, manufacturerProductId for manufacturer-assigned ones). Chunked to
+ * respect Firestore's `in`-operator limit. Read-only.
+ */
+async function findCopyProductIds(rootIds: string[]): Promise<string[]> {
+  const roots = Array.from(new Set(rootIds.filter(Boolean)));
+  if (roots.length === 0) return [];
+  const found = new Set<string>();
+  const runField = async (field: 'originalProductId' | 'manufacturerProductId') => {
+    for (let i = 0; i < roots.length; i += 10) {
+      const chunk = roots.slice(i, i + 10);
+      const snap = await getDocs(query(collection(db, 'products'), where(field, 'in', chunk)));
+      for (const d of snap.docs) found.add(d.id);
+    }
+  };
+  await Promise.all([runField('originalProductId'), runField('manufacturerProductId')]);
+  // Never re-stamp a root as its own copy.
+  for (const r of roots) found.delete(r);
+  return Array.from(found);
 }
 
 /**
@@ -2780,16 +2813,25 @@ export async function adminLinkProductsToCanonical(
  */
 export async function adminUnlinkProductFromCanonical(productId: string): Promise<void> {
   if (!productId) throw new Error('A product id is required.');
-  await setDoc(
-    doc(db, 'products', productId),
-    {
-      canonicalId: deleteField(),
-      canonicalLinkedAt: deleteField(),
-      canonicalLinkedBy: deleteField(),
-      updatedAt: serverTimestamp(),
-    },
-    { merge: true },
-  );
+  // Clear the doc and every seller copy rooted at it, mirroring the propagation
+  // in adminLinkProductsToCanonical so the copies fall back to their name group
+  // instead of being stranded on a canonicalId whose root no longer carries it.
+  const copyIds = await findCopyProductIds([productId]);
+  const targetIds = Array.from(new Set([productId, ...copyIds]));
+  const batch = writeBatch(db);
+  for (const id of targetIds) {
+    batch.set(
+      doc(db, 'products', id),
+      {
+        canonicalId: deleteField(),
+        canonicalLinkedAt: deleteField(),
+        canonicalLinkedBy: deleteField(),
+        updatedAt: serverTimestamp(),
+      },
+      { merge: true },
+    );
+  }
+  await batch.commit();
 }
 
 /**

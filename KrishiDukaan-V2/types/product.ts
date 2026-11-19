@@ -158,11 +158,12 @@ export type MarketplaceProduct = {
    * as the SAME real product. Its value is the authoritative doc's own id, so a
    * group is `products where canonicalId == <authoritativeId>`.
    *
-   * IMPORTANT: this is INERT metadata for now — the marketplace card pipeline
-   * still groups by NAME and does NOT read this field. It becomes the grouping
-   * key only in the separately-approved catalogId migration (Stage 3). It is
-   * NOT the same thing as the `catalogId` on productReviews / order items, which
-   * there means the product doc id. Never used to auto-link by name.
+   * IMPORTANT: this is the marketplace card GROUPING KEY. The card pipeline
+   * (functions/src/marketplace: groupKeyOf) groups by `canonicalId ?? nameKey`,
+   * so linked docs — even with different names — merge into one card; unlinked
+   * docs still group by name. It is NOT the same thing as the `catalogId` on
+   * productReviews / order items, which there means the product doc id. Only ever
+   * set by an explicit admin link — never auto-linked by name.
    */
   canonicalId?: string;
   /** When the canonicalId link was set (Firestore Timestamp). */
