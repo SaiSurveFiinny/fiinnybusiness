@@ -13,6 +13,7 @@ import '../../../core/utils/store_focus_route.dart';
 import '../../../core/widgets/app_top_bar.dart';
 import '../../../core/widgets/empty_state.dart';
 import '../../../core/widgets/error_view.dart';
+import '../../../core/widgets/deliver_to_chip.dart';
 import '../../../core/widgets/product_card.dart';
 import '../../../core/widgets/shimmer_product_card.dart';
 import '../data/quick_buy.dart';
@@ -554,6 +555,8 @@ class _MarketplaceScreenState extends ConsumerState<MarketplaceScreen> {
               scrollDirection: Axis.horizontal,
               padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
               children: [
+                // Prices delivered to this pincode, with dates.
+                const DeliverToChip(),
                 _DistanceFilterChip(
                   maxDistanceKm: state.maxDistanceKm,
                   onChanged: (km) =>

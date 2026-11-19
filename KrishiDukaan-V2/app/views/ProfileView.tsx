@@ -4,7 +4,9 @@ import { MarketplaceProduct } from "../../types/product";
 import { FormEvent, useEffect, useState } from 'react';
 import { ICONS } from '../constants';
 import { saveManufacturerProduct, saveRetailerProduct, db, auth, subscribeSupportConversation } from '../firebase';
-import { doc, updateDoc, serverTimestamp } from 'firebase/firestore';
+import { doc, getDoc, updateDoc, serverTimestamp } from 'firebase/firestore';
+import { DeliveryAddressForm } from '../components/shared/delivery-address-form';
+import type { DeliveryAddress } from '../lib/delivery-address';
 import { signOut } from 'firebase/auth';
 import { useI18n } from '../i18n/I18nContext';
 import { HelperIcon } from '../../components/helpers';
@@ -27,6 +29,9 @@ interface ProfileViewProps {
   onProfileSave: (profile: UserProfile) => void;
   onRetailerProductSaved: () => Promise<void>;
   onNavigate?: (view: any) => void;
+  /** The saved delivery address (shared with checkout, lib/delivery-address.ts). */
+  deliveryAddress?: DeliveryAddress;
+  onSaveDeliveryAddress?: (a: DeliveryAddress) => Promise<boolean>;
 }
 
 interface ProductFormState {
@@ -70,6 +75,8 @@ export default function ProfileView({
   onProfileSave,
   onRetailerProductSaved,
   onNavigate,
+  deliveryAddress,
+  onSaveDeliveryAddress,
 }: ProfileViewProps) {
   const { t } = useI18n();
   const [localProfile, setLocalProfile] = useState(profile);
@@ -129,7 +136,11 @@ export default function ProfileView({
     setSavingProfile(true);
     setStatus(null);
     try {
-      await updateDoc(doc(db, 'users', uid), {
+      // users/{phone} for phone accounts (as getUserProfile reads), users/{uid}
+      // only for email-only accounts — the same doc checkout reads.
+      const idx = await getDoc(doc(db, 'uidIndex', uid));
+      const profileDocId = idx.exists() && idx.data().phone ? String(idx.data().phone) : uid;
+      await updateDoc(doc(db, 'users', profileDocId), {
         name: localProfile.name.trim(),
         phone: localProfile.phone.trim(),
         email: localProfile.email.trim(),
@@ -285,6 +296,12 @@ export default function ProfileView({
             {savingProfile ? t('pvSaving') : t('pvSaveProfile')}
           </button>
         </form>
+
+        {uid && deliveryAddress && onSaveDeliveryAddress && (
+          <div className="mt-6 border-t border-surface-container pt-6">
+            <DeliveryAddressForm value={deliveryAddress} onSave={onSaveDeliveryAddress} />
+          </div>
+        )}
       </div>
 
       {/* Quick link to orders — customers only */}

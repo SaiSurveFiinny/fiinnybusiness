@@ -2,20 +2,22 @@ import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:http/http.dart' as http;
-import 'package:shared_preferences/shared_preferences.dart';
 
 import '../../../core/constants/app_colors.dart';
 import '../../../core/constants/app_config.dart';
 import '../../../core/constants/app_text_styles.dart';
+import '../../../core/providers/deliver_to_provider.dart';
 import '../../../core/utils/delivery_date.dart';
 
 /// "Deliver to 411062 — FREE delivery by Thu, 19 Nov · Change" on the product
 /// page, like Amazon. Same price and rules as checkout: the website's
-/// GET /api/delivery/estimate. The pincode is remembered on this phone (or
-/// taken from the profile); nothing shows when courier delivery is switched
-/// off by the admin.
-class DeliveryEstimateBox extends StatefulWidget {
+/// GET /api/delivery/estimate. The pincode is the shared "Deliver to"
+/// (core/providers/deliver_to_provider.dart: the profile's address, or one
+/// typed here), so cards, this box and the seller list price one address.
+/// Nothing shows when courier delivery is switched off by the admin.
+class DeliveryEstimateBox extends ConsumerStatefulWidget {
   final String productId;
   final String? sellerPhone;
   final String? size;
@@ -30,11 +32,10 @@ class DeliveryEstimateBox extends StatefulWidget {
   });
 
   @override
-  State<DeliveryEstimateBox> createState() => _DeliveryEstimateBoxState();
+  ConsumerState<DeliveryEstimateBox> createState() => _DeliveryEstimateBoxState();
 }
 
-class _DeliveryEstimateBoxState extends State<DeliveryEstimateBox> {
-  static const _prefKey = 'kd_delivery_pincode';
+class _DeliveryEstimateBoxState extends ConsumerState<DeliveryEstimateBox> {
   static final _pin = RegExp(r'^[1-9]\d{5}$');
 
   String _pincode = '';
@@ -59,10 +60,7 @@ class _DeliveryEstimateBoxState extends State<DeliveryEstimateBox> {
   }
 
   Future<void> _init() async {
-    var saved = '';
-    try {
-      saved = (await SharedPreferences.getInstance()).getString(_prefKey) ?? '';
-    } catch (_) {}
+    var saved = ref.read(deliverToProvider)?.pincode ?? '';
     if (!_pin.hasMatch(saved)) saved = widget.profilePincode?.trim() ?? '';
     if (!mounted) return;
     setState(() => _pincode = _pin.hasMatch(saved) ? saved : '');
@@ -125,16 +123,20 @@ class _DeliveryEstimateBoxState extends State<DeliveryEstimateBox> {
       ),
     );
     if (next == null || !_pin.hasMatch(next)) return;
-    try {
-      await (await SharedPreferences.getInstance()).setString(_prefKey, next);
-    } catch (_) {}
-    if (!mounted) return;
-    setState(() => _pincode = next);
-    await _fetch();
+    // The listener in build picks the new pincode up and fetches.
+    await ref.read(deliverToProvider.notifier).choose(next);
   }
 
   @override
   Widget build(BuildContext context) {
+    // The shared pincode changed (typed here, on a card chip, or a newly
+    // saved profile address): price that one.
+    ref.listen(deliverToProvider, (_, next) {
+      final p = next?.pincode ?? '';
+      if (p == _pincode || !_pin.hasMatch(p)) return;
+      setState(() => _pincode = p);
+      unawaited(_fetch());
+    });
     final est = _est;
     if (est != null && est['enabled'] == false) return const SizedBox.shrink();
 
@@ -154,6 +156,8 @@ class _DeliveryEstimateBoxState extends State<DeliveryEstimateBox> {
       final charge = (est['charge'] as num?)?.round() ?? 0;
       final sellerPct = (est['sellerPct'] as num?)?.round() ?? 0;
       final freeAbove = (est['freeAbove'] as num?)?.round();
+      // KrishiDukan's free-delivery campaign paying for it, by name.
+      final campaign = est['campaign']?.toString();
       line = Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
@@ -164,7 +168,9 @@ class _DeliveryEstimateBoxState extends State<DeliveryEstimateBox> {
               ),
               children: [
                 TextSpan(
-                  text: free ? 'FREE delivery' : 'Delivery ₹$charge',
+                  text: free
+                      ? (campaign != null && campaign.isNotEmpty ? 'FREE delivery · $campaign' : 'FREE delivery')
+                      : 'Delivery ₹$charge',
                   style: free
                       ? const TextStyle(color: AppColors.success)
                       : null,

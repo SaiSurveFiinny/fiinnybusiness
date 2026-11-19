@@ -14,6 +14,7 @@ import {
   validPin, withinReassignCap,
   type OrderItemLike, type Quote, type SelfReason, type ShippingConfig, type Stage,
 } from "./pure";
+import { orderSellerKey, recordBooked, recordCancelled, recordSelfDelivery, settlementFor } from "../payouts/settlement-store";
 
 /**
  * Who ships an order, and keeping the order in step with the parcel.
@@ -127,6 +128,18 @@ async function fallBackToSelf(orderId: string, o: FirebaseFirestore.DocumentData
     },
     updatedAt: nowIso(),
   });
+  // Planned courier order that no courier took: the delivery money becomes the
+  // seller's (an adjustment, paid after delivery). docs/delivery-money-architecture.md
+  try {
+    const st = await settlementFor(orderId);
+    if (st && st.plan.deliveryTo === "platform") await recordSelfDelivery(orderId, st.plan, orderSellerKey(o));
+  } catch (e) {
+    logger.error("[shipping] self-delivery adjustment not recorded", { orderId, e: String(e) });
+    await orderRef(orderId).update({
+      "shipment.needsAttention": true,
+      "shipment.attentionNote": "The seller is delivering, but their delivery money was not recorded. Check their payout.",
+    }).catch(() => undefined);
+  }
   await notify(String(o.sellerPhone ?? ""), "order", "Please deliver this order yourself",
     `${SELF_REASON_TEXT[reason]}. Deliver it as usual and update the status.`, { orderId }).catch(() => undefined);
   logger.info("[shipping] self delivery", { orderId, reason });
@@ -163,6 +176,18 @@ export async function bookForOrder(orderId: string): Promise<void> {
   const claimed = await claim(orderId);
   if (!claimed) return;
   const { order: o, attempt } = claimed;
+
+  // The settlement plan decides who ships (docs/delivery-money-architecture.md).
+  // Priced with the seller's own delivery: the customer paid THEM for it, so
+  // the seller delivers and the platform books nothing. No plan (old app
+  // builds, manual orders): the original rules below, claw-back included.
+  let st: Awaited<ReturnType<typeof settlementFor>> = null;
+  try {
+    st = await settlementFor(orderId);
+  } catch (e) {
+    logger.warn("[shipping] settlement read failed; original rules apply", { orderId, e: String(e) });
+  }
+  if (st?.plan.deliveryTo === "seller") return fallBackToSelf(orderId, o, "seller_delivery", [], []);
 
   const items = itemsOf(o);
   const value = orderValue(o);
@@ -227,7 +252,22 @@ export async function bookForOrder(orderId: string): Promise<void> {
         await cancelForOrder(orderId, "order_changed_during_booking");
         return;
       }
-      await keepDeliveryFee(orderId, cfg);
+      if (st) {
+        // Planned order: the checkout transfer never held the delivery money,
+        // so nothing is clawed back. Record who paid what for this parcel.
+        await recordBooked(orderId, {
+          plan: st.plan, sellerKey: orderSellerKey(o), reference, carrier: quote.carrier,
+          service: quote.service, cost: quote.cost, simulated: simulate,
+        }).catch(async (e) => {
+          logger.error("[shipping] booking money not recorded", { orderId, e: String(e) });
+          await orderRef(orderId).update({
+            "shipment.needsAttention": true,
+            "shipment.attentionNote": `Booking cost not recorded: ${String(e).slice(0, 160)}`,
+          }).catch(() => undefined);
+        });
+      } else {
+        await keepDeliveryFee(orderId, cfg);
+      }
       await tellCustomer(orderId, o, trackingUrl, b.awb);
       await notify(String(o.sellerPhone ?? ""), "order", "Courier booked",
         `Print the label, pack the order, then tap Ready for pickup. Tracking ID ${b.awb}.`, { orderId }).catch(() => undefined);
@@ -286,6 +326,11 @@ async function keepDeliveryFee(orderId: string, cfg: ShippingConfig): Promise<vo
       ? items.find((x) => x.id === recorded)
       : items.find((x) => key10(x.notes?.sellerKey) === seller);
     if (!t) return; // no Route transfer: the payout run deducts it instead
+    // A transfer made from a settlement plan never carried the delivery money.
+    if (t.notes?.settlement) {
+      logger.warn("[shipping] planned transfer; no delivery fee to take back", { orderId, transferId: t.id });
+      return;
+    }
     const left = Number(t.amount) - Number(t.amount_reversed ?? 0);
     const amount = Math.min(fee, left);
     if (amount <= 0) return;
@@ -361,6 +406,9 @@ export async function cancelForOrder(orderId: string, why: string): Promise<bool
     }),
     updatedAt: nowIso(),
   });
+  // The booking's ledger entry and any campaign spend are undone.
+  await recordCancelled(orderId, String(taken.reference ?? "")).catch((e) =>
+    logger.error("[shipping] cancellation not recorded in the ledger", { orderId, e: String(e) }));
   logger.info("[shipping] cancelled", { orderId, why });
   return true;
 }

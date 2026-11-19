@@ -2,12 +2,15 @@
 
 import { useEffect, useState } from "react";
 import { formatDeliveryDate } from "../../lib/delivery-eta";
+import { chooseDeliverTo, useDeliverTo } from "../../lib/deliver-to";
 
 /**
  * "Deliver to 411062 — FREE delivery by Thu, 19 Nov · Change" on the product
  * page, like Amazon. Asks /api/delivery/estimate (same courier price and rules
- * as checkout) for the nearest store that delivers. The pincode is remembered
- * in this browser; nothing shows when courier delivery is switched off.
+ * as checkout) for the nearest store that delivers. The pincode is the shared
+ * "Deliver to" (lib/deliver-to: the profile's address, or one typed here), so
+ * cards, this box and the seller list all price the same address. Nothing
+ * shows when courier delivery is switched off.
  */
 
 type Estimate = {
@@ -20,33 +23,26 @@ type Estimate = {
   sellerPct?: number;
   /** Free delivery on orders of at least this much from the store. */
   freeAbove?: number | null;
+  /** KrishiDukan's free-delivery campaign paying for it, by name. */
+  campaign?: string | null;
   deliveryBy?: string | null;
   etaDays?: number | null;
 };
 
-const PIN_KEY = "kd_delivery_pincode";
 const PIN = /^[1-9]\d{5}$/;
 
-function readPin(): string {
-  try { return localStorage.getItem(PIN_KEY) ?? ""; } catch { return ""; }
-}
-function savePin(pin: string) {
-  try { localStorage.setItem(PIN_KEY, pin); } catch { /* private window */ }
-}
-
 export function DeliveryEstimate({ productId, seller, size }: { productId: string; seller?: string; size?: string }) {
-  const [pin, setPin] = useState("");
+  const deliverTo = useDeliverTo();
+  const pin = deliverTo?.pincode ?? "";
   const [draft, setDraft] = useState("");
   const [editing, setEditing] = useState(false);
   const [est, setEst] = useState<Estimate | null>(null);
   const [loading, setLoading] = useState(false);
 
   useEffect(() => {
-    const saved = readPin();
-    setPin(saved);
-    setDraft(saved);
-    setEditing(!PIN.test(saved));
-  }, []);
+    setDraft(pin);
+    setEditing(!PIN.test(pin));
+  }, [pin]);
 
   useEffect(() => {
     if (!PIN.test(pin) || !productId) { setEst(null); return; }
@@ -68,8 +64,7 @@ export function DeliveryEstimate({ productId, seller, size }: { productId: strin
   const apply = () => {
     const p = draft.trim();
     if (!PIN.test(p)) return;
-    savePin(p);
-    setPin(p);
+    chooseDeliverTo(p);
     setEditing(false);
   };
 
@@ -113,7 +108,9 @@ export function DeliveryEstimate({ productId, seller, size }: { productId: strin
           ) : !est ? null : est.available ? (
             <>
               <span className="font-semibold text-on-surface">
-                {est.free ? <span className="text-green-700">FREE delivery</span> : <>Delivery ₹{est.charge}</>}
+                {est.free
+                  ? <span className="text-green-700">FREE delivery{est.campaign ? ` · ${est.campaign}` : ""}</span>
+                  : <>Delivery ₹{est.charge}</>}
                 {!est.free && (est.sellerPct ?? 0) > 0 && est.fullCharge
                   ? <span className="ml-1 text-xs font-normal text-on-surface-variant line-through">₹{est.fullCharge}</span>
                   : null}

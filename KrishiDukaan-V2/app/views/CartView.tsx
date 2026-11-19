@@ -300,6 +300,8 @@ type ServerQuote = {
   storesCover: number;
   /** A store's "free delivery from ₹X" made its part free. */
   freeAbove: number[];
+  /** The platform campaign paying for delivery on this cart: its name, and ₹ it covers. */
+  campaign: { name: string; pays: number } | null;
 };
 
 function useServerDeliveryQuote(readyItems: CartItem[], pincode: string, state: string, enabled: boolean) {
@@ -352,6 +354,11 @@ function useServerDeliveryQuote(readyItems: CartItem[], pincode: string, state: 
           storesCover: sellers.reduce((s: number, b: any) =>
             s + (b?.delivery?.free ? 0 : Number(b?.delivery?.sellerCovers) || 0), 0),
           freeAbove: sellers.map((b: any) => Number(b?.delivery?.freeAboveApplied) || 0).filter((n: number) => n > 0),
+          campaign: (() => {
+            const pays = sellers.reduce((s: number, b: any) => s + (Number(b?.delivery?.campaign?.platformPays) || 0), 0);
+            const name = sellers.map((b: any) => b?.delivery?.campaign?.name).find(Boolean);
+            return pays > 0 && name ? { name: String(name), pays } : null;
+          })(),
         });
       } catch {
         if (!cancelled) setQuote(null);
@@ -1327,6 +1334,13 @@ export default function CartView({
           {canCheckout && !estimatingDelivery && serverQuote && serverQuote.freeAbove.length > 0 && (
             <p className="text-[11px] font-semibold text-green-700 -mt-1">
               Free delivery: your order reached the store&apos;s ₹{Math.min(...serverQuote.freeAbove).toLocaleString("en-IN")} offer
+            </p>
+          )}
+
+          {/* KrishiDukan's free-delivery campaign (docs/delivery-money-architecture.md) */}
+          {canCheckout && !estimatingDelivery && serverQuote?.campaign && (
+            <p className="text-[11px] font-semibold text-green-700 -mt-1">
+              {serverQuote.campaign.name}: KrishiDukan pays ₹{serverQuote.campaign.pays.toLocaleString("en-IN", { maximumFractionDigits: 2 })} of your delivery
             </p>
           )}
 

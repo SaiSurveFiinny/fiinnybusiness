@@ -1,6 +1,7 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 
 import '../utils/delivery_utils.dart';
+import 'settlement.dart';
 
 /// Where a parcel is. Written only by functions/src/shipping; the stages and
 /// wording match types/order.ts on the web.
@@ -169,8 +170,19 @@ class OrderModel {
   /// Courier booking, or the reason the seller delivers. Server-written.
   final ShipmentInfo? shipment;
 
+  /// Who gets which rupee (server-stamped; null for orders without a plan,
+  /// which keep the old earnings rules). See core/models/settlement.dart.
+  final SettlementPlan? settlement;
+  final List<SettlementAdjustment> settlementAdjustments;
+
+  /// The order's current seller, in the key form plans use.
+  final String settlementSellerKey;
+
   const OrderModel({
     this.shipment,
+    this.settlement,
+    this.settlementAdjustments = const [],
+    this.settlementSellerKey = '',
     required this.id,
     required this.customerId,
     required this.customerName,
@@ -277,6 +289,9 @@ class OrderModel {
       customerPhone: d['customerPhone']?.toString() ?? '',
       customerAddress: customerAddressMap,
       shipment: ShipmentInfo.fromMap(d['shipment']),
+      settlement: SettlementPlan.fromMap(d['settlement']),
+      settlementAdjustments: SettlementAdjustment.listFrom(d['settlementAdjustments']),
+      settlementSellerKey: settlementKey(d['sellerPhone'] ?? d['sellerId']),
       sellerId: d['sellerId']?.toString() ?? '',
       sellerName: d['sellerName']?.toString() ?? '',
       sellerType: d['sellerType']?.toString() ?? 'retailer',

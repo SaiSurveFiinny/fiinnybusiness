@@ -21,6 +21,7 @@
 
 import { computeLinePricing } from "../utils/gst";
 import { freeDeliveryAbove, offerPct, type FreeDeliverySettings } from "./free-delivery";
+import { splitCourierCost, type ActiveCampaign, type SplitRates } from "../../functions/src/payouts/settlement";
 import { normalizeUnit } from "../utils/weight";
 import { getActiveDiscountAmt, getActiveDiscountPct, type DiscountFields } from "../utils/discount";
 import {
@@ -96,6 +97,25 @@ export type DeliveryBreakdown = {
   sellerCovers?: number;
   /** The store's "free above ₹X" offer made this parcel free. */
   freeAboveApplied?: number;
+  /**
+   * Platform free-delivery campaign on this parcel: its name and the ₹ the
+   * platform pays towards the courier (functions/src/payouts/settlement.ts).
+   */
+  campaign?: { name: string; platformPays: number };
+  /** Of the customer's delivery charge, the ₹ that is the gateway fee on it. */
+  gatewayGrossUp?: number;
+};
+
+/**
+ * How checkout prices a courier parcel (docs/delivery-money-architecture.md).
+ * Without it, courierDelivery keeps its original rule (no gateway gross-up,
+ * no campaign) for the callers that predate it.
+ */
+export type CourierPricingOptions = {
+  /** settings/route: the gateway fee on the customer's part is added to it. */
+  rates: SplitRates;
+  /** The platform campaign in force, or null. */
+  campaign?: ActiveCampaign | null;
 };
 
 /** A courier price for one seller's parcel, as charged at checkout. */
@@ -177,8 +197,31 @@ export function computeSellerDelivery(
  * seller pays their share of it (Free Delivery = all, a share offer = part),
  * the customer the rest.
  */
-export function courierDelivery(lines: CartPricingLine[], courier: CourierCharge, deliveryType: DeliveryType): DeliveryBreakdown {
+export function courierDelivery(
+  lines: CartPricingLine[],
+  courier: CourierCharge,
+  deliveryType: DeliveryType,
+  options?: CourierPricingOptions,
+): DeliveryBreakdown {
   const share = lines.length ? parcelShare(lines) : 0;
+  if (options) {
+    // Seller pays their offer share; a campaign pays the rest (Option B), up
+    // to its cap; the customer pays what is left plus the gateway fee on it.
+    const split = splitCourierCost({ cost: courier.charge, sellerShare: share, campaign: options.campaign ?? null, rates: options.rates });
+    const campaign = split.campaign > 0 && options.campaign
+      ? { campaign: { name: options.campaign.name, platformPays: split.campaign } }
+      : {};
+    const seller = split.sellerCourier > 0 ? { sellerPaysCourier: split.sellerCourier, sellerCovers: split.sellerCourier } : {};
+    if (split.customerDelivery <= 0 && lines.length > 0) {
+      return { slab: 0, extra: 0, free: true, waived: courier.charge, deliveryType, mode: "courier", courier, ...seller, ...campaign };
+    }
+    const grossUp = r2(split.customerDelivery - split.customerBase);
+    return {
+      slab: split.customerDelivery, extra: 0, free: false, waived: 0, deliveryType, mode: "courier", courier,
+      ...seller, ...campaign,
+      ...(grossUp > 0 ? { gatewayGrossUp: grossUp } : {}),
+    };
+  }
   const customer = share >= 1 ? 0 : Math.round(courier.charge * (1 - share));
   const sellerPays = r2(courier.charge - customer);
   if (customer <= 0 && lines.length > 0) {
@@ -198,6 +241,8 @@ export function computeSellerPricing(
   customerState: string | null | undefined,
   /** Courier price for this seller's parcel; null/undefined = seller's own slab. */
   courier?: CourierCharge | null,
+  /** Checkout's courier rules (gross-up, campaign). Omitted = original rule. */
+  courierOptions?: CourierPricingOptions,
 ): SellerPricing {
   let subtotal = 0;
   let gstTotal = 0;
@@ -220,7 +265,7 @@ export function computeSellerPricing(
   const freeAbove = above > 0 && lines.length > 0 && subtotal + 1e-9 >= above;
   const priced = freeAbove ? lines.map((l) => ({ ...l, deliveryShare: 1 })) : lines;
   const base = courier
-    ? courierDelivery(priced, courier, settings ? resolveDeliverySlabs(settings, customerState).deliveryType : "default")
+    ? courierDelivery(priced, courier, settings ? resolveDeliverySlabs(settings, customerState).deliveryType : "default", courierOptions)
     : computeSellerDelivery(priced, settings, customerState);
   const delivery = freeAbove ? { ...base, freeAboveApplied: above } : base;
   const deliveryCharge = delivery.free ? 0 : r2(delivery.slab + delivery.extra);

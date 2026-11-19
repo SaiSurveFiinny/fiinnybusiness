@@ -24,7 +24,9 @@ import HelpView from './views/HelpView';
 import SupportInboxView from './views/SupportInboxView';
 import { fetchManufacturerProfile } from './dashboard/_lib/brand-page-firestore';
 import { motion } from 'framer-motion';
-import { auth, db, fetchMarketplaceProducts, fetchStores, getUserProfile, fetchHubs, fetchBanners, createOrdersFromCart, updateOrderPayment, trackPageView, trackUserActivity, requestRoleUpgrade } from './firebase';
+import { readDeliveryAddress } from './lib/delivery-address';
+import { clearProfileDeliverTo, profileDeliverTo } from './lib/deliver-to';
+import { auth, db, saveDeliveryAddress, fetchMarketplaceProducts, fetchStores, getUserProfile, fetchHubs, fetchBanners, createOrdersFromCart, updateOrderPayment, trackPageView, trackUserActivity, requestRoleUpgrade } from './firebase';
 import type { Banner } from './firebase';
 import { acceptManufacturerInvite } from './lib/invite/invite-acceptance-service';
 import { readPendingReferral } from './lib/referral-client';
@@ -243,6 +245,14 @@ export default function App() {
     addressState: "",
     addressPincode: "",
   });
+  // The saved delivery address as the profile shows it: checkout's fields are
+  // the live copy (filled from the profile at login, updated by either screen).
+  const profileDeliveryAddress = useMemo(() => ({
+    house: checkoutInfo.addressHouse, area: checkoutInfo.addressArea, landmark: checkoutInfo.addressLandmark,
+    city: checkoutInfo.addressCity, district: checkoutInfo.addressDistrict, state: checkoutInfo.addressState,
+    pincode: checkoutInfo.addressPincode,
+  }), [checkoutInfo.addressHouse, checkoutInfo.addressArea, checkoutInfo.addressLandmark, checkoutInfo.addressCity,
+    checkoutInfo.addressDistrict, checkoutInfo.addressState, checkoutInfo.addressPincode]);
   const [loading, setLoading] = useState(true);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [mfgUpgradeModal, setMfgUpgradeModal] = useState(false);
@@ -812,16 +822,21 @@ export default function App() {
             totalSeats: profileData.totalSeats || 0,
             productCount: profileData.productCount || 0
           });
+          // The one saved delivery address (profile and checkout share it,
+          // web and app — lib/delivery-address.ts).
+          const saved = readDeliveryAddress(profileData as Record<string, unknown>);
+          // Cards and the product page price delivery to this address.
+          profileDeliverTo(saved.pincode, { city: saved.city });
           setCheckoutInfo({
             ...splitPersonName(profileData),
             customerPhone: profileData.phone || "",
-            addressHouse: (profileData as any).addressHouse || "",
-            addressArea: (profileData as any).addressArea || "",
-            addressLandmark: (profileData as any).addressLandmark || "",
-            addressCity: (profileData as any).addressCity || "",
-            addressDistrict: (profileData as any).addressDistrict || "",
-            addressState: (profileData as any).addressState || "",
-            addressPincode: (profileData as any).addressPincode || "",
+            addressHouse: saved.house,
+            addressArea: saved.area,
+            addressLandmark: saved.landmark,
+            addressCity: saved.city,
+            addressDistrict: saved.district,
+            addressState: saved.state,
+            addressPincode: saved.pincode,
           });
 
           // Paywall: only block if not paid AND not an invited retailer.
@@ -1058,6 +1073,7 @@ export default function App() {
   const handleLogout = async () => {
     try {
       await signOut(auth);
+      clearProfileDeliverTo();
       navigate('home', { replace: true, clearInvite: true });
     } catch (error) {
       console.error('Logout error:', error);
@@ -2092,19 +2108,17 @@ export default function App() {
             onSaveAddress={async () => {
               if (!user) return;
               try {
-                const idxSnap = await getDoc(doc(db, 'uidIndex', user.uid));
-                const phone = idxSnap.exists() ? idxSnap.data().phone : null;
-                if (phone) {
-                  await updateDoc(doc(db, 'users', phone), { 
-                    addressHouse: checkoutInfo.addressHouse,
-                    addressArea: checkoutInfo.addressArea,
-                    addressLandmark: checkoutInfo.addressLandmark,
-                    addressCity: checkoutInfo.addressCity,
-                    addressDistrict: checkoutInfo.addressDistrict,
-                    addressState: checkoutInfo.addressState,
-                    addressPincode: checkoutInfo.addressPincode,
-                  });
-                }
+                // Same address the profile shows (lib/delivery-address.ts).
+                profileDeliverTo(checkoutInfo.addressPincode, { saved: true, city: checkoutInfo.addressCity });
+                await saveDeliveryAddress(user.uid, {
+                  house: checkoutInfo.addressHouse,
+                  area: checkoutInfo.addressArea,
+                  landmark: checkoutInfo.addressLandmark,
+                  city: checkoutInfo.addressCity,
+                  district: checkoutInfo.addressDistrict,
+                  state: checkoutInfo.addressState,
+                  pincode: checkoutInfo.addressPincode,
+                }, userRole);
               } catch (e) {
                 console.warn('Could not save address:', e);
               }
@@ -2166,6 +2180,22 @@ export default function App() {
             onProfileSave={handleProfileSave}
             onRetailerProductSaved={loadData}
             onNavigate={navigate}
+            deliveryAddress={profileDeliveryAddress}
+            onSaveDeliveryAddress={async (a) => {
+              if (!user) return false;
+              const ok = await saveDeliveryAddress(user.uid, a, userRole);
+              // Checkout (and delivered prices) use it straight away, this session.
+              if (ok) {
+                profileDeliverTo(a.pincode, { saved: true, city: a.city });
+                setCheckoutInfo((cur) => ({
+                  ...cur,
+                  addressHouse: a.house, addressArea: a.area, addressLandmark: a.landmark,
+                  addressCity: a.city, addressDistrict: a.district, addressState: a.state,
+                  addressPincode: a.pincode,
+                }));
+              }
+              return ok;
+            }}
           />
         );
       case 'orders':

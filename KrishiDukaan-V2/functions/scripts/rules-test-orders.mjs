@@ -47,5 +47,20 @@ await t("customer may NOT ask for pickup", false, () => u(cust, "c", { shipmentR
 await t("customer may NOT edit the shipment", false, () => u(cust, "c", { shipment: {} }));
 await t("customer may NOT create an order with a shipment", false, () => setDoc(doc(cust, "orders", "x"), { ...base, status: "placed", shipment: { mode: "self" } }));
 await t("customer may NOT create an order with a request", false, () => setDoc(doc(cust, "orders", "y"), { ...base, status: "placed", shipmentRequest: {} }));
+// Who gets which rupee is the server's (docs/delivery-money-architecture.md).
+const plan = { v: 1, goodsPaise: 100000, transferPaise: 999999, deliveryTo: "seller" };
+await t("customer may NOT create an order with a settlement plan", false, () => setDoc(doc(cust, "orders", "z1"), { ...base, status: "placed", settlement: plan }));
+await t("customer may NOT create an order with adjustments", false, () => setDoc(doc(cust, "orders", "z2"), { ...base, status: "placed", settlementAdjustments: [{ id: "x", netPaise: 100000 }] }));
+await t("customer may NOT flag a top-up", false, () => setDoc(doc(cust, "orders", "z3"), { ...base, status: "placed", settlementTopUpDue: true }));
+await t("customer may still create a normal order", true, () => setDoc(doc(cust, "orders", "z4"), { ...base, status: "placed" }));
+await t("seller may NOT write the settlement plan", false, () => u(seller, "n", { settlement: plan }));
+await t("seller may NOT add adjustments", false, () => u(seller, "n", { settlementAdjustments: [{ id: "x", netPaise: 100000 }] }));
+await t("seller may NOT claim a top-up", false, () => u(seller, "n", { settlementTopUpClaim: { run: "x" } }));
+await t("customer may NOT write the settlement plan", false, () => u(cust, "n", { settlement: plan }));
+await t("customer may NOT read the delivery ledger", false, async () => {
+  const { getDoc } = await import("firebase/firestore");
+  await adb.collection("deliveryLedger").doc("l1").set({ kind: "booked" });
+  await getDoc(doc(cust, "deliveryLedger", "l1"));
+});
 console.log(fail ? `${fail} FAILED` : "rules: all passed");
 process.exit(fail ? 1 : 0);

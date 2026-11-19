@@ -17,6 +17,17 @@ class AvailabilityEntry {
   final bool? isOnline;
   final List<VariantModel>? variants;
 
+  /// This store's own GST and delivery offers on the product (mirrored from
+  /// its product copy onto the marketplace card, like the web's
+  /// types/product.ts availability[]). Used to price it delivered
+  /// (core/services/delivered_price_service.dart). Null = not on the card.
+  final bool? gstApplicable;
+  final double? gstRate;
+  final bool? gstIncluded;
+  final double? extraDeliveryCharge;
+  final bool? freeDelivery;
+  final double? sellerDeliveryPct;
+
   const AvailabilityEntry({
     required this.storeId,
     this.storePhone,
@@ -26,6 +37,12 @@ class AvailabilityEntry {
     this.discountPct = 0,
     this.isOnline,
     this.variants,
+    this.gstApplicable,
+    this.gstRate,
+    this.gstIncluded,
+    this.extraDeliveryCharge,
+    this.freeDelivery,
+    this.sellerDeliveryPct,
   });
 
   factory AvailabilityEntry.fromMap(Map<String, dynamic> m) {
@@ -40,6 +57,12 @@ class AvailabilityEntry {
       variants: (m['variants'] as List?)
           ?.map((v) => VariantModel.fromMap(v as Map<String, dynamic>))
           .toList(),
+      gstApplicable: m['gstApplicable'] as bool?,
+      gstRate: (m['gstRate'] as num?)?.toDouble(),
+      gstIncluded: m['gstIncluded'] as bool?,
+      extraDeliveryCharge: (m['extraDeliveryCharge'] as num?)?.toDouble(),
+      freeDelivery: m['freeDelivery'] as bool?,
+      sellerDeliveryPct: (m['sellerDeliveryPct'] as num?)?.toDouble(),
     );
   }
 
@@ -52,6 +75,12 @@ class AvailabilityEntry {
     if (discountPct > 0) 'discountPct': discountPct,
     'isOnline': isOnline,
     'variants': variants?.map((v) => v.toMap()).toList(),
+    if (gstApplicable != null) 'gstApplicable': gstApplicable,
+    if (gstRate != null) 'gstRate': gstRate,
+    if (gstIncluded != null) 'gstIncluded': gstIncluded,
+    if (extraDeliveryCharge != null) 'extraDeliveryCharge': extraDeliveryCharge,
+    if (freeDelivery != null) 'freeDelivery': freeDelivery,
+    if (sellerDeliveryPct != null) 'sellerDeliveryPct': sellerDeliveryPct,
   };
 }
 

@@ -112,6 +112,16 @@ export type RecordAttemptInput = {
   sellerBreakdown?: unknown[];
   /** Finalized delivery-address state that picked the in/out-of-state slab. */
   customerDeliveryState?: string;
+  /**
+   * Who gets which rupee, per seller (functions/src/payouts/settlement.ts).
+   * Server-computed at checkout; stamped onto each order by the
+   * stampOrderSettlement function. Clients never write it.
+   */
+  settlements?: Array<{ sellerKey: string; plan: unknown }>;
+  /** Sellers a Route transfer was actually created for on this payment. */
+  routedSellers?: string[];
+  /** The linked account each of those transfers went to (adjustments are paid there). */
+  routedAccounts?: Record<string, string>;
 };
 
 /**
@@ -188,6 +198,9 @@ export async function recordAttempt(input: RecordAttemptInput): Promise<void> {
           ...(input.gstBySeller ? { gstBySeller: input.gstBySeller } : {}),
           ...(input.sellerBreakdown ? { sellerBreakdown: input.sellerBreakdown } : {}),
           ...(input.customerDeliveryState ? { customerDeliveryState: input.customerDeliveryState } : {}),
+          ...(input.settlements ? { settlements: input.settlements } : {}),
+          ...(input.routedSellers ? { routedSellers: input.routedSellers } : {}),
+          ...(input.routedAccounts ? { routedAccounts: input.routedAccounts } : {}),
 
           seatCount: input.seatCount ?? null,
           durationMonths: input.durationMonths ?? null,

@@ -12,6 +12,7 @@ import { Tag } from 'lucide-react';
 import { BannerSlideVisual } from '../components/BannerSlide';
 import { displayPrice } from '../lib/price-display';
 import { PriceTag } from '../../components/shared/price-tag';
+import { DeliveredPriceLine } from '../components/shared/delivered-price-line';
 import ProductImage from '../../components/shared/product-image';
 
 interface HomeViewProps {
@@ -538,6 +539,7 @@ export default function HomeView({
               <div className={`p-3 flex flex-col flex-1 ${hasOffer ? 'bg-gradient-to-b from-green-50/30 to-white' : ''}`}>
                 <h3 className="text-sm font-bold text-on-surface line-clamp-2 mb-1 leading-tight">{product.name}</h3>
                 <PriceTag value={dp} size="sm" className="mt-auto" />
+                <DeliveredPriceLine product={product} className="mt-0.5" />
                 {product.sellMode !== "offline_store_only" && (
                   <div className="mt-2" onClick={(e) => e.stopPropagation()}>
                     <HelperTooltip side="top" textKey="marketAddToCart">

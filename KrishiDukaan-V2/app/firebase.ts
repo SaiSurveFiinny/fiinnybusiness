@@ -1,4 +1,5 @@
 import { getApp, getApps, initializeApp } from 'firebase/app';
+import { deliveryAddressWriteFields, type DeliveryAddress } from './lib/delivery-address';
 import {
   addDoc,
   arrayRemove,
@@ -1419,15 +1420,26 @@ function phoneTail(v: string): string {
 }
 
 /** A delivery address in parts, as checkout collects it (orders.deliveryAddress). */
-export type DeliveryAddress = {
-  house: string;
-  area: string;
-  landmark: string;
-  city: string;
-  district: string;
-  state: string;
-  pincode: string;
-};
+export type { DeliveryAddress } from './lib/delivery-address';
+
+/**
+ * Saves the customer's delivery address to their profile (users/{phone},
+ * resolved through uidIndex like getUserProfile; email-only admin accounts
+ * use users/{uid}). One shape for profile and checkout, web and app
+ * (lib/delivery-address.ts). Returns false when there is no profile to save to.
+ */
+export async function saveDeliveryAddress(uid: string, address: Partial<DeliveryAddress>, role: unknown): Promise<boolean> {
+  const idx = await getDoc(doc(db, 'uidIndex', uid));
+  const phone = idx.exists() ? String(idx.data().phone ?? '') : '';
+  const ref = doc(db, 'users', phone || uid);
+  const snap = await getDoc(ref);
+  if (!snap.exists()) return false;
+  await updateDoc(ref, {
+    ...deliveryAddressWriteFields(address, role ?? snap.data().role),
+    updatedAt: serverTimestamp(),
+  });
+  return true;
+}
 
 export async function createOrdersFromCart(params: {
   customerId: string;

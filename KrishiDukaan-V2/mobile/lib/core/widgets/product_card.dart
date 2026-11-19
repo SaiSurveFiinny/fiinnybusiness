@@ -5,6 +5,7 @@ import '../constants/app_text_styles.dart';
 import '../models/catalog_model.dart';
 import '../utils/geo_utils.dart';
 import 'buy_now_pill.dart';
+import 'delivered_price_line.dart';
 import 'price_tag.dart';
 
 class ProductCard extends StatefulWidget {
@@ -222,41 +223,47 @@ class _ProductCardState extends State<ProductCard> {
                         // Price — "₹final ₹mrp X% off", same as web cards
                         PriceTag(value: dp, fontSize: compact ? 13 : 16),
                         SizedBox(height: compact ? 2 : 4),
-                        // Nearest store distance
-                        Row(
-                          children: [
-                            Icon(
-                              Icons.near_me_outlined,
-                              size: compact ? 10 : 12,
-                              color: AppColors.onSurfaceVariant,
-                            ),
-                            const SizedBox(width: 4),
-                            Expanded(
-                              child: Text(
-                                product.nearestStoreDistanceKm != null
-                                    ? '${GeoUtils.formatDistance(product.nearestStoreDistanceKm!)} away'
-                                    : 'Nearby store',
-                                style: AppTextStyles.caption.copyWith(
-                                  fontSize: compact ? 9 : 11,
+                        // Delivered to the shopper's pincode ("₹532
+                        // delivered · by Sat, 21 Nov") once known; until
+                        // then, and without a pincode, the nearest store.
+                        DeliveredPriceLine(
+                          product: product,
+                          fontSize: compact ? 9 : 11,
+                          fallback: Row(
+                            children: [
+                              Icon(
+                                Icons.near_me_outlined,
+                                size: compact ? 10 : 12,
+                                color: AppColors.onSurfaceVariant,
+                              ),
+                              const SizedBox(width: 4),
+                              Expanded(
+                                child: Text(
+                                  product.nearestStoreDistanceKm != null
+                                      ? '${GeoUtils.formatDistance(product.nearestStoreDistanceKm!)} away'
+                                      : 'Nearby store',
+                                  style: AppTextStyles.caption.copyWith(
+                                    fontSize: compact ? 9 : 11,
+                                  ),
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
                                 ),
-                                maxLines: 1,
-                                overflow: TextOverflow.ellipsis,
                               ),
-                            ),
-                            if (product.rating != null && !compact) ...[
-                              const SizedBox(width: 6),
-                              const Icon(
-                                Icons.star,
-                                size: 12,
-                                color: AppColors.secondary,
-                              ),
-                              const SizedBox(width: 2),
-                              Text(
-                                product.rating!.toStringAsFixed(1),
-                                style: AppTextStyles.caption,
-                              ),
+                              if (product.rating != null && !compact) ...[
+                                const SizedBox(width: 6),
+                                const Icon(
+                                  Icons.star,
+                                  size: 12,
+                                  color: AppColors.secondary,
+                                ),
+                                const SizedBox(width: 2),
+                                Text(
+                                  product.rating!.toStringAsFixed(1),
+                                  style: AppTextStyles.caption,
+                                ),
+                              ],
                             ],
-                          ],
+                          ),
                         ),
                       ],
                     ),

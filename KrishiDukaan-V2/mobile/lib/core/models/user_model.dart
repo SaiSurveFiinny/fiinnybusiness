@@ -1,5 +1,6 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 
+import 'delivery_address.dart';
 import 'staff_session.dart';
 
 class UserModel {
@@ -37,6 +38,10 @@ class UserModel {
   /// (see sellerUserProvider). Null for everyone acting for themselves.
   final StaffSession? staff;
 
+  /// Where this person's own orders are delivered (shared with web profile
+  /// and checkout). Separate from a seller's shop [address].
+  final DeliveryAddress deliveryAddress;
+
   const UserModel({
     required this.uid,
     required this.phone,
@@ -59,6 +64,7 @@ class UserModel {
     this.googleMapsUrl,
     this.shopStaffOwnerPhone,
     this.staff,
+    this.deliveryAddress = DeliveryAddress.empty,
   });
 
   /// True once the essential profile fields are filled. Sellers additionally
@@ -130,6 +136,7 @@ class UserModel {
         gstin: gstin,
         googleMapsUrl: googleMapsUrl,
         staff: session,
+        deliveryAddress: deliveryAddress,
       );
 
   factory UserModel.fromFirestore(DocumentSnapshot doc) {
@@ -157,6 +164,7 @@ class UserModel {
       shopStaffOwnerPhone: (data['shopStaff'] is Map)
           ? (data['shopStaff'] as Map)['ownerPhone'] as String?
           : null,
+      deliveryAddress: DeliveryAddress.fromUserDoc(data),
     );
   }
 
@@ -200,6 +208,7 @@ class UserModel {
       fcmToken: fcmToken ?? this.fcmToken,
       createdAt: createdAt ?? this.createdAt,
       username: username ?? this.username,
+      deliveryAddress: deliveryAddress,
     );
   }
 }

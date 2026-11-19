@@ -17,6 +17,10 @@ import { HelperIcon, HelperTooltip } from '../../components/helpers';
 import { useI18n } from '../i18n/I18nContext';
 import { StatusToast } from '../components/shared/status-toast';
 import { DeliveryEstimate } from '../components/shared/delivery-estimate';
+import { useDeliverTo } from '../lib/deliver-to';
+import { offerFor, rankDelivered, useDeliveredOffers } from '../lib/delivered-price-client';
+import type { OfferInput, OfferResult } from '../lib/delivered-offers';
+import { formatDeliveryDate } from '../lib/delivery-eta';
 import {
   fetchRetailerPublicProfile,
   fetchRetailerProductSummaries,
@@ -1179,7 +1183,7 @@ export default function ProductDetailView({
     [product.availability, storeOnlineMap],
   );
 
-  const visibleStores = useMemo(() => {
+  const storeGroups = useMemo(() => {
     const stocked = displayStores.filter((s) => resolveStoreVariant(s).stocked);
     // Stores that can actually deliver go first. Someone on this page wants to
     // buy, and the list is distance-sorted — so a store willing to ship sat
@@ -1191,8 +1195,51 @@ export default function ProductDetailView({
     const online: typeof stocked = [];
     const offline: typeof stocked = [];
     for (const s of stocked) (canOrderFrom(s) ? online : offline).push(s);
-    return [...online, ...offline];
+    return { online, offline };
   }, [displayStores, resolveStoreVariant, canOrderFrom]);
+
+  // ── Delivered price per seller (docs/delivered-price-architecture.md §4.5) ──
+  // For the shopper's "Deliver to" pincode, each store that delivers is priced
+  // item + delivery (same rules as checkout, POST /api/delivery/offers), and
+  // the list is ordered cheapest DELIVERED first — a nearer store, or one with
+  // an offer or free delivery, wins when it really is cheaper at the door.
+  const deliverTo = useDeliverTo();
+  const deliveryOfferByStore = useMemo(() => {
+    const m = new Map<string, OfferInput>();
+    const size = selectedVariant?.unit || product.unit || productVariants?.[0]?.unit || '';
+    // The 30 nearest delivering stores: enough to find the cheapest, one request.
+    for (const store of storeGroups.online.slice(0, 30)) {
+      const phone = (store as any).phone as string | undefined;
+      const entry = findStoreAvailability(store);
+      const resolved = resolveStoreVariant(store);
+      if (!resolved.price || !(resolved.price > 0)) continue;
+      const { finalPrice } = calcDiscount(resolved.price, resolveStoreDiscountPct(store));
+      const o = offerFor(
+        product,
+        entry
+          ? { ...entry, storePhone: entry.storePhone || phone }
+          : { storeId: store.id, storePhone: phone, stockLevel: '' },
+        size,
+        finalPrice,
+      );
+      if (o) m.set(store.id, o);
+    }
+    return m;
+  }, [storeGroups, selectedVariant, product, productVariants, findStoreAvailability, resolveStoreVariant, resolveStoreDiscountPct]);
+  const deliveryOffers = useMemo(() => Array.from(deliveryOfferByStore.values()), [deliveryOfferByStore]);
+  const deliveredById = useDeliveredOffers(deliveryOffers, deliverTo?.pincode ?? null, true);
+  const deliveredFor = useCallback((storeId: string): OfferResult | null => {
+    const o = deliveryOfferByStore.get(storeId);
+    const r = o ? deliveredById.get(o.id) ?? null : null;
+    return r?.status === 'ok' ? r : null;
+  }, [deliveryOfferByStore, deliveredById]);
+
+  const visibleStores = useMemo(() => {
+    const ranked = rankDelivered(storeGroups.online.map((store) => ({ store, result: deliveredFor(store.id) })))
+      .map((r) => r.store);
+    return [...ranked, ...storeGroups.offline];
+  }, [storeGroups, deliveredFor]);
+  const cheapestDeliveredId = visibleStores.length > 1 && deliveredFor(visibleStores[0]!.id) ? visibleStores[0]!.id : null;
 
   // Compute the displayed price block (current price, MRP, savings, discount %,
   // "lowest nearby") for the CURRENTLY SELECTED variant only. Never uses the
@@ -1481,6 +1528,7 @@ export default function ProductDetailView({
             const hasStoreOffer = resolvedDiscountPct > 0;
             const { finalPrice: resolvedFinalPrice } =
               calcDiscount(resolvedPrice ?? 0, resolvedDiscountPct);
+            const delivered = deliveredFor(store.id);
 
             return (
               <div
@@ -1515,6 +1563,26 @@ export default function ProductDetailView({
                           </span>
                         )}
                       </div>
+                      {/* Delivered to the shopper's pincode: item + delivery = total, and the date. */}
+                      {delivered && (
+                        <div className="mt-1 flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-[11px] leading-tight">
+                          {cheapestDeliveredId === store.id && (
+                            <span className="rounded-full bg-green-600 px-1.5 py-0.5 text-[9px] font-black uppercase tracking-wide text-white">
+                              Lowest delivered
+                            </span>
+                          )}
+                          <span className="text-on-surface-variant">
+                            ₹{delivered.itemTotal!.toLocaleString('en-IN')} +{' '}
+                            {delivered.free
+                              ? <span className="font-bold text-green-700">FREE delivery{delivered.campaign ? ` · ${delivered.campaign}` : ''}</span>
+                              : <>₹{delivered.deliveryCharge!.toLocaleString('en-IN')} delivery</>}
+                            {' '}= <span className="font-bold text-on-surface">₹{delivered.total!.toLocaleString('en-IN')}</span>
+                          </span>
+                          {delivered.deliveryBy && (
+                            <span className="font-semibold text-green-700">· by {formatDeliveryDate(delivered.deliveryBy)}</span>
+                          )}
+                        </div>
+                      )}
                       <div className="flex flex-wrap items-center gap-x-2 gap-y-1 mt-1 md:mt-0.5">
                         <span className="text-[10px] font-bold text-on-surface-variant flex items-center gap-1 whitespace-nowrap">
                           <ICONS.Location className="w-3 h-3 shrink-0" />{(store as any).distanceLabel || store.distance || t('nearby')}

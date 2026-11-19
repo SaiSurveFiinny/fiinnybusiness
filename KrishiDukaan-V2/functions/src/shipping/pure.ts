@@ -12,7 +12,9 @@ export type Stage =
 
 export type SelfReason =
   | "no_pickup_address" | "no_delivery_pincode" | "blocked_category"
-  | "over_value_limit" | "not_serviceable" | "booking_failed" | "automation_off";
+  | "over_value_limit" | "not_serviceable" | "booking_failed" | "automation_off"
+  /** Priced with the seller's own delivery at checkout: the customer paid them for it. */
+  | "seller_delivery";
 
 export interface ShippingConfig {
   /** Off by default: code deployed anywhere does nothing until this is set. */
@@ -279,6 +281,7 @@ export const SELF_REASON_TEXT: Record<SelfReason, string> = {
   not_serviceable: "No courier delivers to this address",
   booking_failed: "The courier booking failed",
   automation_off: "Courier booking is switched off",
+  seller_delivery: "The customer paid your own delivery charge for this order",
 };
 
 /** Reassignment: may this seller be offered the order at this shipping cost? */

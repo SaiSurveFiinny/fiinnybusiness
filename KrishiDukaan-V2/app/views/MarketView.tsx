@@ -12,6 +12,8 @@ import type { CartItem } from '../../types/order';
 import { Tag } from 'lucide-react';
 import { displayPrice } from '../lib/price-display';
 import { PriceTag } from '../../components/shared/price-tag';
+import { DeliveredPriceLine } from '../components/shared/delivered-price-line';
+import { DeliverToChip } from '../components/shared/deliver-to-chip';
 import ProductImage from '../../components/shared/product-image';
 
 interface MarketViewProps {
@@ -670,10 +672,14 @@ export default function MarketView({
         </div>
       </div>
 
-      <p className="text-sm text-outline mb-4 font-medium">
-        {t('showing')} <span className="text-on-surface font-bold">{visibleProducts.length}</span> {t('productsLabel')}
-        {brandFilter !== 'all' ? ` ${t('fromBrand')} ${brandFilter}` : ''}
-      </p>
+      <div className="mb-4 flex flex-wrap items-center justify-between gap-2">
+        <p className="text-sm text-outline font-medium">
+          {t('showing')} <span className="text-on-surface font-bold">{visibleProducts.length}</span> {t('productsLabel')}
+          {brandFilter !== 'all' ? ` ${t('fromBrand')} ${brandFilter}` : ''}
+        </p>
+        {/* Prices delivered to this pincode, with dates (lib/deliver-to). */}
+        <DeliverToChip />
+      </div>
 
       <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-4">
         {visibleProducts.length > 0 ? (
@@ -755,6 +761,7 @@ export default function MarketView({
                   {/* Price */}
                   <div className={`mt-auto pt-2.5 border-t ${showsDiscount ? 'border-green-100' : 'border-surface-container'} mt-2`}>
                     <PriceTag value={dp} size="md" prefix={(product.availability?.length ?? 0) > 1 ? "From" : undefined} />
+                    <DeliveredPriceLine product={product} className="mt-1" />
                   </div>
                   {product.sellMode !== "offline_store_only" && (() => {
                     const inCart = cartItems.some((ci) => ci.productId === product.id);

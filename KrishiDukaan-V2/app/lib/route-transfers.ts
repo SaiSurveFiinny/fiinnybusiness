@@ -1,4 +1,5 @@
 import Razorpay from "razorpay";
+import type { SettlementPlan } from "../../functions/src/payouts/settlement";
 import { FieldValue } from "firebase-admin/firestore";
 import { getAdminDb } from "./firebase-admin";
 import { computeSellerSplit } from "./route-split";
@@ -270,6 +271,8 @@ export async function createHeldTransferForSeller(
   paymentId: string,
   sellerPhone: string,
   grossPaise: number,
+  /** The new seller's settlement plan: its transfer is used as-is (no delivery money in it). */
+  plan?: SettlementPlan,
 ): Promise<HeldTransferOutcome> {
   if (!paymentId) return { status: "no_payment" };
 
@@ -279,7 +282,10 @@ export async function createHeldTransferForSeller(
     if (!accountId) return { status: "not_linked" };
 
     const config = await loadRouteConfig();
-    const split = computeSellerSplit(grossPaise, config);
+    const split = plan
+      ? { transferPaise: plan.transferPaise, commissionPaise: plan.commissionPaise }
+      : computeSellerSplit(grossPaise, config);
+    if (!(split.transferPaise > 0)) return { status: "failed", error: "Nothing to transfer after fees." };
 
     const res = (await razorpay.payments.transfer(paymentId, {
       transfers: [
@@ -293,6 +299,7 @@ export async function createHeldTransferForSeller(
             orderId,
             reassigned: "true",
             commissionPaise: String(split.commissionPaise),
+            ...(plan ? { settlement: `v${plan.v}`, deliveryTo: plan.deliveryTo } : {}),
           },
         } as never,
       ],

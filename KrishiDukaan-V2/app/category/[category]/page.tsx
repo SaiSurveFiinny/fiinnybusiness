@@ -8,6 +8,7 @@ import {
 import { getCategoryBySlug, SEO_CATEGORIES } from "../../lib/seo/category-meta";
 import { displayPrice } from "../../lib/price-display";
 import { PriceTag } from "../../../components/shared/price-tag";
+import { DeliveredPriceLine } from "../../components/shared/delivered-price-line";
 import ProductImage from "../../../components/shared/product-image";
 
 // ISR — cached at the edge, refreshed hourly.
@@ -182,6 +183,8 @@ export default async function CategoryPage({ params }: PageProps) {
                         {p.name}
                       </h3>
                       <PriceTag value={dp} size="sm" className="mt-1" />
+                      {/* Filled in the browser for the shopper's pincode; the page itself stays cached and the same for everyone. */}
+                      <DeliveredPriceLine product={p} className="mt-0.5" />
                     </Link>
                   </li>
                 );

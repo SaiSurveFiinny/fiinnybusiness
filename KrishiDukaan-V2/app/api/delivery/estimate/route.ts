@@ -4,6 +4,9 @@ import { cheapestQuote, courierCheckoutEnabled, parcelKgFor, pickupPincodeFor } 
 import { deliveryByDate } from "../../../lib/delivery-eta";
 import { freeDeliveryAbove, lineDeliveryShare, manufacturerPhoneOf, offerPct } from "../../../lib/free-delivery";
 import { parseVariantWeightKg } from "../../../utils/weight";
+import { loadRouteConfig } from "../../../lib/route-server";
+import { loadActiveCampaign } from "../../../lib/delivery-campaign";
+import { splitCourierCost } from "../../../../functions/src/payouts/settlement";
 
 /**
  * GET /api/delivery/estimate?productId=…&pincode=…&seller=…&size=…
@@ -87,19 +90,26 @@ export async function GET(req: NextRequest) {
       seller: sellerSettings,
       manufacturer: makerSettings,
     });
-  const free = share >= 1;
-
   const quote = await cheapestQuote(pickup, pincode, kg, price);
-  if (!quote) return NextResponse.json({ enabled: true, available: false, free, freeAbove: above || null });
+  // No courier here: the seller delivers at their own slab; a campaign doesn't apply.
+  if (!quote) return NextResponse.json({ enabled: true, available: false, free: share >= 1, freeAbove: above || null });
   const full = Math.ceil(quote.cost);
+  // Same split as checkout (functions/src/payouts/settlement.ts): the seller's
+  // offer, then a running campaign (Option B), then the customer, with the
+  // gateway fee on the customer's part added.
+  const [rates, campaign] = await Promise.all([loadRouteConfig(), loadActiveCampaign()]);
+  const split = splitCourierCost({ cost: full, sellerShare: share, campaign, rates });
+  const free = split.customerDelivery <= 0;
 
   return NextResponse.json(
     {
       enabled: true,
       available: true,
       free,
-      charge: free ? 0 : Math.round(full * (1 - share)),
+      charge: split.customerDelivery,
       fullCharge: full,
+      // "FREE delivery · Diwali offer": the platform campaign paying for it, if any.
+      campaign: split.campaign > 0 && campaign ? campaign.name : null,
       // The store pays this % of delivery (share offers); 0 or 100 otherwise.
       sellerPct: Math.round(share * 100),
       // "FREE delivery on orders of ₹5,000+ from this store"

@@ -231,11 +231,19 @@ class PaymentService {
       // Delivery offers the stores gave (app/lib/free-delivery.ts).
       var storesCover = 0.0;
       double? freeAbove;
+      // KrishiDukan's free-delivery campaign (docs/delivery-money-architecture.md).
+      var campaignPays = 0.0;
+      String? campaignName;
       for (final b in sellers.whereType<Map>()) {
         final d = b['delivery'];
         final by = d is Map && d['courier'] is Map ? (d['courier'] as Map)['deliveryBy']?.toString() : null;
         if (d is Map && d['free'] != true) {
           storesCover += (d['sellerCovers'] as num?)?.toDouble() ?? 0;
+        }
+        if (d is Map && d['campaign'] is Map) {
+          final c = d['campaign'] as Map;
+          campaignPays += (c['platformPays'] as num?)?.toDouble() ?? 0;
+          campaignName ??= c['name']?.toString();
         }
         final above = d is Map ? (d['freeAboveApplied'] as num?)?.toDouble() : null;
         if (above != null && above > 0 && (freeAbove == null || above < freeAbove)) {
@@ -260,6 +268,8 @@ class PaymentService {
         deliveryBy: allDated ? deliveryBy : null,
         storesCover: storesCover,
         freeAbove: freeAbove,
+        campaignName: campaignPays > 0 ? campaignName : null,
+        campaignPays: campaignPays,
       );
     } catch (_) {
       return null;
@@ -447,6 +457,9 @@ class CartQuote {
   final double storesCover;
   /// A store's "free delivery from ₹X" made its part free (the lowest such X).
   final double? freeAbove;
+  /// KrishiDukan's campaign paying for delivery: its name, and the ₹ it covers.
+  final String? campaignName;
+  final double campaignPays;
   const CartQuote({
     required this.delivery,
     required this.gstAdded,
@@ -454,5 +467,7 @@ class CartQuote {
     this.deliveryBy,
     this.storesCover = 0,
     this.freeAbove,
+    this.campaignName,
+    this.campaignPays = 0,
   });
 }

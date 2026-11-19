@@ -1,7 +1,8 @@
 import { FieldValue } from "firebase-admin/firestore";
+import { normaliseRates, planForReassignedSeller, readPlan } from "../../functions/src/payouts/settlement";
 import { getAdminDb } from "./firebase-admin";
 import { findReassignmentCandidates } from "./order-reassignment";
-import { resolveSellerAccount } from "./route-server";
+import { loadRouteConfig, resolveSellerAccount } from "./route-server";
 import {
   classifyExistingTransfer,
   fetchPaymentTransfers,
@@ -299,6 +300,9 @@ export async function reassignOrderByAdmin(params: {
   // at the right listing. Falls back to the product id when no copy is found.
   const newItems = await remapItemListings(order, newSellerPhone);
 
+  const oldPlan = readPlan(order.settlement);
+  const newPlan = oldPlan ? planForReassignedSeller(oldPlan, newSellerPhone, normaliseRates(await loadRouteConfig())) : null;
+
   let raced: string | null = null;
   await db.runTransaction(async (tx) => {
     const fresh = await tx.get(ref);
@@ -349,6 +353,14 @@ export async function reassignOrderByAdmin(params: {
       // reassigned order (adminReassignment is set), so a stale routeTransfer
       // from any earlier state must not linger and point at the old seller.
       routeTransfer: FieldValue.delete(),
+      // A planned order gets the new seller's own plan (goods only, no share of
+      // the first seller's delivery offer). Not routed: the payout run pays it.
+      ...(newPlan
+        ? {
+            settlement: { ...newPlan, routed: false, routedAccountId: "", razorpayOrderId: String(order.settlement?.razorpayOrderId ?? order.payment?.razorpayOrderId ?? ""), stampedAt: nowIso },
+            settlementHistory: FieldValue.arrayUnion({ ...(order.settlement as object), replacedAt: nowIso, reason: "admin_reassignment" }),
+          }
+        : {}),
       updatedAt: nowIso,
     });
   });

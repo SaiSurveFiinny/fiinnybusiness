@@ -28,6 +28,8 @@ import '../../../core/widgets/empty_state.dart';
 import '../../../core/widgets/loading_overlay.dart';
 import '../data/payment_service.dart';
 import '../../orders/data/order_repository.dart';
+import '../../auth/data/auth_repository.dart';
+import '../../../core/models/delivery_address.dart';
 import '../../../core/services/app_review_service.dart';
 import '../../../core/widgets/back_or_home_button.dart';
 import '../../../core/services/analytics_service.dart';
@@ -90,6 +92,10 @@ class _CheckoutScreenState extends ConsumerState<CheckoutScreen> {
   Map<String, String> _areaWarnings = const {};
   int _areaCheckGen = 0;
   bool _prefilled = false;
+
+  /// Save the address typed here as the profile's delivery address (shared
+  /// with the web and the profile screen). On by default, like the web.
+  bool _saveAddress = true;
   String? _error;
   String? _razorpayOrderId;
   /// Order amount in PAISE, kept so a failure can be logged with the value the
@@ -506,6 +512,23 @@ class _CheckoutScreenState extends ConsumerState<CheckoutScreen> {
       orderIds: orderIds,
     ));
 
+    // The address becomes the profile's delivery address (best effort: the
+    // order is already placed; a failed save must not look like a failure).
+    final profile = ref.read(currentUserProvider).value;
+    if (_saveAddress && profile != null) {
+      unawaited(AuthRepository()
+          .saveDeliveryAddress(
+            phone: profile.phone,
+            role: profile.role,
+            address: DeliveryAddress.clean(
+              house: _houseCtrl.text, area: _addressCtrl.text, landmark: _landmarkCtrl.text,
+              city: _cityCtrl.text, district: _districtCtrl.text, state: _state ?? '',
+              pincode: _pincodeCtrl.text,
+            ),
+          )
+          .then((_) => ref.invalidate(currentUserProvider), onError: (_) {}));
+    }
+
     ref.read(cartProvider.notifier).clear();
     // Fire-and-forget: never block navigation on the review prompt.
     unawaited(_reviewService.onOrderCompleted());
@@ -604,12 +627,18 @@ class _CheckoutScreenState extends ConsumerState<CheckoutScreen> {
     if (!_prefilled && profile != null) {
       _prefilled = true;
       if (_firstNameCtrl.text.isEmpty && _lastNameCtrl.text.isEmpty) _prefillName(profile.name);
-      if (_addressCtrl.text.isEmpty) _addressCtrl.text = profile.address ?? '';
-      if (_cityCtrl.text.isEmpty) _cityCtrl.text = profile.city ?? '';
-      if (_pincodeCtrl.text.isEmpty) _pincodeCtrl.text = profile.pincode ?? '';
+      // The one saved delivery address (core/models/delivery_address.dart):
+      // the profile's, the web checkout's, or a buyer's one-line address.
+      final da = profile.deliveryAddress;
+      if (_houseCtrl.text.isEmpty) _houseCtrl.text = da.house;
+      if (_addressCtrl.text.isEmpty) _addressCtrl.text = da.area;
+      if (_landmarkCtrl.text.isEmpty) _landmarkCtrl.text = da.landmark;
+      if (_cityCtrl.text.isEmpty) _cityCtrl.text = da.city;
+      if (_districtCtrl.text.isEmpty) _districtCtrl.text = da.district;
+      if (_pincodeCtrl.text.isEmpty) _pincodeCtrl.text = da.pincode;
       // The saved state, matched onto the recognised list ("Orissa" → Odisha),
       // so returning buyers get the right delivery slab without picking again.
-      final saved = matchIndianState(profile.state);
+      final saved = matchIndianState(da.state);
       if (_state == null && saved != null) _setState(saved);
     }
 
@@ -788,6 +817,17 @@ class _CheckoutScreenState extends ConsumerState<CheckoutScreen> {
                           ? 'Select your state — delivery is priced by it'
                           : null,
                     ),
+                    CheckboxListTile(
+                      value: _saveAddress,
+                      onChanged: (v) => setState(() => _saveAddress = v ?? false),
+                      contentPadding: EdgeInsets.zero,
+                      controlAffinity: ListTileControlAffinity.leading,
+                      dense: true,
+                      title: Text(
+                        'Save as my delivery address',
+                        style: AppTextStyles.caption,
+                      ),
+                    ),
                   ],
                 ),
               ),
@@ -850,6 +890,20 @@ class _CheckoutScreenState extends ConsumerState<CheckoutScreen> {
                               style: AppTextStyles.bodySmall.copyWith(
                                 color: AppColors.success,
                                 fontWeight: FontWeight.w700,
+                              ),
+                            ),
+                          ),
+                        ),
+                      if (_quote?.campaignName != null)
+                        Align(
+                          alignment: Alignment.centerLeft,
+                          child: Padding(
+                            padding: const EdgeInsets.only(bottom: 2),
+                            child: Text(
+                              '${_quote!.campaignName}: KrishiDukan pays ${CurrencyUtils.format(_quote!.campaignPays)} of your delivery',
+                              style: AppTextStyles.caption.copyWith(
+                                color: AppColors.success,
+                                fontWeight: FontWeight.w600,
                               ),
                             ),
                           ),

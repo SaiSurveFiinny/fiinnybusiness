@@ -27,6 +27,7 @@ import { NextRequest, NextResponse } from "next/server";
 import Razorpay from "razorpay";
 import { getAdminDb, getAdminAuth } from "../../../lib/firebase-admin";
 import { loadRouteConfig } from "../../../lib/route-server";
+import { readPlan } from "../../../../functions/src/payouts/settlement";
 
 const razorpay = new Razorpay({
   key_id: process.env.RAZORPAY_KEY_ID!,
@@ -194,9 +195,13 @@ export async function POST(req: NextRequest) {
     }
 
     // Paid after KYC or by the payout run: the commission that payout took.
+    // A planned order: the commission its plan was made with (2% of goods).
     const paidSplit = order.payment?.payoutSplit as { commissionPaise?: number } | undefined;
+    const plan = readPlan(order.settlement);
     const platformFee = typeof paidSplit?.commissionPaise === "number"
       ? paidSplit.commissionPaise / 100
+      : plan
+        ? plan.commissionPaise / 100
       : (await orderWasRouted(paymentId))
         ? await platformFeeFor(order)
         : 0;

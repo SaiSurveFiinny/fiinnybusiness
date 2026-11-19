@@ -147,6 +147,18 @@ async function shiprocketToken(): Promise<string> {
 
 const srHeaders = async () => ({ Authorization: `Bearer ${await shiprocketToken()}`, "Content-Type": "application/json" });
 
+/**
+ * The Shiprocket wallet balance, ₹ (GET /account/details/wallet-balance,
+ * checked against the live account on 16 Nov 2026). Throws when unreadable,
+ * so a failed read is never mistaken for an empty wallet.
+ */
+export async function shiprocketWalletBalance(): Promise<number> {
+  const r = await http(`${SHIPROCKET}/account/details/wallet-balance`, { headers: await srHeaders() });
+  const n = Number(r.body?.data?.balance_amount);
+  if (r.status !== 200 || !Number.isFinite(n)) throw new Error(`Shiprocket wallet balance unreadable (${r.status})`);
+  return n;
+}
+
 async function shiprocketQuotes(pickupPin: string, dropPin: string, kg: number, value: number): Promise<Quote[]> {
   const url = `${SHIPROCKET}/courier/serviceability/?pickup_postcode=${pickupPin}&delivery_postcode=${dropPin}&weight=${kg}&cod=0&declared_value=${Math.ceil(value)}`;
   const r = await http(url, { headers: await srHeaders() });
