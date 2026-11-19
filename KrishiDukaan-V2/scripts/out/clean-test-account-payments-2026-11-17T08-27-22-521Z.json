@@ -1,0 +1,722 @@
+{
+  "project": "krishidukan-e8315",
+  "mode": "apply",
+  "generatedAt": "2026-11-17T08:27:22.521Z",
+  "targetAccounts": [
+    "Arjun Admin",
+    "Sai Influencer Test",
+    "Sai Surve Fiinny",
+    "Kunal Deore Agro Agency",
+    "Karan Tanpure"
+  ],
+  "summary": {
+    "matchedRecords": 64,
+    "affectedOrders": 57,
+    "mixedOrders": 1,
+    "razorpayPaymentsDocs": 8,
+    "paymentAttemptsDocs": 56
+  },
+  "toDelete": [
+    {
+      "account": "Sai Influencer Test",
+      "orderId": "order_TzwotgzxFFazFm",
+      "name": "Sai Influencer Test",
+      "phone": "+919988998899",
+      "categories": [
+        "abandoned"
+      ],
+      "mixed": false,
+      "razorpayPaymentIds": [],
+      "deleteAttemptDoc": "order_TzwotgzxFFazFm"
+    },
+    {
+      "account": "Sai Influencer Test",
+      "orderId": "order_Tzwi33YmrLtY7Z",
+      "name": "Sai Influencer Test",
+      "phone": "+919988998899",
+      "categories": [
+        "abandoned"
+      ],
+      "mixed": false,
+      "razorpayPaymentIds": [],
+      "deleteAttemptDoc": "order_Tzwi33YmrLtY7Z"
+    },
+    {
+      "account": "Sai Influencer Test",
+      "orderId": "order_Tzwbv03gJDQK3V",
+      "name": "Sai Influencer Test",
+      "phone": "+919988998899",
+      "categories": [
+        "abandoned"
+      ],
+      "mixed": false,
+      "razorpayPaymentIds": [],
+      "deleteAttemptDoc": "order_Tzwbv03gJDQK3V"
+    },
+    {
+      "account": "Kunal Deore Agro Agency",
+      "orderId": "order_TzWzfmMP6T4Kin",
+      "name": "kunal Deore",
+      "phone": "+918767263557",
+      "categories": [
+        "abandoned"
+      ],
+      "mixed": false,
+      "razorpayPaymentIds": [],
+      "deleteAttemptDoc": "order_TzWzfmMP6T4Kin"
+    },
+    {
+      "account": "Arjun Admin",
+      "orderId": "order_TzVHvmSIeKxi8X",
+      "name": "Arjun Admin",
+      "phone": "08658032751",
+      "categories": [
+        "abandoned"
+      ],
+      "mixed": false,
+      "razorpayPaymentIds": [],
+      "deleteAttemptDoc": "order_TzVHvmSIeKxi8X"
+    },
+    {
+      "account": "Arjun Admin",
+      "orderId": "order_Tz5MDTF82mz0XZ",
+      "name": "Arjun Admin",
+      "phone": "8658032751",
+      "categories": [
+        "abandoned"
+      ],
+      "mixed": false,
+      "razorpayPaymentIds": [],
+      "deleteAttemptDoc": "order_Tz5MDTF82mz0XZ"
+    },
+    {
+      "account": "Arjun Admin",
+      "orderId": "order_Tz5LcQNlNZWaH3",
+      "name": "Arjun Admin",
+      "phone": "8658032751",
+      "categories": [
+        "abandoned"
+      ],
+      "mixed": false,
+      "razorpayPaymentIds": [],
+      "deleteAttemptDoc": "order_Tz5LcQNlNZWaH3"
+    },
+    {
+      "account": "Sai Influencer Test",
+      "orderId": "order_TyMvUi4y3ErqOs",
+      "name": "Sai Influencer Test",
+      "phone": "+919988998899",
+      "categories": [
+        "abandoned"
+      ],
+      "mixed": false,
+      "razorpayPaymentIds": [],
+      "deleteAttemptDoc": "order_TyMvUi4y3ErqOs"
+    },
+    {
+      "account": "Karan Tanpure",
+      "orderId": "order_TxAUs3QKX3ktzV",
+      "name": "Karan Tanpure",
+      "phone": "+917232839475",
+      "categories": [
+        "abandoned"
+      ],
+      "mixed": false,
+      "razorpayPaymentIds": [],
+      "deleteAttemptDoc": "order_TxAUs3QKX3ktzV"
+    },
+    {
+      "account": "Karan Tanpure",
+      "orderId": "order_TxARLF8Y08JBg0",
+      "name": "Karan Tanpure",
+      "phone": "+917232839475",
+      "categories": [
+        "abandoned"
+      ],
+      "mixed": false,
+      "razorpayPaymentIds": [],
+      "deleteAttemptDoc": "order_TxARLF8Y08JBg0"
+    },
+    {
+      "account": "Karan Tanpure",
+      "orderId": "order_TxAMbdVQ7SFpvk",
+      "name": "Karan Tanpure",
+      "phone": "+917232839475",
+      "categories": [
+        "refunded",
+        "abandoned",
+        "abandoned",
+        "abandoned"
+      ],
+      "mixed": true,
+      "razorpayPaymentIds": [
+        "pay_TxAOkfFMIW4HZl",
+        "pay_TxANH2E3vXryH9",
+        "pay_TxAMsk7AQ2hm0D"
+      ],
+      "deleteAttemptDoc": null
+    },
+    {
+      "account": "Arjun Admin",
+      "orderId": "order_TxAOc7iuGxuYdX",
+      "name": "Arjun Admin",
+      "phone": "9370622016",
+      "categories": [
+        "abandoned"
+      ],
+      "mixed": false,
+      "razorpayPaymentIds": [],
+      "deleteAttemptDoc": "order_TxAOc7iuGxuYdX"
+    },
+    {
+      "account": "Karan Tanpure",
+      "orderId": "order_TxALrft0ehJWnh",
+      "name": "Karan Tanpure",
+      "phone": "+917232839475",
+      "categories": [
+        "abandoned"
+      ],
+      "mixed": false,
+      "razorpayPaymentIds": [],
+      "deleteAttemptDoc": "order_TxALrft0ehJWnh"
+    },
+    {
+      "account": "Karan Tanpure",
+      "orderId": "order_TxAKKh4yHEf5po",
+      "name": "Karan Tanpure",
+      "phone": "+917232839475",
+      "categories": [
+        "abandoned"
+      ],
+      "mixed": false,
+      "razorpayPaymentIds": [
+        "pay_TxAKeyoTxj9595"
+      ],
+      "deleteAttemptDoc": "order_TxAKKh4yHEf5po"
+    },
+    {
+      "account": "Karan Tanpure",
+      "orderId": "order_TxAKKebABtAGgB",
+      "name": "Karan Tanpure",
+      "phone": "+917232839475",
+      "categories": [
+        "abandoned"
+      ],
+      "mixed": false,
+      "razorpayPaymentIds": [],
+      "deleteAttemptDoc": "order_TxAKKebABtAGgB"
+    },
+    {
+      "account": "Karan Tanpure",
+      "orderId": "order_Tx2lpAi0QiJvU3",
+      "name": "Karan Tanpure",
+      "phone": "+917232839475",
+      "categories": [
+        "abandoned"
+      ],
+      "mixed": false,
+      "razorpayPaymentIds": [],
+      "deleteAttemptDoc": "order_Tx2lpAi0QiJvU3"
+    },
+    {
+      "account": "Sai Influencer Test",
+      "orderId": "order_Tw5ktxQZNSOf8O",
+      "name": "Sai Influencer Test",
+      "phone": "+919988998899",
+      "categories": [
+        "abandoned"
+      ],
+      "mixed": false,
+      "razorpayPaymentIds": [],
+      "deleteAttemptDoc": "order_Tw5ktxQZNSOf8O"
+    },
+    {
+      "account": "Arjun Admin",
+      "orderId": "order_Tw5cOnPx37aUvo",
+      "name": "Arjun Admin",
+      "phone": "7276769367",
+      "categories": [
+        "abandoned"
+      ],
+      "mixed": false,
+      "razorpayPaymentIds": [],
+      "deleteAttemptDoc": "order_Tw5cOnPx37aUvo"
+    },
+    {
+      "account": "Arjun Admin",
+      "orderId": "order_Tw5bnJa3pijWT8",
+      "name": "Arjun Admin",
+      "phone": "7276769367",
+      "categories": [
+        "abandoned"
+      ],
+      "mixed": false,
+      "razorpayPaymentIds": [],
+      "deleteAttemptDoc": "order_Tw5bnJa3pijWT8"
+    },
+    {
+      "account": "Sai Influencer Test",
+      "orderId": "order_Tw5W45HD9BclFi",
+      "name": "Sai Influencer Test",
+      "phone": "+919988998899",
+      "categories": [
+        "abandoned"
+      ],
+      "mixed": false,
+      "razorpayPaymentIds": [],
+      "deleteAttemptDoc": "order_Tw5W45HD9BclFi"
+    },
+    {
+      "account": "Sai Influencer Test",
+      "orderId": "order_Tw4oHPnYZMy6bi",
+      "name": "Sai Influencer Test",
+      "phone": "+919988998899",
+      "categories": [
+        "abandoned"
+      ],
+      "mixed": false,
+      "razorpayPaymentIds": [],
+      "deleteAttemptDoc": "order_Tw4oHPnYZMy6bi"
+    },
+    {
+      "account": "Karan Tanpure",
+      "orderId": "order_TuEChkRKDJ77G0",
+      "name": "Karan Tanpure",
+      "phone": "+917232839475",
+      "categories": [
+        "abandoned"
+      ],
+      "mixed": false,
+      "razorpayPaymentIds": [],
+      "deleteAttemptDoc": "order_TuEChkRKDJ77G0"
+    },
+    {
+      "account": "Sai Influencer Test",
+      "orderId": "order_TstpGnjUJz6G0f",
+      "name": "Sai Influencer Test",
+      "phone": "+919988998899",
+      "categories": [
+        "abandoned"
+      ],
+      "mixed": false,
+      "razorpayPaymentIds": [],
+      "deleteAttemptDoc": "order_TstpGnjUJz6G0f"
+    },
+    {
+      "account": "Kunal Deore Agro Agency",
+      "orderId": "order_Tqwz0OklUz83PS",
+      "name": "kunal Deore",
+      "phone": "+918767263557",
+      "categories": [
+        "abandoned"
+      ],
+      "mixed": false,
+      "razorpayPaymentIds": [],
+      "deleteAttemptDoc": "order_Tqwz0OklUz83PS"
+    },
+    {
+      "account": "Kunal Deore Agro Agency",
+      "orderId": "order_Tqwv7Z6CNmMKJg",
+      "name": "kunal Deore",
+      "phone": "+918767263557",
+      "categories": [
+        "abandoned"
+      ],
+      "mixed": false,
+      "razorpayPaymentIds": [],
+      "deleteAttemptDoc": "order_Tqwv7Z6CNmMKJg"
+    },
+    {
+      "account": "Arjun Admin",
+      "orderId": "order_Tqwm1iOLpTlFZv",
+      "name": "Arjun Admin",
+      "phone": "9370622016",
+      "categories": [
+        "abandoned"
+      ],
+      "mixed": false,
+      "razorpayPaymentIds": [],
+      "deleteAttemptDoc": "order_Tqwm1iOLpTlFZv"
+    },
+    {
+      "account": "Arjun Admin",
+      "orderId": "order_TqwlTNQgfeAHJz",
+      "name": "Arjun Admin",
+      "phone": "9370622016",
+      "categories": [
+        "abandoned"
+      ],
+      "mixed": false,
+      "razorpayPaymentIds": [],
+      "deleteAttemptDoc": "order_TqwlTNQgfeAHJz"
+    },
+    {
+      "account": "Sai Surve Fiinny",
+      "orderId": "order_TpgYcmOl5BbbBg",
+      "name": "Sai Surve Fiinny",
+      "phone": "+917276769367",
+      "categories": [
+        "abandoned"
+      ],
+      "mixed": false,
+      "razorpayPaymentIds": [],
+      "deleteAttemptDoc": "order_TpgYcmOl5BbbBg"
+    },
+    {
+      "account": "Arjun Admin",
+      "orderId": "order_Tnjr1fMj1CkNIV",
+      "name": "Arjun Admin",
+      "phone": "7276769367",
+      "categories": [
+        "abandoned"
+      ],
+      "mixed": false,
+      "razorpayPaymentIds": [],
+      "deleteAttemptDoc": "order_Tnjr1fMj1CkNIV"
+    },
+    {
+      "account": "Arjun Admin",
+      "orderId": "order_Tnjq2f63t8ILbX",
+      "name": "Arjun Admin",
+      "phone": "7276769367",
+      "categories": [
+        "abandoned"
+      ],
+      "mixed": false,
+      "razorpayPaymentIds": [],
+      "deleteAttemptDoc": "order_Tnjq2f63t8ILbX"
+    },
+    {
+      "account": "Arjun Admin",
+      "orderId": "order_Tnhi9rZNptUZbB",
+      "name": "Arjun Admin",
+      "phone": "7276769367",
+      "categories": [
+        "abandoned"
+      ],
+      "mixed": false,
+      "razorpayPaymentIds": [],
+      "deleteAttemptDoc": "order_Tnhi9rZNptUZbB"
+    },
+    {
+      "account": "Arjun Admin",
+      "orderId": "order_Tngw0LcaPoYNh8",
+      "name": "Arjun Admin",
+      "phone": "7276769367",
+      "categories": [
+        "abandoned"
+      ],
+      "mixed": false,
+      "razorpayPaymentIds": [],
+      "deleteAttemptDoc": "order_Tngw0LcaPoYNh8"
+    },
+    {
+      "account": "Arjun Admin",
+      "orderId": "order_TngOTOW1nq4DnW",
+      "name": "Arjun Admin",
+      "phone": "7276769367",
+      "categories": [
+        "abandoned"
+      ],
+      "mixed": false,
+      "razorpayPaymentIds": [],
+      "deleteAttemptDoc": "order_TngOTOW1nq4DnW"
+    },
+    {
+      "account": "Arjun Admin",
+      "orderId": "order_TngFg0snatbSiZ",
+      "name": "Arjun Admin",
+      "phone": "7276769367",
+      "categories": [
+        "abandoned"
+      ],
+      "mixed": false,
+      "razorpayPaymentIds": [],
+      "deleteAttemptDoc": "order_TngFg0snatbSiZ"
+    },
+    {
+      "account": "Arjun Admin",
+      "orderId": "order_TnSsF3zVcFx6oT",
+      "name": "Arjun Admin",
+      "phone": "8658032751",
+      "categories": [
+        "abandoned"
+      ],
+      "mixed": false,
+      "razorpayPaymentIds": [],
+      "deleteAttemptDoc": "order_TnSsF3zVcFx6oT"
+    },
+    {
+      "account": "Arjun Admin",
+      "orderId": "order_TnSpR9NfoUCbfI",
+      "name": "Arjun Admin",
+      "phone": "08658032751",
+      "categories": [
+        "abandoned"
+      ],
+      "mixed": false,
+      "razorpayPaymentIds": [],
+      "deleteAttemptDoc": "order_TnSpR9NfoUCbfI"
+    },
+    {
+      "account": "Arjun Admin",
+      "orderId": "order_TnGo0lRDW5rzhA",
+      "name": "Arjun Admin",
+      "phone": "08658032751",
+      "categories": [
+        "abandoned"
+      ],
+      "mixed": false,
+      "razorpayPaymentIds": [],
+      "deleteAttemptDoc": "order_TnGo0lRDW5rzhA"
+    },
+    {
+      "account": "Arjun Admin",
+      "orderId": "order_TnGnY7aHM83y7W",
+      "name": "Arjun Admin",
+      "phone": "08658032751",
+      "categories": [
+        "abandoned"
+      ],
+      "mixed": false,
+      "razorpayPaymentIds": [],
+      "deleteAttemptDoc": "order_TnGnY7aHM83y7W"
+    },
+    {
+      "account": "Arjun Admin",
+      "orderId": "order_TnGn9GhrLLtCuQ",
+      "name": "Arjun Admin",
+      "phone": "08658032751",
+      "categories": [
+        "abandoned"
+      ],
+      "mixed": false,
+      "razorpayPaymentIds": [],
+      "deleteAttemptDoc": "order_TnGn9GhrLLtCuQ"
+    },
+    {
+      "account": "Kunal Deore Agro Agency",
+      "orderId": "order_TmxspMorTa2TkD",
+      "name": "kunal Deore",
+      "phone": "+918767263557",
+      "categories": [
+        "abandoned"
+      ],
+      "mixed": false,
+      "razorpayPaymentIds": [],
+      "deleteAttemptDoc": "order_TmxspMorTa2TkD"
+    },
+    {
+      "account": "Kunal Deore Agro Agency",
+      "orderId": "order_TmwTt9FMBpl60A",
+      "name": "kunal Deore",
+      "phone": "+918767263557",
+      "categories": [
+        "abandoned"
+      ],
+      "mixed": false,
+      "razorpayPaymentIds": [],
+      "deleteAttemptDoc": "order_TmwTt9FMBpl60A"
+    },
+    {
+      "account": "Arjun Admin",
+      "orderId": "order_TlTSEeU8dndAen",
+      "name": "Arjun Admin",
+      "phone": "08658032751",
+      "categories": [
+        "abandoned"
+      ],
+      "mixed": false,
+      "razorpayPaymentIds": [],
+      "deleteAttemptDoc": "order_TlTSEeU8dndAen"
+    },
+    {
+      "account": "Arjun Admin",
+      "orderId": "order_Tkh9tomSQ6op2i",
+      "name": "Arjun Admin",
+      "phone": "8658032721",
+      "categories": [
+        "abandoned"
+      ],
+      "mixed": false,
+      "razorpayPaymentIds": [],
+      "deleteAttemptDoc": "order_Tkh9tomSQ6op2i"
+    },
+    {
+      "account": "Arjun Admin",
+      "orderId": "order_TimVMcd4ooPKEn",
+      "name": "Arjun Admin",
+      "phone": "08658032751",
+      "categories": [
+        "abandoned"
+      ],
+      "mixed": false,
+      "razorpayPaymentIds": [],
+      "deleteAttemptDoc": "order_TimVMcd4ooPKEn"
+    },
+    {
+      "account": "Sai Surve Fiinny",
+      "orderId": "order_TiF3hAGSYCBlbx",
+      "name": "Sai Surve Fiinny",
+      "phone": "+917276769367",
+      "categories": [
+        "abandoned"
+      ],
+      "mixed": false,
+      "razorpayPaymentIds": [],
+      "deleteAttemptDoc": "order_TiF3hAGSYCBlbx"
+    },
+    {
+      "account": "Kunal Deore Agro Agency",
+      "orderId": "order_Ti7iJX8Dvlkei9",
+      "name": "kunal Deore",
+      "phone": "+918767263557",
+      "categories": [
+        "abandoned"
+      ],
+      "mixed": false,
+      "razorpayPaymentIds": [],
+      "deleteAttemptDoc": "order_Ti7iJX8Dvlkei9"
+    },
+    {
+      "account": "Sai Surve Fiinny",
+      "orderId": "order_TfMyvtVm4VG1sS",
+      "name": "Sai Surve Fiinny",
+      "phone": "+917276769367",
+      "categories": [
+        "abandoned"
+      ],
+      "mixed": false,
+      "razorpayPaymentIds": [],
+      "deleteAttemptDoc": "order_TfMyvtVm4VG1sS"
+    },
+    {
+      "account": "Arjun Admin",
+      "orderId": "order_TetS2uX5f7R0f6",
+      "name": "Arjun Admin",
+      "phone": "08658032751",
+      "categories": [
+        "abandoned"
+      ],
+      "mixed": false,
+      "razorpayPaymentIds": [],
+      "deleteAttemptDoc": "order_TetS2uX5f7R0f6"
+    },
+    {
+      "account": "Arjun Admin",
+      "orderId": "order_TcoGaMCsaAuPnU",
+      "name": "Arjun Admin",
+      "phone": null,
+      "categories": [
+        "abandoned"
+      ],
+      "mixed": false,
+      "razorpayPaymentIds": [],
+      "deleteAttemptDoc": "order_TcoGaMCsaAuPnU"
+    },
+    {
+      "account": "Kunal Deore Agro Agency",
+      "orderId": "order_TZy4ZSLmEjvF6o",
+      "name": "kunal Deore",
+      "phone": "+918767263557",
+      "categories": [
+        "abandoned"
+      ],
+      "mixed": false,
+      "razorpayPaymentIds": [],
+      "deleteAttemptDoc": "order_TZy4ZSLmEjvF6o"
+    },
+    {
+      "account": "Kunal Deore Agro Agency",
+      "orderId": "order_TZy4KGzlrLQafk",
+      "name": "kunal Deore",
+      "phone": "+918767263557",
+      "categories": [
+        "abandoned"
+      ],
+      "mixed": false,
+      "razorpayPaymentIds": [],
+      "deleteAttemptDoc": "order_TZy4KGzlrLQafk"
+    },
+    {
+      "account": "Kunal Deore Agro Agency",
+      "orderId": "order_TZy1MIYCdhpIna",
+      "name": "kunal Deore",
+      "phone": "+918767263557",
+      "categories": [
+        "abandoned"
+      ],
+      "mixed": false,
+      "razorpayPaymentIds": [],
+      "deleteAttemptDoc": "order_TZy1MIYCdhpIna"
+    },
+    {
+      "account": "Kunal Deore Agro Agency",
+      "orderId": "order_TZ8SXyVsjRvRmZ",
+      "name": "kunal Deore",
+      "phone": "+918767263557",
+      "categories": [
+        "failed"
+      ],
+      "mixed": false,
+      "razorpayPaymentIds": [
+        "pay_TZ8T1SgWCQ9m9Y"
+      ],
+      "deleteAttemptDoc": "order_TZ8SXyVsjRvRmZ"
+    },
+    {
+      "account": "Kunal Deore Agro Agency",
+      "orderId": "order_TZ8PjzyIOJV2mr",
+      "name": "kunal Deore",
+      "phone": "+918767263557",
+      "categories": [
+        "failed"
+      ],
+      "mixed": false,
+      "razorpayPaymentIds": [
+        "pay_TZ8QduYeRGbWGg"
+      ],
+      "deleteAttemptDoc": "order_TZ8PjzyIOJV2mr"
+    },
+    {
+      "account": "Kunal Deore Agro Agency",
+      "orderId": "order_TXZaXXm7pZZGJE",
+      "name": "kunal Deore",
+      "phone": "+918767263557",
+      "categories": [
+        "failed"
+      ],
+      "mixed": false,
+      "razorpayPaymentIds": [
+        "pay_TXZc7B2Yswfx0R"
+      ],
+      "deleteAttemptDoc": "order_TXZaXXm7pZZGJE"
+    },
+    {
+      "account": "Arjun Admin",
+      "orderId": "order_TBO4Kpn7GkfKTK",
+      "name": "Arjun Admin",
+      "phone": "+917276769367",
+      "categories": [
+        "abandoned"
+      ],
+      "mixed": false,
+      "razorpayPaymentIds": [],
+      "deleteAttemptDoc": "order_TBO4Kpn7GkfKTK"
+    },
+    {
+      "account": "Kunal Deore Agro Agency",
+      "orderId": "order_T0c3SMtDzixB7b",
+      "name": "kunal Deore",
+      "phone": "+918767263557",
+      "categories": [
+        "failed"
+      ],
+      "mixed": false,
+      "razorpayPaymentIds": [
+        "pay_T0c4LS9kWrwq1D"
+      ],
+      "deleteAttemptDoc": "order_T0c3SMtDzixB7b"
+    }
+  ]
+}

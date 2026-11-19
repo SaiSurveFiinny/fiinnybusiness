@@ -992,9 +992,13 @@ service cloud.firestore {
       allow write: if false;
     }
 
-    // Product -> card index, used only by Cloud Functions.
+    // Product -> card index { nameKey, groupKey }, maintained only by Cloud
+    // Functions (writes stay closed). Admins / products-team may READ it so the
+    // Product Identity console can resolve a product name to its member docs
+    // (name search); it exposes only the two key fields, no product data.
     match /cardMembers/{productId} {
-      allow read, write: if false;
+      allow read: if isAdmin() || teamHas('products');
+      allow write: if false;
     }
 
     // Compact copy of the public retailers/manufacturers/profiles/stores
