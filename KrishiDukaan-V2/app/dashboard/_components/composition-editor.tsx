@@ -69,11 +69,15 @@ export function CompositionEditor({ entries, onChange, disabled }: Props) {
 }
 
 /** Categories that support the Composition field. */
+// Mirrors compositionCategories in scripts/seed-product-schema.js.
 export const COMPOSITION_CATEGORIES = new Set([
   "Fertilizers",
   "Pesticides",
+  "Insecticides",
+  "Fungicides",
   "Herbicides",
   "Bio-Stimulants",
+  "Adjuvants",
   "Seeds",
   "Other",
 ]);
