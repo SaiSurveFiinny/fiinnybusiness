@@ -409,7 +409,8 @@ export async function fetchStores(): Promise<Store[]> {
         id: doc.id,
         retailerId: data.retailerId,
         userId: data.userId,
-        name: data.shopName || data.ownerName || 'Retailer',
+        // Business-identity priority: businessName → shopName → ownerName → name.
+        name: data.businessName || data.shopName || data.ownerName || data.name || 'Retailer',
         ownerName: data.ownerName,
         // Fall back to doc.id: for phone-keyed docs the doc ID is the phone number itself
         phone: data.phone || (/^\+?\d{10,13}$/.test(doc.id) ? doc.id : undefined),
@@ -507,7 +508,7 @@ export async function fetchStores(): Promise<Store[]> {
         return {
           id: doc.id,
           userId: data.uid || undefined,
-          name: data.shopName || data.businessName || data.ownerName || data.name,
+          name: data.businessName || data.shopName || data.ownerName || data.name,
           ownerName: data.ownerName,
           phone: data.phone || (/^\+?\d{10,13}$/.test(doc.id) ? doc.id : undefined),
           logo: data.logo || undefined,
@@ -677,7 +678,12 @@ export async function fetchStoresForSellers(sellers: ProductSellerKey[]): Promis
         id: docId || seller.storeId || seller.storePhone || '',
         retailerId: d.retailerId,
         userId: d.uid || d.userId || undefined,
-        name: d.shopName || d.businessName || d.ownerName || d.name || seller.storeName || 'Retailer',
+        // Business-identity priority: businessName → shopName → ownerName → name.
+        // businessName and shopName are both business-identity fields (the canonical
+        // uid-keyed retailer doc stores its business name ONLY in shopName), so they
+        // rank first. `name` is last because on profiles/users docs it holds the
+        // OWNER's personal name, not the shop. ownerName is never the primary name.
+        name: d.businessName || d.shopName || d.ownerName || d.name || seller.storeName || 'Retailer',
         ownerName: d.ownerName,
         phone,
         logo: d.logo || undefined,
