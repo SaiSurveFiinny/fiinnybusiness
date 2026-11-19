@@ -83,6 +83,8 @@ export const getRetailerBrandProducts = cache(async (phone: string, max = 24): P
           image,
           price: Number(data.price || 0),
           slug: buildProductSlug(name, canonicalId),
+          // This shop's own copy — links open the product view scoped to it.
+          listingId: d.id,
         });
       }
     }

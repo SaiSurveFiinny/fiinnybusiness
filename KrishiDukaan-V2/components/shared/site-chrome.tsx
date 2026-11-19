@@ -123,9 +123,9 @@ export function SiteFooter() {
           </h2>
           <div className="space-y-1 text-sm text-on-surface-variant">
             <p className="font-semibold text-on-surface">
-              KrishiDukan Pvt Ltd
+              KrishiDukan Private Limited
             </p>
-            <p>Gurugram, Sector 45 - 122003</p>
+            <p>Gurugram, Sector 52, 122003</p>
             <a
               href="tel:+918658032751"
               className="block pt-1 font-bold text-primary hover:underline"
