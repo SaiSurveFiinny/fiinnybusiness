@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { BadgeCheck, Clock, Facebook, Instagram, MapPin, MessageCircle, Navigation, Phone, Youtube } from "lucide-react";
+import { BadgeCheck, Clock, Facebook, Instagram, MapPin, MessageCircle, Navigation, Phone, ShoppingBag, Youtube } from "lucide-react";
 import type { RetailerBrandData } from "../../lib/seo/retailer-brand-server";
 import type { StoreProduct } from "../../lib/seo/stores-server";
 import StoreProductGrid from "../../stores/_components/store-product-grid";
@@ -10,6 +10,33 @@ import { APP_STORE_URL, PLAY_STORE_URL, iosLive } from "../../lib/store-links";
 function initials(name: string): string {
   const parts = name.trim().split(/\s+/).filter(Boolean);
   return (parts.length > 1 ? parts[0][0] + parts[1][0] : (parts[0] ?? "K").slice(0, 2)).toUpperCase();
+}
+
+/**
+ * A clean, human address from the profile fields.
+ *
+ * Seller addresses arrive messy: `line1` is often a Google-formatted string that
+ * already repeats the city/state/pincode and is prefixed with a plus code
+ * (e.g. "QR75+PM6, Kajla, Maharashtra 431213"), so naively joining
+ * [line1, city, state, pincode] produces
+ * "QR75+PM6, Kajla, Maharashtra 431213, Kajla, Maharashtra, 431213".
+ *
+ * This strips a leading plus code and drops any segment already present in what
+ * we have built so far, so the example collapses to "Kajla, Maharashtra 431213".
+ */
+function formatAddress(p: { line1: string; city: string; state: string; pincode: string }): string {
+  const line1 = p.line1
+    .trim()
+    // Google Open Location Code prefix: 4+ chars, "+", 2+ chars (base-20 alphabet).
+    .replace(/^[0-9A-Z]{4,}\+[0-9A-Z]{2,}\b[,\s]*/i, "")
+    .trim();
+  const segments = [line1, p.city.trim(), p.state.trim(), p.pincode.trim()].filter(Boolean);
+  const out: string[] = [];
+  for (const seg of segments) {
+    if (out.join(", ").toLowerCase().includes(seg.toLowerCase())) continue;
+    out.push(seg);
+  }
+  return out.join(", ");
 }
 
 /**
@@ -27,7 +54,7 @@ export default function RetailerBrandView({
   const { brand, profile } = data;
   const name = profile.name || "KrishiDukan shop";
   const place = [profile.city, profile.state].filter(Boolean).join(", ");
-  const address = [profile.line1, profile.city, profile.state, profile.pincode].filter(Boolean).join(", ");
+  const address = formatAddress(profile);
   const waDigits = (brand.whatsapp || profile.phone).replace(/\D/g, "").slice(-10);
   const shareUrl = shopShareUrl(profile.phone);
   const socials = {
@@ -79,9 +106,22 @@ export default function RetailerBrandView({
             ) : null}
             {brand.establishedYear ? <span>Since {brand.establishedYear}</span> : null}
             {profile.onlineDelivery ? (
-              <span className="rounded-full bg-green-50 px-2 py-0.5 text-xs font-bold text-green-700">Home delivery</span>
+              <span className="rounded-full bg-green-50 px-2 py-0.5 text-xs font-bold text-green-700">Online delivery</span>
             ) : null}
           </p>
+
+          {/* Full address + hours — reachable via Directions/Call too, kept here
+              as compact lines so there is no separate sidebar "Visit us" card. */}
+          {address && address !== place ? (
+            <p className="mt-1.5 flex items-start gap-1.5 text-sm text-on-surface-variant">
+              <MapPin className="mt-0.5 h-4 w-4 shrink-0" /> {address}
+            </p>
+          ) : null}
+          {brand.openingHours ? (
+            <p className="mt-1.5 flex items-start gap-1.5 text-sm text-on-surface-variant">
+              <Clock className="mt-0.5 h-4 w-4 shrink-0" /> {brand.openingHours}
+            </p>
+          ) : null}
 
           <div className="mt-5 flex flex-wrap gap-2.5">
             <a href={`tel:${profile.phone}`} className={`${btn} bg-primary text-white`}>
@@ -121,92 +161,85 @@ export default function RetailerBrandView({
         </ul>
       ) : null}
 
-      <div className="mt-6 grid gap-6 md:grid-cols-[1fr_300px]">
-        <div className="space-y-6">
-          {brand.about ? (
-            <section className="rounded-3xl border border-surface-container bg-white p-5 sm:p-6">
-              <h2 className="text-lg font-black text-on-surface">About us</h2>
-              <p className="mt-2 whitespace-pre-line text-sm leading-relaxed text-on-surface-variant">{brand.about}</p>
-            </section>
-          ) : null}
-
-          {brand.photos.length > 0 ? (
-            <section className="rounded-3xl border border-surface-container bg-white p-5 sm:p-6">
-              <h2 className="text-lg font-black text-on-surface">Our shop</h2>
-              <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-3">
-                {brand.photos.map((src, i) => (
-                  <a key={src} href={src} target="_blank" rel="noopener noreferrer" className="block overflow-hidden rounded-2xl bg-surface-container-low">
-                    {/* eslint-disable-next-line @next/next/no-img-element */}
-                    <img src={src} alt={`${name} photo ${i + 1}`} loading="lazy" decoding="async" className="aspect-square h-full w-full object-cover transition-transform hover:scale-105" />
-                  </a>
-                ))}
-              </div>
-            </section>
-          ) : null}
-        </div>
-
-        <aside className="space-y-4">
-          <section className="rounded-3xl border border-surface-container bg-white p-5 text-sm">
-            <h2 className="text-base font-black text-on-surface">Visit us</h2>
-            {address ? (
-              <p className="mt-2 flex gap-2 text-on-surface-variant">
-                <MapPin className="mt-0.5 h-4 w-4 shrink-0" /> {address}
-              </p>
-            ) : null}
-            {brand.openingHours ? (
-              <p className="mt-2 flex gap-2 text-on-surface-variant">
-                <Clock className="mt-0.5 h-4 w-4 shrink-0" /> {brand.openingHours}
-              </p>
-            ) : null}
-            <p className="mt-2 flex gap-2">
-              <Phone className="mt-0.5 h-4 w-4 shrink-0 text-on-surface-variant" />
-              <a href={`tel:${profile.phone}`} className="font-bold text-primary hover:underline">{profile.phone}</a>
-            </p>
-            {profile.ownerName ? <p className="mt-2 text-on-surface-variant">Proprietor: {profile.ownerName}</p> : null}
+      {/* Single column on every width — content width matches the hero card,
+          so there is never an empty side column on desktop. */}
+      <div className="mt-6 space-y-6">
+        {brand.about ? (
+          <section className="rounded-3xl border border-surface-container bg-white p-5 sm:p-6">
+            <h2 className="text-lg font-black text-on-surface">About us</h2>
+            <p className="mt-2 whitespace-pre-line text-sm leading-relaxed text-on-surface-variant">{brand.about}</p>
           </section>
+        ) : null}
 
-          {socials.instagram || socials.facebook || socials.youtube ? (
-            <section className="flex gap-2 rounded-3xl border border-surface-container bg-white p-4">
-              {socials.instagram ? (
-                <a href={socials.instagram} target="_blank" rel="noopener noreferrer" aria-label="Instagram" className="rounded-xl bg-pink-50 p-2.5 text-pink-600"><Instagram className="h-5 w-5" /></a>
-              ) : null}
-              {socials.facebook ? (
-                <a href={socials.facebook} target="_blank" rel="noopener noreferrer" aria-label="Facebook" className="rounded-xl bg-blue-50 p-2.5 text-blue-600"><Facebook className="h-5 w-5" /></a>
-              ) : null}
-              {socials.youtube ? (
-                <a href={socials.youtube} target="_blank" rel="noopener noreferrer" aria-label="YouTube" className="rounded-xl bg-red-50 p-2.5 text-red-600"><Youtube className="h-5 w-5" /></a>
-              ) : null}
-            </section>
-          ) : null}
-
-          <section className="rounded-3xl bg-primary p-5 text-white">
-            <p className="text-sm font-black">Order from {name} on the KrishiDukan app</p>
-            <p className="mt-1 text-xs text-white/80">Follow the shop, see new stock and offers first.</p>
-            <div className="mt-3 flex flex-wrap gap-2">
-              <a href={PLAY_STORE_URL} target="_blank" rel="noopener noreferrer" className="rounded-xl bg-white px-3 py-2 text-xs font-black text-primary">Get it on Google Play</a>
-              {iosLive ? (
-                <a href={APP_STORE_URL} target="_blank" rel="noopener noreferrer" className="rounded-xl bg-white px-3 py-2 text-xs font-black text-primary">App Store</a>
-              ) : null}
+        {brand.photos.length > 0 ? (
+          <section className="rounded-3xl border border-surface-container bg-white p-5 sm:p-6">
+            <h2 className="text-lg font-black text-on-surface">Our shop</h2>
+            <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-4">
+              {brand.photos.map((src, i) => (
+                <a key={src} href={src} target="_blank" rel="noopener noreferrer" className="block overflow-hidden rounded-2xl bg-surface-container-low">
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                  <img src={src} alt={`${name} photo ${i + 1}`} loading="lazy" decoding="async" className="aspect-square h-full w-full object-cover transition-transform hover:scale-105" />
+                </a>
+              ))}
             </div>
           </section>
-        </aside>
-      </div>
+        ) : null}
 
-      {products.length > 0 ? (
-        <section className="mt-8">
+        {socials.instagram || socials.facebook || socials.youtube ? (
+          <section className="flex gap-2 rounded-3xl border border-surface-container bg-white p-4">
+            {socials.instagram ? (
+              <a href={socials.instagram} target="_blank" rel="noopener noreferrer" aria-label="Instagram" className="rounded-xl bg-pink-50 p-2.5 text-pink-600"><Instagram className="h-5 w-5" /></a>
+            ) : null}
+            {socials.facebook ? (
+              <a href={socials.facebook} target="_blank" rel="noopener noreferrer" aria-label="Facebook" className="rounded-xl bg-blue-50 p-2.5 text-blue-600"><Facebook className="h-5 w-5" /></a>
+            ) : null}
+            {socials.youtube ? (
+              <a href={socials.youtube} target="_blank" rel="noopener noreferrer" aria-label="YouTube" className="rounded-xl bg-red-50 p-2.5 text-red-600"><Youtube className="h-5 w-5" /></a>
+            ) : null}
+          </section>
+        ) : null}
+
+        {/* Products — fills the main area that used to be empty on desktop. */}
+        <section>
           <h2 className="mb-4 text-lg font-black text-on-surface">Products at {name}</h2>
-          <nav aria-label={`${name} products`} className="sr-only">
-            <ul>
-              {products.map((p) => (
-                <li key={p.id}>
-                  <Link href={`/products/${p.slug}`}>{p.name}</Link>
-                </li>
-              ))}
-            </ul>
-          </nav>
-          <StoreProductGrid products={products} storeName={name} storePhone={profile.phone} />
+          {products.length > 0 ? (
+            <>
+              <nav aria-label={`${name} products`} className="sr-only">
+                <ul>
+                  {products.map((p) => (
+                    <li key={p.id}>
+                      <Link href={`/products/${p.slug}`}>{p.name}</Link>
+                    </li>
+                  ))}
+                </ul>
+              </nav>
+              <StoreProductGrid products={products} storeName={name} storePhone={profile.phone} appProductLinks />
+            </>
+          ) : (
+            <div className="rounded-3xl border border-dashed border-surface-container bg-white px-6 py-12 text-center">
+              <ShoppingBag className="mx-auto h-10 w-10 text-on-surface-variant/40" />
+              <p className="mt-3 text-sm font-bold text-on-surface">No products listed yet</p>
+              <p className="mt-1 text-sm text-on-surface-variant">
+                {name} hasn’t added products online yet. Call or WhatsApp to ask what’s in stock.
+              </p>
+            </div>
+          )}
         </section>
-      ) : null}
+
+        {/* Full-width app CTA, below the products grid. */}
+        <section className="flex flex-col gap-3 rounded-3xl bg-primary p-6 text-white sm:flex-row sm:items-center sm:justify-between sm:p-7">
+          <div>
+            <p className="text-base font-black">Order from {name} on the KrishiDukan app</p>
+            <p className="mt-1 text-sm text-white/80">Follow the shop, see new stock and offers first.</p>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            <a href={PLAY_STORE_URL} target="_blank" rel="noopener noreferrer" className="rounded-xl bg-white px-4 py-2.5 text-sm font-black text-primary">Get it on Google Play</a>
+            {iosLive ? (
+              <a href={APP_STORE_URL} target="_blank" rel="noopener noreferrer" className="rounded-xl bg-white px-4 py-2.5 text-sm font-black text-primary">App Store</a>
+            ) : null}
+          </div>
+        </section>
+      </div>
     </main>
   );
 }

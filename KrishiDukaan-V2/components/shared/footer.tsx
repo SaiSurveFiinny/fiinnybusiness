@@ -154,8 +154,8 @@ export default function Footer({ onNavigate, onCategoryClick }: FooterProps) {
               >
                 {t('footerContact')}
               </button>
-              <p className="font-semibold text-on-surface">KrishiDukan Pvt Ltd</p>
-              <p>Gurugram, Sector 45 - 122003</p>
+              <p className="font-semibold text-on-surface">KrishiDukan Private Limited</p>
+              <p>Gurugram, Sector 52, 122003</p>
               <a href="tel:+918658032751" className="block font-bold text-primary hover:underline">
                 +91 86580 32751
               </a>

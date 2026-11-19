@@ -15,8 +15,12 @@ import { RefreshButton } from "../_components/refresh-button";
 import type { MarketplaceProduct } from "../../../types/product";
 import { cn } from "../../dashboard/_lib/cn";
 import { AddProductInventoryForm } from "../../dashboard/_components/add-product-inventory-form";
+import { PRODUCT_CATEGORIES } from "../../dashboard/_lib/category-info";
 
-const CATEGORIES = ["seeds", "fertilizers", "pesticides", "irrigation", "tools", "general"];
+// Single shared category list. The chip VALUE is the lowercase categoryKey (what
+// the cards are indexed by for the Firestore query); the label shows the proper
+// canonical name. "all" is handled separately.
+const CATEGORY_CHIPS = PRODUCT_CATEGORIES.map((name) => ({ value: name.toLowerCase(), label: name }));
 const ADMIN_SEAT_STATS = { totalPurchased: 99, activeUsed: 0, available: 99, expiringSoon: 0 };
 
 export default function AdminProductsPage() {
@@ -281,7 +285,8 @@ export default function AdminProductsPage() {
   const filtered = useMemo(() => {
     const result = groupedProducts.filter(p => {
       const matchSearch = true; // search is done by findCardsByName
-      const matchCat = catFilter === "all" || p.category === catFilter;
+      // catFilter is the lowercase categoryKey; p.category keeps its display case.
+      const matchCat = catFilter === "all" || String(p.category ?? "").toLowerCase() === catFilter;
       const matchStock = stockFilter === "all" || p.stock === stockFilter;
       if (min !== null && !Number.isNaN(min) && p.price < min) return false;
       if (max !== null && !Number.isNaN(max) && p.price > max) return false;
@@ -410,10 +415,10 @@ export default function AdminProductsPage() {
       </div>
 
       <div className="flex flex-wrap gap-2">
-        {["all", ...CATEGORIES].map(c => (
-          <button key={c} onClick={() => setCatFilter(c)}
-            className={`px-3 py-1 rounded-full text-xs font-bold transition-all ${catFilter === c ? "bg-primary text-white" : "bg-surface-container text-on-surface-variant hover:bg-surface-container-high"}`}>
-            {c.charAt(0).toUpperCase() + c.slice(1)}
+        {[{ value: "all", label: "All" }, ...CATEGORY_CHIPS].map(c => (
+          <button key={c.value} onClick={() => setCatFilter(c.value)}
+            className={`px-3 py-1 rounded-full text-xs font-bold transition-all ${catFilter === c.value ? "bg-primary text-white" : "bg-surface-container text-on-surface-variant hover:bg-surface-container-high"}`}>
+            {c.label}
           </button>
         ))}
       </div>

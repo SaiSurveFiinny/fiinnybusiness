@@ -15,6 +15,7 @@ import { PriceTag } from '../../components/shared/price-tag';
 import { DeliveredPriceLine } from '../components/shared/delivered-price-line';
 import { DeliverToChip } from '../components/shared/deliver-to-chip';
 import ProductImage from '../../components/shared/product-image';
+import { MARKET_FILTER_CATEGORIES, type ProductCategory } from '../dashboard/_lib/category-info';
 
 interface MarketViewProps {
   /**
@@ -469,16 +470,30 @@ export default function MarketView({
     });
   }, [sourceProducts]);
 
+  // Chip id === canonical category name, so its filter value (lowercased by the
+  // API into categoryKey) always matches a product's stored category. The order
+  // and subset are driven by the single shared MARKET_FILTER_CATEGORIES list;
+  // only the label key + icon are presentation and live in this map.
+  const CHIP_META: Record<ProductCategory, { labelKey: Parameters<typeof t>[0]; icon: React.ComponentType<{ className?: string }> }> = {
+    Fertilizers:       { labelKey: 'catFertilizers',  icon: ICONS.Science },
+    Pesticides:        { labelKey: 'catPesticides',   icon: ICONS.Science },
+    Insecticides:      { labelKey: 'catInsecticides', icon: ICONS.Science },
+    Fungicides:        { labelKey: 'catPesticides',   icon: ICONS.Science },
+    Herbicides:        { labelKey: 'catHerbicides',   icon: ICONS.Science },
+    'Bio-Stimulants':  { labelKey: 'catBioStimulants',icon: ICONS.Science },
+    Adjuvants:         { labelKey: 'catTools',        icon: ICONS.Market },
+    Seeds:             { labelKey: 'catSeeds',        icon: ICONS.Sprout },
+    Sprayers:          { labelKey: 'catSprayers',     icon: ICONS.Market },
+    Tools:             { labelKey: 'catTools',        icon: ICONS.Market },
+    Other:             { labelKey: 'catTools',        icon: ICONS.Market },
+  };
   const categories = [
-    { id: 'all',           name: t('allProducts'),      icon: null },
-    { id: 'Seeds',         name: t('catSeeds'),         icon: ICONS.Sprout },
-    { id: 'Fertilizers',  name: t('catFertilizers'),  icon: ICONS.Science },
-    { id: 'Pesticides',   name: t('catPesticides'),   icon: ICONS.Science },
-    { id: 'Herbicides',   name: t('catHerbicides'),   icon: ICONS.Science },
-    { id: 'Bio Pesticides', name: t('catBioStimulants'), icon: ICONS.Science },
-    { id: 'Sprayers',     name: t('catSprayers'),     icon: ICONS.Market },
-    { id: 'Insecticides', name: t('catInsecticides'), icon: ICONS.Science },
-    { id: 'Tools',        name: t('catTools'),        icon: ICONS.Market },
+    { id: 'all', name: t('allProducts'), icon: null as React.ComponentType<{ className?: string }> | null },
+    ...MARKET_FILTER_CATEGORIES.map((c) => ({
+      id: c,
+      name: t(CHIP_META[c].labelKey),
+      icon: CHIP_META[c].icon,
+    })),
   ];
 
   const [filterOpen, setFilterOpen] = useState(false);

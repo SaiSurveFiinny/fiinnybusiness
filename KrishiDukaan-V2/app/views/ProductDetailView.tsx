@@ -31,6 +31,7 @@ import { ReviewSection } from '../../components/shared/ReviewSection';
 import { ProductListingCard } from '../../components/shared/ProductListingCard';
 import { BoughtBy } from '../../components/shared/bought-by';
 import { displayPrice, pctOff } from '../lib/price-display';
+import { sharePhone, shopShareUrl } from '../lib/share-links';
 
 type StoreListItem = {
   id: string;
@@ -166,6 +167,14 @@ function RetailerProfileSection({
   const [profile, setProfile] = useState<RetailerPublicProfile | null>(null);
   const [products, setProducts] = useState<RetailerProductSummary[]>([]);
   const [loading, setLoading] = useState(true);
+  // Whether this shop has a live /shop/{phone} brand page. The doc is only
+  // gettable when enabled === true (firestore.rules), so a disabled or missing
+  // page resolves to false and the "Visit brand page" link stays hidden — the
+  // same visibility switch Phase 2's auto-publish will flip. Mirrors the
+  // manufacturer section's slug-gated "Visit Brand Store" button.
+  const brandPhone = sharePhone(retailerPhone);
+  const brandUrl = shopShareUrl(retailerPhone);
+  const [brandLive, setBrandLive] = useState(false);
 
   useEffect(() => {
     setLoading(true);
@@ -179,6 +188,15 @@ function RetailerProfileSection({
       })
       .finally(() => setLoading(false));
   }, [retailerPhone, currentProductId]);
+
+  useEffect(() => {
+    if (!brandPhone) { setBrandLive(false); return; }
+    let cancelled = false;
+    getDoc(doc(db, "retailerBrandPages", brandPhone))
+      .then((snap) => { if (!cancelled) setBrandLive(snap.exists() && snap.data()?.enabled === true); })
+      .catch(() => { if (!cancelled) setBrandLive(false); });
+    return () => { cancelled = true; };
+  }, [brandPhone]);
 
   if (loading) {
     return (
@@ -228,7 +246,22 @@ function RetailerProfileSection({
           </span>
         </div>
       </div>
-      
+
+      {/* Visit brand page — only when the shop has a live /shop/{phone} page.
+          Reuses the manufacturer "Visit Brand Store" button pattern. */}
+      {brandLive && brandUrl && (
+        <div className="px-6 pt-4">
+          <a
+            href={brandUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="w-full justify-center sm:w-auto sm:justify-start inline-flex items-center gap-1.5 bg-primary hover:bg-primary/90 text-white px-4 py-2 rounded-2xl text-[10px] font-black uppercase tracking-widest transition-all hover:scale-[1.02] active:scale-95"
+          >
+            {t('visitBrandStore')} <ICONS.ChevronRight className="w-3 h-3" />
+          </a>
+        </div>
+      )}
+
       {/* Store Reviews */}
       <div className="px-6 pt-4 border-b border-surface-container pb-4">
         <ReviewSection targetId={retailerPhone} targetType="store" />

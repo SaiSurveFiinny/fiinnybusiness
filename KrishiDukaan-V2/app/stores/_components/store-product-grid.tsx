@@ -36,6 +36,8 @@ export interface StoreGridProduct {
   image: string;
   price: number;
   slug: string;
+  /** This shop's own copy doc id; used only when appProductLinks is set. */
+  listingId?: string;
 }
 
 export default function StoreProductGrid({
@@ -45,6 +47,7 @@ export default function StoreProductGrid({
   storeIds = [],
   marketProducts = [],
   nextCursor = null,
+  appProductLinks = false,
 }: {
   products: StoreGridProduct[];
   storeName: string;
@@ -55,6 +58,12 @@ export default function StoreProductGrid({
   marketProducts?: MarketplaceProduct[];
   /** Cursor for the next page; null when the first page is everything. */
   nextCursor?: string | null;
+  /**
+   * When true (retailer brand page), cards open the interactive marketplace
+   * product view scoped to THIS shop (/?view=product&product={listingId}),
+   * instead of the canonical /products/{slug} SEO page used by /stores/* pages.
+   */
+  appProductLinks?: boolean;
 }) {
   const { addToCart, isInCart } = useSharedCart();
   const [toast, setToast] = useState<string | null>(null);
@@ -104,6 +113,11 @@ export default function StoreProductGrid({
 
   const marketFor = (p: StoreGridProduct) =>
     marketByName.get(p.name.toLowerCase().trim());
+
+  const hrefFor = (p: StoreGridProduct) =>
+    appProductLinks
+      ? `/?view=product&product=${encodeURIComponent(p.listingId ?? p.id)}`
+      : `/products/${p.slug}`;
 
   // This page is one shop, so show what THIS shop charges (and its own
   // discount) — not the cheapest price anywhere in the marketplace.
@@ -178,7 +192,7 @@ export default function StoreProductGrid({
                   : "border-surface-container hover:border-primary/40"
               }`}
             >
-              <a href={`/products/${p.slug}`} className="group block">
+              <a href={hrefFor(p)} className="group block">
                 <div className="relative flex aspect-square items-center justify-center overflow-hidden bg-[#f7f5f0] p-2">
                   <ProductImage
                     src={p.image}
@@ -213,7 +227,7 @@ export default function StoreProductGrid({
                   showsDiscount ? "bg-gradient-to-b from-green-50/30 to-white" : ""
                 }`}
               >
-                <a href={`/products/${p.slug}`} className="hover:text-primary">
+                <a href={hrefFor(p)} className="hover:text-primary">
                   <p className="line-clamp-2 text-xs font-bold leading-tight text-on-surface md:text-sm">
                     {p.name}
                   </p>

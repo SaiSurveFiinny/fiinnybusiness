@@ -1,11 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import crypto from "crypto";
 import Razorpay from "razorpay";
-import { recordFailureFromRazorpay } from "../../../lib/payment-attempts";
-import {
-  findOrdersForRazorpayOrder,
-  recoverOrderFromCapturedPayment,
-} from "../../../lib/order-recovery";
+import { recordFailureFromRazorpay, markAttemptPaid } from "../../../lib/payment-attempts";
 import { markPayoutsDueFromWebhook } from "../../../lib/payout-sync";
 import {
   recordPaymentLinkPaid,
@@ -31,14 +27,16 @@ import {
  * connection, or an old app build all mean the failure is real on Razorpay's
  * side and invisible on ours.
  *
- * payment.captured — the mirror image, and the more expensive one: a payment
- * Razorpay captured (and whose seller Route transfer it already executed)
- * where the app never reached the step that writes our `orders` document.
- * The customer paid; on our side there was no order, no seller notification,
- * nothing — a real ₹1,311 order on 16 Sep 2026 went exactly this way. When
- * this event arrives and no order exists after a short grace period (so the
- * normal client path gets to finish first), the order is rebuilt server-side
- * from the paymentAttempts record. See app/lib/order-recovery.ts.
+ * payment.captured — mirror the captured payment into `payments`, close out
+ * the payment attempt, and (only for a retailer manual pay-by-link order)
+ * reconcile the order the link points at. It deliberately does NOT create a
+ * marketplace order. Rebuilding one here raced the normal client write — the
+ * webhook arriving first and the client finishing a few seconds later produced
+ * TWO order documents for a single payment (one rcv_<orderId>_<n>, one client
+ * auto-id). The client checkout path (web createOrdersFromCart / mobile
+ * OrderRepository.createOrdersAfterPayment) is now the SOLE creator of
+ * marketplace orders; a genuinely lost order is recovered deliberately via
+ * scripts/recover-order-*.ts (which still uses app/lib/order-recovery.ts).
  *
  * transfer.processed / transfer.failed / settlement.processed — a seller's
  * Route transfer moved; the order is re-checked with Razorpay right away
@@ -57,16 +55,6 @@ import {
  * (This is a DIFFERENT secret from RAZORPAY_KEY_SECRET — the webhook secret
  * is generated when the webhook is created in the Dashboard.)
  */
-
-/**
- * How long to let the normal client path finish before rebuilding an order
- * ourselves. Razorpay fires payment.captured within seconds of capture, often
- * before the app has even received its own success callback — jumping in
- * immediately would race the client and produce two orders for one payment.
- */
-const CAPTURE_GRACE_MS = 12_000;
-
-const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 function verifySignature(rawBody: Buffer, signature: string | null): boolean {
   const secret = process.env.RAZORPAY_WEBHOOK_SECRET;
@@ -256,15 +244,22 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
       const amountPaise = Number(paymentEntity.amount ?? 0);
 
       // Mirror the capture into `payments` straight away (the dashboard's
-      // source of truth), independent of the order-recovery dance below.
+      // source of truth).
       await upsertPaymentFromEntity(paymentEntity as RazorpayPaymentEntity, "webhook", {
         capturedAt: new Date(),
       });
 
-      // Fallback for a retailer manual pay-by-link order when only `payment.captured`
-      // (not `payment_link.paid`) is configured: Razorpay copies the payment link's
-      // notes onto the payment, so kdOrderId points straight at our order. Reconcile
-      // it here. Idempotent — markPaymentLinkOrderPaid no-ops if already paid.
+      // Close out the payment attempt so the ledger reads 'paid' even when the
+      // client never reported back (killed app, dropped network, late UPI). No
+      // order is created here — see below.
+      await markAttemptPaid(orderId, paymentId);
+
+      // The ONE case where a capture may touch the orders collection: a retailer
+      // manual pay-by-link order, when only `payment.captured` (not
+      // `payment_link.paid`) is configured. Razorpay copies the payment link's
+      // notes onto the payment, so kdOrderId points straight at our order.
+      // Reconcile it here. Idempotent — markPaymentLinkOrderPaid no-ops if
+      // already paid. This updates an EXISTING order; it never creates one.
       const captureNotes = (paymentEntity.notes ?? {}) as Record<string, unknown>;
       const kdOrderId = String(captureNotes.kdOrderId ?? "").trim();
       if (kdOrderId) {
@@ -279,27 +274,13 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
         return NextResponse.json({ ok: true, ...linkOutcome });
       }
 
-      // Cheap first look, then the grace wait only if needed. The recovery
-      // call re-checks for itself before writing, so most captures find the
-      // client already wrote the order and go no further.
-      if ((await findOrdersForRazorpayOrder(orderId)).length === 0) {
-        await sleep(CAPTURE_GRACE_MS);
-      }
-
-      const outcome = await recoverOrderFromCapturedPayment({
-        razorpayOrderId: orderId,
-        razorpayPaymentId: paymentId,
-        amountPaise,
-      });
-
-      if (outcome.action === "recovered") {
-        console.warn(
-          `[razorpay-webhook] RECOVERED order(s) for ${orderId} / ${paymentId}: ` +
-            `${outcome.orderIds.join(", ")}` +
-            (outcome.addressMissing ? " — ADDRESS MISSING, seller must contact customer" : ""),
-        );
-      }
-      return NextResponse.json({ ok: true, ...outcome });
+      // Deliberately NOT rebuilding a marketplace order from paymentAttempts.
+      // The webhook creating an order raced the client write and produced
+      // duplicate order docs for a single payment. The client checkout path is
+      // the sole order creator; a genuinely lost order is recovered on purpose
+      // via scripts/recover-order-*.ts.
+      await markEventDone();
+      return NextResponse.json({ ok: true, captured: paymentId, orderCreated: false });
     }
 
     // ── payment.failed ───────────────────────────────────────────────────

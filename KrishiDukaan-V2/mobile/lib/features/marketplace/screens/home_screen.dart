@@ -393,17 +393,19 @@ const _categories = [
     startColor: Color(0xFFFFF1F2), // rose-50
     endColor: Color(0xFFFCE7F3), // pink-100
   ),
+  // 'Bio Pesticides' was a typo for 'Bio-Stimulants' and matched no product.
   _CategoryItem(
-    id: 'Bio Pesticides',
+    id: 'Bio-Stimulants',
     label: 'Bio-Stimulants',
     imgUrl:
         'https://images.unsplash.com/photo-1530836369250-ef72a3f5cda8?auto=format&fit=crop&w=120&h=120&q=80',
     startColor: Color(0xFFE0F2F1), // teal-50
     endColor: Color(0xFFE0F7FA), // cyan-100
   ),
+  // Replaces the Sprayers tile (chip removed; category kept, still searchable).
   _CategoryItem(
-    id: 'Sprayers',
-    label: 'Sprayers',
+    id: 'Insecticides',
+    label: 'Insecticides',
     imgUrl:
         'https://images.unsplash.com/photo-1622383563227-04401ab4e5ea?auto=format&fit=crop&w=120&h=120&q=80',
     startColor: Color(0xFFE0F2FE), // sky-50

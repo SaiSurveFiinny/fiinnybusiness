@@ -427,10 +427,23 @@ export function EditProductModal({ row, accountDeliveryEnabled, onClose, onSaved
   useEffect(() => {
     let cancelled = false;
     void loadProductSchema().then(() => {
-      if (!cancelled) setCategoryOptions(getProductCategories());
+      if (cancelled) return;
+      const options = getProductCategories();
+      setCategoryOptions(options);
+      // The initial preselect (below) is derived synchronously against the
+      // compile-time CATEGORIES constant, so a category that exists only in the
+      // runtime schema (e.g. one added via settings/productSchema after this
+      // build shipped) wrongly falls back to "Other". Now that the real option
+      // list is loaded, promote such a saved category to its canonical dropdown
+      // value instead of leaving it on "Other".
+      const canonical = options.find((c) => c.toLowerCase() === row.category.toLowerCase());
+      if (canonical && canonical !== "Other") {
+        setCategory((cur) => (cur === "Other" ? canonical : cur));
+        setCustomCategory((cur) => (cur === row.category ? "" : cur));
+      }
     });
     return () => { cancelled = true; };
-  }, []);
+  }, [row.category]);
   const [name, setName]               = useState(row.productName);
   // For "Other": category stores the actual custom name; isStandardCategory check determines display.
   // Use a case-insensitive lookup so Firestore values like "pesticides" resolve to "Pesticides".
