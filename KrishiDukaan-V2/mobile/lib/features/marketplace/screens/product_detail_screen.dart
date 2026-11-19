@@ -34,9 +34,13 @@ import '../../../core/widgets/expandable_text.dart';
 import '../providers/marketplace_provider.dart';
 import '../widgets/review_sheet.dart';
 import '../widgets/store_selector_sheet.dart';
+import '../widgets/delivery_estimate.dart';
 import '../../reels/providers/reels_provider.dart';
 import '../../reels/screens/shop_profile_screen.dart';
 import '../../../core/providers/user_provider.dart';
+import '../../../core/providers/deliver_to_provider.dart';
+import '../../../core/services/delivered_price_service.dart';
+import '../../../core/utils/delivery_date.dart';
 import '../../../core/widgets/back_or_home_button.dart';
 import '../../../core/services/analytics_service.dart';
 
@@ -74,6 +78,11 @@ class _ProductDetailScreenState extends ConsumerState<ProductDetailScreen> {
   static const _kStorePreviewLimit = 10;
   static const _kStorePageSize = 10;
   int _visibleStoreCount = _kStorePreviewLimit;
+
+  // Delivered price per seller for the "Deliver to" pincode
+  // (docs/delivered-price-architecture.md §4.5): listing id → result.
+  final Map<String, DeliveredResult?> _delivered = {};
+  String _deliveredSig = '';
 
   @override
   void initState() {
@@ -259,6 +268,26 @@ class _ProductDetailScreenState extends ConsumerState<ProductDetailScreen> {
                       _buildVariantSelector(variants, selectedVariant)
                     else if (_singleSizeOf(catalog) != null)
                       _buildSingleSize(_singleSizeOf(catalog)!),
+
+                    // ── Deliver to <pincode>: courier price + date for
+                    //    the store an order would go to. ─────────────────────
+                    Builder(builder: (context) {
+                      final options = listingsAsync.maybeWhen(
+                        data: (raw) => buildStoreOptions(catalog, raw,
+                            selectedVariant: _selectedVariantOf(catalog)),
+                        orElse: () => null,
+                      );
+                      if (options == null || options.isEmpty) {
+                        return const SizedBox.shrink();
+                      }
+                      return DeliveryEstimateBox(
+                        productId: catalog.id,
+                        sellerPhone: options.first.listing.sellerPhone,
+                        size: _selectedVariantLabel(catalog),
+                        profilePincode:
+                            ref.watch(currentUserProvider).value?.pincode,
+                      );
+                    }),
 
                     const Divider(height: 1, thickness: 1),
 
@@ -531,6 +560,61 @@ class _ProductDetailScreenState extends ConsumerState<ProductDetailScreen> {
       return variants[_selectedVariantIdx.clamp(0, variants.length - 1)].label;
     }
     return catalog.unit;
+  }
+
+  /// The offer to price for [listing]: one pack of the selected size at this
+  /// store's price after its discount. Null when it can't be ordered online.
+  DeliveredOffer? _deliveryOfferFor(ListingModel listing, CatalogModel catalog) {
+    if (!listing.isOnline || listing.sellMode == 'offline_store_only') return null;
+    final tail = listing.sellerPhone.replaceAll(RegExp(r'\D'), '');
+    final t10 = tail.length > 10 ? tail.substring(tail.length - 10) : tail;
+    AvailabilityEntry? entry;
+    for (final a in catalog.availability ?? const <AvailabilityEntry>[]) {
+      final p = (a.storePhone ?? a.storeId).replaceAll(RegExp(r'\D'), '');
+      if (a.storeId == listing.id || (t10.length == 10 && p.endsWith(t10))) {
+        entry = a;
+        break;
+      }
+    }
+    if (entry?.isOnline == false) return null;
+    final price = storePriceForVariant(listing, catalog, _selectedVariantOf(catalog));
+    if (price == null || price <= 0) return null;
+    final pct = (entry != null && entry.discountPct > 0)
+        ? entry.discountPct
+        : (catalog.sellerDiscounts[listing.sellerPhone] ?? catalog.sellerDiscounts[listing.id] ?? 0);
+    final finalPrice = price * (1 - (pct.clamp(0, 99)) / 100);
+    return offerFor(
+      catalog,
+      entry ??
+          AvailabilityEntry(storeId: listing.id, storePhone: listing.sellerPhone, sellingPrice: price),
+      _selectedVariantLabel(catalog) ?? '',
+      finalPrice,
+    );
+  }
+
+  /// Prices the nearest 30 online sellers delivered (one batched request,
+  /// cached on the phone) and re-sorts the list as answers arrive.
+  void _priceSellers(List<ListingModel> listings, CatalogModel catalog, String? pin) {
+    final offers = <String, DeliveredOffer>{};
+    if (pin != null) {
+      for (final l in listings.take(30)) {
+        final o = _deliveryOfferFor(l, catalog);
+        if (o != null) offers[l.id] = o;
+      }
+    }
+    final sig = '${pin ?? ''}#${offers.entries.map((e) => '${e.key}=${e.value.id}').join('¦')}';
+    if (sig == _deliveredSig) return;
+    _deliveredSig = sig;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || _deliveredSig != sig) return;
+      setState(() => _delivered.clear());
+      for (final e in offers.entries) {
+        DeliveredPriceService.instance.get(pin!, e.value).then((r) {
+          if (!mounted || _deliveredSig != sig) return;
+          setState(() => _delivered[e.key] = r);
+        });
+      }
+    });
   }
 
   /// "18" for 18.0, "12.5" for 12.5 — no pointless ".0".
@@ -1317,10 +1401,12 @@ class _ProductDetailScreenState extends ConsumerState<ProductDetailScreen> {
               Text('Buy from a store near you', style: AppTextStyles.heading3),
             ],
           ),
-          const Padding(
-            padding: EdgeInsets.only(left: 24, top: 2),
+          Padding(
+            padding: const EdgeInsets.only(left: 24, top: 2),
             child: Text(
-              'Nearest stores first — compare price & discount',
+              ref.watch(deliverToProvider) != null
+                  ? 'Lowest price delivered to ${ref.watch(deliverToProvider)!.pincode} first'
+                  : 'Nearest stores first — compare price & discount',
               style: AppTextStyles.bodySmall,
             ),
           ),
@@ -1364,10 +1450,21 @@ class _ProductDetailScreenState extends ConsumerState<ProductDetailScreen> {
             error: (_, _) =>
                 const ErrorView(message: 'Failed to load sellers.'),
             data: (listingsRaw) {
-              final listings = listingsRaw.cast<ListingModel>();
-              if (listings.isEmpty) {
+              final nearestFirst = listingsRaw.cast<ListingModel>();
+              if (nearestFirst.isEmpty) {
                 return const _EmptyListings();
               }
+              // Cheapest delivered to the shopper's pincode first; sellers not
+              // priced (in-store only, or still loading) keep distance order.
+              _priceSellers(nearestFirst, catalog, ref.watch(deliverToProvider)?.pincode);
+              DeliveredResult? okResult(ListingModel l) {
+                final r = _delivered[l.id];
+                return (r != null && r.ok) ? r : null;
+              }
+              final listings = rankDelivered(nearestFirst, okResult);
+              final cheapestId = listings.length > 1 && okResult(listings.first) != null
+                  ? listings.first.id
+                  : null;
               final sellerDiscounts = catalog.sellerDiscounts;
               final total = listings.length;
               final shownCount =
@@ -1393,6 +1490,8 @@ class _ProductDetailScreenState extends ConsumerState<ProductDetailScreen> {
                           sellerDiscounts[listing.sellerPhone] ??
                           sellerDiscounts[listing.id] ??
                           0.0,
+                      delivered: okResult(listing),
+                      cheapestDelivered: listing.id == cheapestId,
                     ),
                   ),
                   if (hasMore) _buildStoresToggle(total, shownCount),
@@ -2385,6 +2484,10 @@ class _SellerTile extends ConsumerStatefulWidget {
   final bool gstApplicable;
   final double gstRate;
 
+  /// Item + delivery to the shopper's pincode, and the date (null: unknown).
+  final DeliveredResult? delivered;
+  final bool cheapestDelivered;
+
   const _SellerTile({
     required this.listing,
     required this.catalogId,
@@ -2396,6 +2499,8 @@ class _SellerTile extends ConsumerStatefulWidget {
     this.variantPrice,
     this.gstApplicable = false,
     this.gstRate = 0,
+    this.delivered,
+    this.cheapestDelivered = false,
   });
 
   @override
@@ -2680,6 +2785,13 @@ class _SellerTileState extends ConsumerState<_SellerTile> {
                                 ],
                               ],
                             ),
+                            if (widget.delivered != null) ...[
+                              const SizedBox(height: 4),
+                              _DeliveredBreakdown(
+                                result: widget.delivered!,
+                                cheapest: widget.cheapestDelivered,
+                              ),
+                            ],
                             const SizedBox(height: 6),
 
                             // Distance + status + delivery
@@ -3509,4 +3621,67 @@ String _describeStates(List<String> s) {
   if (s.length == 2) return '${s[0]} and ${s[1]}';
   if (s.length == 3) return '${s[0]}, ${s[1]} and ${s[2]}';
   return '${s[0]}, ${s[1]} and ${s.length - 2} more';
+}
+
+
+/// "₹450 + ₹82 delivery = ₹532 · by Sat, 21 Nov" on a seller tile, with a
+/// "LOWEST DELIVERED" tag on the cheapest. Mirror of the web product page.
+class _DeliveredBreakdown extends StatelessWidget {
+  final DeliveredResult result;
+  final bool cheapest;
+  const _DeliveredBreakdown({required this.result, required this.cheapest});
+
+  static String _rs(double v) =>
+      '₹${v == v.roundToDouble() ? v.toInt() : v.toStringAsFixed(2)}';
+
+  @override
+  Widget build(BuildContext context) {
+    final date = formatDeliveryDate(result.deliveryBy);
+    final campaign = result.campaign;
+    return Wrap(
+      spacing: 6,
+      runSpacing: 2,
+      crossAxisAlignment: WrapCrossAlignment.center,
+      children: [
+        if (cheapest)
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+            decoration: BoxDecoration(
+              color: AppColors.success,
+              borderRadius: BorderRadius.circular(20),
+            ),
+            child: const Text(
+              'LOWEST DELIVERED',
+              style: TextStyle(color: Colors.white, fontSize: 9, fontWeight: FontWeight.w800),
+            ),
+          ),
+        Text.rich(
+          TextSpan(
+            style: AppTextStyles.caption,
+            children: [
+              TextSpan(text: '${_rs(result.itemTotal ?? 0)} + '),
+              result.free
+                  ? TextSpan(
+                      text: campaign != null && campaign.isNotEmpty
+                          ? 'FREE delivery · $campaign'
+                          : 'FREE delivery',
+                      style: const TextStyle(color: AppColors.success, fontWeight: FontWeight.w700),
+                    )
+                  : TextSpan(text: '${_rs(result.deliveryCharge ?? 0)} delivery'),
+              const TextSpan(text: ' = '),
+              TextSpan(
+                text: _rs(result.total ?? 0),
+                style: const TextStyle(fontWeight: FontWeight.w800, color: AppColors.onSurface),
+              ),
+              if (date != null)
+                TextSpan(
+                  text: ' · by $date',
+                  style: const TextStyle(color: AppColors.success, fontWeight: FontWeight.w600),
+                ),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
 }

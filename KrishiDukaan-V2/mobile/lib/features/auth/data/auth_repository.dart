@@ -1,6 +1,8 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 
+import '../../../core/models/delivery_address.dart';
+
 class AuthRepository {
   final FirebaseAuth _auth = FirebaseAuth.instance;
   final FirebaseFirestore _db = FirebaseFirestore.instance;
@@ -106,6 +108,20 @@ class AuthRepository {
         }, SetOptions(merge: true)),
       ]);
     }
+  }
+
+  /// Saves the delivery address to users/{phone} — the same fields the web
+  /// profile and checkout write (core/models/delivery_address.dart), so it is
+  /// one address on every screen. A seller's shop address is never touched.
+  Future<void> saveDeliveryAddress({
+    required String phone,
+    required String role,
+    required DeliveryAddress address,
+  }) async {
+    await _db.collection('users').doc(phone).set({
+      ...address.writeFields(role),
+      'updatedAt': FieldValue.serverTimestamp(),
+    }, SetOptions(merge: true));
   }
 
   /// Saves profile-completion fields. Mirrors the web: writes the completion

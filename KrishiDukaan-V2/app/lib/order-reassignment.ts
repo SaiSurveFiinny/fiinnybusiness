@@ -5,6 +5,7 @@ import { computeSellerSplit } from "./route-split";
 import { loadRouteConfig, resolveSellerAccount } from "./route-server";
 import { createHeldTransferForSeller, reverseOrderSellerTransfer } from "./route-transfers";
 import { grossFor, type OrderLike } from "../dashboard/_lib/seller-earnings";
+import { normaliseRates, planForReassignedSeller, readPlan } from "../../functions/src/payouts/settlement";
 
 /**
  * Seller reassignment — a rejected order offered to other sellers before the
@@ -247,7 +248,12 @@ export async function startReassignment(params: {
   const grossPaise = grossPaiseOf(orderId, order);
   let sellerEarning: number | null = null;
   try {
-    sellerEarning = computeSellerSplit(grossPaise, await loadRouteConfig()).transferPaise / 100;
+    // A planned order: what a new seller would net under their own plan
+    // (goods only, no courier share; functions/src/payouts/settlement.ts).
+    const plan = readPlan(order.settlement);
+    sellerEarning = plan
+      ? planForReassignedSeller(plan, "", normaliseRates(await loadRouteConfig())).transferPaise / 100
+      : computeSellerSplit(grossPaise, await loadRouteConfig()).transferPaise / 100;
   } catch {
     sellerEarning = null;
   }
@@ -387,13 +393,32 @@ export async function acceptReassignment(orderId: string, sellerPhone: string): 
   await decrementSellerStock(original, sellerPhone);
 
   const paymentId = String(original.payment?.razorpayPaymentId ?? "").trim();
+  // A planned order gets a plan for its new seller: their goods, no share of
+  // the first seller's delivery offer (the platform pays the courier).
+  const oldPlan = readPlan(original.settlement);
+  const newPlan = oldPlan
+    ? planForReassignedSeller(oldPlan, sellerPhone, normaliseRates(await loadRouteConfig()))
+    : undefined;
   const transfer = await createHeldTransferForSeller(
     orderId,
     paymentId,
     sellerPhone,
     grossPaiseOf(orderId, original),
+    newPlan,
   );
   await ref.update({
+    ...(newPlan
+      ? {
+          settlement: {
+            ...newPlan,
+            routed: transfer.status === "created",
+            routedAccountId: transfer.status === "created" ? transfer.accountId : "",
+            razorpayOrderId: String(original.settlement?.razorpayOrderId ?? original.payment?.razorpayOrderId ?? ""),
+            stampedAt: new Date().toISOString(),
+          },
+          settlementHistory: FieldValue.arrayUnion({ ...(original.settlement as object), replacedAt: new Date().toISOString(), reason: "reassignment" }),
+        }
+      : {}),
     "reassignment.transfer":
       transfer.status === "created"
         ? { status: "created", id: transfer.transferId, amountPaise: transfer.amountPaise }

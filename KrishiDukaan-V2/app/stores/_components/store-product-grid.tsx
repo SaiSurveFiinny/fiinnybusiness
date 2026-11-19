@@ -25,6 +25,7 @@ import type { MarketplaceProduct } from "../../../types/product";
 import { useSharedCart } from "../../lib/useSharedCart";
 import { displayPrice, sellerDisplayPrice, type DisplayPrice } from "../../lib/price-display";
 import { PriceTag } from "../../../components/shared/price-tag";
+import { DeliveredPriceLine } from "../../components/shared/delivered-price-line";
 
 const last10 = (v?: string) => (v ?? "").replace(/\D/g, "").slice(-10);
 import ProductImage from "../../../components/shared/product-image";
@@ -219,6 +220,9 @@ export default function StoreProductGrid({
                 </a>
 
                 <PriceTag value={dp} size="sm" className="mt-1.5" />
+                {market && (storePhone || storeIds[0]) && (
+                  <DeliveredPriceLine product={market} seller={storePhone || storeIds[0]} className="mt-0.5" />
+                )}
 
                 {orderable ? (
                   <div className="mt-2">

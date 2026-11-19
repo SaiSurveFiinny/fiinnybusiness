@@ -144,8 +144,9 @@ export function SellerEarningsPanel({
 
       <p className="mt-3 text-xs text-on-surface-variant">
         Amounts shown are after the payment gateway&apos;s charge
-        {gatewayFees > 0 ? ` (${inr(gatewayFees)} so far)` : ""} and any
-        platform fee shown on the order.
+        {gatewayFees > 0 ? ` (${inr(gatewayFees)} so far)` : ""}, KrishiDukan&apos;s
+        commission and your free-delivery offers. Delivery the customer pays for
+        a courier goes to the courier, not into your payout.
       </p>
 
       {rows.length > 0 && (
@@ -157,7 +158,7 @@ export function SellerEarningsPanel({
                 <th className="pb-2 pr-3 font-semibold">Delivered</th>
                 <th className="pb-2 pr-3 font-semibold">Where is the money</th>
                 <th className="pb-2 pr-3 font-semibold">Settled · UTR</th>
-                <th className="pb-2 pr-3 text-right font-semibold">Gateway fee</th>
+                <th className="pb-2 pr-3 text-right font-semibold">Deductions</th>
                 <th className="pb-2 text-right font-semibold">You receive</th>
               </tr>
             </thead>
@@ -189,8 +190,14 @@ export function SellerEarningsPanel({
                           "—"
                         )}
                       </td>
-                      <td className="py-2 pr-3 text-right text-on-surface-variant">
-                        {r.gatewayFee > 0 ? `−${inr(r.gatewayFee)}` : "—"}
+                      <td className="py-2 pr-3 text-right text-xs text-on-surface-variant">
+                        {r.platformFee + r.gatewayFee + r.deliveryFee > 0 ? (
+                          <>
+                            {r.platformFee > 0 && <span className="block">Commission −{inr(r.platformFee)}</span>}
+                            {r.gatewayFee > 0 && <span className="block">Gateway −{inr(r.gatewayFee)}</span>}
+                            {r.deliveryFee > 0 && <span className="block">Delivery offer −{inr(r.deliveryFee)}</span>}
+                          </>
+                        ) : "—"}
                       </td>
                       <td className="py-2 text-right font-semibold text-on-surface">
                         {inr(r.payout?.transferId && typeof r.payout.amount === "number" ? r.payout.amount : r.net)}

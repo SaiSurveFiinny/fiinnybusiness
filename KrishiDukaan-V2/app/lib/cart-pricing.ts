@@ -20,6 +20,8 @@
  */
 
 import { computeLinePricing } from "../utils/gst";
+import { freeDeliveryAbove, offerPct, type FreeDeliverySettings } from "./free-delivery";
+import { splitCourierCost, type ActiveCampaign, type SplitRates } from "../../functions/src/payouts/settlement";
 import { normalizeUnit } from "../utils/weight";
 import { getActiveDiscountAmt, getActiveDiscountPct, type DiscountFields } from "../utils/discount";
 import {
@@ -43,7 +45,33 @@ export type CartPricingLine = {
   gstIncluded?: boolean;
   extraDeliveryCharge?: number;
   freeDelivery?: boolean;
+  /**
+   * The seller's share of this line's delivery, 0..1 (lib/free-delivery
+   * lineDeliveryShare: product / store / manufacturer-network offers).
+   * freeDelivery true counts as 1.
+   */
+  deliveryShare?: number;
 };
+
+/** A line's seller share of delivery, 0..1. */
+export function lineShare(l: CartPricingLine): number {
+  if (l.freeDelivery) return 1;
+  const s = Number(l.deliveryShare);
+  return Number.isFinite(s) ? Math.min(1, Math.max(0, s)) : 0;
+}
+
+/**
+ * The seller's share of a parcel: each line's share weighted by its weight
+ * (what delivery is priced on), by value when no weight is readable.
+ */
+export function parcelShare(lines: CartPricingLine[]): number {
+  if (!lines.length) return 0;
+  const by = (w: (l: CartPricingLine) => number) => {
+    const total = lines.reduce((s, l) => s + Math.max(0, w(l)), 0);
+    return total > 0 ? lines.reduce((s, l) => s + Math.max(0, w(l)) * lineShare(l), 0) / total : null;
+  };
+  return by((l) => l.weightKg) ?? by((l) => l.unitPrice * l.qty) ?? lines.reduce((s, l) => s + lineShare(l), 0) / lines.length;
+}
 
 export type DeliveryBreakdown = {
   /** Weight-slab component actually charged (0 if free). */
@@ -55,6 +83,52 @@ export type DeliveryBreakdown = {
   waived: number;
   /** Which slab set applied. "default" = single-slab seller or state unknown. */
   deliveryType: DeliveryType;
+  /** "courier": priced from Delhivery/Shiprocket (lib/courier-quote). Absent = seller's slab. */
+  mode?: "courier" | "seller";
+  /** The courier quote the customer was charged. */
+  courier?: CourierCharge;
+  /**
+   * Courier orders: the part of the courier price the SELLER pays (all of it
+   * when every item ships free, part of it on a share offer). Taken from the
+   * seller's payout after booking, capped at the real courier cost.
+   */
+  sellerPaysCourier?: number;
+  /** Rupees of delivery the seller took off the customer's charge (share offers; slab or courier). */
+  sellerCovers?: number;
+  /** The store's "free above ₹X" offer made this parcel free. */
+  freeAboveApplied?: number;
+  /**
+   * Platform free-delivery campaign on this parcel: its name and the ₹ the
+   * platform pays towards the courier (functions/src/payouts/settlement.ts).
+   */
+  campaign?: { name: string; platformPays: number };
+  /** Of the customer's delivery charge, the ₹ that is the gateway fee on it. */
+  gatewayGrossUp?: number;
+};
+
+/**
+ * How checkout prices a courier parcel (docs/delivery-money-architecture.md).
+ * Without it, courierDelivery keeps its original rule (no gateway gross-up,
+ * no campaign) for the callers that predate it.
+ */
+export type CourierPricingOptions = {
+  /** settings/route: the gateway fee on the customer's part is added to it. */
+  rates: SplitRates;
+  /** The platform campaign in force, or null. */
+  campaign?: ActiveCampaign | null;
+};
+
+/** A courier price for one seller's parcel, as charged at checkout. */
+export type CourierCharge = {
+  /** Rupees charged to the customer (the quote, rounded up to a whole rupee). */
+  charge: number;
+  carrier: "delhivery" | "shiprocket";
+  service: string;
+  etaDays?: number | null;
+  /** Billable weight band the quote was for. */
+  weightKg: number;
+  /** Estimated delivery date, YYYY-MM-DD (lib/delivery-eta), when the courier gave a transit time. */
+  deliveryBy?: string | null;
 };
 
 export type SellerPricing = {
@@ -80,11 +154,15 @@ export function computeSellerDelivery(
   settings: DeliverySettingsLike | null,
   customerState: string | null | undefined,
 ): DeliveryBreakdown {
-  const chargeable = lines.filter((l) => !l.freeDelivery);
+  // Lines the seller ships wholly free add no weight and no charge.
+  const chargeable = lines.filter((l) => lineShare(l) < 1);
   const isFree = lines.length > 0 && chargeable.length === 0;
 
-  const extraOf = (ls: CartPricingLine[]) =>
-    r2(ls.reduce((s, l) => s + ((l.extraDeliveryCharge ?? 0) > 0 ? l.extraDeliveryCharge! : 0), 0));
+  const extraOf = (ls: CartPricingLine[], customerPart = false) =>
+    r2(ls.reduce((s, l) => {
+      const e = (l.extraDeliveryCharge ?? 0) > 0 ? l.extraDeliveryCharge! : 0;
+      return s + (customerPart ? e * (1 - lineShare(l)) : e);
+    }, 0));
   const weightOf = (ls: CartPricingLine[]) => r3(ls.reduce((s, l) => s + l.weightKg, 0));
 
   let deliveryType: DeliveryType = "default";
@@ -101,8 +179,58 @@ export function computeSellerDelivery(
     return { slab: 0, extra: 0, free: true, waived, deliveryType };
   }
 
-  const slab = slabFor(weightOf(chargeable));
-  return { slab, extra: extraOf(chargeable), free: false, waived: 0, deliveryType };
+  const fullSlab = slabFor(weightOf(chargeable));
+  const fullExtra = extraOf(chargeable);
+  // Share offers: the seller delivers this one themselves and simply charges
+  // the customer less — the slab by the parcel's share, each extra by its line's.
+  const share = parcelShare(chargeable);
+  if (share <= 0) return { slab: fullSlab, extra: fullExtra, free: false, waived: 0, deliveryType };
+  const slab = r2(fullSlab * (1 - share));
+  const extra = extraOf(chargeable, true);
+  const sellerCovers = r2(fullSlab + fullExtra - slab - extra);
+  return { slab, extra, free: false, waived: 0, deliveryType, ...(sellerCovers > 0 ? { sellerCovers } : {}) };
+}
+
+/**
+ * Delivery when a courier price is known. The courier price replaces the slab
+ * and the per-product extras (it already reflects weight and distance). The
+ * seller pays their share of it (Free Delivery = all, a share offer = part),
+ * the customer the rest.
+ */
+export function courierDelivery(
+  lines: CartPricingLine[],
+  courier: CourierCharge,
+  deliveryType: DeliveryType,
+  options?: CourierPricingOptions,
+): DeliveryBreakdown {
+  const share = lines.length ? parcelShare(lines) : 0;
+  if (options) {
+    // Seller pays their offer share; a campaign pays the rest (Option B), up
+    // to its cap; the customer pays what is left plus the gateway fee on it.
+    const split = splitCourierCost({ cost: courier.charge, sellerShare: share, campaign: options.campaign ?? null, rates: options.rates });
+    const campaign = split.campaign > 0 && options.campaign
+      ? { campaign: { name: options.campaign.name, platformPays: split.campaign } }
+      : {};
+    const seller = split.sellerCourier > 0 ? { sellerPaysCourier: split.sellerCourier, sellerCovers: split.sellerCourier } : {};
+    if (split.customerDelivery <= 0 && lines.length > 0) {
+      return { slab: 0, extra: 0, free: true, waived: courier.charge, deliveryType, mode: "courier", courier, ...seller, ...campaign };
+    }
+    const grossUp = r2(split.customerDelivery - split.customerBase);
+    return {
+      slab: split.customerDelivery, extra: 0, free: false, waived: 0, deliveryType, mode: "courier", courier,
+      ...seller, ...campaign,
+      ...(grossUp > 0 ? { gatewayGrossUp: grossUp } : {}),
+    };
+  }
+  const customer = share >= 1 ? 0 : Math.round(courier.charge * (1 - share));
+  const sellerPays = r2(courier.charge - customer);
+  if (customer <= 0 && lines.length > 0) {
+    return { slab: 0, extra: 0, free: true, waived: courier.charge, deliveryType, mode: "courier", courier, sellerPaysCourier: courier.charge };
+  }
+  return {
+    slab: customer, extra: 0, free: false, waived: 0, deliveryType, mode: "courier", courier,
+    ...(sellerPays > 0 ? { sellerPaysCourier: sellerPays, sellerCovers: sellerPays } : {}),
+  };
 }
 
 /** Full per-seller pricing: subtotal, GST and delivery. */
@@ -111,6 +239,10 @@ export function computeSellerPricing(
   lines: CartPricingLine[],
   settings: DeliverySettingsLike | null,
   customerState: string | null | undefined,
+  /** Courier price for this seller's parcel; null/undefined = seller's own slab. */
+  courier?: CourierCharge | null,
+  /** Checkout's courier rules (gross-up, campaign). Omitted = original rule. */
+  courierOptions?: CourierPricingOptions,
 ): SellerPricing {
   let subtotal = 0;
   let gstTotal = 0;
@@ -127,7 +259,15 @@ export function computeSellerPricing(
     gstTotal += p.gstTotal;
     gstAdded += p.gstAdded;
   }
-  const delivery = computeSellerDelivery(lines, settings, customerState);
+  // The store's "free delivery above ₹X": the store's part of this order
+  // (after discounts, before added GST) reaches it → every line ships free.
+  const above = freeDeliveryAbove(settings as FreeDeliverySettings);
+  const freeAbove = above > 0 && lines.length > 0 && subtotal + 1e-9 >= above;
+  const priced = freeAbove ? lines.map((l) => ({ ...l, deliveryShare: 1 })) : lines;
+  const base = courier
+    ? courierDelivery(priced, courier, settings ? resolveDeliverySlabs(settings, customerState).deliveryType : "default", courierOptions)
+    : computeSellerDelivery(priced, settings, customerState);
+  const delivery = freeAbove ? { ...base, freeAboveApplied: above } : base;
   const deliveryCharge = delivery.free ? 0 : r2(delivery.slab + delivery.extra);
   return {
     sellerKey,
@@ -410,6 +550,8 @@ export type Commercial = {
   gstIncluded: boolean;
   extraDeliveryCharge: number;
   freeDelivery: boolean;
+  /** Seller pays this % (1–99) of this product's delivery; 0 = none. Free is freeDelivery. */
+  sellerDeliveryPct: number;
 };
 
 /** A store's own GST + delivery settings from any product-shaped document. */
@@ -422,6 +564,7 @@ export function commercialOf(d: Record<string, unknown> | null | undefined): Com
     gstIncluded: d?.gstIncluded !== false,
     extraDeliveryCharge: Number.isFinite(extra) && extra > 0 ? extra : 0,
     freeDelivery: d?.freeDelivery === true,
+    sellerDeliveryPct: d?.freeDelivery === true ? 0 : offerPct(d?.sellerDeliveryPct),
   };
 }
 
@@ -437,7 +580,8 @@ export function hasCommercial(d: Record<string, unknown> | null | undefined): bo
     d.gstRate !== undefined ||
     d.gstIncluded !== undefined ||
     d.extraDeliveryCharge !== undefined ||
-    d.freeDelivery !== undefined
+    d.freeDelivery !== undefined ||
+    d.sellerDeliveryPct !== undefined
   );
 }
 

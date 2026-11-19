@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getAdminAuth, getAdminDb } from "../../../lib/firebase-admin";
-import { grossFor, type OrderLike } from "../../../dashboard/_lib/seller-earnings";
+import { refundBaseFor, type OrderLike } from "../../../dashboard/_lib/seller-earnings";
 import { refundOrder } from "../../../lib/order-refund";
 
 /**
@@ -81,7 +81,7 @@ export async function POST(req: NextRequest) {
       if (!snap.exists) return NextResponse.json({ error: "Order not found" }, { status: 404 });
       const order = snap.data() as FirebaseFirestore.DocumentData;
       const payment = (order.payment ?? {}) as { transferId?: string };
-      const orderTotal = grossFor({ id: orderId, ...(order as object) } as OrderLike);
+      const orderTotal = refundBaseFor({ id: orderId, ...(order as object) } as OrderLike);
       const refundAmount =
         typeof amount === "number" && amount > 0 ? Math.min(amount, orderTotal) : orderTotal;
       return NextResponse.json({

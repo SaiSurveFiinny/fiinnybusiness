@@ -8,6 +8,10 @@
  * precedence over the derived state (see `payoutStateFor`).
  */
 
+import {
+  readAdjustments, readPlan, settlementView, type SettlementView,
+} from "../../../functions/src/payouts/settlement";
+
 /** Days after an order is marked delivered before its money is released.
  *
  * Matches the refund window the support FAQ already promises customers
@@ -75,7 +79,40 @@ export type OrderLike = {
   };
   /** Razorpay's view of this order's transfer (functions/src/payouts/payout-status.ts). */
   payout?: OrderPayout;
+  shipment?: { platformKeptDelivery?: boolean; sellerPaysCourier?: number } | null;
+  deliveryBreakdown?: { sellerPaysCourier?: number } | null;
+  /** Server-stamped settlement plan (functions/src/payouts/settlement.ts). */
+  settlement?: unknown;
+  settlementAdjustments?: unknown;
+  sellerPhone?: string;
+  sellerId?: string;
 };
+
+/**
+ * The order's settlement, when it has one: what its current seller is owed
+ * from the plan made at checkout (refunds and later adjustments included).
+ * Null for orders without a plan, which keep the original formulas below.
+ */
+export function settlementOf(order: OrderLike): SettlementView | null {
+  const plan = readPlan(order.settlement);
+  if (!plan) return null;
+  return settlementView(plan, readAdjustments(order.settlementAdjustments), {
+    sellerKey: order.sellerPhone ?? order.sellerId ?? plan.sellerKey,
+    refundedPaise: Math.round((order.payment?.refundedAmount ?? 0) * 100),
+  });
+}
+
+/**
+ * The amount a refund of this seller's part of the payment is measured
+ * against: their goods plus what the customer paid for delivery, less the
+ * delivery once a courier was booked for it (it is spent), as today.
+ */
+export function refundBaseFor(order: OrderLike): number {
+  const plan = readPlan(order.settlement);
+  if (!plan) return grossFor(order);
+  const delivery = order.shipment?.platformKeptDelivery ? 0 : plan.customerDeliveryPaise;
+  return (plan.goodsPaise + delivery) / 100;
+}
 
 /** One order's transfer as Razorpay last reported it. */
 export type OrderPayout = {
@@ -101,6 +138,8 @@ export type SellerEarningsRow = {
   gatewayFee: number;
   /** KrishiDukan's cut on this order. 0 for every order unless an admin set one. */
   platformFee: number;
+  /** The seller's share of the courier cost (their free/partial delivery offer). */
+  deliveryFee: number;
   net: number;
   state: PayoutState;
   deliveredAt: Date | null;
@@ -148,18 +187,28 @@ function toDate(v: unknown): Date | null {
 /** The seller's share of an order, BEFORE refunds. Mobile and web disagree on
  *  the field name. */
 export function grossFor(order: OrderLike): number {
+  const planned = settlementOf({ ...order, payment: { ...order.payment, refundedAmount: 0 } });
+  if (planned) return planned.grossPaise / 100;
   const value = order.total ?? order.grandTotal;
-  if (typeof value === "number" && Number.isFinite(value)) return value;
-  // Fall back to the parts when neither total field is present.
-  return (
-    (order.subtotal ?? 0) + (order.deliveryCharge ?? 0) + (order.totalGst ?? 0)
-  );
+  const total = typeof value === "number" && Number.isFinite(value)
+    ? value
+    // Fall back to the parts when neither total field is present.
+    : (order.subtotal ?? 0) + (order.deliveryCharge ?? 0) + (order.totalGst ?? 0);
+  // The platform paid the courier on this order, so the delivery fee is not the
+  // seller's. (functions/src/shipping/engine.ts takes it back from the transfer.)
+  if (!order.shipment?.platformKeptDelivery) return total;
+  // Plus the courier cost the seller bears when every item was Free Delivery.
+  // The shipment's figure (capped at what the courier charged) once booked.
+  const sellerPays = Math.max(0, Number(order.shipment?.sellerPaysCourier ?? order.deliveryBreakdown?.sellerPaysCourier ?? 0));
+  return Math.max(0, total - (order.deliveryCharge ?? 0) - sellerPays);
 }
 
 /** What the seller is actually owed: their share less anything refunded to the
  *  customer. A fully refunded order is caught earlier by its 'refunded'
  *  status; this handles the partial case, which leaves the status untouched. */
 export function payableGrossFor(order: OrderLike): number {
+  const planned = settlementOf(order);
+  if (planned) return planned.grossPaise / 100;
   const refunded = order.payment?.refundedAmount ?? 0;
   return Math.max(0, grossFor(order) - refunded);
 }
@@ -167,8 +216,19 @@ export function payableGrossFor(order: OrderLike): number {
 /** Fees deducted before the seller is paid. The gateway fee is only known
  *  once /api/payment/fee has fetched it from Razorpay; unknown is treated as 0
  *  rather than guessing a rate, so the figure is never a fabricated deduction. */
-export function feesFor(order: OrderLike): { gatewayFee: number; platformFee: number } {
+export function feesFor(order: OrderLike): { gatewayFee: number; platformFee: number; deliveryFee: number } {
+  // A planned order: the deductions its transfer was actually made with,
+  // including the seller's share of the courier cost (their delivery offer).
+  const planned = settlementOf(order);
+  if (planned) {
+    return {
+      gatewayFee: planned.gatewayFeePaise / 100,
+      platformFee: planned.commissionPaise / 100,
+      deliveryFee: planned.deliveryPaise / 100,
+    };
+  }
   return {
+    deliveryFee: 0,
     gatewayFee: (order.payment?.gatewayFee ?? 0) + (order.payment?.gatewayTax ?? 0),
     platformFee: order.payment?.platformFee ?? 0,
   };
@@ -181,6 +241,8 @@ export function netFor(order: OrderLike): number {
   // Once a payout transfer has paid the order, what it sent is the answer.
   const sent = order.payment?.transferredNet;
   if (order.payment?.transferId && typeof sent === "number" && sent > 0) return sent;
+  const planned = settlementOf(order);
+  if (planned) return planned.netPaise / 100;
   const { gatewayFee, platformFee } = feesFor(order);
   return Math.max(0, payableGrossFor(order) - gatewayFee - platformFee);
 }
@@ -265,10 +327,10 @@ export function computeSellerEarnings(
     const gross = payableGrossFor(order);
     // Deducted here as well as displayed: if "You receive" did not subtract it,
     // the seller would be shown a figure larger than what reaches their bank.
-    const { gatewayFee, platformFee } = feesFor(order);
+    const { gatewayFee, platformFee, deliveryFee } = feesFor(order);
     const net = netFor(order);
 
-    rows.push({ orderId: order.id, gross, gatewayFee, platformFee, net, state, deliveredAt, releaseOn, payout: order.payout ?? null, order });
+    rows.push({ orderId: order.id, gross, gatewayFee, platformFee, deliveryFee, net, state, deliveredAt, releaseOn, payout: order.payout ?? null, order });
     gatewayFees += gatewayFee;
     platformFees += platformFee;
 

@@ -16,6 +16,7 @@ import '../../../core/utils/order_status_label.dart';
 import '../../../core/utils/currency_utils.dart';
 import '../../../core/widgets/error_view.dart';
 import '../providers/orders_provider.dart';
+import '../widgets/shipment_card.dart';
 import '../../../core/services/analytics_service.dart';
 
 class OrderDetailScreen extends ConsumerWidget {
@@ -74,6 +75,11 @@ class OrderDetailScreen extends ConsumerWidget {
                   ),
                 ),
                 const SizedBox(height: 16),
+
+                if (order.shipment?.isCourier == true) ...[
+                  ShipmentCard(order: order),
+                  const SizedBox(height: 16),
+                ],
 
                 // Order items
                 Text('Items', style: AppTextStyles.heading3),

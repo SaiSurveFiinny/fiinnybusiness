@@ -24,6 +24,17 @@ export interface DeliverySettings {
    * within/outside decision needs no second Firestore read at checkout.
    */
   sellerState: string;
+  /** Free delivery on everything this store sells: the customer pays nothing,
+   *  the courier cost comes out of this store's payout (app/lib/free-delivery).
+   *  Not named `freeDelivery`: older app builds delete that field on save. */
+  storeFreeDelivery?: boolean;
+  /** Store-wide share offer: this store pays this % (1–99) of delivery on everything it sells. */
+  storeDeliveryPct?: number;
+  /** Free delivery when this store's part of an order (after discounts) is at least this (₹); 0 = off. */
+  freeDeliveryAbove?: number;
+  /** Manufacturers: free delivery on their products at every retailer in their
+   *  network (the retailer selling it bears the courier cost). */
+  networkFreeDelivery?: boolean;
   updatedAt?: Timestamp | null;
 }
 

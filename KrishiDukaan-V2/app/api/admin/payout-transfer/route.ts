@@ -8,6 +8,9 @@ import {
   type OrderLike,
 } from "../../../dashboard/_lib/seller-earnings";
 import { computeSellerSplit, type SellerSplit } from "../../../lib/route-split";
+import {
+  balancePayoutSplit, markAdjustmentsPaid, readAdjustments, readPlan,
+} from "../../../../functions/src/payouts/settlement";
 import { loadRouteConfig } from "../../../lib/route-server";
 import {
   fetchPaymentTransfers,
@@ -262,6 +265,17 @@ export async function POST(req: NextRequest) {
       const config = await loadRouteConfig();
       const splits = new Map<string, SellerSplit>();
       for (const row of dueRows) {
+        // A planned order pays its plan plus any adjustment still owed
+        // (functions/src/payouts/settlement.ts); others keep the old rule.
+        const plan = readPlan(row.order.settlement);
+        if (plan) {
+          const split = balancePayoutSplit(plan, readAdjustments(row.order.settlementAdjustments), {
+            sellerKey: row.order.sellerPhone ?? row.order.sellerId ?? plan.sellerKey,
+            refundedPaise: Math.round((row.order.payment?.refundedAmount ?? 0) * 100),
+          });
+          if (split.transferPaise > 0) splits.set(row.orderId, split);
+          continue;
+        }
         try {
           splits.set(row.orderId, computeSellerSplit(Math.round(payableGrossFor(row.order) * 100), config));
         } catch {
@@ -342,6 +356,18 @@ export async function POST(req: NextRequest) {
             "payment.platformFee": splits.get(row.orderId)!.commissionPaise / 100,
             "payment.payoutVia": "payout_run",
             "payment.payoutSplit": splits.get(row.orderId)!,
+            // The adjustments this transfer included, so nothing pays them again.
+            ...(readPlan(row.order.settlement)
+              ? {
+                  settlementAdjustments: markAdjustmentsPaid(
+                    readAdjustments(row.order.settlementAdjustments),
+                    row.order.sellerPhone ?? row.order.sellerId ?? seller,
+                    transfer.id,
+                    transferredAt,
+                    "payout_run",
+                  ),
+                }
+              : {}),
           });
         }
         await batch.commit();

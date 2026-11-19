@@ -5,7 +5,7 @@ import type { CartItem, SellerType } from "../../types/order";
 import { cartItemKey } from "../../types/order";
 import type { MarketplaceProduct } from "../../types/product";
 import type { StoreWithDistance } from "../utils/nearby";
-import { fetchStoreOnlineDelivery } from "../firebase";
+import { auth, fetchStoreOnlineDelivery } from "../firebase";
 import { ICONS } from "../constants";
 import { useI18n } from "../i18n/I18nContext";
 import { HelperIcon } from "../../components/helpers";
@@ -15,8 +15,10 @@ import { resolveVariant } from "../lib/cart-pricing";
 import { parseVariantWeightKg } from "../utils/weight";
 import { computeLinePricing } from "../utils/gst";
 import { resolveDeliverySlabs, chargeFromSlabs, type DeliveryType } from "../utils/delivery";
+import { formatDeliveryDate } from "../lib/delivery-eta";
+import { INDIAN_STATES } from "../dashboard/_types/delivery-settings";
 
-type AddressField = "customerFirstName" | "customerLastName" | "customerPhone" | "addressArea" | "addressCity" | "addressDistrict" | "addressState" | "addressPincode";
+type AddressField = "customerFirstName" | "customerLastName" | "customerPhone" | "addressHouse" | "addressArea" | "addressLandmark" | "addressCity" | "addressDistrict" | "addressState" | "addressPincode";
 
 type CartViewProps = {
   items: CartItem[];
@@ -25,7 +27,10 @@ type CartViewProps = {
   customerFirstName: string;
   customerLastName: string;
   customerPhone: string;
+  /** Flat, house no., building, company, apartment. */
+  addressHouse: string;
   addressArea: string;
+  addressLandmark: string;
   addressCity: string;
   addressDistrict: string;
   addressState: string;
@@ -277,6 +282,98 @@ function useDeliveryEstimates(readyItems: CartItem[], customerState: string): De
 
   return { totalCharge, bySellerCharge, bySellerWeight, deliveryType, loading };
 }
+
+// ─── Courier price from the server ────────────────────────────────────────────
+// When signed in with a delivery pincode, the cart asks the server for the
+// exact price it will charge (create-cart-order, quoteOnly): the cheaper of
+// Delhivery and Shiprocket per seller parcel, or the seller's own charge where
+// no courier serves the address. The Pay request then hits the server's quote
+// cache, so the cart total and the amount charged are the same number.
+
+type CourierInfo = { carrier: "delhivery" | "shiprocket"; service: string; etaDays?: number | null; deliveryBy?: string | null };
+type ServerQuote = {
+  delivery: number;
+  /** Per seller: courier details when priced by a courier, null when the seller's charge. */
+  couriers: CourierInfo[];
+  sellerCharged: number;
+  /** Rupees of delivery the stores' offers took off this cart. */
+  storesCover: number;
+  /** A store's "free delivery from ₹X" made its part free. */
+  freeAbove: number[];
+  /** The platform campaign paying for delivery on this cart: its name, and ₹ it covers. */
+  campaign: { name: string; pays: number } | null;
+};
+
+function useServerDeliveryQuote(readyItems: CartItem[], pincode: string, state: string, enabled: boolean) {
+  const [quote, setQuote] = useState<ServerQuote | null>(null);
+  const [loading, setLoading] = useState(false);
+  const pin = pincode.trim();
+  const depKey = readyItems
+    .map((i) => `${i.sellerPhone || i.sellerId}:${i.productId}:${i.qty}:${i.variantUnit ?? ""}`)
+    .sort()
+    .join("|") + `#${pin}#${state.trim().toLowerCase()}`;
+
+  useEffect(() => {
+    if (!enabled || !readyItems.length || !/^[1-9]\d{5}$/.test(pin)) {
+      setQuote(null);
+      setLoading(false);
+      return;
+    }
+    let cancelled = false;
+    setLoading(true);
+    const timer = setTimeout(async () => {
+      try {
+        const idToken = await auth.currentUser?.getIdToken();
+        if (!idToken) throw new Error("no session");
+        const res = await fetch("/api/payment/create-cart-order", {
+          method: "POST",
+          headers: { "Content-Type": "application/json", Authorization: `Bearer ${idToken}` },
+          body: JSON.stringify({
+            quoteOnly: true,
+            items: readyItems.map((i) => ({
+              productId: i.productId, sellerId: i.sellerId, sellerPhone: i.sellerPhone,
+              qty: i.qty, variantUnit: i.variantUnit,
+            })),
+            userId: auth.currentUser?.uid,
+            clientGstAdded: 0,
+            customerDeliveryState: state.trim(),
+            customerPincode: pin,
+          }),
+        });
+        const body = await res.json().catch(() => null);
+        if (cancelled) return;
+        if (!res.ok || !body?.quoteOnly) { setQuote(null); return; }
+        const sellers = Array.isArray(body.sellerBreakdown) ? body.sellerBreakdown : [];
+        const couriers: CourierInfo[] = sellers
+          .map((b: any) => b?.delivery?.mode === "courier" ? b.delivery.courier : null)
+          .filter(Boolean);
+        setQuote({
+          delivery: Number(body.delivery) || 0,
+          couriers,
+          sellerCharged: sellers.length - couriers.length,
+          storesCover: sellers.reduce((s: number, b: any) =>
+            s + (b?.delivery?.free ? 0 : Number(b?.delivery?.sellerCovers) || 0), 0),
+          freeAbove: sellers.map((b: any) => Number(b?.delivery?.freeAboveApplied) || 0).filter((n: number) => n > 0),
+          campaign: (() => {
+            const pays = sellers.reduce((s: number, b: any) => s + (Number(b?.delivery?.campaign?.platformPays) || 0), 0);
+            const name = sellers.map((b: any) => b?.delivery?.campaign?.name).find(Boolean);
+            return pays > 0 && name ? { name: String(name), pays } : null;
+          })(),
+        });
+      } catch {
+        if (!cancelled) setQuote(null);
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    }, 450);
+    return () => { cancelled = true; clearTimeout(timer); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [depKey, enabled]);
+
+  return { quote, loading };
+}
+
+const COURIER_LABEL = { delhivery: "Delhivery", shiprocket: "Shiprocket" } as const;
 
 // ─── Can these items reach this address? ──────────────────────────────────────
 // A manufacturer's product sells online only in its licensed states; a store
@@ -798,7 +895,9 @@ export default function CartView({
   customerFirstName,
   customerLastName,
   customerPhone,
+  addressHouse,
   addressArea,
+  addressLandmark,
   addressCity,
   addressDistrict,
   addressState,
@@ -836,11 +935,51 @@ export default function CartView({
   // Uses the finalized delivery-address state so pan-India sellers charge the
   // correct in-state / out-of-state slab, and recalculates when it changes.
   const {
-    totalCharge: deliveryCharge,
+    totalCharge: slabDeliveryCharge,
     bySellerWeight,
     deliveryType,
-    loading: estimatingDelivery,
+    loading: estimatingSlabs,
   } = useDeliveryEstimates(readyItems, addressState);
+  // The server's real price (courier or seller charge) once signed in with a
+  // pincode; until then the seller-slab estimate above.
+  const { quote: serverQuote, loading: quoting } = useServerDeliveryQuote(
+    readyItems, addressPincode, addressState, isLoggedIn,
+  );
+  const deliveryCharge = serverQuote ? serverQuote.delivery : slabDeliveryCharge;
+  const estimatingDelivery = estimatingSlabs || quoting;
+  const courierNote = serverQuote && serverQuote.couriers.length > 0
+    ? serverQuote.couriers
+        .map((c) => `${COURIER_LABEL[c.carrier]}${c.carrier === "shiprocket" ? ` (${c.service})` : ` ${c.service}`}${c.etaDays ? ` · ~${c.etaDays} days` : ""}`)
+        .join(", ")
+    : null;
+  // "Delivery by Thu, 19 Nov": the latest seller parcel decides (lib/delivery-eta).
+  // Only when every seller ships by courier; a seller's own delivery has no date.
+  const deliveryByIso = serverQuote && serverQuote.couriers.length > 0 && serverQuote.sellerCharged === 0
+    && serverQuote.couriers.every((c) => !!c.deliveryBy)
+    ? serverQuote.couriers.map((c) => c.deliveryBy as string).sort().at(-1) ?? null
+    : null;
+
+  // Pincode → city, district, state (app/api/pincode). The customer types only
+  // the area; the rest comes from the pincode, so the state that prices delivery
+  // can't be mistyped.
+  const lastPinRef = useRef<string>("");
+  useEffect(() => {
+    const pin = addressPincode.trim();
+    if (!/^[1-9]\d{5}$/.test(pin) || pin === lastPinRef.current) return;
+    lastPinRef.current = pin;
+    let cancelled = false;
+    fetch(`/api/pincode/${pin}`)
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => {
+        if (cancelled || !d?.state) return;
+        if (d.city) onCustomerFieldChange("addressCity", d.city);
+        if (d.district) onCustomerFieldChange("addressDistrict", d.district);
+        onCustomerFieldChange("addressState", d.state);
+      })
+      .catch(() => { /* lookup down: the fields stay editable */ });
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [addressPincode]);
   const areaWarnings = useSellAreaWarnings(readyItems, addressState);
   const blockedCount = readyItems.filter((i) => areaWarnings[sellAreaKey(i)]).length;
 
@@ -1165,7 +1304,7 @@ export default function CartView({
                 {estimatingDelivery && (
                   <span className="inline-block h-3 w-3 animate-spin rounded-full border-2 border-primary border-t-transparent" />
                 )}
-                {!estimatingDelivery && deliveryType && (
+                {!estimatingDelivery && deliveryType && !courierNote && (
                   <span className="inline-flex items-center rounded-full bg-primary/8 border border-primary/20 px-2 py-0.5 text-[10px] font-bold text-primary">
                     {deliveryType === "in_state" ? t('cartDeliveryWithinState') : t('cartDeliveryOutsideState')}
                   </span>
@@ -1177,6 +1316,39 @@ export default function CartView({
                   : t('cartDeliveryFree')}
               </span>
             </div>
+          )}
+
+          {/* Estimated delivery date */}
+          {canCheckout && !estimatingDelivery && deliveryByIso && (
+            <p className="text-xs font-semibold text-green-700 -mt-1">
+              Delivery by {formatDeliveryDate(deliveryByIso)}
+            </p>
+          )}
+
+          {/* Delivery offers the stores gave (lib/free-delivery) */}
+          {canCheckout && !estimatingDelivery && serverQuote && serverQuote.storesCover > 0 && (
+            <p className="text-[11px] font-semibold text-green-700 -mt-1">
+              The store pays ₹{serverQuote.storesCover.toLocaleString("en-IN", { maximumFractionDigits: 2 })} of your delivery
+            </p>
+          )}
+          {canCheckout && !estimatingDelivery && serverQuote && serverQuote.freeAbove.length > 0 && (
+            <p className="text-[11px] font-semibold text-green-700 -mt-1">
+              Free delivery: your order reached the store&apos;s ₹{Math.min(...serverQuote.freeAbove).toLocaleString("en-IN")} offer
+            </p>
+          )}
+
+          {/* KrishiDukan's free-delivery campaign (docs/delivery-money-architecture.md) */}
+          {canCheckout && !estimatingDelivery && serverQuote?.campaign && (
+            <p className="text-[11px] font-semibold text-green-700 -mt-1">
+              {serverQuote.campaign.name}: KrishiDukan pays ₹{serverQuote.campaign.pays.toLocaleString("en-IN", { maximumFractionDigits: 2 })} of your delivery
+            </p>
+          )}
+
+          {/* Which courier the price came from */}
+          {canCheckout && !estimatingDelivery && courierNote && (
+            <p className="text-[10px] text-on-surface-variant -mt-1">
+              Courier: {courierNote}
+            </p>
           )}
 
           {/* Deliver-to state — clarifies which address state drove the charge above */}
@@ -1300,47 +1472,73 @@ export default function CartView({
               {locationError && (
                 <p className="text-[11px] font-semibold text-amber-700 -mt-0.5">{locationError}</p>
               )}
+              {/* Amazon-style order: pincode first (it fills town, district and
+                  state), then the house, the area, a landmark, town and state. */}
+              <input
+                value={addressPincode}
+                onChange={(e) => onCustomerFieldChange("addressPincode", e.target.value.replace(/\D/g, "").slice(0, 6))}
+                placeholder={`${t('cartPincode')} *`}
+                aria-label={t('cartPincode')}
+                inputMode="numeric"
+                autoComplete="postal-code"
+                maxLength={6}
+                className="rounded-lg border border-outline-variant/30 bg-surface-container-low px-3 py-1.5 text-sm w-full"
+              />
+              <input
+                value={addressHouse}
+                onChange={(e) => onCustomerFieldChange("addressHouse", e.target.value)}
+                placeholder={`${t('cartAddrHouse')} *`}
+                aria-label={t('cartAddrHouse')}
+                autoComplete="address-line1"
+                maxLength={120}
+                className="rounded-lg border border-outline-variant/30 bg-surface-container-low px-3 py-1.5 text-sm w-full"
+              />
               <input
                 ref={addressInputRef}
                 value={addressArea}
                 onChange={(e) => { onCustomerFieldChange("addressArea", e.target.value); setLocationError(null); }}
-                placeholder={t('cartAreaLocality')}
+                placeholder={`${t('cartAddrArea')} *`}
+                aria-label={t('cartAddrArea')}
                 autoComplete="off"
+                maxLength={160}
                 className="rounded-lg border border-outline-variant/30 bg-surface-container-low px-3 py-1.5 text-sm w-full"
               />
-              <div className="grid grid-cols-2 gap-2">
-                <input
-                  value={addressCity}
-                  onChange={(e) => onCustomerFieldChange("addressCity", e.target.value)}
-                  placeholder={t('cartCity')}
-                  className="rounded-lg border border-outline-variant/30 bg-surface-container-low px-3 py-1.5 text-sm"
-                />
-                <input
-                  value={addressDistrict}
-                  onChange={(e) => onCustomerFieldChange("addressDistrict", e.target.value)}
-                  placeholder={t('cartDistrict')}
-                  className="rounded-lg border border-outline-variant/30 bg-surface-container-low px-3 py-1.5 text-sm"
-                />
-              </div>
-              <div className="grid grid-cols-2 gap-2">
-                <input
-                  value={addressState}
-                  onChange={(e) => onCustomerFieldChange("addressState", e.target.value)}
-                  placeholder={t('cartState')}
-                  className="rounded-lg border border-outline-variant/30 bg-surface-container-low px-3 py-1.5 text-sm"
-                />
-                <input
-                  value={addressPincode}
-                  onChange={(e) => onCustomerFieldChange("addressPincode", e.target.value)}
-                  placeholder={t('cartPincode')}
-                  type="number"
-                  maxLength={6}
-                  className="rounded-lg border border-outline-variant/30 bg-surface-container-low px-3 py-1.5 text-sm"
-                />
-              </div>
+              <input
+                value={addressLandmark}
+                onChange={(e) => onCustomerFieldChange("addressLandmark", e.target.value)}
+                placeholder={t('cartAddrLandmark')}
+                aria-label={t('cartAddrLandmark')}
+                maxLength={80}
+                className="rounded-lg border border-outline-variant/30 bg-surface-container-low px-3 py-1.5 text-sm w-full"
+              />
+              {/* One Town / City box. The district comes from the pincode and is
+                  kept with the order, but not shown: India Post's district is
+                  also the city, so a second box only repeated it. */}
+              <input
+                value={addressCity}
+                onChange={(e) => onCustomerFieldChange("addressCity", e.target.value)}
+                placeholder={`${t('cartAddrCity')} *`}
+                aria-label={t('cartAddrCity')}
+                autoComplete="address-level2"
+                className="rounded-lg border border-outline-variant/30 bg-surface-container-low px-3 py-1.5 text-sm w-full"
+              />
+              <select
+                value={addressState}
+                onChange={(e) => onCustomerFieldChange("addressState", e.target.value)}
+                aria-label={t('cartState')}
+                className="rounded-lg border border-outline-variant/30 bg-surface-container-low px-3 py-1.5 text-sm w-full"
+              >
+                <option value="">{`${t('cartAddrStateSelect')} *`}</option>
+                {addressState && !INDIAN_STATES.includes(addressState) && (
+                  <option value={addressState}>{addressState}</option>
+                )}
+                {INDIAN_STATES.map((st) => (
+                  <option key={st} value={st}>{st}</option>
+                ))}
+              </select>
 
               {/* Save address checkbox */}
-              {onSaveAddress && (addressArea.trim() || addressCity.trim() || addressDistrict.trim() || addressState.trim() || addressPincode.trim()) && (
+              {onSaveAddress && (addressHouse.trim() || addressArea.trim() || addressCity.trim() || addressDistrict.trim() || addressState.trim() || addressPincode.trim()) && (
                 <label className="flex items-center gap-2 mt-2 px-1 cursor-pointer group">
                   <input
                     type="checkbox"

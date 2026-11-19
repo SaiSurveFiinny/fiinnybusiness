@@ -1,8 +1,10 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:krishidukaan_app/core/models/catalog_model.dart';
 import 'package:krishidukaan_app/core/models/listing_model.dart'
     show VariantModel;
+import 'package:krishidukaan_app/core/providers/deliver_to_provider.dart';
 import 'package:krishidukaan_app/core/widgets/product_card.dart';
 import 'package:krishidukaan_app/features/marketplace/data/quick_buy.dart';
 
@@ -29,14 +31,23 @@ Future<void> _pump(
   double w = 105,
   double h = 210,
 }) => t.pumpWidget(
-  MaterialApp(
-    home: Scaffold(
-      body: Center(
-        child: SizedBox(width: w, height: h, child: card),
+  // No "Deliver to" pincode: the card shows its usual distance row.
+  ProviderScope(
+    overrides: [deliverToProvider.overrideWith(_NoPincode.new)],
+    child: MaterialApp(
+      home: Scaffold(
+        body: Center(
+          child: SizedBox(width: w, height: h, child: card),
+        ),
       ),
     ),
   ),
 );
+
+class _NoPincode extends DeliverToNotifier {
+  @override
+  DeliverTo? build() => null;
+}
 
 void main() {
   testWidgets(

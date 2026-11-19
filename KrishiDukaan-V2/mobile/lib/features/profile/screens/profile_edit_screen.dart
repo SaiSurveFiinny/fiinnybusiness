@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:cached_network_image/cached_network_image.dart';
@@ -8,10 +9,12 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:go_router/go_router.dart';
 import 'package:image_picker/image_picker.dart';
+import 'package:http/http.dart' as http;
 import '../../../core/constants/app_colors.dart';
 import '../../../core/constants/app_config.dart';
 import '../../../core/services/places_service.dart';
 import '../../../core/constants/app_text_styles.dart';
+import '../../../core/models/delivery_address.dart';
 import '../../../core/providers/user_provider.dart';
 import '../../../core/widgets/loading_overlay.dart';
 import '../../auth/data/auth_repository.dart';
@@ -63,6 +66,19 @@ class _ProfileEditScreenState extends ConsumerState<ProfileEditScreen> {
   final _whatsappCtrl = TextEditingController();
   final _youtubeCtrl = TextEditingController();
 
+  // Delivery address (core/models/delivery_address.dart, shared with checkout
+  // and the web). Buyers: house + landmark here, and the area/city/state/
+  // pincode boxes above are the same address. Sellers: a separate address for
+  // their own orders (their shop address stays as it is).
+  final _dHouseCtrl = TextEditingController();
+  final _dLandmarkCtrl = TextEditingController();
+  final _dAreaCtrl = TextEditingController();
+  final _dCityCtrl = TextEditingController();
+  final _dStateCtrl = TextEditingController();
+  final _dPinCtrl = TextEditingController();
+  String _dDistrict = '';
+  String _lastPinLooked = '';
+
   bool _saving = false;
   bool _prefilled = false;
 
@@ -96,8 +112,51 @@ class _ProfileEditScreenState extends ConsumerState<ProfileEditScreen> {
     _facebookCtrl.dispose();
     _whatsappCtrl.dispose();
     _youtubeCtrl.dispose();
+    _dHouseCtrl.dispose();
+    _dLandmarkCtrl.dispose();
+    _dAreaCtrl.dispose();
+    _dCityCtrl.dispose();
+    _dStateCtrl.dispose();
+    _dPinCtrl.dispose();
     super.dispose();
   }
+
+  /// Pincode → town, district and state (GET /api/pincode/{pin}), the same
+  /// lookup checkout uses, so the state that prices delivery can't be mistyped.
+  Future<void> _lookupPincode(
+    String pin,
+    TextEditingController city,
+    TextEditingController state,
+  ) async {
+    if (!RegExp(r'^[1-9]\d{5}$').hasMatch(pin) || pin == _lastPinLooked) return;
+    _lastPinLooked = pin;
+    try {
+      final res = await http
+          .get(Uri.parse('${AppConfig.apiBaseUrl}/api/pincode/$pin'))
+          .timeout(const Duration(seconds: 8));
+      if (!mounted || res.statusCode != 200) return;
+      final d = jsonDecode(res.body);
+      if (d is! Map || d['state'] == null) return;
+      setState(() {
+        if ((d['city'] ?? '').toString().isNotEmpty) city.text = d['city'].toString();
+        _dDistrict = (d['district'] ?? '').toString();
+        state.text = d['state'].toString();
+      });
+    } catch (_) {
+      // Lookup down: the fields stay editable.
+    }
+  }
+
+  /// The delivery address as typed, for whichever layout this user sees.
+  DeliveryAddress _deliveryAddressFor(bool isSeller) => isSeller
+      ? DeliveryAddress.clean(
+          house: _dHouseCtrl.text, area: _dAreaCtrl.text, landmark: _dLandmarkCtrl.text,
+          city: _dCityCtrl.text, district: _dDistrict, state: _dStateCtrl.text, pincode: _dPinCtrl.text,
+        )
+      : DeliveryAddress.clean(
+          house: _dHouseCtrl.text, area: _addressCtrl.text, landmark: _dLandmarkCtrl.text,
+          city: _cityCtrl.text, district: _dDistrict, state: _stateCtrl.text, pincode: _pincodeCtrl.text,
+        );
 
   /// The canonical GSTIN + Google Maps link live on retailers/{phone} (what
   /// the web dashboard edits), so when the users-doc mirrors are empty pull
@@ -264,6 +323,15 @@ class _ProfileEditScreenState extends ConsumerState<ProfileEditScreen> {
         geo: _geo,
       );
 
+      // The delivery address, in the shape web profile and both checkouts
+      // share. Written after saveProfile so a buyer's one-line fields end up
+      // as the full address. Sellers: only when they filled one in.
+      final isSellerRole = role == 'retailer' || role == 'manufacturer';
+      final delivery = _deliveryAddressFor(isSellerRole);
+      if (!isSellerRole || !delivery.isEmpty) {
+        await _repo.saveDeliveryAddress(phone: phone, role: role, address: delivery);
+      }
+
       ref.invalidate(currentUserProvider);
       // The avatar on Profile reads retailerProfileProvider, which is keyed
       // by phone and won't otherwise know the logo doc just changed.
@@ -321,6 +389,24 @@ class _ProfileEditScreenState extends ConsumerState<ProfileEditScreen> {
           _pincodeCtrl.text = user.pincode ?? '';
           _gstinCtrl.text = user.gstin ?? '';
           _mapsUrlCtrl.text = user.googleMapsUrl ?? '';
+          final da = user.deliveryAddress;
+          _dHouseCtrl.text = da.house;
+          _dLandmarkCtrl.text = da.landmark;
+          _dDistrict = da.district;
+          if (user.isSeller) {
+            _dAreaCtrl.text = da.area;
+            _dCityCtrl.text = da.city;
+            _dStateCtrl.text = da.state;
+            _dPinCtrl.text = da.pincode;
+            _lastPinLooked = da.pincode;
+          } else if (!da.isEmpty) {
+            // A buyer's saved delivery address fills the boxes above too.
+            _addressCtrl.text = da.area;
+            _cityCtrl.text = da.city;
+            _stateCtrl.text = da.state;
+            _pincodeCtrl.text = da.pincode;
+            _lastPinLooked = da.pincode;
+          }
           // Always fetch for sellers — not just when gstin/mapsUrl are
           // empty — since this is also the only place the existing logo
           // (never mirrored to users/{phone}) can be prefilled from.
@@ -526,32 +612,40 @@ class _ProfileEditScreenState extends ConsumerState<ProfileEditScreen> {
                           Icons.play_circle_outline),
                     ] else ...[
                       const SizedBox(height: 24),
-                      Text('Delivery Address (optional)',
-                          style: AppTextStyles.heading3),
+                      Text('Delivery Address', style: AppTextStyles.heading3),
+                      const SizedBox(height: 4),
+                      Text(
+                        'Used for prices with delivery, delivery dates and checkout. '
+                        'You can still change it at checkout.',
+                        style: AppTextStyles.caption,
+                      ),
                       const SizedBox(height: 12),
                       _locationButton(),
                       const SizedBox(height: 12),
-                      _field(_addressCtrl, 'Address', Icons.home_outlined,
-                          maxLines: 2),
+                      ..._addressFields(
+                        pin: _pincodeCtrl,
+                        area: _addressCtrl,
+                        city: _cityCtrl,
+                        state: _stateCtrl,
+                      ),
+                    ],
+
+                    if (isSeller) ...[
+                      const SizedBox(height: 24),
+                      Text('Delivery address for your own orders (optional)',
+                          style: AppTextStyles.heading3),
+                      const SizedBox(height: 4),
+                      Text(
+                        'Where things you buy on KrishiDukaan are delivered. '
+                        'Your shop address above is not changed.',
+                        style: AppTextStyles.caption,
+                      ),
                       const SizedBox(height: 12),
-                      Row(
-                        children: [
-                          Expanded(
-                            child: _field(_cityCtrl, 'City',
-                                Icons.location_city_outlined),
-                          ),
-                          const SizedBox(width: 12),
-                          SizedBox(
-                            width: 120,
-                            child: _field(_pincodeCtrl, 'Pincode',
-                                Icons.pin_outlined,
-                                keyboardType: TextInputType.number,
-                                inputFormatters: [
-                                  FilteringTextInputFormatter.digitsOnly,
-                                  LengthLimitingTextInputFormatter(6),
-                                ]),
-                          ),
-                        ],
+                      ..._addressFields(
+                        pin: _dPinCtrl,
+                        area: _dAreaCtrl,
+                        city: _dCityCtrl,
+                        state: _dStateCtrl,
                       ),
                     ],
 
@@ -730,6 +824,38 @@ class _ProfileEditScreenState extends ConsumerState<ProfileEditScreen> {
     );
   }
 
+  /// Amazon-style order, as checkout: pincode first (it fills town and state),
+  /// then house, area, landmark, town, state.
+  List<Widget> _addressFields({
+    required TextEditingController pin,
+    required TextEditingController area,
+    required TextEditingController city,
+    required TextEditingController state,
+  }) =>
+      [
+        _field(pin, 'Pincode', Icons.pin_outlined,
+            keyboardType: TextInputType.number,
+            inputFormatters: [
+              FilteringTextInputFormatter.digitsOnly,
+              LengthLimitingTextInputFormatter(6),
+            ],
+            onChanged: (v) => _lookupPincode(v.trim(), city, state)),
+        const SizedBox(height: 12),
+        _field(_dHouseCtrl, 'Flat / house no. / building', Icons.home_outlined),
+        const SizedBox(height: 12),
+        _field(area, 'Area / street / village', Icons.signpost_outlined, maxLines: 2),
+        const SizedBox(height: 12),
+        _field(_dLandmarkCtrl, 'Landmark (optional)', Icons.place_outlined),
+        const SizedBox(height: 12),
+        Row(
+          children: [
+            Expanded(child: _field(city, 'Town / city', Icons.location_city_outlined)),
+            const SizedBox(width: 12),
+            Expanded(child: _field(state, 'State', Icons.map_outlined)),
+          ],
+        ),
+      ];
+
   Widget _field(
     TextEditingController controller,
     String label,
@@ -739,6 +865,7 @@ class _ProfileEditScreenState extends ConsumerState<ProfileEditScreen> {
     int maxLines = 1,
     List<TextInputFormatter>? inputFormatters,
     bool highlightIfEmpty = false,
+    ValueChanged<String>? onChanged,
   }) {
     final flagged =
         _highlighting && highlightIfEmpty && controller.text.trim().isEmpty;
@@ -752,7 +879,12 @@ class _ProfileEditScreenState extends ConsumerState<ProfileEditScreen> {
       style: AppTextStyles.body,
       // Only while highlighting: rebuild per keystroke so the amber outline
       // disappears as soon as the field has content.
-      onChanged: _highlighting ? (_) => setState(() {}) : null,
+      onChanged: (_highlighting || onChanged != null)
+          ? (v) {
+              if (_highlighting) setState(() {});
+              onChanged?.call(v);
+            }
+          : null,
       decoration: InputDecoration(
         labelText: label,
         prefixIcon: Icon(icon, color: flagged ? AppColors.error : null),

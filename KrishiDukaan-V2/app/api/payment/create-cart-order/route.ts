@@ -18,7 +18,13 @@ import {
   resolveVariant,
   type CartPricingLine,
   type SellerPricing,
+  type CourierCharge,
 } from '../../../lib/cart-pricing';
+import { cheapestQuote, courierCheckoutEnabled, dropPincodeFrom, parcelKgFor, pickupPincodeFor } from '../../../lib/courier-quote';
+import { deliveryByDate } from '../../../lib/delivery-eta';
+import { lineDeliveryShare, manufacturerPhoneOf } from '../../../lib/free-delivery';
+import { loadActiveCampaign } from '../../../lib/delivery-campaign';
+import { planSettlement, type SettlementPlan } from '../../../../functions/src/payouts/settlement';
 
 const razorpay = new Razorpay({
   key_id: process.env.RAZORPAY_KEY_ID!,
@@ -26,7 +32,13 @@ const razorpay = new Razorpay({
 });
 
 /** One priced cart line plus the seller phone used to find its delivery settings. */
-type ServerLine = CartPricingLine & { sellerPhone?: string };
+type ServerLine = CartPricingLine & {
+  sellerPhone?: string;
+  /** The manufacturer this product belongs to: their network free-delivery applies. */
+  manufacturerPhone?: string;
+  /** This product's own share offer (seller pays 1–99% of its delivery). */
+  sellerDeliveryPct?: number;
+};
 
 /** A reason one cart line cannot be ordered — surfaced to the client so it can
  *  tell the shopper exactly which item to fix, never charging a wrong amount. */
@@ -123,6 +135,8 @@ export async function POST(request: Request) {
       customerPhone,
       customerAddress,
       deliveryBySeller,
+      customerPincode,
+      quoteOnly,
     } = body as {
       items:             CartItemInput[];
       userId:            string;
@@ -142,6 +156,10 @@ export async function POST(request: Request) {
       customerPhone?:    string;
       customerAddress?:  unknown;
       deliveryBySeller?: Record<string, number>;
+      /** Delivery pincode; the courier price is quoted to it. */
+      customerPincode?: string;
+      /** Price the cart (items, GST, delivery) without creating a payment. */
+      quoteOnly?: boolean;
     };
 
     console.log('[create-cart-order] received:', {
@@ -391,6 +409,11 @@ export async function POST(request: Request) {
             gstIncluded: commercial.gstIncluded,
             extraDeliveryCharge: commercial.extraDeliveryCharge,
             freeDelivery: commercial.freeDelivery,
+            sellerDeliveryPct: commercial.sellerDeliveryPct,
+            manufacturerPhone: manufacturerPhoneOf(
+              (copyDoc?.data() as Record<string, unknown> | undefined) ?? null,
+              prodData as Record<string, unknown> | null,
+            ) || undefined,
           }
         : null;
       // Per-line eligibility inputs, evaluated after the parallel reads below:
@@ -515,15 +538,68 @@ export async function POST(request: Request) {
         { status: 422 },
       );
     }
+    // Delivery offers (lib/free-delivery): the product's own (free or a %),
+    // the store's (free or a %), the manufacturer's network free delivery.
+    // The customer pays the rest; on a courier order the seller's part is
+    // later taken from their payout, never absorbed by us. The store's
+    // "free above ₹X" is applied per seller in computeSellerPricing.
+    const makerPhones = Array.from(new Set(pricingLines.map((l) => l.manufacturerPhone).filter((p): p is string => !!p)));
+    const makerSettings = new Map<string, Record<string, unknown> | null>();
+    await Promise.all(makerPhones.map(async (phone) => {
+      const snap = await db.collection('deliverySettings').doc(phone).get().catch(() => null);
+      makerSettings.set(phone, snap?.exists ? (snap.data() as Record<string, unknown>) : null);
+    }));
+    for (const l of pricingLines) {
+      l.deliveryShare = lineDeliveryShare({
+        productFree: l.freeDelivery === true,
+        productPct: l.sellerDeliveryPct,
+        seller: settingsBySeller.get(l.sellerKey) as Record<string, unknown> | null | undefined,
+        manufacturer: l.manufacturerPhone ? makerSettings.get(l.manufacturerPhone) : null,
+      });
+    }
+
     const linesBySeller = new Map<string, ServerLine[]>();
     for (const l of pricingLines) {
       const list = linesBySeller.get(l.sellerKey) ?? [];
       list.push(l);
       linesBySeller.set(l.sellerKey, list);
     }
+    // Courier price per seller parcel (lib/courier-quote): the cheaper of
+    // Delhivery and Shiprocket to this pincode. A seller neither courier serves,
+    // or with no shop pincode, keeps their own slab charge. Only new clients
+    // (which show this price in the cart) are charged it.
+    const courierBySeller = new Map<string, CourierCharge>();
+    const dropPin = dropPincodeFrom(customerAddress, customerPincode);
+    if (clientGstAdded !== undefined && dropPin && (await courierCheckoutEnabled())) {
+      await Promise.all(Array.from(linesBySeller.entries()).map(async ([key, lines]) => {
+        try {
+          const pickup = await pickupPincodeFor(key);
+          if (!pickup) return;
+          const kg = parcelKgFor(lines);
+          const value = lines.reduce((s, l) => s + l.unitPrice * l.qty, 0);
+          const q = await cheapestQuote(pickup, dropPin, kg, value);
+          if (q) {
+            courierBySeller.set(key, {
+              charge: Math.ceil(q.cost), carrier: q.carrier, service: q.service,
+              etaDays: q.etaDays ?? null, weightKg: kg,
+              deliveryBy: deliveryByDate(q.etaDays),
+            });
+          }
+        } catch (e) {
+          console.warn('[create-cart-order] courier quote failed, seller slab used', key, e);
+        }
+      }));
+    }
+    // Courier parcels: the gateway fee on the customer's part is added to it
+    // and a running platform campaign pays its share (Option B). Same rates
+    // the seller's transfer is split with (settings/route).
+    const splitRates = (await routePrefetch).config ?? await loadRouteConfig();
+    const campaign = courierBySeller.size > 0 ? await loadActiveCampaign() : null;
+    const courierOptions = { rates: splitRates, campaign };
     const sellerPricing: SellerPricing[] = Array.from(linesBySeller.entries()).map(
       ([key, lines]) =>
-        computeSellerPricing(key, lines, settingsBySeller.get(key) ?? null, customerDeliveryState),
+        computeSellerPricing(key, lines, settingsBySeller.get(key) ?? null, customerDeliveryState,
+          courierBySeller.get(key) ?? null, courierOptions),
     );
     const serverDeliveryBySeller: Record<string, number> = {};
     const serverGstBySeller: Record<string, number> = {};
@@ -538,6 +614,19 @@ export async function POST(request: Request) {
     console.log('[create-cart-order] serverDelivery:', serverDelivery,
       '| serverGstAdded:', serverGstAdded, '| bySeller:', serverDeliveryBySeller,
       '| state:', customerDeliveryState);
+
+    // The cart's price check: same pricing, no payment created.
+    if (quoteOnly === true) {
+      return NextResponse.json({
+        ok: true,
+        quoteOnly: true,
+        subtotal: serverSubtotal,
+        gstAdded: serverGstAdded,
+        delivery: serverDelivery,
+        total: Math.round((serverSubtotal + serverGstAdded + serverDelivery) * 100) / 100,
+        sellerBreakdown: sellerPricing,
+      });
+    }
 
     console.log('[create-cart-order] serverSubtotal:', serverSubtotal,
       '| clientSubtotal:', clientSubtotal,
@@ -593,6 +682,30 @@ export async function POST(request: Request) {
     console.log('[create-cart-order] creating Razorpay order | ₹', totalForPayment,
       '| paise:', amountPaise);
 
+    // Who gets which rupee (functions/src/payouts/settlement.ts). New clients
+    // only: their per-seller pricing is the server's own. Delivery the
+    // platform ships is never in the seller's transfer; commission is on goods
+    // only; a seller's free-delivery offer is their share of the courier cost.
+    const settlementPlans = new Map<string, SettlementPlan>();
+    if (isNewClient) {
+      for (const sp of sellerPricing) {
+        const courierPriced = sp.delivery.mode === 'courier' && !!sp.delivery.courier;
+        const quote = courierPriced ? Number(sp.delivery.courier!.charge) || 0 : 0;
+        const sellerCourier = courierPriced ? Number(sp.delivery.sellerPaysCourier ?? 0) || 0 : 0;
+        settlementPlans.set(sp.sellerKey, planSettlement({
+          sellerKey: sp.sellerKey,
+          goods: sp.subtotal + sp.gstAdded,
+          deliveryTo: courierPriced ? 'platform' : 'seller',
+          customerDelivery: sp.deliveryCharge,
+          sellerCourier,
+          campaign: courierPriced ? sp.delivery.campaign?.platformPays ?? 0 : 0,
+          courierQuote: quote,
+          sellerShare: quote > 0 ? Math.min(1, sellerCourier / quote) : 0,
+          rates: splitRates,
+        }));
+      }
+    }
+
     // Each seller's payout share follows their OWN order total (items + added
     // GST + their delivery) — what their order record will say. Legacy clients
     // don't give us per-seller totals, so they keep the subtotal proportions.
@@ -601,6 +714,7 @@ export async function POST(request: Request) {
       amountPaise,
       isNewClient && totalsSum > 0 ? totalBySeller : subtotalBySeller,
       await routePrefetch,
+      settlementPlans.size > 0 ? settlementPlans : undefined,
     );
     let { splitSummary } = route;
 
@@ -665,6 +779,16 @@ export async function POST(request: Request) {
             sellerBreakdown: sellerPricing,
             customerDeliveryState:
               typeof customerDeliveryState === 'string' ? customerDeliveryState.trim() : undefined,
+          }
+        : {}),
+      // The settlement plan per seller and which sellers Razorpay actually
+      // split to (after any retry without transfers). Copied onto each order
+      // by the stampOrderSettlement function; clients never write it.
+      ...(settlementPlans.size > 0
+        ? {
+            settlements: Array.from(settlementPlans.entries()).map(([sellerKey, plan]) => ({ sellerKey, plan })),
+            routedSellers: splitSummary.map((row) => row.sellerKey),
+            routedAccounts: Object.fromEntries(splitSummary.map((row) => [row.sellerKey, row.accountId])),
           }
         : {}),
     });
@@ -825,6 +949,8 @@ async function buildRouteTransfers(
   orderAmountPaise: number,
   subtotalBySeller: Map<string, number>,
   prefetched?: RouteContext,
+  /** Settlement plans (new clients): each seller's transfer is exactly its plan. */
+  plans?: Map<string, SettlementPlan>,
 ): Promise<{
   transfers: Array<{ account: string; amount: number; currency: string; on_hold: boolean; notes: Record<string, string> }>;
   splitSummary: SplitSummaryRow[];
@@ -834,6 +960,10 @@ async function buildRouteTransfers(
 
   try {
     const config = prefetched?.config ?? await loadRouteConfig();
+
+    if (plans && plans.size > 0) {
+      return await planTransfers(orderAmountPaise, plans, config, prefetched);
+    }
 
     // Allocate the ACTUAL captured amount across sellers in proportion to their
     // subtotals. Deriving each share from the order total rather than summing
@@ -897,4 +1027,63 @@ async function buildRouteTransfers(
     console.error('[create-cart-order] transfer build failed, creating order unsplit:', e);
     return empty;
   }
+}
+
+/**
+ * Route transfers from settlement plans: each seller gets exactly their plan's
+ * transferPaise. What is left of the payment (delivery the platform ships,
+ * commission, a seller's courier share) stays with the platform. Same
+ * guarantees as the proportional path: never more than the order amount, and
+ * a seller with no linked account (or nothing left after fees) is skipped,
+ * never failing the payment.
+ */
+async function planTransfers(
+  orderAmountPaise: number,
+  plans: Map<string, SettlementPlan>,
+  config: Awaited<ReturnType<typeof loadRouteConfig>>,
+  prefetched?: RouteContext,
+): Promise<{
+  transfers: Array<{ account: string; amount: number; currency: string; on_hold: boolean; notes: Record<string, string> }>;
+  splitSummary: SplitSummaryRow[];
+}> {
+  const transfers: Array<{ account: string; amount: number; currency: string; on_hold: boolean; notes: Record<string, string> }> = [];
+  const splitSummary: SplitSummaryRow[] = [];
+  for (const [key, plan] of Array.from(plans.entries())) {
+    if (plan.transferPaise <= 0) {
+      console.warn('[create-cart-order] nothing to transfer after fees for', key);
+      continue;
+    }
+    const seller = prefetched?.accounts.has(key) ? prefetched.accounts.get(key)! : await resolveSellerAccount(key);
+    const accountId = seller?.razorpayAccountId;
+    if (!accountId) continue;
+    transfers.push({
+      account: accountId,
+      amount: plan.transferPaise,
+      currency: 'INR',
+      on_hold: config.holdTransfers,
+      notes: {
+        sellerKey: key,
+        commissionPaise: String(plan.commissionPaise),
+        // Marks a transfer that never carried delivery money, so nothing
+        // downstream tries to take a delivery fee back out of it.
+        settlement: `v${plan.v}`,
+        deliveryTo: plan.deliveryTo,
+        sellerCourierPaise: String(plan.sellerCourierPaise),
+      },
+    });
+    splitSummary.push({
+      sellerKey: key,
+      accountId,
+      grossPaise: plan.goodsPaise + plan.keptDeliveryPaise,
+      commissionPaise: plan.commissionPaise,
+      gatewayFeePaise: plan.gatewayFeePaise,
+      transferPaise: plan.transferPaise,
+    });
+  }
+  if (transfers.length === 0) return { transfers: [], splitSummary: [] };
+  const total = transfers.reduce((sum, t) => sum + t.amount, 0);
+  if (total > orderAmountPaise) {
+    throw new Error(`Route transfers (${total} paise) exceed the order amount (${orderAmountPaise} paise).`);
+  }
+  return { transfers, splitSummary };
 }

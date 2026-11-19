@@ -1,4 +1,5 @@
 import { getApp, getApps, initializeApp } from 'firebase/app';
+import { deliveryAddressWriteFields, type DeliveryAddress } from './lib/delivery-address';
 import {
   addDoc,
   arrayRemove,
@@ -1424,11 +1425,35 @@ function phoneTail(v: string): string {
   return d.length >= 10 ? d.slice(-10) : "";
 }
 
+/** A delivery address in parts, as checkout collects it (orders.deliveryAddress). */
+export type { DeliveryAddress } from './lib/delivery-address';
+
+/**
+ * Saves the customer's delivery address to their profile (users/{phone},
+ * resolved through uidIndex like getUserProfile; email-only admin accounts
+ * use users/{uid}). One shape for profile and checkout, web and app
+ * (lib/delivery-address.ts). Returns false when there is no profile to save to.
+ */
+export async function saveDeliveryAddress(uid: string, address: Partial<DeliveryAddress>, role: unknown): Promise<boolean> {
+  const idx = await getDoc(doc(db, 'uidIndex', uid));
+  const phone = idx.exists() ? String(idx.data().phone ?? '') : '';
+  const ref = doc(db, 'users', phone || uid);
+  const snap = await getDoc(ref);
+  if (!snap.exists()) return false;
+  await updateDoc(ref, {
+    ...deliveryAddressWriteFields(address, role ?? snap.data().role),
+    updatedAt: serverTimestamp(),
+  });
+  return true;
+}
+
 export async function createOrdersFromCart(params: {
   customerId: string;
   customerName: string;
   customerPhone: string;
   customerAddress: string;
+  /** The same address in parts (house / area / landmark / city / state / pincode). */
+  deliveryAddress?: DeliveryAddress;
   /** Finalized delivery-address state — decides in/out-of-state delivery slabs. */
   customerDeliveryState?: string;
   /**
@@ -1449,7 +1474,7 @@ export async function createOrdersFromCart(params: {
     paidAt: string;
   };
 }): Promise<string[]> {
-  const { customerId, customerName, customerPhone, customerAddress, customerDeliveryState, serverBreakdown, items, payment } = params;
+  const { customerId, customerName, customerPhone, customerAddress, deliveryAddress, customerDeliveryState, serverBreakdown, items, payment } = params;
   if (!items.length) return [];
 
   const groups = new Map<string, CartItem[]>();
@@ -1628,6 +1653,7 @@ export async function createOrdersFromCart(params: {
       customerName: customerName.trim(),
       customerPhone: customerPhone.trim(),
       customerAddress: customerAddress.trim(),
+      ...(deliveryAddress?.pincode ? { deliveryAddress } : {}),
       ...(customerDeliveryState ? { customerDeliveryState } : {}),
       sellerId,
       sellerType,
@@ -1870,6 +1896,22 @@ export async function updateOrderStatus(orderId: string, status: OrderStatus): P
   await updateDoc(doc(db, "orders", orderId), {
     status,
     statusHistory: arrayUnion({ status, at: new Date().toISOString() } as StatusHistoryEntry),
+    updatedAt: serverTimestamp(),
+  });
+}
+
+/**
+ * Asks the shipping functions to act on a courier order: request the pickup, or
+ * (test bookings only, checked on the server) pretend to be the courier. This
+ * field is the only shipping data a seller can write.
+ */
+export async function requestShipmentAction(
+  orderId: string,
+  action: "pickup" | "simulate",
+  event?: string,
+): Promise<void> {
+  await updateDoc(doc(db, "orders", orderId), {
+    shipmentRequest: { id: crypto.randomUUID(), action, ...(event ? { event } : {}), at: new Date().toISOString() },
     updatedAt: serverTimestamp(),
   });
 }

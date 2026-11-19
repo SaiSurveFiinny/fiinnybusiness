@@ -1,4 +1,5 @@
 import '../../../core/models/order_model.dart';
+import '../../../core/models/settlement.dart';
 
 /// Seller earnings — what a seller is owed, what is still on hold, and what
 /// has already been paid out.
@@ -157,15 +158,57 @@ SellerEarnings earningsFromStats(
 /// OrderModel.total already falls back to `grandTotal` then `subtotal`, which
 /// covers the mobile/web field split (mobile writes `total`, web writes
 /// `grandTotal`).
-double _grossFor(OrderModel order) => order.total;
+///
+/// When the platform paid the courier the delivery fee isn't the seller's, same
+/// as grossFor in app/dashboard/_lib/seller-earnings.ts.
+double _grossFor(OrderModel order) {
+  // A planned order: its plan (delivery the platform shipped is never the
+  // seller's; their delivery-offer share is shown as a deduction).
+  final planned = _planView(order, refunded: false);
+  if (planned != null) return planned.grossPaise / 100;
+  if (order.shipment?.platformKeptDelivery != true) return order.total;
+  // Plus the courier cost the seller bears when every item was Free Delivery.
+  final sellerPays = order.shipment?.sellerPaysCourier ??
+      order.deliveryBreakdown?.sellerPaysCourier ??
+      0;
+  final value = order.total - order.deliveryCharge - (sellerPays > 0 ? sellerPays : 0);
+  return value > 0 ? value : 0;
+}
 
 /// What the seller is actually owed: their share less anything refunded. A
 /// fully refunded order is caught earlier by its status; this handles the
 /// partial case, which leaves the status untouched.
 double payableGrossFor(OrderModel order) {
+  final planned = _planView(order);
+  if (planned != null) return planned.grossPaise / 100;
   final refunded = order.payment?.refundedAmount ?? 0;
   final value = _grossFor(order) - refunded;
   return value > 0 ? value : 0;
+}
+
+/// The order's settlement view (same as settlementOf on the web), or null.
+SettlementView? _planView(OrderModel order, {bool refunded = true}) {
+  final plan = order.settlement;
+  if (plan == null) return null;
+  return settlementView(
+    plan,
+    order.settlementAdjustments,
+    sellerKey: order.settlementSellerKey.isNotEmpty ? order.settlementSellerKey : plan.sellerKey,
+    refundedPaise: refunded ? ((order.payment?.refundedAmount ?? 0) * 100).round() : 0,
+  );
+}
+
+/// What the seller gets for one order and what came off it, for a planned
+/// order; null otherwise (the caller keeps its own rule).
+({double net, double commission, double gatewayFee, double deliveryOffer})? plannedNetFor(OrderModel order) {
+  final v = _planView(order);
+  if (v == null) return null;
+  return (
+    net: v.netPaise / 100,
+    commission: v.commissionPaise / 100,
+    gatewayFee: v.gatewayFeePaise / 100,
+    deliveryOffer: v.deliveryPaise / 100,
+  );
 }
 
 /// When the order was marked delivered, from its own status history.
@@ -258,12 +301,21 @@ SellerEarnings computeSellerEarnings(
     // Gateway fee is only known once it has been fetched from Razorpay;
     // unknown counts as 0 rather than guessing a rate, so the seller is never
     // shown a fabricated deduction.
-    final gatewayFee =
-        (order.payment?.gatewayFee ?? 0) + (order.payment?.gatewayTax ?? 0);
+    // A planned order: the deductions its payout is really made with
+    // (commission, gateway fee, the seller's delivery offer) and any
+    // adjustment owed to them.
+    final planned = plannedNetFor(order);
+    final gatewayFee = planned != null
+        ? planned.gatewayFee
+        : (order.payment?.gatewayFee ?? 0) + (order.payment?.gatewayTax ?? 0);
     // Once a payout transfer has paid the order, what it sent is the answer.
     final sent = order.payment?.transferredNet ?? 0;
     final paid = (order.payment?.transferId ?? '').isNotEmpty && sent > 0;
-    final net = paid ? sent : ((gross - gatewayFee) > 0 ? gross - gatewayFee : 0.0);
+    final net = paid
+        ? sent
+        : planned != null
+            ? planned.net
+            : ((gross - gatewayFee) > 0 ? gross - gatewayFee : 0.0);
 
     rows.add(SellerEarningsRow(
       orderId: order.id,

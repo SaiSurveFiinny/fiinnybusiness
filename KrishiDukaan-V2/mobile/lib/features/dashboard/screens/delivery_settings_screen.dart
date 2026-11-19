@@ -1,3 +1,5 @@
+import 'package:flutter/services.dart';
+import '../../../core/utils/delivery_offer.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -87,6 +89,16 @@ class _DeliverySettingsBodyState extends ConsumerState<_DeliverySettingsBody> {
   // by its selling licence.
   String _coverageType = 'pan_india';
   List<String> _states = [];
+
+  // Free delivery offers (app/lib/free-delivery.ts on the website). The
+  // customer pays nothing; the courier cost comes out of this seller's payout.
+  // `storeFreeDelivery`, not `freeDelivery`: older builds of this screen delete
+  // that field on every save.
+  bool _storeFreeDelivery = false;
+  bool _networkFreeDelivery = false;
+  // Store-wide share offer (I pay __% of delivery) and "free from ₹X".
+  final _storeShareCtrl = TextEditingController();
+  final _freeAboveCtrl = TextEditingController();
   final _stateSearchCtrl = TextEditingController();
 
   @override
@@ -98,6 +110,8 @@ class _DeliverySettingsBodyState extends ConsumerState<_DeliverySettingsBody> {
   @override
   void dispose() {
     _stateSearchCtrl.dispose();
+    _storeShareCtrl.dispose();
+    _freeAboveCtrl.dispose();
     super.dispose();
   }
 
@@ -107,13 +121,20 @@ class _DeliverySettingsBodyState extends ConsumerState<_DeliverySettingsBody> {
     );
     if (!mounted) return;
     setState(() {
-      _coverageType = !widget.isManufacturer && data?['coverageType'] == 'states'
+      _storeFreeDelivery = data?['storeFreeDelivery'] == true;
+      _networkFreeDelivery = data?['networkFreeDelivery'] == true;
+      final share = _storeFreeDelivery ? 0 : GstDeliveryOffer.parsePct(data?['storeDeliveryPct']);
+      _storeShareCtrl.text = share > 0 ? '$share' : '';
+      final above = (data?['freeDeliveryAbove'] as num?)?.toDouble() ?? 0;
+      _freeAboveCtrl.text = above > 0 ? above.toStringAsFixed(0) : '';
+      _coverageType =
+          !widget.isManufacturer && data?['coverageType'] == 'states'
           ? 'states'
           : 'pan_india';
       _states = widget.isManufacturer
           ? const []
           : (data?['states'] as List?)?.map((e) => e.toString()).toList() ??
-              const [];
+                const [];
       List<_WeightSlab> read(Object? raw) => [
         for (final s in (raw as List? ?? const []).whereType<Map>())
           if (s['minKg'] is num && s['maxKg'] is num && s['charge'] is num)
@@ -228,6 +249,12 @@ class _DeliverySettingsBodyState extends ConsumerState<_DeliverySettingsBody> {
             ? encode(_outSlabs)
             : const <Map<String, dynamic>>[],
         'sellerState': _sellerState,
+        'storeFreeDelivery': _storeFreeDelivery,
+        'storeDeliveryPct': _storeFreeDelivery
+            ? 0
+            : GstDeliveryOffer.parsePct(_storeShareCtrl.text),
+        'freeDeliveryAbove': double.tryParse(_freeAboveCtrl.text.trim()) ?? 0,
+        if (widget.isManufacturer) 'networkFreeDelivery': _networkFreeDelivery,
         // Remove dead fields a previous version of this screen wrote, so the
         // doc converges on the single schema checkout actually reads.
         'slabs': FieldValue.delete(),
@@ -287,6 +314,8 @@ class _DeliverySettingsBodyState extends ConsumerState<_DeliverySettingsBody> {
                 // Coverage first: it decides whether there is one slab set or two.
                 _coverageSection(),
                 const SizedBox(height: 16),
+                _freeDeliverySection(),
+                const SizedBox(height: 16),
                 if (_coverageType == 'pan_india') ...[
                   _Section(
                     title: 'Delivery Charges',
@@ -343,6 +372,85 @@ class _DeliverySettingsBodyState extends ConsumerState<_DeliverySettingsBody> {
                 const SizedBox(height: 80),
               ],
             ),
+    );
+  }
+
+  Widget _freeDeliverySection() {
+    return _Section(
+      title: 'Delivery Offers',
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text(
+            'Pay all or part of your customers\' delivery. On courier orders '
+            'your part is taken from your payout after the courier is booked '
+            '(never more than the courier really charged), then commission applies.',
+            style: TextStyle(color: AppColors.onSurfaceVariant),
+          ),
+          SwitchListTile(
+            contentPadding: EdgeInsets.zero,
+            value: _storeFreeDelivery,
+            onChanged: _saving ? null : (v) => setState(() => _storeFreeDelivery = v),
+            title: const Text('Free delivery on everything I sell'),
+          ),
+          if (!_storeFreeDelivery)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 12),
+              child: TextField(
+                controller: _storeShareCtrl,
+                enabled: !_saving,
+                keyboardType: TextInputType.number,
+                inputFormatters: [
+                  FilteringTextInputFormatter.digitsOnly,
+                  LengthLimitingTextInputFormatter(2),
+                ],
+                decoration: const InputDecoration(
+                  labelText: 'Or share it: I pay (%) on everything',
+                  helperText: 'Optional, 1–99. The buyer pays the rest. A product\'s own offer wins when better for the buyer.',
+                  helperMaxLines: 2,
+                  suffixText: '%',
+                  isDense: true,
+                  border: OutlineInputBorder(),
+                ),
+              ),
+            ),
+          TextField(
+            controller: _freeAboveCtrl,
+            enabled: !_saving,
+            keyboardType: TextInputType.number,
+            inputFormatters: [
+              FilteringTextInputFormatter.digitsOnly,
+              LengthLimitingTextInputFormatter(7),
+            ],
+            decoration: const InputDecoration(
+              labelText: 'Free delivery on orders from ₹',
+              hintText: 'e.g. 5000',
+              helperText: 'When an order from your store reaches this amount (after discounts), delivery is free. Empty = off.',
+              helperMaxLines: 2,
+              prefixText: '₹ ',
+              isDense: true,
+              border: OutlineInputBorder(),
+            ),
+          ),
+          if (widget.isManufacturer)
+            SwitchListTile(
+              contentPadding: EdgeInsets.zero,
+              value: _networkFreeDelivery,
+              onChanged: _saving ? null : (v) => setState(() => _networkFreeDelivery = v),
+              title: const Text('Free delivery across my retailer network'),
+              subtitle: const Text(
+                'Your products ship free from every retailer that sells them. '
+                'The retailer who ships bears the courier cost — agree this '
+                'with your network first.',
+              ),
+            ),
+          const SizedBox(height: 4),
+          const Text(
+            'Tap Save to keep changes.',
+            style: TextStyle(fontSize: 11, color: AppColors.onSurfaceVariant),
+          ),
+        ],
+      ),
     );
   }
 
@@ -422,7 +530,10 @@ class _DeliverySettingsBodyState extends ConsumerState<_DeliverySettingsBody> {
             children: [
               Text(
                 'Where you sell is set per product, by its licence',
-                style: TextStyle(color: AppColors.primary, fontWeight: FontWeight.w700),
+                style: TextStyle(
+                  color: AppColors.primary,
+                  fontWeight: FontWeight.w700,
+                ),
               ),
               SizedBox(height: 6),
               Text(

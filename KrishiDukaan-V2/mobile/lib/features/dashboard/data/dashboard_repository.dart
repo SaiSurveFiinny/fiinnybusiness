@@ -314,6 +314,8 @@ class DashboardRepository {
     bool gstIncluded = true,
     double extraDeliveryCharge = 0,
     bool freeDelivery = false,
+    // Share offer: the seller pays this % (1–99) of the delivery.
+    int sellerDeliveryPct = 0,
     // Web-parity product detail fields. All optional so existing callers and
     // older app versions keep working; each is only written when non-empty so
     // a product never gains a meaningless empty array/map.
@@ -470,6 +472,7 @@ class DashboardRepository {
       'gstIncluded': gstApplicable == true ? gstIncluded : false,
       'extraDeliveryCharge': freeDelivery ? 0 : extraDeliveryCharge,
       'freeDelivery': freeDelivery,
+      'sellerDeliveryPct': freeDelivery ? 0 : sellerDeliveryPct,
       // Same field names the web dashboard writes (inventory-firestore.ts), so
       // a product created on either platform renders identically on both.
       if (categoryInfo != null && categoryInfo.isNotEmpty)
@@ -1002,6 +1005,7 @@ class DashboardRepository {
     bool? gstIncluded,
     double? extraDeliveryCharge,
     bool? freeDelivery,
+    int? sellerDeliveryPct,
   }) async {
     try {
       final snap = await _db
@@ -1028,6 +1032,8 @@ class DashboardRepository {
         data['extraDeliveryCharge'] =
             (freeDelivery ?? false) ? 0 : (extraDeliveryCharge ?? 0);
         data['freeDelivery'] = freeDelivery ?? false;
+        data['sellerDeliveryPct'] =
+            (freeDelivery ?? false) ? 0 : (sellerDeliveryPct ?? 0);
       }
       if (discountEnabled != null) {
         data['discountEnabled'] = discountEnabled;
@@ -1392,6 +1398,22 @@ class DashboardRepository {
       'statusHistory': FieldValue.arrayUnion([
         {'status': status, 'at': DateTime.now().toIso8601String()},
       ]),
+      'updatedAt': FieldValue.serverTimestamp(),
+    });
+  }
+
+  /// Asks the shipping functions to act on a courier order: request the
+  /// pickup, or (test bookings only, checked on the server) act as the courier.
+  /// This field is the only shipping data a seller can write.
+  Future<void> requestShipmentAction(String orderId, String action,
+      {String? event}) async {
+    await _db.collection('orders').doc(orderId).update({
+      'shipmentRequest': {
+        'id': '${DateTime.now().microsecondsSinceEpoch}',
+        'action': action,
+        if (event != null) 'event': event,
+        'at': DateTime.now().toIso8601String(),
+      },
       'updatedAt': FieldValue.serverTimestamp(),
     });
   }

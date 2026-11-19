@@ -1,6 +1,102 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 
 import '../utils/delivery_utils.dart';
+import 'settlement.dart';
+
+/// Where a parcel is. Written only by functions/src/shipping; the stages and
+/// wording match types/order.ts on the web.
+class ShipmentInfo {
+  final String mode; // courier | self
+  final String stage;
+  final bool simulated;
+  final String? carrier;
+  final String? service;
+  final String? awb;
+  final String? trackingUrl;
+  final String? labelUrl;
+  final String? pickupDate;
+  final double? weightKg;
+  final bool weightGuessed;
+  final double? cost;
+  final bool platformKeptDelivery;
+
+  /// Free Delivery: the courier cost taken from the seller's payout, capped at
+  /// what the courier charged (functions/src/shipping/pure.ts sellerCourierShare).
+  final double? sellerPaysCourier;
+  final String? reasonText;
+
+  const ShipmentInfo({
+    required this.mode,
+    required this.stage,
+    this.simulated = false,
+    this.carrier,
+    this.service,
+    this.awb,
+    this.trackingUrl,
+    this.labelUrl,
+    this.pickupDate,
+    this.weightKg,
+    this.weightGuessed = false,
+    this.cost,
+    this.platformKeptDelivery = false,
+    this.sellerPaysCourier,
+    this.reasonText,
+  });
+
+  static ShipmentInfo? fromMap(dynamic raw) {
+    if (raw is! Map) return null;
+    final stage = raw['stage']?.toString() ?? '';
+    if (stage.isEmpty) return null;
+    return ShipmentInfo(
+      mode: raw['mode']?.toString() ?? 'courier',
+      stage: stage,
+      simulated: raw['simulated'] == true,
+      carrier: raw['carrier']?.toString(),
+      service: raw['service']?.toString(),
+      awb: raw['awb']?.toString(),
+      trackingUrl: raw['trackingUrl']?.toString(),
+      labelUrl: raw['labelUrl']?.toString(),
+      pickupDate: raw['pickupDate']?.toString(),
+      weightKg: (raw['weightKg'] as num?)?.toDouble(),
+      weightGuessed: raw['weightGuessed'] == true,
+      cost: (raw['cost'] as num?)?.toDouble(),
+      platformKeptDelivery: raw['platformKeptDelivery'] == true,
+      sellerPaysCourier: (raw['sellerPaysCourier'] as num?)?.toDouble(),
+      reasonText: raw['reasonText']?.toString(),
+    );
+  }
+
+  bool get isCourier => mode == 'courier';
+
+  /// The courier has it: the seller can no longer reject the order.
+  bool get leftSeller => const {
+        'picked_up', 'in_transit', 'out_for_delivery', 'delivered',
+        'returning', 'returned', 'lost',
+      }.contains(stage);
+
+  bool get isTrouble => const {'returning', 'returned', 'lost'}.contains(stage);
+
+  String get carrierName => switch (carrier) {
+        'delhivery' => 'Delhivery',
+        'shiprocket' => 'Shiprocket',
+        _ => 'Courier',
+      };
+
+  String get stageText => switch (stage) {
+        'booking' => 'Booking the courier',
+        'booked' => 'Courier booked',
+        'pickup_requested' => 'Waiting for courier pickup',
+        'picked_up' => 'Picked up by courier',
+        'in_transit' => 'In transit',
+        'out_for_delivery' => 'Out for delivery',
+        'delivered' => 'Delivered',
+        'returning' => 'Returning to the seller',
+        'returned' => 'Returned to the seller',
+        'lost' => 'Lost by the courier',
+        'cancelling' => 'Cancelling the courier',
+        _ => stage,
+      };
+}
 
 class OrderModel {
   final String id;
@@ -71,7 +167,22 @@ class OrderModel {
   final String? rejectionReason;
   final String? cancellationReason;
 
+  /// Courier booking, or the reason the seller delivers. Server-written.
+  final ShipmentInfo? shipment;
+
+  /// Who gets which rupee (server-stamped; null for orders without a plan,
+  /// which keep the old earnings rules). See core/models/settlement.dart.
+  final SettlementPlan? settlement;
+  final List<SettlementAdjustment> settlementAdjustments;
+
+  /// The order's current seller, in the key form plans use.
+  final String settlementSellerKey;
+
   const OrderModel({
+    this.shipment,
+    this.settlement,
+    this.settlementAdjustments = const [],
+    this.settlementSellerKey = '',
     required this.id,
     required this.customerId,
     required this.customerName,
@@ -177,6 +288,10 @@ class OrderModel {
       customerName: d['customerName']?.toString() ?? '',
       customerPhone: d['customerPhone']?.toString() ?? '',
       customerAddress: customerAddressMap,
+      shipment: ShipmentInfo.fromMap(d['shipment']),
+      settlement: SettlementPlan.fromMap(d['settlement']),
+      settlementAdjustments: SettlementAdjustment.listFrom(d['settlementAdjustments']),
+      settlementSellerKey: settlementKey(d['sellerPhone'] ?? d['sellerId']),
       sellerId: d['sellerId']?.toString() ?? '',
       sellerName: d['sellerName']?.toString() ?? '',
       sellerType: d['sellerType']?.toString() ?? 'retailer',

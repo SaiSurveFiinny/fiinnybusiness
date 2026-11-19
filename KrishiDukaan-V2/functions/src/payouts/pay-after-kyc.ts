@@ -47,6 +47,7 @@ import { defineSecret } from "firebase-functions/params";
 import { onSchedule } from "firebase-functions/v2/scheduler";
 import { logger } from "firebase-functions/v2";
 import { matchOrderTransfer, type RazorpayTransfer } from "./payout-status";
+import { balancePayoutSplit, markAdjustmentsPaid, readAdjustments, readPlan } from "./settlement";
 
 const RAZORPAY_KEY_ID = defineSecret("RAZORPAY_KEY_ID");
 const RAZORPAY_KEY_SECRET = defineSecret("RAZORPAY_KEY_SECRET");
@@ -171,7 +172,16 @@ export function decideOrder(orderId: string, o: Order, config: RouteConfig, now:
   const delivered = deliveredAtMs(o);
   if (delivered && now - delivered < PAYOUT_HOLD_DAYS * DAY) return wait("in hold after delivery");
   if (toMs(pay.payoutErrorAt) && now - toMs(pay.payoutErrorAt) < RETRY_AFTER_MS) return wait("retrying after a failure");
-  const split = computeSellerSplit(payableGrossPaise(o), config);
+  // A planned order (docs/delivery-money-architecture.md): its plan plus any
+  // adjustment still owed; delivery the platform shipped is never paid out.
+  const plan = readPlan(o.settlement);
+  const planned = plan
+    ? balancePayoutSplit(plan, readAdjustments(o.settlementAdjustments), {
+        sellerKey: o.sellerPhone ?? o.sellerId ?? plan.sellerKey,
+        refundedPaise: Math.round((Number(o.payment?.refundedAmount) || 0) * 100),
+      })
+    : null;
+  const split = planned ? (planned.transferPaise > 0 ? planned : null) : computeSellerSplit(payableGrossPaise(o), config);
   if (!split) return skip("nothing payable after fees");
   return { orderId, action: "pay", split };
 }
@@ -298,6 +308,17 @@ export async function payVerifiedSellers(now = Date.now()) {
             "payment.platformFee": g.split.commissionPaise / 100,
             "payment.payoutVia": "after_kyc",
             "payment.payoutSplit": g.split,
+            ...(readPlan(g.doc.get("settlement"))
+              ? {
+                  settlementAdjustments: markAdjustmentsPaid(
+                    readAdjustments(g.doc.get("settlementAdjustments")),
+                    String(g.doc.get("sellerPhone") ?? g.doc.get("sellerId") ?? phone),
+                    t.id,
+                    at,
+                    "after_kyc",
+                  ),
+                }
+              : {}),
             "payment.payoutClaim": admin.firestore.FieldValue.delete(),
             "payment.payoutError": admin.firestore.FieldValue.delete(),
             "payment.payoutErrorAt": admin.firestore.FieldValue.delete(),

@@ -55,7 +55,26 @@ export interface SeoProduct {
   lowestPrice?: number;
   lowestFinalPrice?: number;
   /** Just the per-seller pricing — lets cards strike each offer against its own seller's price. */
-  availability?: { storeId: string; storePhone?: string; stockLevel: string; sellingPrice?: number; discountPct?: number }[];
+  /**
+   * Per-seller pricing — lets cards strike each offer against its own seller's
+   * price, and price it delivered (lib/delivered-price-client): online flag,
+   * GST and the seller's delivery offers ride along.
+   */
+  availability?: {
+    storeId: string; storePhone?: string; stockLevel: string; sellingPrice?: number; discountPct?: number;
+    isOnline?: boolean; gstApplicable?: boolean; gstRate?: number; gstIncluded?: boolean;
+    extraDeliveryCharge?: number; freeDelivery?: boolean; sellerDeliveryPct?: number;
+  }[];
+  /** Product-level defaults for the above, the maker, base pack and sell mode. */
+  gstApplicable?: boolean;
+  gstRate?: number;
+  gstIncluded?: boolean;
+  extraDeliveryCharge?: number;
+  freeDelivery?: boolean;
+  sellerDeliveryPct?: number;
+  manufacturerPhone?: string;
+  unit?: string;
+  sellMode?: "online_delivery" | "offline_store_only";
   variants: { unit: string; price: number; stock?: number }[];
   categoryInfo: Record<string, string | string[]>;
   benefits: string[];
@@ -101,8 +120,24 @@ function mapProduct(id: string, data: Record<string, unknown>): SeoProduct {
           stockLevel: str(a.stockLevel),
           sellingPrice: typeof a.sellingPrice === "number" ? a.sellingPrice : undefined,
           discountPct: typeof a.discountPct === "number" ? a.discountPct : undefined,
+          ...(typeof a.isOnline === "boolean" ? { isOnline: a.isOnline } : {}),
+          ...(typeof a.gstApplicable === "boolean" ? { gstApplicable: a.gstApplicable } : {}),
+          ...(typeof a.gstRate === "number" ? { gstRate: a.gstRate } : {}),
+          ...(typeof a.gstIncluded === "boolean" ? { gstIncluded: a.gstIncluded } : {}),
+          ...(typeof a.extraDeliveryCharge === "number" ? { extraDeliveryCharge: a.extraDeliveryCharge } : {}),
+          ...(typeof a.freeDelivery === "boolean" ? { freeDelivery: a.freeDelivery } : {}),
+          ...(typeof a.sellerDeliveryPct === "number" ? { sellerDeliveryPct: a.sellerDeliveryPct } : {}),
         }))
       : undefined,
+    ...(typeof data.gstApplicable === "boolean" ? { gstApplicable: data.gstApplicable } : {}),
+    ...(typeof data.gstRate === "number" ? { gstRate: data.gstRate } : {}),
+    ...(typeof data.gstIncluded === "boolean" ? { gstIncluded: data.gstIncluded } : {}),
+    ...(typeof data.extraDeliveryCharge === "number" ? { extraDeliveryCharge: data.extraDeliveryCharge } : {}),
+    ...(typeof data.freeDelivery === "boolean" ? { freeDelivery: data.freeDelivery } : {}),
+    ...(typeof data.sellerDeliveryPct === "number" ? { sellerDeliveryPct: data.sellerDeliveryPct } : {}),
+    ...(data.manufacturerPhone ? { manufacturerPhone: str(data.manufacturerPhone) } : {}),
+    ...(data.unit ? { unit: str(data.unit) } : {}),
+    ...(data.sellMode === "offline_store_only" || data.sellMode === "online_delivery" ? { sellMode: data.sellMode } : {}),
     variants: Array.isArray(data.variants)
       ? (data.variants as { unit: string; price: number; stock?: number }[])
       : [],

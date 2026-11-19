@@ -1,4 +1,5 @@
 import * as admin from "firebase-admin";
+import { readAdjustments, readPlan, settlementView } from "../payouts/settlement";
 import { createHash } from "crypto";
 import { onDocumentWritten } from "firebase-functions/v2/firestore";
 import { logger } from "firebase-functions/v2";
@@ -103,17 +104,34 @@ export function earningsPhase(d: admin.firestore.DocumentData): "transferred" | 
 function addEarnings(c: Contribution, totals: string, key: string, d: admin.firestore.DocumentData, orderId?: string): void {
   const phase = earningsPhase(d);
   if (phase === "not_payable") return;
-  const gross = Math.max(0, earningsGross(d) - (Number(d.payment?.refundedAmount ?? 0) || 0));
-  const gatewayFee = (Number(d.payment?.gatewayFee ?? 0) || 0) + (Number(d.payment?.gatewayTax ?? 0) || 0);
-  const platformFee = Number(d.payment?.platformFee ?? 0) || 0;
+  // A planned order (payouts/settlement.ts): the deductions its payout is
+  // really made with, delivery the platform shipped excluded, adjustments in.
+  const plan = readPlan(d.settlement);
+  const planned = plan
+    ? settlementView(plan, readAdjustments(d.settlementAdjustments), {
+        sellerKey: d.sellerPhone ?? d.sellerId ?? plan.sellerKey,
+        refundedPaise: Math.round((Number(d.payment?.refundedAmount ?? 0) || 0) * 100),
+      })
+    : null;
+  const gross = planned
+    ? planned.grossPaise / 100
+    : Math.max(0, earningsGross(d) - (Number(d.payment?.refundedAmount ?? 0) || 0));
+  const gatewayFee = planned
+    ? planned.gatewayFeePaise / 100
+    : (Number(d.payment?.gatewayFee ?? 0) || 0) + (Number(d.payment?.gatewayTax ?? 0) || 0);
+  const platformFee = planned ? planned.commissionPaise / 100 : Number(d.payment?.platformFee ?? 0) || 0;
+  // The seller's courier share (their delivery offer), planned orders only.
+  const deliveryFee = planned ? planned.deliveryPaise / 100 : 0;
+  // Planned orders also gain adjustments (seller delivered after all, cheaper booking).
+  const extra = planned ? planned.adjustmentsPaise / 100 : 0;
   // Net of the gateway fee (the app's figure); the website also takes off the
   // platform fee, kept separately per state.
   // Once a payout transfer has paid the order, what it sent is the answer
   // (same rule as netFor in seller-earnings.ts).
   const sent = Number(d.payment?.transferredNet ?? 0) || 0;
   const paid = Boolean(d.payment?.transferId) && sent > 0;
-  const net = paid ? sent : Math.max(0, gross - gatewayFee);
-  const webNet = paid ? sent : Math.max(0, gross - gatewayFee - platformFee);
+  const net = paid ? sent : planned ? planned.netPaise / 100 : Math.max(0, gross - gatewayFee);
+  const webNet = paid ? sent : planned ? planned.netPaise / 100 : Math.max(0, gross - gatewayFee - platformFee - deliveryFee + extra);
   addTo(c, totals, "earnings.orders", 1);
   addTo(c, totals, `earnings.${phase}.net`, net);
   addTo(c, totals, `earnings.${phase}.platformFee`, platformFee);
@@ -134,7 +152,7 @@ function addEarnings(c: Contribution, totals: string, key: string, d: admin.fire
   if (phase === "delivered" && at > 0 && orderId && /^[A-Za-z0-9_-]{1,100}$/.test(orderId)) {
     const day = `${SELLER_DAILY}/${key}_${istDayKey(at)}`;
     addTo(c, day, `holds.${orderId}.net`, net);
-    addTo(c, day, `holds.${orderId}.webNet`, Math.max(0, gross - gatewayFee - platformFee));
+    addTo(c, day, `holds.${orderId}.webNet`, planned ? planned.netPaise / 100 : Math.max(0, gross - gatewayFee - platformFee));
     addTo(c, day, `holds.${orderId}.at`, at);
     // The real release time when the Route transfer has one (24h after
     // delivery); screens fall back to `at` + 7 days without it.

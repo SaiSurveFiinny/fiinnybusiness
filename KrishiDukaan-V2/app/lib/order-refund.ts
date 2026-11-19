@@ -1,6 +1,6 @@
 import Razorpay from "razorpay";
 import { getAdminDb } from "./firebase-admin";
-import { grossFor, netFor, type OrderLike } from "../dashboard/_lib/seller-earnings";
+import { netFor, refundBaseFor, type OrderLike } from "../dashboard/_lib/seller-earnings";
 import { reverseOrderSellerTransfer } from "./route-transfers";
 import { refundFields, type RazorpayRefundEntity } from "./refund-sync";
 
@@ -73,7 +73,9 @@ export async function refundOrder(params: {
   }
 
   const orderLike = { id: orderId, ...(order as object) } as OrderLike;
-  const orderTotal = grossFor(orderLike);
+  // What the customer paid for this order (its plan's goods + delivery, less
+  // delivery a booked courier has used), or the original rule without a plan.
+  const orderTotal = refundBaseFor(orderLike);
   const refundAmount =
     typeof amount === "number" && amount > 0
       ? Math.round(Math.min(amount, orderTotal) * 100) / 100
