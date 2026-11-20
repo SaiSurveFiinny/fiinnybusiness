@@ -263,7 +263,6 @@ export default function App() {
   }), [checkoutInfo.addressHouse, checkoutInfo.addressArea, checkoutInfo.addressLandmark, checkoutInfo.addressCity,
     checkoutInfo.addressDistrict, checkoutInfo.addressState, checkoutInfo.addressPincode]);
   const [loading, setLoading] = useState(true);
-  const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [mfgUpgradeModal, setMfgUpgradeModal] = useState(false);
   const [mfgUpgradeLoading, setMfgUpgradeLoading] = useState(false);
   /** Preserved `inviteCode` query param for manufacturer → retailer signup links (legacy `invite` also read). */
@@ -759,10 +758,26 @@ export default function App() {
     }
   }, [currentView, ensureCatalogLoaded]);
 
-  const loadData = async (attempt = 1) => {
+  // Top Picks is ONE rail on Home, not the site, so a failed fetch must never
+  // block or blank any view. It used to: a 499 (the SSR server restarting
+  // mid-request — not Firestore, not rules) bubbled into errorMsg, which
+  // replaced EVERY view with a "Firebase Connection Error" screen. Now a
+  // failure just leaves the rail empty (HomeView shows its noTopPicks
+  // placeholder) and quietly retries in the background. Never throws.
+  const loadTopPicks = async (attempt = 1): Promise<void> => {
+    try {
+      setHomeRailProducts(await fetchTopPicks());
+    } catch (error) {
+      console.warn(`Top Picks load failed (attempt ${attempt}):`, error);
+      if (attempt < 4) {
+        setTimeout(() => void loadTopPicks(attempt + 1), 2000 * attempt);
+      }
+    }
+  };
+
+  const loadData = async () => {
     try {
       setLoading(true);
-      setErrorMsg(null);
       trackPageView('home');
 
       // Home's rails only need a small, bounded slice, so this fetches just the
@@ -782,9 +797,6 @@ export default function App() {
       // the likeliest source of the test shops in the live store locator. An
       // empty result now renders as empty, which is the truth.
 
-      const railProducts = await fetchTopPicks();
-      setHomeRailProducts(railProducts);
-
       // Banners are a non-critical homepage enhancement — HomeView falls back
       // to its built-in default slides if this fails or returns empty, so a
       // failure here must never block the rest of the page from loading.
@@ -792,16 +804,11 @@ export default function App() {
         console.warn('Failed to fetch banners, homepage will use default slides:', err);
       });
 
-      if (railProducts.length === 0) {
-        setErrorMsg('No products found in database even after sync. Please check your Firestore rules.');
-      }
-    } catch (error: any) {
-      console.error('Failed to load data from Firebase:', error);
-      if (attempt < 3) {
-        await new Promise((r) => setTimeout(r, 1500 * attempt));
-        return loadData(attempt + 1);
-      }
-      setErrorMsg(`Firebase Connection Error: ${error.message || 'Unknown error'}. Check your browser console for details.`);
+      // The spinner waits for the first Top Picks attempt only (so the rail
+      // doesn't flash empty on a normal load); retries run after it clears.
+      await loadTopPicks();
+    } catch (error) {
+      console.error('Home boot failed:', error);
     } finally {
       setLoading(false);
     }
@@ -1936,21 +1943,6 @@ export default function App() {
       </div>
     );
 
-    if (errorMsg) return (
-      <div className="p-20 text-center">
-        <div className="bg-red-50 text-red-700 p-6 rounded-2xl border border-red-100 max-w-lg mx-auto">
-          <h3 className="text-xl font-bold mb-2">{t('dataLoadingIssue')}</h3>
-          <p className="mb-4">{errorMsg}</p>
-          <button
-            onClick={() => void loadData()}
-            className="bg-red-600 text-white px-6 py-2 rounded-lg font-bold hover:bg-red-700 transition-colors"
-          >
-            {t('retryConnection')}
-          </button>
-        </div>
-      </div>
-    );
-
     switch (currentView) {
       case 'home':
         return (
@@ -2566,12 +2558,12 @@ export default function App() {
       )}
 
       {/* Onboarding Tour — only runs on first visit, only on home view */}
-      {currentView === 'home' && !loading && !errorMsg ? (
+      {currentView === 'home' && !loading ? (
         <GuidedTour steps={tourSteps} />
       ) : null}
 
       {/* "Get the app" popup — first-time visitors only, skippable, home view only */}
-      {currentView === 'home' && !loading && !errorMsg ? <AppPromoModal /> : null}
+      {currentView === 'home' && !loading ? <AppPromoModal /> : null}
 
       <StatusToast
         message={toastMsg}
