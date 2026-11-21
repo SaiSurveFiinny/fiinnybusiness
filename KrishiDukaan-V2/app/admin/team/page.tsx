@@ -53,6 +53,9 @@ const SECTION_LABELS: Record<AdminSection, string> = {
   blog: "Blog",
   team: "Team",
   salesTeam: "Sales Team",
+  salesDealerEdit: "Sales: Edit dealers",
+  salesDealerDelete: "Sales: Delete dealers",
+  auditLog: "Audit Log",
   referrals: "Referrals",
 };
 

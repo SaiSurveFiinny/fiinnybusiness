@@ -1,9 +1,10 @@
 "use client";
 
 import { FormEvent, useEffect, useState } from 'react';
-import { X, LocateFixed, CheckCircle, AlertCircle, Loader2 } from 'lucide-react';
+import { X, LocateFixed, CheckCircle, AlertCircle, Loader2, ChevronDown } from 'lucide-react';
 import { getUserLocation } from '../../app/utils/geolocation';
 import type { Dealer, DealerInput } from '../../app/sales/dealers/dealers-service';
+import { PREDEFINED_STATUSES, STATUS_LABELS } from '../../app/sales/dealers/dealer-status';
 
 interface DealerFormProps {
   open: boolean;
@@ -18,7 +19,23 @@ const EMPTY: DealerInput = {
   phone: '',
   address: '',
   geo: null,
+  type: 'retailer',
+  interest: '',
+  status: '',
 };
+
+const DEALER_TYPES = [
+  { value: 'retailer',     label: 'Retailer' },
+  { value: 'distributor',  label: 'Distributor' },
+  { value: 'manufacturer', label: 'Manufacturer' },
+];
+
+const INTEREST_OPTIONS = [
+  { value: '',              label: '— Not assessed —' },
+  { value: 'low',           label: 'Low Interest' },
+  { value: 'considering',   label: 'Considering' },
+  { value: 'veryInterested',label: 'Very Interested' },
+];
 
 export default function DealerForm({ open, initial, onClose, onSubmit }: DealerFormProps) {
   const [form, setForm] = useState<DealerInput>(EMPTY);
@@ -38,6 +55,9 @@ export default function DealerForm({ open, initial, onClose, onSubmit }: DealerF
           geo: initial.geo
             ? { lat: initial.geo.latitude, lng: initial.geo.longitude }
             : null,
+          type:     initial.type     ?? 'retailer',
+          interest: initial.interest ?? '',
+          status:   initial.status   ?? '',
         });
         setGeoStatus(initial.geo ? 'ok' : 'idle');
       } else {
@@ -218,6 +238,68 @@ export default function DealerForm({ open, initial, onClose, onSubmit }: DealerF
                 ? 'Permission denied — tap to retry'
                 : 'Use Current Location'}
             </button>
+          </div>
+
+          {/* Dealer Type */}
+          <div>
+            <label className="mb-1.5 block text-xs font-semibold uppercase tracking-wider text-on-surface-variant">
+              Dealer Type
+            </label>
+            <div className="flex gap-2">
+              {DEALER_TYPES.map((t) => (
+                <button
+                  key={t.value}
+                  type="button"
+                  onClick={() => setForm((f) => ({ ...f, type: t.value }))}
+                  className={`flex-1 rounded-xl border py-2.5 text-xs font-bold transition active:scale-95 ${
+                    form.type === t.value
+                      ? 'border-primary bg-primary text-white'
+                      : 'border-outline/30 bg-surface-container-low text-on-surface-variant hover:border-primary/40'
+                  }`}
+                >
+                  {t.label}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* Dealer Status */}
+          <div>
+            <label className="mb-1.5 block text-xs font-semibold uppercase tracking-wider text-on-surface-variant">
+              Status <span className="text-outline font-normal normal-case">(optional)</span>
+            </label>
+            <div className="relative">
+              <select
+                value={form.status ?? ''}
+                onChange={(e) => setForm((f) => ({ ...f, status: e.target.value }))}
+                className="w-full appearance-none rounded-xl border border-outline/30 bg-surface-container-low px-4 py-3 pr-10 text-sm text-on-surface focus:border-primary focus:outline-none focus:ring-2 focus:ring-primary/20"
+              >
+                <option value="">— Select status —</option>
+                {PREDEFINED_STATUSES.map((s) => (
+                  <option key={s} value={s}>{STATUS_LABELS[s]}</option>
+                ))}
+              </select>
+              <ChevronDown className="pointer-events-none absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-outline" />
+            </div>
+          </div>
+
+          {/* Dealer Interest */}
+          <div>
+            <label className="mb-1.5 block text-xs font-semibold uppercase tracking-wider text-on-surface-variant">
+              Dealer Interest <span className="text-outline font-normal normal-case">(optional)</span>
+            </label>
+            <div className="relative">
+              <select
+                value={form.interest ?? ''}
+                onChange={(e) => setForm((f) => ({ ...f, interest: e.target.value }))}
+                className="w-full appearance-none rounded-xl border border-outline/30 bg-surface-container-low px-4 py-3 pr-10 text-sm text-on-surface focus:border-primary focus:outline-none focus:ring-2 focus:ring-primary/20"
+              >
+                {INTEREST_OPTIONS.map((o) => (
+                  <option key={o.value} value={o.value}>{o.label}</option>
+                ))}
+              </select>
+              <ChevronDown className="pointer-events-none absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-outline" />
+            </div>
           </div>
 
           {/* Error */}

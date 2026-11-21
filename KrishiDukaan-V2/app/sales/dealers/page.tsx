@@ -9,6 +9,7 @@ import {
   fetchDealers,
   createDealer,
   updateDealer,
+  updateDealerStatus,
   deactivateDealer,
   type Dealer,
   type DealerInput,
@@ -146,13 +147,28 @@ export default function DealersPage() {
 
   const closeVisitForm = () => { setVisitFormOpen(false); setVisitDealer(null); };
 
-  const handleMarkAsVisited = async (input: Omit<MarkVisitInput, 'daySessionId' | 'visitSequence'>) => {
+  const handleMarkAsVisited = async (
+    input: Omit<MarkVisitInput, 'daySessionId' | 'visitSequence'>,
+    newStatus?: string,
+  ) => {
     if (!user) return;
-    await markAsVisited(user.uid, {
-      ...input,
-      daySessionId:  activeSessionId ?? undefined,
-      visitSequence: todayVisits.length + 1,
-    });
+    const ops: Promise<unknown>[] = [
+      markAsVisited(user.uid, {
+        ...input,
+        daySessionId:  activeSessionId ?? undefined,
+        visitSequence: todayVisits.length + 1,
+      }),
+    ];
+    if (newStatus !== undefined) {
+      ops.push(updateDealerStatus(input.dealerId, newStatus));
+    }
+    await Promise.all(ops);
+    // Reflect the new status in the local dealer list immediately
+    if (newStatus !== undefined) {
+      setDealers((prev) =>
+        prev.map((d) => d.id === input.dealerId ? { ...d, status: newStatus || undefined } : d),
+      );
+    }
     await refreshVisits(user.uid);
   };
 

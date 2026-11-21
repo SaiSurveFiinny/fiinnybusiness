@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useEffect, useState } from "react";
-import {  Box, LayoutDashboard, Layers, Users, X, Mail, MessageSquare, Building2, BarChart3, CreditCard, BookOpen, Tag, Package, MessageCircle, Video, UserCog, ShoppingCart, IndianRupee, Banknote, ReceiptText, ShieldAlert, Contact, GalleryHorizontal, Link2, Search, ChevronDown, Smartphone, Info, SearchCheck , HeadphonesIcon, HelpCircle, PhoneCall, Truck  } from "lucide-react";
+import {  Box, LayoutDashboard, Layers, Users, X, Mail, MessageSquare, Building2, BarChart3, CreditCard, BookOpen, Tag, Package, MessageCircle, Video, UserCog, ShoppingCart, IndianRupee, Banknote, ReceiptText, ShieldAlert, Contact, GalleryHorizontal, Link2, Search, ChevronDown, Smartphone, Info, SearchCheck , HeadphonesIcon, HelpCircle, PhoneCall, Truck, ClipboardList  } from "lucide-react";
 import { collection, limit, onSnapshot, query, where } from "firebase/firestore";
 import { cn } from "../../dashboard/_lib/cn";
 import { db } from "../../firebase";
@@ -91,6 +91,7 @@ const navGroups: NavGroup[] = [
       { href: "/admin/search-insights", label: "Search insights", icon: SearchCheck, sections: ["analytics"], keywords: "searches keywords demand categories" },
       { href: "/admin/search-links", label: "Search links", icon: Link2, sections: ["analytics"], keywords: "search synonyms aliases spellings link products no results" },
       { href: "/admin/reports", label: "Reports", icon: Mail, sections: ["reports"], keywords: "export email" },
+      { href: "/admin/audit-log", label: "Audit Log", icon: ClipboardList, sections: ["auditLog"], keywords: "audit trail history changes exports sales team" },
     ],
   },
 ];

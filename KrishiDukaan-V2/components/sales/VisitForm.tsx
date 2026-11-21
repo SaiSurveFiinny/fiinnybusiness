@@ -9,18 +9,21 @@ import {
   type VisitPurpose,
 } from '../../app/sales/dealers/dealer-visit-service';
 import type { Dealer } from '../../app/sales/dealers/dealers-service';
+import { PREDEFINED_STATUSES, STATUS_LABELS, statusLabel, statusColor } from '../../app/sales/dealers/dealer-status';
 
 interface VisitFormProps {
   open: boolean;
   dealer: Dealer | null;
   onClose: () => void;
-  onSubmit: (input: Omit<MarkVisitInput, 'daySessionId' | 'visitSequence'>) => Promise<void>;
+  /** newStatus is the updated dealer status if the exec changed it, else undefined. */
+  onSubmit: (input: Omit<MarkVisitInput, 'daySessionId' | 'visitSequence'>, newStatus?: string) => Promise<void>;
 }
 
 export default function VisitForm({ open, dealer, onClose, onSubmit }: VisitFormProps) {
   const [purpose, setPurpose] = useState<VisitPurpose | ''>('');
   const [purposeOther, setPurposeOther] = useState('');
   const [notes, setNotes] = useState('');
+  const [status, setStatus] = useState('');
   const [geo, setGeo] = useState<{ lat: number; lng: number } | null>(null);
   const [geoStatus, setGeoStatus] = useState<'loading' | 'ok' | 'error'>('loading');
   const [submitting, setSubmitting] = useState(false);
@@ -31,6 +34,7 @@ export default function VisitForm({ open, dealer, onClose, onSubmit }: VisitForm
     setPurpose('');
     setPurposeOther('');
     setNotes('');
+    setStatus(dealer?.status ?? '');
     setGeo(null);
     setGeoStatus('loading');
     setError('');
@@ -58,14 +62,18 @@ export default function VisitForm({ open, dealer, onClose, onSubmit }: VisitForm
     setError('');
     setSubmitting(true);
     try {
-      await onSubmit({
-        dealerId:     dealer.id,
-        dealerName:   dealer.shopName,
-        purpose:      purpose as VisitPurpose,
-        purposeOther: purpose === 'Other' ? purposeOther.trim() : undefined,
-        notes:        notes.trim() || undefined,
-        geo,
-      });
+      const statusChanged = status !== (dealer.status ?? '');
+      await onSubmit(
+        {
+          dealerId:     dealer.id,
+          dealerName:   dealer.shopName,
+          purpose:      purpose as VisitPurpose,
+          purposeOther: purpose === 'Other' ? purposeOther.trim() : undefined,
+          notes:        notes.trim() || undefined,
+          geo,
+        },
+        statusChanged ? status : undefined,
+      );
       onClose();
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : 'Something went wrong. Please try again.');
@@ -99,6 +107,34 @@ export default function VisitForm({ open, dealer, onClose, onSubmit }: VisitForm
         </div>
 
         <form onSubmit={handleSubmit} className="space-y-4 px-5 pb-8">
+
+          {/* Dealer Status — pre-filled with current status; exec can update */}
+          <div>
+            <label className="mb-1.5 block text-xs font-semibold uppercase tracking-wider text-on-surface-variant">
+              Dealer Status <span className="text-outline font-normal normal-case">(optional — updates dealer record)</span>
+            </label>
+            {dealer?.status && status === dealer.status && (
+              <div className="mb-2 flex items-center gap-2">
+                <span className="text-xs text-on-surface-variant">Current:</span>
+                <span className={`rounded-full px-2 py-0.5 text-[11px] font-bold ${statusColor(dealer.status)}`}>
+                  {statusLabel(dealer.status)}
+                </span>
+              </div>
+            )}
+            <div className="relative">
+              <select
+                value={status}
+                onChange={(e) => setStatus(e.target.value)}
+                className="w-full appearance-none rounded-xl border border-outline/30 bg-surface-container-low px-4 py-3 pr-10 text-sm text-on-surface focus:border-primary focus:outline-none focus:ring-2 focus:ring-primary/20"
+              >
+                <option value="">— No change —</option>
+                {PREDEFINED_STATUSES.map((s) => (
+                  <option key={s} value={s}>{STATUS_LABELS[s]}</option>
+                ))}
+              </select>
+              <ChevronDown className="pointer-events-none absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-outline" />
+            </div>
+          </div>
 
           {/* Purpose */}
           <div>

@@ -12,6 +12,10 @@ export const ADMIN_SECTIONS = [
   "reels", "discounts", "inventory", "companies", "hubs", "banners", "reports", "messages",
   "whatsapp", "support", "blog", "team", "salesTeam", "referrals", "payouts", "routePayouts", "moderation",
   "appVersion", "aboutPage", "enquiries",
+  // Sales-dealer write permissions (finer-grained than salesTeam which is read-only)
+  "salesDealerEdit", "salesDealerDelete",
+  // Audit log — append-only trail for sales team mutations and CSV exports
+  "auditLog",
 ] as const;
 
 export type AdminSection = (typeof ADMIN_SECTIONS)[number];
@@ -37,6 +41,7 @@ export function sectionsForPath(pathname: string): AdminSection[] {
   const seg = pathname.split("/")[2] ?? "";
   if (!seg) return ["overview"];
   if (seg === "sales-team") return ["salesTeam"];
+  if (seg === "audit-log") return ["auditLog"];
   if (seg === "customer-history") return ["orders", "users"];
   if (seg === "route-payouts") return ["routePayouts"];
   if (seg === "payouts") return ["payouts", "routePayouts"];
@@ -51,6 +56,8 @@ export function sectionsForPath(pathname: string): AdminSection[] {
 export function pathForSection(section: AdminSection): string {
   if (section === "overview") return "/admin";
   if (section === "salesTeam") return "/admin/sales-team";
+  if (section === "auditLog") return "/admin/audit-log";
+  if (section === "salesDealerEdit" || section === "salesDealerDelete") return "/admin/sales-team";
   if (section === "routePayouts") return "/admin/payouts?tab=overview";
   if (section === "appVersion") return "/admin/app-version";
   if (section === "aboutPage") return "/admin/about-page";

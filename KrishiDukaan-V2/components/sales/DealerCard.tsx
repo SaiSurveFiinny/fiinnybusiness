@@ -4,6 +4,7 @@ import { useState } from 'react';
 import { Phone, MapPin, Pencil, PowerOff, Store, ClipboardCheck, Clock, CheckCircle } from 'lucide-react';
 import type { Dealer } from '../../app/sales/dealers/dealers-service';
 import type { DealerVisit } from '../../app/sales/dealers/dealer-visit-service';
+import { statusLabel, statusColor } from '../../app/sales/dealers/dealer-status';
 
 interface DealerCardProps {
   dealer: Dealer;
@@ -86,6 +87,11 @@ export default function DealerCard({
           <div className="min-w-0 flex-1">
             <p className="truncate text-sm font-bold text-on-surface">{dealer.shopName}</p>
             <p className="truncate text-xs text-on-surface-variant">{dealer.ownerName}</p>
+            {dealer.status && (
+              <span className={`mt-1 inline-block rounded-full px-2 py-0.5 text-[10px] font-bold ${statusColor(dealer.status)}`}>
+                {statusLabel(dealer.status)}
+              </span>
+            )}
           </div>
         </div>
 

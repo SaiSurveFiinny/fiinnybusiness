@@ -41,6 +41,14 @@ export type Dealer = {
    * value means "not assessed", not a default to assume.
    */
   interest?: string;
+
+  /**
+   * Current deal/relationship stage — written by the Flutter Sales App
+   * (DealerStatus enum stored as camelCase .name: 'pitching' | 'interested' |
+   * 'ongoing' | 'pending' | 'completed' | 'closed' | 'notInterested', or any
+   * custom string). Optional; a missing value means no status has been set yet.
+   */
+  status?: string;
 };
 
 export type DealerInput = {
@@ -49,6 +57,12 @@ export type DealerInput = {
   phone: string;
   address: string;
   geo: { lat: number; lng: number } | null;
+  /** DealerType enum name: 'retailer' | 'distributor' | 'manufacturer' */
+  type?: string;
+  /** DealerInterest enum name: 'low' | 'considering' | 'veryInterested' */
+  interest?: string;
+  /** DealerStatus enum name or custom string — see dealer-status.ts */
+  status?: string;
 };
 
 function mapDealerDoc(d: { id: string; data: () => Record<string, unknown> }): Dealer {
@@ -69,6 +83,7 @@ function mapDealerDoc(d: { id: string; data: () => Record<string, unknown> }): D
     imageUrl: data.imageUrl ? String(data.imageUrl) : undefined,
     imagePath: data.imagePath ? String(data.imagePath) : undefined,
     interest: data.interest ? String(data.interest) : undefined,
+    status:   data.status   ? String(data.status)   : undefined,
   };
 }
 
@@ -108,6 +123,9 @@ export async function createDealer(uid: string, input: DealerInput): Promise<str
     geo: input.geo ? new GeoPoint(input.geo.lat, input.geo.lng) : null,
     active: true,
     createdBy: uid,
+    ...(input.type     ? { type:     input.type     } : {}),
+    ...(input.interest ? { interest: input.interest } : {}),
+    ...(input.status   ? { status:   input.status   } : {}),
     createdAt: now,
     updatedAt: now,
   });
@@ -115,19 +133,31 @@ export async function createDealer(uid: string, input: DealerInput): Promise<str
 }
 
 export async function updateDealer(dealerId: string, input: DealerInput): Promise<void> {
-  await updateDoc(doc(db, 'dealers', dealerId), {
+  const update: Record<string, unknown> = {
     shopName: input.shopName.trim(),
     ownerName: input.ownerName.trim(),
     phone: input.phone.trim(),
     address: input.address.trim(),
     geo: input.geo ? new GeoPoint(input.geo.lat, input.geo.lng) : null,
     updatedAt: serverTimestamp(),
-  });
+  };
+  if (input.type     !== undefined) update.type     = input.type     || null;
+  if (input.interest !== undefined) update.interest = input.interest || null;
+  if (input.status   !== undefined) update.status   = input.status   || null;
+  await updateDoc(doc(db, 'dealers', dealerId), update);
 }
 
 export async function deactivateDealer(dealerId: string): Promise<void> {
   await updateDoc(doc(db, 'dealers', dealerId), {
     active: false,
+    updatedAt: serverTimestamp(),
+  });
+}
+
+/** Update only the status field — called from the Mark as Visited flow. */
+export async function updateDealerStatus(dealerId: string, status: string): Promise<void> {
+  await updateDoc(doc(db, 'dealers', dealerId), {
+    status: status || null,
     updatedAt: serverTimestamp(),
   });
 }
